@@ -184,6 +184,21 @@ test("refused for its protocol version: says so and backs off long", async () =>
   await until(() => s.socks.length === 2, 2000);
 });
 
+test("refused for its runner id: explains once and backs off long", async () => {
+  const reason = `runner id "box" isn't allowed for token "runner-alice": use "runner-alice" or "runner-alice:<anything>"`;
+  const s = fakeServer(0, { welcome: false, onHello: (ws) => ws.close(4004, reason) });
+  cleanup.push(() => s.server.stop(true));
+  const { conn, logs } = runner(s.url, { runnerIdBackoffMs: 300 });
+  conn.start();
+  await until(() => s.socks.length === 3, 3000);
+  await until(() => logs.filter((l) => l.startsWith("retrying")).length >= 2);
+  const explained = logs.filter((l) => l.includes("refused this runner's id"));
+  expect(explained).toEqual([`the server refused this runner's id: ${reason}. Set "runnerId" in runner.json to an id this token may use, then restart the runner.`]);
+  expect(logs.filter((l) => l.startsWith("retrying")).every((l) => l === "retrying in 0.3s")).toBe(true);
+  expect(conn.connected).toBe(false);
+  conn.stop();
+});
+
 test("not connected until the server welcomes the hello", async () => {
   let accept!: () => void;
   const s = fakeServer(0, { welcome: false, onHello: (ws) => (accept = () => ws.send(JSON.stringify({ t: "welcome" }))) });

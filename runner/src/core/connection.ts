@@ -8,7 +8,7 @@
 
 import { capEvent, guardFrame } from "../../../shared/limits";
 import { redactValue } from "../credentials";
-import { CLOSE_PROTOCOL, CLOSE_REPLACED, type PushKeys, type RunnerInfo, type RunnerToServer, type ServerToRunner } from "../../../shared/protocol";
+import { CLOSE_PROTOCOL, CLOSE_REPLACED, CLOSE_RUNNER_ID, type PushKeys, type RunnerInfo, type RunnerToServer, type ServerToRunner } from "../../../shared/protocol";
 
 export interface ConnectionOptions {
   /** the app's base URL, e.g. https://tether--me.foliation.dev or http://localhost:8790 */
@@ -34,6 +34,8 @@ export interface ConnectionOptions {
   replacedBackoffMs?: number;
   /** how long to wait after the server refused our protocol version */
   protocolBackoffMs?: number;
+  /** how long to wait after the server refused our runner id for this token */
+  runnerIdBackoffMs?: number;
   WebSocket?: typeof WebSocket;
   fetch?: typeof fetch;
 }
@@ -53,6 +55,8 @@ export class Connection {
   private stopped = false;
   private ready = false;
   private helloName = "";
+  /** the last runner-id refusal explained in the log, so retries don't repeat it */
+  private idRefusal = "";
   private readonly log: (line: string) => void;
   private readonly WS: typeof WebSocket;
   private readonly fetch: typeof fetch;
@@ -158,6 +162,7 @@ export class Connection {
         // but refuses the hello must not be retried every second.
         this.ready = true;
         this.attempt = 0;
+        this.idRefusal = "";
         this.log(`connected to ${this.opts.url} as ${this.helloName}`);
         this.opts.onState?.(true, m.push);
       } else if (m.t === "viewers") this.opts.onViewers?.(m.sessions ?? {});
@@ -183,6 +188,16 @@ export class Connection {
         // Retrying won't help until one side is updated; keep trying rarely in case the app is.
         const wait = this.opts.protocolBackoffMs ?? 5 * 60_000;
         this.log(`the server refused this runner: ${ev.reason}. Retrying in ${wait / 1000}s.`);
+        return this.scheduleRetry(wait);
+      }
+      if (ev.code === CLOSE_RUNNER_ID) {
+        // This token may not use this runner id (server/src/runnerIds.ts). Only runner.json or the
+        // token can fix that, so say how once and then retry rarely.
+        const wait = this.opts.runnerIdBackoffMs ?? 5 * 60_000;
+        if (ev.reason !== this.idRefusal) {
+          this.idRefusal = ev.reason;
+          this.log(`the server refused this runner's id: ${ev.reason}. Set "runnerId" in runner.json to an id this token may use, then restart the runner.`);
+        }
         return this.scheduleRetry(wait);
       }
       if (was || opened) this.log(`disconnected (${ev.code}${ev.reason ? ` ${ev.reason}` : ""})`);

@@ -37,6 +37,11 @@ describe("wire", () => {
     for (const bad of ["", "nope", "[]", "null", '{"t":"rpc","id":"1","op":"ping"}', '{"t":"rpc","id":1,"runnerId":"b","op":"x"}', '{"t":"hello"}'])
       expect(parseBrowserMessage(bad)).toBeNull();
   });
+  test("renew frames carry exactly one well-formed ticket", () => {
+    expect(parseBrowserMessage('{"t":"renew","ticket":"eyJzdWIi.c2ln-_x","extra":1}')).toEqual({ t: "renew", ticket: "eyJzdWIi.c2ln-_x" });
+    for (const ticket of [undefined, 7, "", "nodot", "a.b.c", "a b.c", ".sig", "pay.", `${"a".repeat(701)}.s`, `p.${"s".repeat(101)}`])
+      expect(parseBrowserMessage(JSON.stringify({ t: "renew", ticket }))).toBeNull();
+  });
   test("browser rpc frames are rebuilt, and args must be an object", () => {
     expect(parseBrowserMessage('{"t":"rpc","id":"1","runnerId":"b","op":"ping","extra":1}')).toEqual({ t: "rpc", id: "1", runnerId: "b", op: "ping", args: {} });
     expect(parseBrowserMessage('{"t":"rpc","id":"1","runnerId":"b","op":"ping","args":"x"}')).toBeNull();

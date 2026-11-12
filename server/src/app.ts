@@ -20,6 +20,10 @@ export interface AppOptions {
   dev?: boolean;
   /** the app's VAPID keys (push.ts); push is off without them */
   push?: PushKeys;
+  /** who is calling; identity.ts's viewerFrom unless a test stands in for the edge */
+  identify?: (req: Request) => Promise<Viewer | null>;
+  /** how often browser sockets past their sign-in deadline are closed (relay.sweep) */
+  sweepMs?: number;
 }
 
 /**
@@ -64,9 +68,11 @@ export function originAllowed(req: Request, extra: string[] = []): boolean {
   return extra.includes(origin);
 }
 
-export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay } {
+/** `stop` stops the server and the sweep. */
+export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay; stop: () => void } {
   const log = opts.log ?? ((l: string) => console.log(l));
   const dev = opts.dev ?? DEV;
+  const identify = opts.identify ?? viewerFrom;
   const relay = opts.relay ?? new Relay({ log, push: opts.push });
 
   const guard = (what: string, fn: () => void) => {
@@ -88,10 +94,19 @@ export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay
       if (url.pathname === "/api/health") return Response.json({ ok: true });
       if (dev && !loopbackHost(req)) return new Response("dev mode answers only localhost", { status: 403 });
 
-      const viewer = await viewerFrom(req);
+      const viewer = await identify(req);
       if (url.pathname === "/api/me") {
         if (!viewer) return Response.json({ error: "unauthenticated" }, { status: 401 });
         return Response.json({ ...browserUser(viewer), allowed: isOwner(viewer), dev });
+      }
+      if (url.pathname === "/api/ws-ticket") {
+        // Same checks as opening the socket: the ticket keeps a socket open (tickets.ts).
+        const noStore = { "Cache-Control": "no-store" };
+        if (req.method !== "GET") return new Response("GET only", { status: 405, headers: noStore });
+        if (!originAllowed(req, opts.allowedOrigins)) return new Response("cross-origin request refused", { status: 403, headers: noStore });
+        if (!viewer) return Response.json({ error: "unauthenticated" }, { status: 401, headers: noStore });
+        if (!isOwner(viewer)) return new Response("owners only", { status: 403, headers: noStore });
+        return Response.json({ ticket: relay.tickets.issue(viewer.id) }, { headers: noStore });
       }
       if (url.pathname === "/api/ws") {
         if (!originAllowed(req, opts.allowedOrigins)) return new Response("cross-origin socket refused", { status: 403 });
@@ -113,7 +128,9 @@ export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay
       closeOnBackpressureLimit: true,
       maxPayloadLength: 16 * 1024 * 1024,
       open(ws) {
-        if (ws.data.kind === "browser") guard("browser open", () => relay.addBrowser(ws, browserUser(ws.data.viewer), PROTOCOL_VERSION));
+        if (ws.data.kind === "browser") guard("browser open", () => relay.addBrowser(ws, browserUser(ws.data.viewer), PROTOCOL_VERSION, ws.data.viewer.id));
+        // Its token's name limits which runner ids its hellos may claim (runnerIds.ts).
+        else guard("runner open", () => relay.addRunner(ws, ws.data.viewer.name));
       },
       message(ws: ServerWebSocket<Conn>, raw) {
         if (ws.data.kind === "runner") {
@@ -133,5 +150,18 @@ export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay
       },
     },
   });
-  return { server, relay };
+  // Closes browser sockets whose sign-in ran out; unref'd so it never keeps the process alive.
+  const sweep = setInterval(() => {
+    try {
+      relay.sweep();
+    } catch {
+      log("the sign-in sweep failed");
+    }
+  }, opts.sweepMs ?? 10_000);
+  (sweep as { unref?: () => void }).unref?.();
+  const stop = () => {
+    clearInterval(sweep);
+    server.stop(true);
+  };
+  return { server, relay, stop };
 }

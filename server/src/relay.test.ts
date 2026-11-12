@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { PROTOCOL_VERSION, type BrowserToServer, type RunnerInfo, type RunnerToServer } from "../../shared/protocol";
 import { Relay, type Socket } from "./relay";
+import { runnerIdAllowed, runnerIdRefusal } from "./runnerIds";
+import { Tickets } from "./tickets";
 
 class FakeSocket implements Socket {
   sent: any[] = [];
@@ -25,6 +27,12 @@ class FakeSocket implements Socket {
 
 const runnerInfo = (id: string): Omit<RunnerInfo, "connectedAt"> => ({ id, name: id, hostname: `${id}.local`, version: "0.0.0", protocol: PROTOCOL_VERSION, harnesses: [{ id: "claude", version: "2.1.0" }] });
 
+/** A runner connection opened with service token `token` says hello. */
+function hi(relay: Relay, s: Socket, runner: Omit<RunnerInfo, "connectedAt">, token = "runner") {
+  relay.addRunner(s, token);
+  relay.onRunnerMessage(s, { t: "hello", runner });
+}
+
 function setup(opts: { rpcTimeoutMs?: number } = {}) {
   const relay = new Relay({ rpcTimeoutMs: opts.rpcTimeoutMs ?? 1000, now: () => 1000 });
   const browser = (name: string) => {
@@ -34,7 +42,7 @@ function setup(opts: { rpcTimeoutMs?: number } = {}) {
   };
   const runner = (id: string) => {
     const s = new FakeSocket(`runner:${id}`);
-    relay.onRunnerMessage(s, { t: "hello", runner: runnerInfo(id) });
+    hi(relay, s, runnerInfo(id));
     expect(s.take()).toEqual([{ t: "welcome" }, { t: "viewers", sessions: {} }]);
     return s;
   };
@@ -49,7 +57,7 @@ describe("connections", () => {
     const logs: string[] = [];
     const relay = new Relay({ log: (s) => logs.push(s) });
     const runner = new FakeSocket("runner"), browser = new FakeSocket("owner"), other = new FakeSocket("other");
-    relay.onRunnerMessage(runner, { t: "hello", runner: runnerInfo("box") });
+    hi(relay, runner, runnerInfo("box"));
     relay.addBrowser(browser, { name: "owner", email: "owner@example.com" }, PROTOCOL_VERSION);
     relay.addBrowser(other, { name: "other", email: "other@example.com" }, PROTOCOL_VERSION);
     runner.take(); browser.take(); other.take();
@@ -463,11 +471,11 @@ describe("repeated hello", () => {
     const a = new FakeSocket("a");
     relay.addBrowser(a, { name: "a", email: "" }, 1);
     const r = new FakeSocket("r");
-    relay.onRunnerMessage(r, { t: "hello", runner: runnerInfo("box") });
+    hi(relay, r, runnerInfo("box"));
     relay.onBrowserMessage(a, { t: "rpc", id: "1", runnerId: "box", op: "subscribe", args: { sessionId: "claude:x" } });
     a.take();
     now = 5000;
-    relay.onRunnerMessage(r, { t: "hello", runner: { ...runnerInfo("box"), harnesses: [] } });
+    hi(relay, r, { ...runnerInfo("box"), harnesses: [] });
     expect(r.closed).toBeUndefined();
     const [list] = a.take("runners");
     expect(list.runners[0]).toMatchObject({ connectedAt: 1000, harnesses: [] });
@@ -477,9 +485,9 @@ describe("repeated hello", () => {
   test("on a new connection it gets a new connectedAt", () => {
     let now = 1000;
     const relay = new Relay({ now: () => now });
-    relay.onRunnerMessage(new FakeSocket("r1"), { t: "hello", runner: runnerInfo("box") });
+    hi(relay, new FakeSocket("r1"), runnerInfo("box"));
     now = 2000;
-    relay.onRunnerMessage(new FakeSocket("r2"), { t: "hello", runner: runnerInfo("box") });
+    hi(relay, new FakeSocket("r2"), runnerInfo("box"));
     expect(relay.runnerList()[0]!.connectedAt).toBe(2000);
   });
 });
@@ -532,21 +540,21 @@ describe("protocol version", () => {
     relay.addBrowser(a, { name: "a", email: "" }, PROTOCOL_VERSION + 1);
     a.take();
     const r = new FakeSocket("r");
-    relay.onRunnerMessage(r, { t: "hello", runner: runnerInfo("box") });
+    hi(relay, r, runnerInfo("box"));
     expect(r.closed?.code).toBe(4003);
     expect(r.closed?.reason).toContain("update the runner");
     expect(relay.runnerList()).toEqual([]);
     expect(a.take("runners")).toEqual([]);
     const newer = new FakeSocket("n");
-    relay.onRunnerMessage(newer, { t: "hello", runner: { ...runnerInfo("box"), protocol: PROTOCOL_VERSION + 2 } });
+    hi(relay, newer, { ...runnerInfo("box"), protocol: PROTOCOL_VERSION + 2 });
     expect(newer.closed?.reason).toContain("update the app");
   });
 
   test("a runner already connected that says hello with another protocol is removed", () => {
     const relay = new Relay({ protocol: PROTOCOL_VERSION });
     const r = new FakeSocket("r");
-    relay.onRunnerMessage(r, { t: "hello", runner: runnerInfo("box") });
-    relay.onRunnerMessage(r, { t: "hello", runner: { ...runnerInfo("box"), protocol: 9 } });
+    hi(relay, r, runnerInfo("box"));
+    hi(relay, r, { ...runnerInfo("box"), protocol: 9 });
     expect(relay.runnerList()).toEqual([]);
     expect(r.closed?.code).toBe(4003);
   });
@@ -707,7 +715,7 @@ describe("presence and push keys", () => {
     const a = browser("a");
     relay.onBrowserMessage(a, { t: "presence", deviceId: "dev-a", runnerId: "one", sessionId: "x:1" });
     const again = new FakeSocket("runner:one:2");
-    relay.onRunnerMessage(again, { t: "hello", runner: runnerInfo("one") });
+    hi(relay, again, runnerInfo("one"));
     expect(again.take()).toEqual([{ t: "welcome" }, { t: "viewers", sessions: { "x:1": ["dev-a"] } }]);
   });
 
@@ -718,7 +726,174 @@ describe("presence and push keys", () => {
     relay.addBrowser(b, { name: "b", email: "b@x" }, 1);
     expect(b.take("hello")[0].push).toEqual({ publicKey: "PUB" });
     const r = new FakeSocket("r");
-    relay.onRunnerMessage(r, { t: "hello", runner: runnerInfo("one") });
+    hi(relay, r, runnerInfo("one"));
     expect(r.take("welcome")[0].push).toEqual(push);
+  });
+});
+
+describe("runner ids per token", () => {
+  test("the owner token may claim any id outside other tokens' namespaces", () => {
+    for (const id of ["instance-x", "runner", "runner:x", "3f2a-uuid", "tether-dev"]) expect(runnerIdAllowed("runner", id)).toBe(true);
+    for (const id of ["runner-alice", "runner-alice:x", "runner-"]) expect(runnerIdAllowed("runner", id)).toBe(false);
+  });
+
+  test("a runner-<name> token may claim only its own name and name:*", () => {
+    for (const id of ["runner-alice", "runner-alice:x", "runner-alice:"]) expect(runnerIdAllowed("runner-alice", id)).toBe(true);
+    for (const id of ["instance-x", "runner", "runner:x", "runner-alicex", "runner-al", "runner-bob", ""]) expect(runnerIdAllowed("runner-alice", id)).toBe(false);
+    expect(runnerIdAllowed("", "anything")).toBe(false);
+  });
+
+  test("a refused hello is closed with a reason naming the allowed ids, and logged", () => {
+    const logs: string[] = [];
+    const relay = new Relay({ log: (l) => logs.push(l) });
+    const r = new FakeSocket("r");
+    hi(relay, r, runnerInfo("instance-x"), "runner-alice");
+    expect(r.closed?.code).toBe(4004);
+    expect(r.closed?.reason).toBe(`runner id "instance-x" isn't allowed for token "runner-alice": use "runner-alice" or "runner-alice:<anything>"`);
+    expect(r.sent).toEqual([]);
+    expect(relay.runnerList()).toEqual([]);
+    expect(logs.some((l) => l.includes("refused runner instance-x"))).toBe(true);
+  });
+
+  test("the close reason always fits a WebSocket close frame", () => {
+    const name = `runner-${"é".repeat(200)}`;
+    const reason = runnerIdRefusal(name, "x".repeat(500));
+    expect(new TextEncoder().encode(reason).length).toBeLessThanOrEqual(123);
+    expect(reason).not.toContain("\uFFFD");
+    expect(runnerIdRefusal("runner", "runner-alice")).toContain(`any id not starting with "runner-"`);
+  });
+
+  test("a socket that never registered a token can't claim anything", () => {
+    const relay = new Relay();
+    const r = new FakeSocket("r");
+    relay.onRunnerMessage(r, { t: "hello", runner: runnerInfo("box") });
+    expect(r.closed?.code).toBe(4004);
+    expect(relay.runnerList()).toEqual([]);
+  });
+
+  test("a refused hello doesn't disturb the runner that holds the id", () => {
+    const { relay, browser, rpc } = setup();
+    const a = browser("a");
+    const owner = new FakeSocket("owner");
+    hi(relay, owner, runnerInfo("instance-x"));
+    rpc(a, "1", "instance-x", "subscribe", { sessionId: "claude:s" });
+    rpc(a, "2", "instance-x", "setCredential", { source: "anthropic", key: "k" });
+    owner.take();
+    a.take();
+    const thief = new FakeSocket("thief");
+    hi(relay, thief, runnerInfo("instance-x"), "runner-alice");
+    expect(thief.closed?.code).toBe(4004);
+    expect(owner.closed).toBeUndefined();
+    expect(owner.take()).toEqual([]);
+    expect(a.take()).toEqual([]);
+    expect(relay.stats()).toMatchObject({ runners: 1, subscriptions: 1, pending: 2 });
+    // Its rpcs still reach the owner's runner, and nothing from the refused socket counts.
+    relay.onRunnerMessage(thief, { t: "event", sessionId: "claude:s", seq: 1, event: { type: "state", state: {} } as any });
+    expect(a.take()).toEqual([]);
+    rpc(a, "3", "instance-x", "ping");
+    expect(owner.take("rpc")).toHaveLength(1);
+  });
+
+  test("a repeated hello on the same connection is checked again", () => {
+    const { relay, browser } = setup();
+    const a = browser("a");
+    const r = new FakeSocket("alice");
+    hi(relay, r, runnerInfo("runner-alice"), "runner-alice");
+    expect(r.take()[0]).toEqual({ t: "welcome" });
+    expect(relay.runnerList().map((x) => x.id)).toEqual(["runner-alice"]);
+    a.take();
+    // No addRunner this time: the token recorded at connect is the one checked.
+    relay.onRunnerMessage(r, { t: "hello", runner: runnerInfo("instance-x") });
+    expect(r.closed?.code).toBe(4004);
+    expect(relay.runnerList()).toEqual([]);
+    expect(a.take("runners")[0].runners).toEqual([]);
+  });
+
+  test("the same token's newer connection still replaces the old one", () => {
+    const relay = new Relay();
+    const old = new FakeSocket("old");
+    hi(relay, old, runnerInfo("runner-alice:laptop"), "runner-alice");
+    const fresh = new FakeSocket("fresh");
+    hi(relay, fresh, runnerInfo("runner-alice:laptop"), "runner-alice");
+    expect(old.closed?.code).toBe(4000);
+    expect(fresh.closed).toBeUndefined();
+  });
+});
+
+describe("browser sign-in renewal", () => {
+  function renewSetup() {
+    let now = 1_000_000;
+    const logs: string[] = [];
+    const relay = new Relay({ now: () => now, reauthMs: 300_000, log: (l) => logs.push(l) });
+    const b = new FakeSocket("b");
+    relay.addBrowser(b, { name: "b", email: "b@x" }, 1, "user-1");
+    b.take();
+    return { relay, b, logs, tick: (ms: number) => (now += ms), renew: (ticket: string) => relay.onBrowserMessage(b, { t: "renew", ticket }) };
+  }
+
+  test("a socket that never renews is closed after the TTL", () => {
+    const { relay, b, tick } = renewSetup();
+    tick(299_999);
+    relay.sweep();
+    expect(b.closed).toBeUndefined();
+    tick(1);
+    relay.sweep();
+    expect(b.closed).toEqual({ code: 4005, reason: "sign-in needs refreshing" });
+    expect(relay.stats().browsers).toBe(0);
+  });
+
+  test("renewing every 2 minutes keeps it open; a valid ticket extends to the ticket's expiry", () => {
+    const { relay, b, tick, renew } = renewSetup();
+    for (let i = 0; i < 10; i++) {
+      tick(120_000);
+      renew(relay.tickets.issue("user-1"));
+      relay.sweep();
+      expect(b.closed).toBeUndefined();
+    }
+    tick(299_000);
+    relay.sweep();
+    expect(b.closed).toBeUndefined();
+    tick(1_000);
+    relay.sweep();
+    expect(b.closed?.code).toBe(4005);
+  });
+
+  test("expired, tampered, foreign and other-person tickets don't extend it", () => {
+    const { relay, b, tick, renew, logs } = renewSetup();
+    const stale = relay.tickets.issue("user-1");
+    tick(200_000);
+    const fresh = relay.tickets.issue("user-1");
+    tick(100_000 - 1);
+    // stale expired just now (issued 300 s ago) and must not count
+    tick(1);
+    const [p, sig] = fresh.split(".");
+    const forged = Buffer.from(JSON.stringify({ sub: "user-1", exp: 9e15 })).toString("base64url");
+    const other = new Tickets({ now: () => 1_300_000 }).issue("user-1");
+    for (const t of [stale, `${forged}.${sig}`, `${p}.${sig!.slice(0, -2)}AA`, other, relay.tickets.issue("user-2")]) {
+      // renew is checked before the deadline is: keep the socket alive to test each one
+      (relay as any).browsers.get(b).deadline = 1_300_001;
+      renew(t);
+      expect((relay as any).browsers.get(b).deadline).toBe(1_300_001);
+    }
+    expect(logs.filter((l) => l.includes("renew"))).toHaveLength(1);
+    expect(logs.join("\n")).not.toContain(p!);
+  });
+
+  test("frames on a socket past its deadline close it even before the sweep", () => {
+    const { relay, b, tick, renew } = renewSetup();
+    tick(300_000);
+    renew(relay.tickets.issue("user-1"));
+    expect(b.closed?.code).toBe(4005);
+  });
+
+  test("a browser added without a viewer id can never renew", () => {
+    let now = 0;
+    const relay = new Relay({ now: () => now, reauthMs: 1000 });
+    const b = new FakeSocket("b");
+    relay.addBrowser(b, { name: "b", email: "" }, 1);
+    relay.onBrowserMessage(b, { t: "renew", ticket: relay.tickets.issue("") });
+    now = 1000;
+    relay.sweep();
+    expect(b.closed?.code).toBe(4005);
   });
 });

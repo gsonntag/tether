@@ -76,6 +76,13 @@ tether/
   web/        React UI
 ```
 
+**Who may connect.** A browser must be an app owner when it opens its socket, and keeps proving
+it: the page fetches a short-lived ticket from `GET /api/ws-ticket` (an ordinary request the edge
+signs afresh) every 2 minutes and sends it as `renew`. A socket without a valid ticket for 5
+minutes is closed (`CLOSE_REAUTH`), so a revoked share loses access within minutes. A runner's
+service token named N may claim the runner id N or `N:*`; the original token `runner` may also
+claim any id not starting with `runner-` (`CLOSE_RUNNER_ID` otherwise; server/src/runnerIds.ts).
+
 **Core events, inside the runner.** The session core emits typed events on an in-process bus:
 `turnStarted`, `turnEnded`, `message`, `toolCall`, `requestOpened`, `requestClosed`, `modeChanged`
 (live, terminal or stored), `error`. Modules subscribe to these. The core never imports a module.

@@ -6,7 +6,9 @@
 //
 // Sockets are abstract (send/close) so the routing is tested without a network.
 
-import { CLOSE_PROTOCOL, CLOSE_REPLACED, CLOSE_TOO_SLOW, PROTOCOL_VERSION, TERMINAL_OPS, type BrowserToServer, type PushKeys, type OpName, type ResultMsg, type RunnerInfo, type RunnerToServer, type ServerToBrowser, type ServerToRunner, type User } from "../../shared/protocol";
+import { CLOSE_PROTOCOL, CLOSE_REAUTH, CLOSE_REPLACED, CLOSE_RUNNER_ID, CLOSE_TOO_SLOW, PROTOCOL_VERSION, TERMINAL_OPS, type BrowserToServer, type PushKeys, type OpName, type ResultMsg, type RunnerInfo, type RunnerToServer, type ServerToBrowser, type ServerToRunner, type User } from "../../shared/protocol";
+import { runnerIdAllowed, runnerIdRefusal } from "./runnerIds";
+import { Tickets } from "./tickets";
 
 export interface Socket {
   /** Bun's convention: bytes sent, -1 queued under backpressure, 0 dropped */
@@ -22,7 +24,14 @@ export interface RelayOptions {
   now?: () => number;
   /** the app's VAPID keys (push.ts): the public one to browsers, the pair to runners */
   push?: PushKeys;
+  /** how long a browser socket stays signed in without a renew ticket (tickets.ts) */
+  reauthMs?: number;
+  /** issues and checks renew tickets; by default its own, on this relay's clock */
+  tickets?: Tickets;
 }
+
+/** A browser socket's sign-in lasts this long from connecting, then as long as its latest ticket. */
+export const REAUTH_MS = 5 * 60_000;
 
 interface RunnerConn {
   sock: Socket;
@@ -41,6 +50,12 @@ interface Route {
 }
 
 interface BrowserConn {
+  /** who signed in on this socket: a renew ticket must be for them */
+  viewerId: string;
+  /** past this (the relay's clock), the socket is closed with CLOSE_REAUTH */
+  deadline: number;
+  /** a bad renew was already logged for this socket */
+  badRenewLogged?: boolean;
   /** session key -> its route (see Route) */
   subs: Map<string, Route>;
   attaches: Set<string>;
@@ -66,6 +81,8 @@ const isTerminalOp = (op: string): op is (typeof TERMINAL_OPS)[number] => (TERMI
 export class Relay {
   private runners = new Map<string, RunnerConn>();
   private runnerOf = new Map<Socket, string>();
+  /** each runner connection's service token name, which limits the ids it may claim (runnerIds.ts) */
+  private runnerToken = new WeakMap<Socket, string>();
   private browsers = new Map<Socket, BrowserConn>();
   private subscribers = new Map<string, Set<Socket>>();
   private attaches = new Map<string, { browser: Socket; runnerId: string }>();
@@ -76,6 +93,8 @@ export class Relay {
   private readonly log: (line: string) => void;
   private readonly now: () => number;
   private readonly push?: PushKeys;
+  private readonly reauthMs: number;
+  readonly tickets: Tickets;
   /** the viewers frame last sent to each runner, so only changes go out */
   private viewersSent = new Map<string, string>();
 
@@ -85,6 +104,8 @@ export class Relay {
     this.protocol = opts.protocol ?? PROTOCOL_VERSION;
     this.log = opts.log ?? (() => {});
     this.now = opts.now ?? Date.now;
+    this.reauthMs = opts.reauthMs ?? REAUTH_MS;
+    this.tickets = opts.tickets ?? new Tickets({ now: this.now });
   }
 
   runnerList(): RunnerInfo[] {
@@ -93,8 +114,9 @@ export class Relay {
 
   // ---------------- browsers ----------------
 
-  addBrowser(sock: Socket, user: User, protocol: number) {
-    this.browsers.set(sock, { subs: new Map(), attaches: new Set() });
+  /** `viewerId`: the signed-in person's id (the identity token's sub), which renew tickets must match. */
+  addBrowser(sock: Socket, user: User, protocol: number, viewerId = "") {
+    this.browsers.set(sock, { viewerId, deadline: this.now() + this.reauthMs, subs: new Map(), attaches: new Set() });
     this.out(sock, { t: "hello", user, protocol, ...(this.push ? { push: { publicKey: this.push.publicKey } } : {}) });
     this.out(sock, { t: "runners", runners: this.runnerList() });
   }
@@ -124,6 +146,9 @@ export class Relay {
   onBrowserMessage(sock: Socket, msg: BrowserToServer) {
     const b = this.browsers.get(sock);
     if (!b) return;
+    // Past its deadline the socket is done, even if the sweep hasn't come round yet.
+    if (this.now() >= b.deadline) return this.expire(sock);
+    if (msg.t === "renew") return this.renew(b, msg.ticket);
     if (msg.t === "ping") return this.out(sock, { t: "pong" });
     if (msg.t === "presence") {
       const was = b.presence?.runnerId;
@@ -185,7 +210,37 @@ export class Relay {
     this.out(runner.sock, { t: "rpc", id, op: m.op, args });
   }
 
+  /** A valid ticket for this socket's own viewer keeps it signed in until the ticket runs out. */
+  private renew(b: BrowserConn, ticket: string) {
+    const t = this.tickets.verify(ticket);
+    if (t && b.viewerId && t.sub === b.viewerId) {
+      b.deadline = Math.max(b.deadline, t.exp);
+      return;
+    }
+    // Never log the ticket itself.
+    if (!b.badRenewLogged) this.log(`ignored a renew ticket that was ${t ? "for someone else" : "invalid or expired"}`);
+    b.badRenewLogged = true;
+  }
+
+  /** Closes every browser socket whose sign-in wasn't renewed in time (app.ts calls this often). */
+  sweep() {
+    const now = this.now();
+    for (const [sock, b] of [...this.browsers]) if (now >= b.deadline) this.expire(sock);
+  }
+
+  private expire(sock: Socket) {
+    // Its routes go now, so nothing more reaches it while the close is under way.
+    this.removeBrowser(sock);
+    this.log("closed a browser socket whose sign-in wasn't renewed");
+    sock.close(CLOSE_REAUTH, "sign-in needs refreshing");
+  }
+
   // ---------------- runners ----------------
+
+  /** A runner connection opened with this service token (by name); its hellos are checked against it. */
+  addRunner(sock: Socket, tokenName: string) {
+    this.runnerToken.set(sock, tokenName);
+  }
 
   onRunnerMessage(sock: Socket, m: RunnerToServer) {
     if (m.t === "hello") return this.hello(sock, m.runner);
@@ -263,6 +318,16 @@ export class Relay {
       this.log(`refused runner ${info.id} (${info.name}): protocol ${info.protocol}, expected ${this.protocol}`);
       if (this.runnerOf.get(sock) === info.id) this.removeRunner(sock);
       sock.close(CLOSE_PROTOCOL, `protocol mismatch: the app speaks ${this.protocol}, the runner ${info.protocol}; update ${newer}`);
+      return;
+    }
+    const token = this.runnerToken.get(sock) ?? "";
+    if (!runnerIdAllowed(token, info.id)) {
+      // Checked before anything changes, so a refused claim never disturbs the runner holding the id.
+      const reason = runnerIdRefusal(token, info.id);
+      this.log(`refused runner ${info.id} (${info.name}) from ${info.hostname}: ${reason}`);
+      // A repeated hello on this connection asking for a forbidden id: its earlier id goes too.
+      if (this.runnerOf.has(sock)) this.removeRunner(sock);
+      sock.close(CLOSE_RUNNER_ID, reason);
       return;
     }
     const id = info.id;

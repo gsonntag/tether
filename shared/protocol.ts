@@ -38,6 +38,16 @@ export const CLOSE_REPLACED = 4000;
 export const CLOSE_TOO_SLOW = 4002;
 /** Close code for a runner whose protocol version differs from the server's. */
 export const CLOSE_PROTOCOL = 4003;
+/**
+ * Close code for a runner whose hello claims a runner id its service token may not use
+ * (server/src/runnerIds.ts). The reason says which ids that token may use.
+ */
+export const CLOSE_RUNNER_ID = 4004;
+/**
+ * Close code for a browser socket whose sign-in wasn't renewed in time (a `renew` ticket from
+ * GET /api/ws-ticket). Reconnecting goes through the edge's identity check again.
+ */
+export const CLOSE_REAUTH = 4005;
 
 /** Bumped when a change needs runner, server and web to move together. */
 export const PROTOCOL_VERSION = 2;
@@ -507,6 +517,12 @@ export type BrowserToServer =
    * read (SPEC §10 Home). `deviceId` is the device's own random id (also given to pushSubscribe).
    */
   | { t: "presence"; deviceId: string; runnerId?: string; sessionId?: string }
+  /**
+   * Keeps this socket signed in: a ticket from GET /api/ws-ticket, which checks the person's
+   * identity afresh. A socket that goes too long without one is closed with CLOSE_REAUTH, so a
+   * revoked share or a demoted owner loses access within minutes even with a tab left open.
+   */
+  | { t: "renew"; ticket: string }
   | { t: "ping" };
 
 export type ServerToBrowser =

@@ -18,6 +18,8 @@ function json(raw: string | ArrayBuffer | Uint8Array): unknown {
 const MAX_ID = 512;
 const isId = (v: unknown): v is string => isStr(v) && v.length <= MAX_ID;
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+/** a renew ticket: two base64url parts (server/src/tickets.ts), well under 1 KB */
+const TICKET = /^[A-Za-z0-9_-]{1,700}\.[A-Za-z0-9_-]{1,100}$/;
 const optStr = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
 /**
@@ -28,6 +30,7 @@ export function parseBrowserMessage(raw: string | ArrayBuffer | Uint8Array): Bro
   const m = json(raw);
   if (!isObj(m)) return null;
   if (m.t === "ping") return { t: "ping" };
+  if (m.t === "renew") return typeof m.ticket === "string" && TICKET.test(m.ticket) ? { t: "renew", ticket: m.ticket } : null;
   if (m.t === "presence") {
     if (!isId(m.deviceId)) return null;
     const both = isId(m.runnerId) && isId(m.sessionId);

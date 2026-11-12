@@ -2,7 +2,7 @@
 // that slept, a network that changed), and carries rpcs. Everything it touches in the browser
 // comes in through `LinkDeps`, so the logic is tested without one (link.test.ts).
 
-import type { ServerToBrowser } from "../../shared/protocol";
+import { CLOSE_REAUTH, type ServerToBrowser } from "../../shared/protocol";
 
 export type LinkState = "connecting" | "open" | "down";
 export type AuthState = "ok" | "signedOut" | "notOwner";
@@ -23,6 +23,11 @@ export interface LinkDeps {
   open: (url: string) => SocketLike;
   /** GET /api/me: status, whether it redirected, content type, and the parsed body when JSON */
   me: () => Promise<{ status: number; redirected: boolean; json: boolean; body?: { allowed?: boolean } }>;
+  /**
+   * GET /api/ws-ticket: a fresh ticket that keeps the socket signed in (server/src/tickets.ts).
+   * 401/403 means this person may no longer use the app. Without it the link never renews.
+   */
+  ticket?: () => Promise<{ status: number; ticket?: string }>;
   now?: () => number;
 }
 
@@ -35,13 +40,17 @@ export interface LinkTimings {
   maxBackoffMs: number;
   /** a socket still connecting after this long is abandoned and redialled */
   dialMs: number;
+  /** how often an open socket renews its sign-in (the server closes it after 5 minutes without) */
+  renewMs: number;
+  /** waking renews at once unless the last renew is more recent than this */
+  renewWakeMs: number;
 }
 
 const OPEN = 1;
 /** An rpc's error when no answer came in time. */
 export const NO_ANSWER = "No answer in time.";
 
-export const DEFAULT_TIMINGS: LinkTimings = { pingMs: 25_000, silenceMs: 60_000, probeMs: 5_000, rpcTimeoutMs: 130_000, maxBackoffMs: 15_000, dialMs: 10_000 };
+export const DEFAULT_TIMINGS: LinkTimings = { pingMs: 25_000, silenceMs: 60_000, probeMs: 5_000, rpcTimeoutMs: 130_000, maxBackoffMs: 15_000, dialMs: 10_000, renewMs: 120_000, renewWakeMs: 30_000 };
 
 /** 0.5 s, 1 s, 2 s … up to the cap. */
 export const linkBackoff = (attempt: number, max: number) => Math.min(max, 500 * 2 ** Math.min(attempt, 10));
@@ -56,6 +65,9 @@ export class Link {
   private probe?: ReturnType<typeof setTimeout>;
   private dial?: ReturnType<typeof setTimeout>;
   private lastHeard = 0;
+  private renewer?: ReturnType<typeof setInterval>;
+  /** the open socket's renewals: one at a time, and none after the server said no */
+  private renewal?: { sock: SocketLike; busy: boolean; refused: boolean; last: number };
   private rpcSeq = 0;
   private pending = new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private handlers = new Map<string, Set<Handler>>();
@@ -140,6 +152,9 @@ export class Link {
         if (this.now() - this.lastHeard > this.t.silenceMs) return this.drop(sock);
         sock.send(JSON.stringify({ t: "ping" }));
       }, this.t.pingMs);
+      this.renewal = { sock, busy: false, refused: false, last: 0 };
+      this.renew(sock);
+      this.renewer = setInterval(() => this.renew(sock), this.t.renewMs);
     };
     sock.onmessage = (ev) => {
       if (this.ws !== sock) return;
@@ -162,8 +177,8 @@ export class Link {
       }
       this.handlers.get(m.t)?.forEach((f) => f(m));
     };
-    sock.onclose = () => {
-      if (this.ws === sock) this.closed(opened);
+    sock.onclose = (ev) => {
+      if (this.ws === sock) this.closed(opened, ev?.code === CLOSE_REAUTH);
     };
     sock.onerror = () => {};
   }
@@ -187,6 +202,8 @@ export class Link {
     }
     if (this.ws.readyState !== OPEN || this.state !== "open") return;
     const sock = this.ws;
+    // A background tab's timers are throttled: its renewals may have fallen behind.
+    if (this.now() - (this.renewal?.last ?? 0) >= this.t.renewWakeMs) this.renew(sock);
     clearTimeout(this.probe);
     sock.send(JSON.stringify({ t: "ping" }));
     this.probe = setTimeout(() => this.drop(sock), this.t.probeMs);
@@ -214,20 +231,46 @@ export class Link {
     this.connect();
   }
 
+  /**
+   * Fetches a fresh ticket and hands it to the server over this socket. A refusal (the share was
+   * revoked, or they're no longer an owner) stops renewing: the server closes the socket when its
+   * last ticket runs out, and the sign-in check shows why.
+   */
+  private renew(sock: SocketLike) {
+    const r = this.renewal;
+    const ticket = this.deps.ticket;
+    if (!ticket || !r || r.sock !== sock || r.busy || r.refused) return;
+    r.busy = true;
+    r.last = this.now();
+    ticket()
+      .then((res) => {
+        if (res.status === 401 || res.status === 403) {
+          r.refused = true;
+          return void this.checkAuth();
+        }
+        if (res.ticket && this.ws === sock && sock.readyState === OPEN) sock.send(JSON.stringify({ t: "renew", ticket: res.ticket }));
+      })
+      .catch(() => {}) // offline: the next renewal tries again
+      .finally(() => (r.busy = false));
+  }
+
   private cleanup() {
     clearTimeout(this.dial);
     clearInterval(this.pinger);
+    clearInterval(this.renewer);
+    this.renewal = undefined;
     clearTimeout(this.probe);
     for (const p of this.pending.values()) (clearTimeout(p.timer), p.reject(new Error("Disconnected.")));
     this.pending.clear();
   }
 
-  private closed(wasOpen: boolean) {
+  private closed(wasOpen: boolean, reauth = false) {
     this.ws = undefined;
     this.cleanup();
     this.setState("down");
-    // A connection refused outright may be a sign-in problem rather than the network.
-    if (!wasOpen) void this.checkAuth();
+    // A connection refused outright may be a sign-in problem rather than the network; so is one
+    // the server closed because its sign-in wasn't renewed.
+    if (!wasOpen || reauth) void this.checkAuth();
     this.retry = setTimeout(() => this.connect(), linkBackoff(this.attempt++, this.t.maxBackoffMs));
   }
 

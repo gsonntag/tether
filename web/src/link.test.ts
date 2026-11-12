@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { CLOSE_REAUTH } from "../../shared/protocol";
 import { Link, linkBackoff, type LinkDeps, type LinkTimings, type SocketLike } from "./link";
 
 class FakeSocket implements SocketLike {
@@ -24,9 +25,9 @@ class FakeSocket implements SocketLike {
   receive(m: unknown) {
     this.onmessage?.({ data: JSON.stringify(m) });
   }
-  serverClose() {
+  serverClose(code?: number) {
     this.readyState = 3;
-    this.onclose?.({});
+    this.onclose?.(code ? { code } : {});
   }
 }
 
@@ -177,4 +178,89 @@ test("wake replaces a socket stuck connecting, and a late open of the old one is
   expect(states.at(-1)).toBe("connecting");
   socks[1]!.open();
   expect(states.at(-1)).toBe("open");
+});
+
+describe("sign-in renewal", () => {
+  function renewing(timings: Partial<LinkTimings>, answer: () => { status: number; ticket?: string }, meAllowed = true) {
+    const socks: FakeSocket[] = [];
+    let fetches = 0;
+    let now = 0;
+    const link = new Link(
+      {
+        url: "ws://x/api/ws",
+        open: () => (socks.push(new FakeSocket()), socks.at(-1)!),
+        me: async () => ({ status: 200, redirected: false, json: true, body: { allowed: meAllowed } }),
+        ticket: async () => (fetches++, answer()),
+        now: () => now,
+      },
+      { maxBackoffMs: 50, ...timings },
+    );
+    links.push(link);
+    const auth: string[] = [];
+    link.onAuth((a) => auth.push(a));
+    return { link, socks, auth, last: () => socks.at(-1)!, fetches: () => fetches, tick: (ms: number) => (now += ms) };
+  }
+  const renews = (s: FakeSocket) => s.sent.filter((m) => m.t === "renew").map((m) => m.ticket);
+
+  test("renews right after opening and then on a timer", async () => {
+    let n = 0;
+    const { link, last } = renewing({ renewMs: 30 }, () => ({ status: 200, ticket: `t${++n}` }));
+    link.connect();
+    last().open();
+    await until(() => renews(last()).length >= 3);
+    expect(renews(last()).slice(0, 3)).toEqual(["t1", "t2", "t3"]);
+  });
+
+  test("waking renews at once when the last renewal is old, not when it's recent", async () => {
+    const { link, last, fetches, tick } = renewing({ renewMs: 60_000, renewWakeMs: 30_000 }, () => ({ status: 200, ticket: "t" }));
+    link.connect();
+    last().open();
+    await until(() => renews(last()).length === 1);
+    tick(10_000);
+    link.wake();
+    await Bun.sleep(10);
+    expect(fetches()).toBe(1);
+    tick(30_000);
+    link.wake();
+    await until(() => renews(last()).length === 2);
+  });
+
+  test("a refused ticket stops renewing and checks the sign-in", async () => {
+    const { link, last, fetches, auth } = renewing({ renewMs: 20 }, () => ({ status: 403 }), false);
+    link.connect();
+    last().open();
+    await until(() => auth.includes("notOwner"));
+    await Bun.sleep(80);
+    expect(fetches()).toBe(1);
+    expect(renews(last())).toEqual([]);
+  });
+
+  test("a ticket that arrives after its socket closed isn't sent on the next one", async () => {
+    let release!: (v: { status: number; ticket: string }) => void;
+    const socks: FakeSocket[] = [];
+    const link = new Link({ url: "ws://x/api/ws", open: () => (socks.push(new FakeSocket()), socks.at(-1)!), me: async () => ({ status: 200, redirected: false, json: true, body: { allowed: true } }), ticket: () => new Promise((r) => (release = r)) }, { maxBackoffMs: 5 });
+    links.push(link);
+    link.connect();
+    socks[0]!.open();
+    const first = release;
+    socks[0]!.serverClose();
+    await until(() => socks.length === 2);
+    socks[1]!.open();
+    expect(release).not.toBe(first);
+    first({ status: 200, ticket: "old" });
+    release({ status: 200, ticket: "new" });
+    await until(() => renews(socks[1]!).length === 1);
+    expect(renews(socks[1]!)).toEqual(["new"]);
+    expect(renews(socks[0]!)).toEqual([]);
+  });
+
+  test("closed for an expired sign-in: reconnects and checks the sign-in", async () => {
+    const { link, socks, last, auth } = renewing({}, () => ({ status: 200, ticket: "t" }), false);
+    link.connect();
+    last().open();
+    auth.length = 0;
+    last().serverClose(CLOSE_REAUTH);
+    await until(() => auth.includes("notOwner"));
+    await until(() => socks.length === 2);
+  });
 });

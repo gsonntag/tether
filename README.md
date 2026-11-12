@@ -165,7 +165,8 @@ Runner (`runner.env` in production, or the shell in dev):
 
 On first start the runner writes `runner.json` with a generated `runnerId`. Set `"name"` there to
 change its label (the default is the hostname). Never copy a `runner.json` between machines,
-because two runners with one id replace each other.
+because two runners with one id replace each other. A runner with a `runner-<name>` token must set
+its `runnerId` itself (see Production, step 2).
 
 Server:
 
@@ -207,7 +208,17 @@ because your shell may carry production values. For UI work without a model,
    owners can use the UI, because it runs commands on their machines. The app deploys from `main`,
    so merging a PR deploys the web app and server.
 2. **Runner token.** Create an app service token named `runner` or `runner-<name>`, e.g.
-   `fol tokens create tether --service runner --role editor`.
+   `fol tokens create tether --service runner --role editor`. The token's name limits which
+   runner ids it may connect as, so one token can never take over another's runner (and the
+   rpcs, API keys among them, that go to it):
+   - a token named `runner-<name>` may use the id `runner-<name>` or `runner-<name>:<anything>`.
+     A generated id isn't one of those, so put `"runnerId": "runner-<name>"` (or
+     `"runner-<name>:<machine>"` for several machines) in `runner.json` before the first start;
+   - the token named exactly `runner` may use `runner`, `runner:<anything>`, or any id that
+     doesn't start with `runner-`, so existing runners with generated ids keep working.
+
+   The server refuses any other id. The runner then logs the server's reason, which names the ids
+   its token may use, and retries every 5 minutes.
 3. **Runner.** Run the runner as a systemd user unit, `tether-runner.service`, from a checkout of
    its own that is pinned to `origin/main` (for example `~/tether-prod`), not from a working
    checkout you edit. The unit uses:
