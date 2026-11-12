@@ -1361,8 +1361,10 @@ if the home is deleted meanwhile (and its number reused), the person is told it'
    `home:` row.
 
 *Homes.* (The router is shared, so all of this, the Home/H prefixes and reply threading work the
-same on every connector, Discord included; the way back, `replyVia` and a channel's claim, is kept
-for the Home agent as a whole, not per home.) Each of Home's tabs is a home the person can text: `h` is the primary one, the **Texts**
+same on every connector, Discord included. The way back for private answers, `replyVia`, is kept
+for the Home agent as a whole; a shared channel's claim is each home's own (`home:<chat>`): a
+channel message to one home may be answered in that channel only by that home's turn, armed only
+when that home's own chat is idle, so another home's private answer never goes there.) Each of Home's tabs is a home the person can text: `h` is the primary one, the **Texts**
 tab (made by the first text to `h`, again if it was closed; Home shows no delete for it, though
 `/new` in it still starts a fresh one), and every other tab is `h1`, `h2`, …. A tab keeps its number
 while it's open (a move keeps it too); a new tab takes the lowest free number, so deleting `h2` and
@@ -1391,15 +1393,18 @@ or a session's own text since, turns away from it. The router's state (texting.j
 across restarts.
 
 *Files and images.* Files the person sends on any connector (iMessage attachments through Photon,
-Discord's from its CDN) go as the *Connectors* paragraph says, stored by the runner, which reads them
-itself, outside every session's sandbox; what Tether sends goes only to the person. Each read is
+Discord's from its CDN) go as the *Connectors* paragraph says, stored by the runner as an upload is
+(`core/attachments.ts` storeFile: a safe name, an image's extension made its type's, the
+session's 2 GB, read-only, never over another file), which reads them itself, outside every
+session's sandbox. Each read is
 bounded: at most its cap (10 MB an image, 25 MB a file), counted as it streams whatever size it
 claimed, and 30 s (iMessage's download; Discord's own limits; the stash's outer bound), so a stalled
 download can't hold up the text queue; one that fails is skipped and the person is told. An image
 is what its bytes say (PNG, JPEG, GIF, WebP, HEIC): one that only claims to be is stored as a plain
 file. HEIC is turned into JPEG with ImageMagick when the runner has it, and so is a PNG, JPEG or WebP
 over 2048 px on its long edge (ATTACH_IMAGE_EDGE) or too big for the model APIs (NATIVE_IMAGE_MAX),
-scaled to fit: `convert` told the input's coder, `-limit memory 256MiB -limit map 512MiB -limit
+scaled to fit: `convert` told the input's coder, run with only PATH and its own temporary folder
+in its environment (never the runner's tokens), `-limit memory 256MiB -limit map 512MiB -limit
 disk 256MiB -limit area 128MP -limit width 16KP -limit height 16KP -limit time …`, its temporary
 files in a `tether-magick-*` folder of its own that's removed after (ones older than an hour are
 swept when texting starts), at most 2 at once (a finished one hands its slot straight on), waiting
@@ -1420,13 +1425,16 @@ person's text (a send, the ✅, opening iMessage's chat) gives up after 30 s (`P
 and the queue goes on; a text whose send timed out may have gone, so text_person tells the agent
 not to send it again.
 
-Out, `text_person` takes an optional `image` where the connector takes images (`Connector.images`:
+Out, images are read by the runner itself, outside every session's sandbox, and go only to the
+person: their DM on Discord, their phone on iMessage. `text_person` takes an optional `image` where
+the connector takes images (`Connector.images`:
 iMessage, each image its own message after the words; Discord, an attachment): an absolute path to
 a .png/.jpg/.gif/.webp/.heic file, opened once without following a final symlink or blocking on a
 FIFO, checked on that handle (a regular file of at most 10 MB whose first bytes match), sent as the
-bytes checked (`Outbound.files`). Every refusal says the same thing (no telling which paths exist),
-a try counts against the agent's text cap (sessions' pre-check: at most 5 refusals per 10 minutes),
-and nothing goes. A relayed session's image path goes to the Home agent inside its report's fence,
+bytes checked (`Outbound.files`; a path handed to a connector, `Outbound.images`, is checked the
+same way). The file is read once, where it's sent. Every refusal says the same thing (no telling
+which paths exist), a try counts against the agent's text cap, and a session past 5 refusals in 10
+minutes has every image refused before anything goes; nothing goes. A relayed session's image path goes to the Home agent inside its report's fence,
 on an `image path:` line that can't open or close a fence (`unfence`).
 
 On iMessage only texts from the person's own number are heard (`link.ts` fromOwner): the sender's

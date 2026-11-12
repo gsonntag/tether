@@ -506,8 +506,9 @@ export class HomeAgent implements HomeEnd {
     return this.homes();
   }
 
-  textsBusy(): boolean {
-    const id = this.state.texts;
+  /** A home's chat (none: the Texts chat) is running a turn or has messages waiting. */
+  textsBusy(chat?: string): boolean {
+    const id = chat ?? this.state.texts;
     if (!id || !this.state.tabs.includes(id)) return false;
     const look = this.ctx.session(id);
     const st = look?.state;
@@ -533,20 +534,23 @@ export class HomeAgent implements HomeEnd {
    * one runs, with the files they sent.
    */
   async take(text: string, via: TakeVia = {}, to?: HomeTarget): Promise<void> {
-    let chat: string;
-    const n = to && "n" in to ? to.n : undefined;
-    if (!to || n === 0) chat = await this.textsChat();
-    else {
-      const h = this.homes().find((x) => x.n !== 0 && (n !== undefined ? x.n === n : x.chat === (to as { chat: string }).chat));
-      if (!h?.chat) throw new Error(`there's no ${n !== undefined ? homeLabel(n) : "such home"}`);
-      chat = await this.follow(h.chat).catch(() => h.chat!);
-      if (!this.isTextsChat(chat)) {
-        (this.state.textHomes ??= []).push(chat);
-        this.save();
-      }
+    const chat = await this.chatOf(to);
+    if (!this.isTextsChat(chat)) {
+      (this.state.textHomes ??= []).push(chat);
+      this.save();
     }
     const files = via.files ? await via.files(chat) : [];
     await this.ctx.sessions.queue(chat, (via.mark ?? FROM_IMESSAGE) + text + heicNote(files), files);
+  }
+
+  /** The chat a text to a home goes to: h's Texts tab (made if it's gone), or that home's tab if it's open. */
+  async chatOf(to?: HomeTarget): Promise<string> {
+    const n = to && "n" in to ? to.n : undefined;
+    const want = to && "chat" in to ? to.chat : undefined;
+    if (!to || n === 0 || (want && want === this.state.texts)) return this.textsChat();
+    const h = this.homes().find((x) => x.n !== 0 && (n !== undefined ? x.n === n : x.chat === want));
+    if (!h?.chat) throw new Error(`there's no ${n !== undefined ? homeLabel(n) : "such home"}`);
+    return this.follow(h.chat).catch(() => h.chat!);
   }
 
   /** The Texts tab: the one texts went to, else a new one (current once a text lands in it). */

@@ -22,11 +22,10 @@
 // the bot user) isn't taken: it needs the GUILDS intent to tell that role apart. The settings hint says
 // to mention the bot itself.
 
-import { readFileSync } from "node:fs";
-import { basename } from "node:path";
 import { FROM_DISCORD } from "../../../../shared/fromTether";
 import { cleanMime } from "../../../../shared/attachments";
 import { ATTACH_FILE_MAX } from "../../../../shared/limits";
+import { readOutgoingImage } from "./images";
 import type { ConnectorForm } from "../../../../shared/protocol";
 import { registerSecret } from "../../credentials";
 import { PartialSend, type Connector, type Inbound, type InboundFile } from "./connector";
@@ -294,7 +293,12 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
       const link = {
         async send(out: { text: string; images?: string[]; files?: { name: string; mimeType: string; data: Uint8Array }[]; place?: string; shared?: boolean }) {
           const files = [
-            ...(out.images ?? []).map((p) => ({ name: basename(p), data: new Uint8Array(readFileSync(p)), type: cleanMime(undefined, p) })),
+            // A path is read and checked like an agent's image (images.ts): never just any file.
+            ...(out.images ?? []).map((p) => {
+              const r = readOutgoingImage(p);
+              if ("problem" in r) throw new Error(r.problem);
+              return { name: r.name, data: new Uint8Array(r.data), type: r.mimeType };
+            }),
             // Bytes already read and checked (an agent's text_person image): sent as they are.
             ...(out.files ?? []).map((f) => ({ name: f.name, data: f.data, type: f.mimeType })),
           ];

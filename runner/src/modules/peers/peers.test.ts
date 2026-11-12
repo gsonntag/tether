@@ -10,6 +10,7 @@ import { classifyTool } from "../../adapters/toolKind";
 import { peerTarget } from "../../../../shared/peers";
 import { ASKS_MAX, MAX_HOPS, PeerCaps, RATE_MAX } from "./caps";
 import { answerIn, Peers } from "./index";
+import { IMAGE_REFUSED, ImageFailures, readOutgoingImage } from "../texting/images";
 import { callerOf, peerSecret, peerToken, PeerSocket } from "./server";
 
 const row = (id: string, title: string, o: Partial<SessionSummary> = {}): SessionSummary => ({ id, harness: id.startsWith("codex") ? "codex" : "claude", nativeId: id.split(":")[1]!, projectPath: "/p/app", title, mode: "live", status: "idle", updatedAt: 0, ...o });
@@ -411,29 +412,40 @@ describe("the stdio MCP server", () => {
 });
 
 describe("text_person with an image", () => {
-  test("a path that isn't a real image is refused before anything goes (or is relayed)", async () => {
+  test("the image is read once, where it's sent; refusals that come back are counted, and past a few every image is refused before anything goes", async () => {
     const { peers } = setup([row("claude:a", "A")]);
     const dir = mkdtempSync(join(tmpdir(), "tether-peer-img-"));
     writeFileSync(join(dir, "key.png"), "-----BEGIN OPENSSH PRIVATE KEY-----");
     writeFileSync(join(dir, "ok.png"), Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(8)]));
-    const sent: unknown[] = [];
+    const sent: unknown[][] = [];
     const relayed: unknown[] = [];
+    let drives = false;
     (peers as any).ctx.homeLine = {
-      home: { relay: async (...a: unknown[]) => void relayed.push(a) },
-      phone: { text: async (...a: unknown[]) => (sent.push(a), { text: "Texted the person." }) },
+      home: { relay: async (...a: unknown[]) => (drives ? (relayed.push(a), "Not texted: it went to the Home agent.") : undefined) },
+      // Texting reads and checks the image (personText): a bad one comes back refused.
+      phone: {
+        text: async (...a: unknown[]) => {
+          sent.push(a);
+          const o = a[2] as { image?: string };
+          return o.image && "problem" in readOutgoingImage(o.image) ? { text: `${IMAGE_REFUSED} Nothing was sent.`, isError: true } : { text: "Texted the person." };
+        },
+      },
     };
     const call = (args: Record<string, unknown>) => peers.call({ from: "claude:a", tool: "text_person", args } as any);
-    for (const image of [join(dir, "key.png"), "/etc/passwd", "relative.png"]) {
-      const r = await call({ message: "look", image });
-      expect([image, r.isError]).toEqual([image, true]);
-    }
-    expect(sent).toEqual([]);
-    expect(relayed).toEqual([]);
     expect((await call({ message: "look", image: join(dir, "ok.png") })).text).toBe("Texted the person.");
     expect(sent).toEqual([["claude:a", "look", { image: join(dir, "ok.png") }]]);
-    expect(relayed).toEqual([["claude:a", "look", join(dir, "ok.png")]]);
-    expect((await call({ message: "plain" })).text).toBe("Texted the person.");
-    expect(sent.at(-1)).toEqual(["claude:a", "plain", {}]);
+    // Refused where it's read; each refusal counts.
+    for (let i = 0; i < ImageFailures.MAX; i++) expect((await call({ message: "look", image: "/etc/passwd" })).isError).toBe(true);
+    const tries = sent.length;
+    // Past the limit: refused here, before anything goes (even a real image), and never relayed.
+    drives = true;
+    for (const image of [join(dir, "key.png"), join(dir, "ok.png")]) expect(await call({ message: "look", image })).toEqual({ text: `${IMAGE_REFUSED} Nothing was sent.`, isError: true });
+    expect(sent.length).toBe(tries);
+    expect(relayed).toEqual([]);
+    // Words alone still go (here, relayed to the Home agent that drives it).
+    expect((await call({ message: "plain" })).text).toContain("Not texted");
+    expect(relayed).toEqual([["claude:a", "plain", undefined]]);
     rmSync(dir, { recursive: true, force: true });
   });
 });
+

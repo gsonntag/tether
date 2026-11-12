@@ -39,8 +39,6 @@
 // casual sentence at most, never that something works, and no acknowledgment after a reply is
 // passed on (texts.ts has the whole rule).
 
-import { randomBytes } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Msg, Request, RequestAnswer, RunStatus } from "../../../../shared/transcript";
 import { isImageType, safeName, splitAttachments, type Attachment } from "../../../../shared/attachments";
@@ -48,7 +46,7 @@ import { fromTexted } from "../../../../shared/fromTether";
 import { ATTACH_FILE_MAX, ATTACH_IMAGE_MAX, ATTACH_MAX } from "../../../../shared/limits";
 import type { MessagingStatus } from "../../../../shared/protocol";
 import type { Module, ModuleContext } from "..";
-import { sessionKey } from "../../core/attachments";
+import { storeFile } from "../../core/attachments";
 import { agentOf, endWorthTelling, failureKind, FINISH_DELAY_MS, REQUEST_DELAY_MS, requestStillOpen } from "../push";
 import { Channel, timedOut, withTimeout, type Connector, type Inbound, type InboundFile } from "./connector";
 import { connectors, type ConnectorDeps } from "./connectors";
@@ -257,10 +255,10 @@ export class Texter {
    * wrote it on. The place they wrote it (a server channel others read) only for `answer`, the
    * direct answer to what they wrote there, and only once: anything later goes to their own DM.
    */
-  backTo(id: string, answer = false): Back | undefined {
-    const ct = this.channelTurns.get(id);
+  backTo(id: string, answer = false, claim = id): Back | undefined {
+    const ct = this.channelTurns.get(claim);
     if (answer && ct?.phase === "active") {
-      this.channelTurns.delete(id);
+      this.channelTurns.delete(claim);
       return { via: ct.via, place: ct.place, shared: true };
     }
     const b = this.store.replyVia[id];
@@ -268,11 +266,13 @@ export class Texter {
     return b ? { via: b.via, ...(b.place ? { place: b.place } : {}) } : undefined;
   }
 
-  /** Session `id` (or HOME: the Texts chat) is idle with nothing queued, so a message now starts its next turn. */
+  /** Session `id` (or a home's claim key, homeKey) is idle with nothing queued, so a message now starts its next turn. */
   private idle(id: string): boolean {
-    if (id === HOME) {
-      const busy = this.ctx.homeLine?.home?.textsBusy;
-      return !!busy && !busy();
+    if (id === HOME || id.startsWith(`${HOME}:`)) {
+      const home = this.ctx.homeLine?.home;
+      if (!home?.textsBusy) return false;
+      const chat = id.slice(HOME.length + 1);
+      return !home.textsBusy(chat || undefined);
     }
     const look = this.ctx.session(id);
     // Not driven from its terminal, its queue not held, not waiting out a restart: a message now runs as the next turn.
@@ -280,9 +280,19 @@ export class Texter {
     return !!look && look.status === "idle" && !look.busy && !(st?.queue?.length ?? 0) && st?.mode !== "terminal" && !st?.queueHeld && !st?.restartWait;
   }
 
-  /** Which channelTurns key a session's events are for: HOME for the Home agent's Texts chat. */
+  /** Which channelTurns key a session's events are for: each home's own (homeKey), so one home's turn never takes another's claim. */
   private turnKey(sessionId: string): string {
-    return this.ctx.homeLine?.home?.isTextsChat(sessionId) ? HOME : sessionId;
+    return this.ctx.homeLine?.home?.isTextsChat(sessionId) ? this.homeKey(sessionId) : sessionId;
+  }
+
+  /**
+   * A home's channel-claim key: "home:<its chat>" (`chat` none: the primary home's). A channel message
+   * to one home may answer in that channel only from that home's turn. (Where its private answers go,
+   * replyVia, is the Home agent's as a whole: HOME.)
+   */
+  private homeKey(chat?: string): string {
+    const c = chat ?? this.ctx.homeLine?.home?.homes().find((h) => h.n === 0)?.chat;
+    return c ? `${HOME}:${c}` : HOME;
   }
 
   private async say(text: string, back?: Back): Promise<string | undefined> {
@@ -372,7 +382,7 @@ export class Texter {
     const words = clip(body, HOME_MAX);
     if (!this.target() || !words) return { sent: false };
     const home = this.homeOf(o.chat);
-    const back = o.reply === false ? undefined : this.backTo(HOME, !!o.answer);
+    const back = o.reply === false ? undefined : this.backTo(HOME, !!o.answer, this.homeKey(o.chat));
     const r = await this.send(this.router.stampHome(words, o.about, home), back);
     this.noteSent(r, HOME, undefined, o.about, home?.chat);
     const imageSent = r.sent && image ? await this.sendImage(image, back, (ids) => this.noteSent({ ids }, HOME, undefined, o.about, home?.chat)) : undefined;
@@ -449,7 +459,6 @@ export class Texter {
       await this.say(TEXTS.filesNotSent, via);
       return [];
     }
-    const into = join(dir, sessionKey(sessionId));
     const out: Attachment[] = [];
     for (const f of files.slice(0, ATTACH_MAX)) {
       const max = isImageType(f.mimeType) ? ATTACH_IMAGE_MAX : ATTACH_FILE_MAX;
@@ -467,11 +476,8 @@ export class Texter {
           if (img) ({ name, mimeType, data } = img);
           else if (isImageType(mimeType)) mimeType = "application/octet-stream";
         }
-        mkdirSync(into, { recursive: true, mode: 0o700 });
-        name = safeName(name);
-        const path = join(into, `${randomBytes(4).toString("hex")}-${name}`);
-        writeFileSync(path, data, { mode: 0o400 });
-        out.push({ path, name, mimeType, size: data.byteLength });
+        // As an upload is stored: a safe name, the session's 2 GB, read-only, never over another file.
+        out.push(storeFile(dir, sessionId, { name, mimeType, data }));
       } catch (e: any) {
         this.ctx.log(`texting: couldn't take ${safeName(f.name)}: ${e?.message ?? e}`);
         await this.say(TEXTS.fileSkipped(safeName(f.name)), via);
@@ -805,10 +811,17 @@ export class Texter {
       if (files.length) await this.say(TEXTS.filesNotSent, back);
       return;
     }
-    // Every home answers back the way the person wrote (one key for all of them).
+    // Every home answers back the way the person wrote (one replyVia for all of them, HOME); each home
+    // has its own channel claim (homeKey: its chat, resolved, and made for h if it's gone).
     const key = d.kind === "deliver" ? d.sessionId : HOME;
+    let claim = key;
+    if (d.kind === "home") {
+      const to = d.chat ? { chat: d.chat } : { n: 0 };
+      const chat = home!.chatOf ? await home!.chatOf(to).catch(() => undefined) : home!.homes().find((h) => (d.chat ? h.chat === d.chat : h.n === 0))?.chat;
+      claim = this.homeKey(chat);
+    }
     // Any input ends a channel turn's claim; this one may start a new one (below).
-    this.channelTurns.delete(key);
+    this.channelTurns.delete(claim);
     if (back) {
       // The way back: the connector, and the place only when it's private (a DM).
       // A channel message keeps the DM this session was last written from (the place private answers go).
@@ -822,7 +835,7 @@ export class Texter {
     }
     /** A channel message to an idle session (or Home): the turn it starts may answer in the channel. */
     const arm = () => {
-      if (via && m.shared && m.place && !elsewhere && this.idle(key)) this.channelTurns.set(key, { via, place: m.place, expect: shown(words), phase: "armed" });
+      if (via && m.shared && m.place && !elsewhere && this.idle(claim)) this.channelTurns.set(claim, { via, place: m.place, expect: shown(words), phase: "armed" });
     };
     /** One more message the session owes an answer to: queued, it's its own turn's; else (a steer, a request answer) the current turn answers it. */
     const owe = (queued: boolean) => this.talking.set(key, queued ? (this.talking.get(key) ?? 0) + 1 : Math.max(1, this.talking.get(key) ?? 0));
@@ -848,7 +861,7 @@ export class Texter {
         await this.read(m);
         if (d.gone) await this.say(TEXTS.homeGoneSentToH, back);
       } catch (e: any) {
-        this.channelTurns.delete(key);
+        this.channelTurns.delete(claim);
         await failed(d.home ? homeLabel(d.home) : "the Home agent", e);
       }
       return;

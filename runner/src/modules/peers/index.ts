@@ -22,7 +22,7 @@ import type { Module, ModuleContext, SessionLook } from "..";
 import { BROADCAST_MAX, PeerCaps } from "./caps";
 import { peerSecret, peerToken, PeerSocket, type PeerAnswer, type PeerCall } from "./server";
 import { ASK_DEFAULT_MIN, ASK_MAX_MIN } from "./tools";
-import { IMAGE_REFUSED, ImageFailures, readOutgoingImage } from "../texting/images";
+import { IMAGE_REFUSED, ImageFailures } from "../texting/images";
 
 /** How much of an answer an ask returns. */
 export const ANSWER_MAX = 20_000;
@@ -134,22 +134,19 @@ export class Peers {
       case PEER_TOOLS.broadcast:
         return this.broadcastFrom(from, str(a.text), { project: str(a.project), status: str(a.status), scope: str(a.scope) });
       case TEXT_PERSON: {
-        // An image is checked first: a bad path is the tool's error wherever the text would go.
+        // The image is read and checked once, where it's sent (texting's personText, or the Home
+        // agent's text_person for a relayed one). Refusals count here: past a few, every image is
+        // refused (no probing the machine's paths).
         const image = str(a.image).trim();
-        if (image) {
-          // Failed checks count: past a few, every check fails (no probing the machine's paths).
-          const r = this.imageFails.allowed(from) ? readOutgoingImage(image) : { problem: IMAGE_REFUSED };
-          if ("problem" in r) {
-            this.imageFails.failed(from);
-            return { text: `${r.problem} Nothing was sent.`, isError: true };
-          }
-        }
+        if (image && !this.imageFails.allowed(from)) return { text: `${IMAGE_REFUSED} Nothing was sent.`, isError: true };
         // A session the Home agent drives reports to it instead: it texts the person (their PM).
         const relayed = await this.ctx.homeLine?.home?.relay?.(from, str(a.message), image || undefined);
         if (relayed) return { text: relayed };
         const phone = this.ctx.homeLine?.phone;
         if (!phone) return { text: "Texting is off in Tether, so nothing was sent. Say it in your reply instead.", isError: true };
-        return phone.text(from, str(a.message), image ? { image } : {});
+        const r = await phone.text(from, str(a.message), image ? { image } : {});
+        if (image && r.isError && r.text.startsWith(IMAGE_REFUSED)) this.imageFails.failed(from);
+        return r;
       }
       default:
         return { text: `There's no tool ${c.tool}.`, isError: true };

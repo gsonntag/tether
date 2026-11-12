@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import { sessionKey, storeFile } from "../../core/attachments";
+import { ATTACH_SESSION_MAX } from "../../../../shared/limits";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { redact } from "../../credentials";
@@ -1209,5 +1211,26 @@ describe("round 5: a stalled Photon, and restarts", () => {
     while (!s.texts.includes(TEXTS.filesNotSent) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
     expect(s.texts.filter((x) => x === TEXTS.filesNotSent).length).toBe(1);
     await s.t.stop();
+  });
+});
+
+describe("round 7: the person's files are stored as uploads are", () => {
+  test("a safe name with its type's extension, read-only, and the session's 2 GB respected", () => {
+    const root = mkdtempSync(join(tmpdir(), "texting-store-"));
+    scratch.push(root);
+    const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1]);
+    const a = storeFile(root, "claude:a", { name: "../my photo.png", mimeType: "image/jpeg", data: JPEG });
+    expect([a.name, a.mimeType, a.size]).toEqual(["my_photo.jpg", "image/jpeg", JPEG.length]);
+    expect(a.path.startsWith(root + "/")).toBe(true);
+    expect(statSync(a.path).mode & 0o777).toBe(0o400);
+    expect(readFileSync(a.path).equals(JPEG)).toBe(true);
+    // A file that fills the session's 2 GB (sparse: no real disk): nothing more goes in.
+    const dir = join(root, sessionKey("claude:a"));
+    const big = join(dir, "00000000-big.bin");
+    writeFileSync(big, "");
+    truncateSync(big, ATTACH_SESSION_MAX);
+    expect(() => storeFile(root, "claude:a", { name: "x.txt", mimeType: "text/plain", data: Buffer.from("hi") })).toThrow("2 GB");
+    // Another session isn't affected.
+    expect(storeFile(root, "codex:b", { name: "x.txt", mimeType: "text/plain", data: Buffer.from("hi") }).name).toBe("x.txt");
   });
 });

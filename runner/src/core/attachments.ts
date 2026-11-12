@@ -249,25 +249,6 @@ export class AttachmentStore {
   }
 
   /**
-   * A whole file from the runner itself (an image the person texted: modules/texting) stored as one
-   * of the session's attachments, read-only, as an upload would be.
-   */
-  put(sessionId: string, f: { name: string; mimeType: string; data: Buffer }): Attachment {
-    let name = safeName(f.name);
-    const mimeType = cleanMime(f.mimeType, name);
-    const problem = sizeProblem(f.data.length, mimeType);
-    if (problem) throw new Error(problem);
-    if (IMAGE_EXT[mimeType] && !name.toLowerCase().endsWith(`.${IMAGE_EXT[mimeType]}`) && !(mimeType === "image/jpeg" && /\.jpe?g$/i.test(name)))
-      name = `${name.replace(/\.[A-Za-z0-9]{1,10}$/, "")}.${IMAGE_EXT[mimeType]}`;
-    const dir = this.sessionDir(sessionId);
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    this.roomFor(dir, f.data.length);
-    const path = join(dir, `${randomBytes(4).toString("hex")}-${name}`);
-    writeFileSync(path, f.data, { mode: 0o400, flag: "wx" });
-    return { path, name, mimeType, size: f.data.length };
-  }
-
-  /**
    * The attachments a message names, checked: each a file under this session's folder (or, for a
    * subagent, its main session's), as it is on disk. Anything else fails the message.
    */
@@ -352,13 +333,44 @@ export class AttachmentStore {
   }
 
   private roomFor(dir: string, size: number) {
-    let used = 0;
+    let used = usedIn(dir);
+    for (const u of this.uploads.values()) if (!u.done && u.tmp.startsWith(dir + "/")) used += u.size;
+    if (used + size > ATTACH_SESSION_MAX) throw new Error(FULL);
+  }
+}
+
+const FULL = "This session's attachments already use 2 GB on the runner. Start a new session to attach more.";
+
+/** The bytes a session's attachment folder holds. */
+function usedIn(dir: string): number {
+  let used = 0;
+  try {
     for (const f of readdirSync(dir)) {
       try {
         used += statSync(join(dir, f)).size;
       } catch {}
     }
-    for (const u of this.uploads.values()) if (!u.done && u.tmp.startsWith(dir + "/")) used += u.size;
-    if (used + size > ATTACH_SESSION_MAX) throw new Error("This session's attachments already use 2 GB on the runner. Start a new session to attach more.");
-  }
+  } catch {}
+  return used;
+}
+
+/**
+ * A whole file from the runner itself (one the person sent by text: modules/texting) stored as one of
+ * session `sessionId`'s attachments under `root` (the attachments folder), as an upload is: a safe
+ * name (an image's extension made its type's), its size checked, the session's 2 GB respected,
+ * read-only, never over another file. `mimeType` is taken as given (the caller checked it).
+ */
+export function storeFile(root: string, sessionId: string, f: { name: string; mimeType: string; data: Uint8Array }): Attachment {
+  let name = safeName(f.name);
+  const mimeType = f.mimeType;
+  const problem = sizeProblem(f.data.byteLength, mimeType);
+  if (problem) throw new Error(problem);
+  if (IMAGE_EXT[mimeType] && !name.toLowerCase().endsWith(`.${IMAGE_EXT[mimeType]}`) && !(mimeType === "image/jpeg" && /\.jpe?g$/i.test(name)))
+    name = `${name.replace(/\.[A-Za-z0-9]{1,10}$/, "")}.${IMAGE_EXT[mimeType]}`;
+  const dir = join(root, sessionKey(sessionId));
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (usedIn(dir) + f.data.byteLength > ATTACH_SESSION_MAX) throw new Error(FULL);
+  const path = join(dir, `${randomBytes(4).toString("hex")}-${name}`);
+  writeFileSync(path, f.data, { mode: 0o400, flag: "wx" });
+  return { path, name, mimeType, size: f.data.byteLength };
 }

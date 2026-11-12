@@ -53,13 +53,6 @@ export function replyContext(a: TextAbout): string {
   return `(replying to your text about session ${cleanId(a.sessionId)}${title ? `, "${title}"` : ""}${project ? ` in ${project}` : ""}) `;
 }
 
-const REPLY_CONTEXT = /^\(replying to your text about session ([^\s,()]+)[,)]/;
-
-/** The session a texted message's context line (replyContext) names, if it has one. */
-export function aboutOf(text: string): string | undefined {
-  return REPLY_CONTEXT.exec(text)?.[1];
-}
-
 /** Said to an agent with a HEIC photo that couldn't be made a JPEG (texting/images.ts): it's attached by its path only. */
 export const HEIC_NOTE = "(The photo is HEIC and couldn't be converted, so it's attached by its path only.)";
 
@@ -99,8 +92,10 @@ export interface HomeEnd {
   deleteHome(n: number): Promise<Home[]>;
   /** whether a session is a chat texts go to: its own turns aren't texted as a session's */
   isTextsChat(sessionId: string): boolean;
-  /** the Texts chat is running a turn or has messages waiting (a text now wouldn't start the next turn) */
-  textsBusy?(): boolean;
+  /** a home's chat (none: the primary one, the Texts chat) is running a turn or has messages waiting (a text now wouldn't start its next turn) */
+  textsBusy?(chat?: string): boolean;
+  /** the chat a text to this home goes to (h's made if it's gone); throws when that home isn't open */
+  chatOf?(to?: HomeTarget): Promise<string>;
   /**
    * A session's text_person, when the Home agent drives that session (started or messaged it, and
    * the person hasn't stepped in): the message goes to the Home agent as a report instead, and it

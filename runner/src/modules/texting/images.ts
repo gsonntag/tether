@@ -300,7 +300,8 @@ export const imagemagick: Convert = (data, from) =>
               `${from}:-`,
               ...["-auto-orient", "-resize", `${ATTACH_IMAGE_EDGE}x${ATTACH_IMAGE_EDGE}>`, "-quality", "85", "jpeg:-"],
             ],
-            { stdio: ["pipe", "pipe", "ignore"], env: { ...process.env, MAGICK_TEMPORARY_PATH: tmp, MAGICK_TMPDIR: tmp, TMPDIR: tmp } },
+            // Only what it needs: never the runner's tokens or keys.
+            { stdio: ["pipe", "pipe", "ignore"], env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: tmp, MAGICK_TEMPORARY_PATH: tmp, MAGICK_TMPDIR: tmp, TMPDIR: tmp } },
           );
         } catch {
           return done(undefined);

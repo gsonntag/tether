@@ -328,18 +328,28 @@ describe("the Discord connector", () => {
     await o.link.stop();
   });
 
-  test("images go out as attachments, on the last part", async () => {
+  test("images go out as attachments, on the last part; a path is checked like an agent's image", async () => {
     const dir = mkdtempSync(join(tmpdir(), "discord-img-"));
     try {
       const img = join(dir, "chart.png");
-      writeFileSync(img, new Uint8Array([9, 9]));
+      const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 9];
+      writeFileSync(img, new Uint8Array(png));
       const f = fakeDiscord({ TETHER_DISCORD_TOKEN: TOKEN, TETHER_DISCORD_OWNER_IDS: ME, TETHER_DISCORD_CHANNEL_ID: CHAN });
       const { link } = await openIt(f);
       await link.send({ text: "[home] here's the chart", images: [img] });
       const form = f.calls.find((c) => c.form)!.form!;
       expect(JSON.parse(String(form.get("payload_json")))).toEqual({ content: "[home] here's the chart", allowed_mentions: { parse: [] }, attachments: [{ id: 0, filename: "chart.png" }] });
       const file = form.get("files[0]") as File;
-      expect([file.name, file.type, [...new Uint8Array(await file.arrayBuffer())]]).toEqual(["chart.png", "image/png", [9, 9]]);
+      expect([file.name, file.type, [...new Uint8Array(await file.arrayBuffer())]]).toEqual(["chart.png", "image/png", png]);
+      // Not a real image (or not one at all): refused, nothing posted.
+      const posts = f.calls.length;
+      writeFileSync(join(dir, "key.png"), "-----BEGIN OPENSSH PRIVATE KEY-----");
+      for (const p of [join(dir, "key.png"), "/etc/passwd"]) await expect(link.send({ text: "x", images: [p] })).rejects.toThrow(/isn't an image/);
+      expect(f.calls.length).toBe(posts);
+      // Bytes already checked (Outbound.files) go as they are.
+      await link.send({ text: "", files: [{ name: "b.png", mimeType: "image/png", data: new Uint8Array(png) }] });
+      const last = f.calls.filter((c) => c.form).at(-1)!.form!.get("files[0]") as File;
+      expect([last.name, last.type]).toEqual(["b.png", "image/png"]);
       await link.stop();
     } finally {
       rmSync(dir, { recursive: true, force: true });

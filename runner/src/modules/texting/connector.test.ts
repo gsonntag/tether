@@ -81,7 +81,11 @@ function setup(o: { home?: boolean; attachmentsDir?: string } = {}) {
     { list: [im.c, dc.c] },
   );
   // As the texting module wires it.
-  line.phone = { send: (text, o) => t.homeText(text, { reply: true, answer: !!o?.answer }), text: (from, body) => t.personText(from, body) };
+  // As the texting module wires it (index.ts textingModule).
+  line.phone = {
+    send: (text, o) => t.homeText(text, { reply: true, answer: !!o?.answer, ...(o?.about ? { about: o.about } : {}), ...(o?.chat ? { chat: o.chat } : {}) }),
+    text: (from, body, opts) => t.personText(from, body, opts),
+  };
   /** the session's state as the runner sees it (idle unless set) */
   const look = (id: string) => sessions[id];
   return { t, im: im.state, dc: dc.state, told, took, store, line, home, look };
@@ -1110,5 +1114,92 @@ describe("final round", () => {
     s.t.said("claude:a", agent("Quietly done."));
     await s.t.turnEnded("claude:a");
     expect((s.t as any).turns.size).toBe(0);
+  });
+});
+
+describe("round 7: each home has its own channel claim", () => {
+  const user = (id: string, text: string) => ({ id, role: "user" as const, ts: 1, parts: [{ type: "text" as const, text }] });
+  /** h (claude:texts) and h1 (claude:h1), each busy or not on its own. */
+  function twoHomes() {
+    const s = setup({ home: true });
+    const busy: Record<string, boolean> = { "claude:texts": false, "claude:h1": false };
+    const took: [string, unknown][] = [];
+    const homes = [
+      { n: 0, chat: "claude:texts" },
+      { n: 1, chat: "claude:h1" },
+    ];
+    s.line.home = {
+      take: async (text, _via, to) => void took.push([text, to]),
+      isTextsChat: (id) => id in busy,
+      textsBusy: (chat) => busy[chat ?? "claude:texts"]!,
+      chatOf: async (to) => (to && "chat" in to ? to.chat : "claude:texts"),
+      homes: () => homes,
+      newHome: async () => 2,
+      deleteHome: async () => homes,
+    };
+    return { ...s, busy, took };
+  }
+
+  test("h1's DM turn runs while a channel message goes to h: h1's answer stays private, h's goes to the channel", async () => {
+    const s = twoHomes();
+    await s.t.start();
+    s.dc.hear({ text: "h1 my private thing", place: "dm-1" });
+    await tick();
+    expect(s.took.at(-1)).toEqual(["my private thing", { chat: "claude:h1" }]);
+    s.t.said("claude:h1", user("u1", "[From Discord] my private thing"));
+    s.t.turnStarted("claude:h1");
+    s.busy["claude:h1"] = true;
+    s.dc.hear({ text: "h hi", place: "chan-1", shared: true });
+    await tick();
+    s.t.said("claude:texts", user("u2", "[From Discord] hi"));
+    s.t.turnStarted("claude:texts");
+    // h1 answers its DM: never the channel.
+    expect(await s.line.phone!.send("your private answer", { answer: true, chat: "claude:h1" })).toBe(true);
+    expect(s.dc.sent.at(-1)!.text).toBe("[h1] your private answer");
+    expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
+    expect(s.dc.sent.at(-1)!.place).not.toBe("chan-1");
+    // h answers the channel message: the channel.
+    expect(await s.line.phone!.send("hey", { answer: true })).toBe(true);
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[home] hey", place: "chan-1", shared: true });
+  });
+
+  test("the mirror: h's DM turn runs while a channel message goes to h1", async () => {
+    const s = twoHomes();
+    await s.t.start();
+    s.dc.hear({ text: "h my private thing", place: "dm-1" });
+    await tick();
+    s.t.said("claude:texts", user("u1", "[From Discord] my private thing"));
+    s.t.turnStarted("claude:texts");
+    s.busy["claude:texts"] = true;
+    s.dc.hear({ text: "h1 hi", place: "chan-1", shared: true });
+    await tick();
+    s.t.said("claude:h1", user("u2", "[From Discord] hi"));
+    s.t.turnStarted("claude:h1");
+    expect(await s.line.phone!.send("your private answer", { answer: true })).toBe(true);
+    expect(s.dc.sent.at(-1)!.text).toBe("[home] your private answer");
+    expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
+    expect(await s.line.phone!.send("hey", { answer: true, chat: "claude:h1" })).toBe(true);
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[h1] hey", place: "chan-1", shared: true });
+  });
+
+  test("a channel message to h1 while h is busy is armed for h1 (and h's answer doesn't take it)", async () => {
+    const s = twoHomes();
+    await s.t.start();
+    s.busy["claude:texts"] = true;
+    s.dc.hear({ text: "h1 hi", place: "chan-1", shared: true });
+    await tick();
+    expect((s.t as any).channelTurns.get("home:claude:h1")).toMatchObject({ place: "chan-1", phase: "armed" });
+    expect((s.t as any).channelTurns.has("home:claude:texts")).toBe(false);
+    s.t.said("claude:h1", user("u1", "[From Discord] hi"));
+    s.t.turnStarted("claude:h1");
+    expect(await s.line.phone!.send("not this one", { answer: true })).toBe(true);
+    expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
+    expect(await s.line.phone!.send("hey", { answer: true, chat: "claude:h1" })).toBe(true);
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[h1] hey", place: "chan-1", shared: true });
+    // h1 busy: a channel message to it arms nothing.
+    s.busy["claude:h1"] = true;
+    s.dc.hear({ text: "h1 again", place: "chan-1", shared: true });
+    await tick();
+    expect((s.t as any).channelTurns.has("home:claude:h1")).toBe(false);
   });
 });

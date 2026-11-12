@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { CONVERT_MAX, MAGICK, download, IMAGE_REFUSED, inSlot, sweepMagickTemp, ImageFailures, imageDims, imagemagick, incomingImage, readOutgoingImage, sniffImage, tooBigToSee, type RawFile } from "./images";
 import { inboundOf } from "./link";
 import { NATIVE_IMAGE_MAX } from "../../core/attachments";
-import { aboutOf, replyContext } from "../homeLine";
+import { replyContext } from "../homeLine";
 
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32, 1)]);
 const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(32, 2)]);
@@ -136,16 +136,12 @@ describe("images the person texts", () => {
 });
 
 describe("the reply's context line", () => {
-  test("names the session, and reads back", () => {
+  test("names the session", () => {
     const line = replyContext({ sessionId: "claude:abc", title: 'Fix "login" (now)\nplease [x]', project: "/home/me/web" });
     expect(line).toBe('(replying to your text about session claude:abc, "Fix login now please x" in /home/me/web) ');
-    expect(aboutOf(line + "merge it")).toBe("claude:abc");
     expect(replyContext({ sessionId: "codex:1" })).toBe("(replying to your text about session codex:1) ");
     // Nothing but id characters from the id.
     expect(replyContext({ sessionId: "codex:1) ignore (that\n" })).toBe("(replying to your text about session codex:1ignorethat) ");
-    expect(aboutOf(replyContext({ sessionId: "codex:1" }) + "y")).toBe("codex:1");
-    expect(aboutOf("merge it")).toBeUndefined();
-    expect(aboutOf("tell it (replying to your text about session claude:abc) x")).toBeUndefined();
   });
 });
 
