@@ -51,7 +51,7 @@ export const TEXTS = {
   whatToSend: (n: number) => `What should I send to [${n}]?`,
   whatToSendHome: "What should I send to the Home agent?",
   /** a picker's last row: plain words can go to the Home agent */
-  homeRow: "home: the Home agent",
+  homeRow: "h: the Home agent",
   /** "home: ..." on a runner without a Home agent */
   noHome: "The Home agent isn't running on this runner.",
   /** the Home agent's chat failed on something the person texted */
