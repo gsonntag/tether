@@ -6,16 +6,24 @@ import { Link, type AuthState, type LinkState } from "./link";
 
 export type { AuthState, LinkState };
 
+/** Gives up on a fetch after `ms`, so a hung request never stalls renewing (AbortSignal.timeout needs Safari 16). */
+function timeout(ms: number): AbortSignal {
+  if (typeof AbortSignal.timeout === "function") return AbortSignal.timeout(ms);
+  const c = new AbortController();
+  setTimeout(() => c.abort(), ms);
+  return c.signal;
+}
+
 const link = new Link({
   url: `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/ws`,
   open: (url) => new WebSocket(url),
   me: async () => {
-    const res = await fetch("/api/me", { credentials: "same-origin" });
+    const res = await fetch("/api/me", { credentials: "same-origin", signal: timeout(20_000) });
     const json = !!res.headers.get("content-type")?.includes("json");
     return { status: res.status, redirected: res.redirected, json, body: json && res.ok ? await res.json() : undefined };
   },
   ticket: async () => {
-    const res = await fetch("/api/ws-ticket", { credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(20_000) });
+    const res = await fetch("/api/ws-ticket", { credentials: "same-origin", cache: "no-store", signal: timeout(20_000) });
     // The edge's sign-in page instead of our JSON: signed out, as good as a 401.
     if (res.redirected || !res.headers.get("content-type")?.includes("json")) return { status: res.ok ? 401 : res.status };
     const body = res.ok ? await res.json().catch(() => undefined) : undefined;
