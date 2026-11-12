@@ -752,7 +752,7 @@ describe("runner ids per token", () => {
     expect(r.closed?.reason).toBe(`runner id "instance-x" isn't allowed for token "runner-alice": use "runner-alice" or "runner-alice:<anything>"`);
     expect(r.sent).toEqual([]);
     expect(relay.runnerList()).toEqual([]);
-    expect(logs.some((l) => l.includes("refused runner instance-x"))).toBe(true);
+    expect(logs.some((l) => l.includes('refused runner "instance-x"'))).toBe(true);
   });
 
   test("the close reason always fits a WebSocket close frame", () => {
@@ -879,11 +879,38 @@ describe("browser sign-in renewal", () => {
     expect(logs.join("\n")).not.toContain(p!);
   });
 
-  test("frames on a socket past its deadline close it even before the sweep", () => {
+  test("past the deadline, before the sweep: a valid renew is accepted, anything else closes", () => {
     const { relay, b, tick, renew } = renewSetup();
     tick(300_000);
     renew(relay.tickets.issue("user-1"));
-    expect(b.closed?.code).toBe(4005);
+    expect(b.closed).toBeUndefined();
+    tick(299_999);
+    relay.sweep();
+    expect(b.closed).toBeUndefined();
+
+    const late = renewSetup();
+    late.tick(300_000);
+    late.relay.onBrowserMessage(late.b, { t: "ping" });
+    expect(late.b.closed?.code).toBe(4005);
+    expect(late.b.take()).toEqual([]);
+
+    const bad = renewSetup();
+    bad.tick(300_000);
+    bad.renew(bad.relay.tickets.issue("user-2"));
+    expect(bad.b.closed?.code).toBe(4005);
+  });
+
+  test("tickets must be canonical base64url", () => {
+    const tickets = new Tickets({ now: () => 0 });
+    const t = tickets.issue("user-1");
+    expect(tickets.verify(t)).toMatchObject({ sub: "user-1" });
+    const [p, sig] = t.split(".") as [string, string];
+    for (const bad of [`${p}.${sig}=`, `${p}=.${sig}`, `${p}.${sig}.`, `${p}.+${sig.slice(1)}`, `${p} .${sig}`]) expect(tickets.verify(bad)).toBeNull();
+    // a different last character that decodes to the same bytes (unused trailing bits)
+    const last = sig.at(-1)!;
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const twin = [...alphabet].find((c) => c !== last && Buffer.from(sig.slice(0, -1) + c, "base64url").equals(Buffer.from(sig, "base64url")));
+    if (twin) expect(tickets.verify(`${p}.${sig.slice(0, -1)}${twin}`)).toBeNull();
   });
 
   test("a browser added without a viewer id can never renew", () => {
@@ -895,5 +922,22 @@ describe("browser sign-in renewal", () => {
     now = 1000;
     relay.sweep();
     expect(b.closed?.code).toBe(4005);
+  });
+});
+
+describe("logs", () => {
+  test("runner-supplied id, name and hostname are quoted, escaped and capped", () => {
+    const logs: string[] = [];
+    const relay = new Relay({ log: (l) => logs.push(l) });
+    const evil = { ...runnerInfo("box"), id: "box\nrunner fake connected\u0085", name: "n\u001b[31m", hostname: "h".repeat(500), harnesses: [{ id: "claude" as const, version: "1\r2" }] };
+    hi(relay, new FakeSocket("a"), evil);
+    hi(relay, new FakeSocket("b"), { ...evil, id: "runner-x\n" });
+    hi(relay, new FakeSocket("c"), { ...evil, protocol: 99 });
+    expect(logs).toHaveLength(3);
+    for (const l of logs) {
+      expect(l).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(l.length).toBeLessThan(400);
+    }
+    expect(logs[0]).toContain('runner "box\\nrunner fake connected\\u0085"');
   });
 });

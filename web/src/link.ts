@@ -25,7 +25,8 @@ export interface LinkDeps {
   me: () => Promise<{ status: number; redirected: boolean; json: boolean; body?: { allowed?: boolean } }>;
   /**
    * GET /api/ws-ticket: a fresh ticket that keeps the socket signed in (server/src/tickets.ts).
-   * 401/403 means this person may no longer use the app. Without it the link never renews.
+   * 401/403 may mean this person can no longer use the app (/api/me decides). Without it the link
+   * never renews.
    */
   ticket?: () => Promise<{ status: number; ticket?: string }>;
   now?: () => number;
@@ -44,13 +45,18 @@ export interface LinkTimings {
   renewMs: number;
   /** waking renews at once unless the last renew is more recent than this */
   renewWakeMs: number;
+  /** a ticket fetch that hasn't answered by then counts as failed */
+  renewTimeoutMs: number;
+  /** after a failed renew, retry after this, doubling up to renewRetryMaxMs */
+  renewRetryMs: number;
+  renewRetryMaxMs: number;
 }
 
 const OPEN = 1;
 /** An rpc's error when no answer came in time. */
 export const NO_ANSWER = "No answer in time.";
 
-export const DEFAULT_TIMINGS: LinkTimings = { pingMs: 25_000, silenceMs: 60_000, probeMs: 5_000, rpcTimeoutMs: 130_000, maxBackoffMs: 15_000, dialMs: 10_000, renewMs: 120_000, renewWakeMs: 30_000 };
+export const DEFAULT_TIMINGS: LinkTimings = { pingMs: 25_000, silenceMs: 60_000, probeMs: 5_000, rpcTimeoutMs: 130_000, maxBackoffMs: 15_000, dialMs: 10_000, renewMs: 120_000, renewWakeMs: 30_000, renewTimeoutMs: 20_000, renewRetryMs: 15_000, renewRetryMaxMs: 60_000 };
 
 /** 0.5 s, 1 s, 2 s … up to the cap. */
 export const linkBackoff = (attempt: number, max: number) => Math.min(max, 500 * 2 ** Math.min(attempt, 10));
@@ -66,8 +72,12 @@ export class Link {
   private dial?: ReturnType<typeof setTimeout>;
   private lastHeard = 0;
   private renewer?: ReturnType<typeof setInterval>;
-  /** the open socket's renewals: one at a time, and none after the server said no */
-  private renewal?: { sock: SocketLike; busy: boolean; refused: boolean; last: number };
+  /**
+   * The open socket's renewals: one at a time (`attempt` numbers them, so a late answer to one
+   * that timed out is ignored), retried after failures, and stopped only once /api/me confirms
+   * the person is signed out or not allowed.
+   */
+  private renewal?: { sock: SocketLike; busy: boolean; stopped: boolean; last: number; attempt: number; failures: number; retry?: ReturnType<typeof setTimeout> };
   private rpcSeq = 0;
   private pending = new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private handlers = new Map<string, Set<Handler>>();
@@ -152,7 +162,7 @@ export class Link {
         if (this.now() - this.lastHeard > this.t.silenceMs) return this.drop(sock);
         sock.send(JSON.stringify({ t: "ping" }));
       }, this.t.pingMs);
-      this.renewal = { sock, busy: false, refused: false, last: 0 };
+      this.renewal = { sock, busy: false, stopped: false, last: 0, attempt: 0, failures: 0 };
       this.renew(sock);
       this.renewer = setInterval(() => this.renew(sock), this.t.renewMs);
     };
@@ -232,32 +242,53 @@ export class Link {
   }
 
   /**
-   * Fetches a fresh ticket and hands it to the server over this socket. A refusal (the share was
-   * revoked, or they're no longer an owner) stops renewing: the server closes the socket when its
-   * last ticket runs out, and the sign-in check shows why.
+   * Fetches a fresh ticket and hands it to the server over this socket. A failure (offline, a
+   * timeout, a server error, or a 401/403) is retried after 15 s, 30 s, 60 s…; a 401/403 also
+   * checks the sign-in, and only a confirmed sign-out or lost access stops renewing: the server
+   * then closes the socket when its last ticket runs out, and the sign-in check shows why.
    */
   private renew(sock: SocketLike) {
     const r = this.renewal;
     const ticket = this.deps.ticket;
-    if (!ticket || !r || r.sock !== sock || r.busy || r.refused) return;
+    if (!ticket || !r || r.sock !== sock || r.busy || r.stopped) return;
+    clearTimeout(r.retry);
     r.busy = true;
     r.last = this.now();
+    const n = ++r.attempt;
+    const current = () => r.attempt === n && r.busy && this.renewal === r;
+    const done = (ok: boolean) => {
+      r.busy = false;
+      if (ok) return void (r.failures = 0);
+      if (r.stopped || this.renewal !== r) return;
+      const wait = Math.min(this.t.renewRetryMaxMs, this.t.renewRetryMs * 2 ** r.failures++);
+      r.retry = setTimeout(() => this.renew(sock), wait);
+    };
+    const timer = setTimeout(() => current() && done(false), this.t.renewTimeoutMs);
     ticket()
-      .then((res) => {
+      .then(async (res) => {
+        if (!current()) return;
+        clearTimeout(timer);
         if (res.status === 401 || res.status === 403) {
-          r.refused = true;
-          return void this.checkAuth();
+          const auth = await this.checkAuth();
+          if (auth === "signedOut" || auth === "notOwner") r.stopped = true;
+          return done(false);
         }
-        if (res.ticket && this.ws === sock && sock.readyState === OPEN) sock.send(JSON.stringify({ t: "renew", ticket: res.ticket }));
+        if (!res.ticket) return done(false);
+        if (this.ws === sock && sock.readyState === OPEN) sock.send(JSON.stringify({ t: "renew", ticket: res.ticket }));
+        done(true);
       })
-      .catch(() => {}) // offline: the next renewal tries again
-      .finally(() => (r.busy = false));
+      .catch(() => {
+        if (!current()) return;
+        clearTimeout(timer);
+        done(false);
+      });
   }
 
   private cleanup() {
     clearTimeout(this.dial);
     clearInterval(this.pinger);
     clearInterval(this.renewer);
+    clearTimeout(this.renewal?.retry);
     this.renewal = undefined;
     clearTimeout(this.probe);
     for (const p of this.pending.values()) (clearTimeout(p.timer), p.reject(new Error("Disconnected.")));
@@ -274,14 +305,19 @@ export class Link {
     this.retry = setTimeout(() => this.connect(), linkBackoff(this.attempt++, this.t.maxBackoffMs));
   }
 
-  private async checkAuth() {
+  /** Asks /api/me and tells the listeners; the answer, or undefined when it couldn't tell. */
+  private async checkAuth(): Promise<AuthState | undefined> {
     try {
       const me = await this.deps.me();
       // Signed out: our 401, or Foliation's edge answering with its sign-in page instead.
-      if (me.status === 401 || (me.status < 400 && (me.redirected || !me.json))) return this.authListeners.forEach((f) => f("signedOut"));
+      if (me.status === 401 || (me.status < 400 && (me.redirected || !me.json))) {
+        this.authListeners.forEach((f) => f("signedOut"));
+        return "signedOut";
+      }
       if (me.status >= 400 || !me.body) return;
       const auth: AuthState = me.body.allowed ? "ok" : "notOwner";
       this.authListeners.forEach((f) => f(auth));
+      return auth;
     } catch {
       // offline: the network, not the sign-in
     }

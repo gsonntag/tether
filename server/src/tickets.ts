@@ -21,6 +21,8 @@ export interface TicketOptions {
 }
 
 const b64url = (b: Buffer | string) => Buffer.from(b).toString("base64url");
+/** Exactly what we'd have encoded: no padding, no stray characters, no unused trailing bits. */
+const canonical = (s: string) => /^[A-Za-z0-9_-]+$/.test(s) && Buffer.from(s, "base64url").toString("base64url") === s;
 
 export class Tickets {
   private readonly secret: Uint8Array;
@@ -41,7 +43,7 @@ export class Tickets {
   /** The ticket's subject and expiry when it is genuine and unexpired, else null. */
   verify(ticket: string): { sub: string; exp: number } | null {
     const [payload, sig, extra] = ticket.split(".");
-    if (!payload || !sig || extra !== undefined) return null;
+    if (!payload || !sig || extra !== undefined || !canonical(payload) || !canonical(sig)) return null;
     const given = Buffer.from(sig, "base64url");
     const want = this.mac(payload);
     if (given.length !== want.length || !timingSafeEqual(given, want)) return null;

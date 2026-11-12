@@ -175,7 +175,7 @@ describe("runner ids through the front door", () => {
     await until(() => alice.closed.code !== undefined);
     expect(alice.closed).toEqual({ code: 4004, reason: `runner id "instance-x" isn't allowed for token "runner-alice": use "runner-alice" or "runner-alice:<anything>"` });
     expect(owner.closed.code).toBeUndefined();
-    expect(logs.some((l) => l.includes("refused runner instance-x"))).toBe(true);
+    expect(logs.some((l) => l.includes('refused runner "instance-x"'))).toBe(true);
     const ok = await open(`ws://${base}/api/runner`, as("alice"));
     ok.ws.send(JSON.stringify({ ...hello, runner: { ...hello.runner, id: "runner-alice:laptop" } }));
     await until(() => ok.frames.some((m) => m.t === "welcome"));

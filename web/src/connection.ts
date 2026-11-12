@@ -15,10 +15,11 @@ const link = new Link({
     return { status: res.status, redirected: res.redirected, json, body: json && res.ok ? await res.json() : undefined };
   },
   ticket: async () => {
-    const res = await fetch("/api/ws-ticket", { credentials: "same-origin", cache: "no-store" });
+    const res = await fetch("/api/ws-ticket", { credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(20_000) });
     // The edge's sign-in page instead of our JSON: signed out, as good as a 401.
     if (res.redirected || !res.headers.get("content-type")?.includes("json")) return { status: res.ok ? 401 : res.status };
-    return { status: res.status, ticket: res.ok ? (await res.json()).ticket : undefined };
+    const body = res.ok ? await res.json().catch(() => undefined) : undefined;
+    return { status: res.status, ticket: typeof body?.ticket === "string" ? body.ticket : undefined };
   },
 });
 

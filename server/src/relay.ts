@@ -75,6 +75,13 @@ interface Pending {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/**
+ * A runner-supplied value (id, name, hostname, version) made safe for a log line: quoted, capped,
+ * and with control characters escaped, so a runner can't forge or garble log lines.
+ */
+export const logValue = (v: string, max = 80) =>
+  JSON.stringify(v.length > max ? `${v.slice(0, max)}…` : v).replace(/[\u007f-\u009f\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+
 const subKey = (runnerId: string, sessionId: string) => `${runnerId}\u0000${sessionId}`;
 const isTerminalOp = (op: string): op is (typeof TERMINAL_OPS)[number] => (TERMINAL_OPS as readonly string[]).includes(op);
 
@@ -146,9 +153,13 @@ export class Relay {
   onBrowserMessage(sock: Socket, msg: BrowserToServer) {
     const b = this.browsers.get(sock);
     if (!b) return;
-    // Past its deadline the socket is done, even if the sweep hasn't come round yet.
+    // A valid ticket is fresh proof of sign-in, so it counts even just past the deadline (before
+    // the sweep got there). Anything else past the deadline closes the socket.
+    if (msg.t === "renew") {
+      if (!this.renew(b, msg.ticket) && this.now() >= b.deadline) this.expire(sock);
+      return;
+    }
     if (this.now() >= b.deadline) return this.expire(sock);
-    if (msg.t === "renew") return this.renew(b, msg.ticket);
     if (msg.t === "ping") return this.out(sock, { t: "pong" });
     if (msg.t === "presence") {
       const was = b.presence?.runnerId;
@@ -211,15 +222,16 @@ export class Relay {
   }
 
   /** A valid ticket for this socket's own viewer keeps it signed in until the ticket runs out. */
-  private renew(b: BrowserConn, ticket: string) {
+  private renew(b: BrowserConn, ticket: string): boolean {
     const t = this.tickets.verify(ticket);
     if (t && b.viewerId && t.sub === b.viewerId) {
       b.deadline = Math.max(b.deadline, t.exp);
-      return;
+      return true;
     }
     // Never log the ticket itself.
     if (!b.badRenewLogged) this.log(`ignored a renew ticket that was ${t ? "for someone else" : "invalid or expired"}`);
     b.badRenewLogged = true;
+    return false;
   }
 
   /** Closes every browser socket whose sign-in wasn't renewed in time (app.ts calls this often). */
@@ -307,7 +319,7 @@ export class Relay {
     this.runners.delete(id);
     this.viewersSent.delete(id);
     this.forgetRunner(id, "The runner disconnected.");
-    this.log(`runner ${id} disconnected`);
+    this.log(`runner ${logValue(id)} disconnected`);
     this.broadcastRunners();
   }
 
@@ -315,7 +327,7 @@ export class Relay {
     if (info.protocol !== this.protocol) {
       // A runner from another protocol version would misread frames: refuse it, and say which side to update.
       const newer = info.protocol > this.protocol ? "the app" : "the runner";
-      this.log(`refused runner ${info.id} (${info.name}): protocol ${info.protocol}, expected ${this.protocol}`);
+      this.log(`refused runner ${logValue(info.id)} (${logValue(info.name)}): protocol ${info.protocol}, expected ${this.protocol}`);
       if (this.runnerOf.get(sock) === info.id) this.removeRunner(sock);
       sock.close(CLOSE_PROTOCOL, `protocol mismatch: the app speaks ${this.protocol}, the runner ${info.protocol}; update ${newer}`);
       return;
@@ -324,7 +336,7 @@ export class Relay {
     if (!runnerIdAllowed(token, info.id)) {
       // Checked before anything changes, so a refused claim never disturbs the runner holding the id.
       const reason = runnerIdRefusal(token, info.id);
-      this.log(`refused runner ${info.id} (${info.name}) from ${info.hostname}: ${reason}`);
+      this.log(`refused runner ${logValue(info.id)} (${logValue(info.name)}) from ${logValue(info.hostname)}: token ${logValue(token)} may not use that id`);
       // A repeated hello on this connection asking for a forbidden id: its earlier id goes too.
       if (this.runnerOf.has(sock)) this.removeRunner(sock);
       sock.close(CLOSE_RUNNER_ID, reason);
@@ -354,7 +366,7 @@ export class Relay {
     if (prev?.sock !== sock) this.viewersSent.delete(id);
     this.sendViewers(id);
     if (prev?.sock !== sock)
-      this.log(`runner ${id} (${info.name}) connected from ${info.hostname}; ${info.harnesses.map((h) => `${h.id} ${h.version}`).join(", ") || "no harnesses"}`);
+      this.log(`runner ${logValue(id)} (${logValue(info.name)}) connected from ${logValue(info.hostname)}; ${info.harnesses.map((h) => `${h.id} ${logValue(h.version, 40)}`).join(", ") || "no harnesses"}`);
     this.broadcastRunners();
   }
 

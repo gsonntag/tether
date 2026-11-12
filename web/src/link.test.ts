@@ -181,7 +181,7 @@ test("wake replaces a socket stuck connecting, and a late open of the old one is
 });
 
 describe("sign-in renewal", () => {
-  function renewing(timings: Partial<LinkTimings>, answer: () => { status: number; ticket?: string }, meAllowed = true) {
+  function renewing(timings: Partial<LinkTimings>, answer: () => { status: number; ticket?: string } | Promise<{ status: number; ticket?: string }>, meAllowed = true) {
     const socks: FakeSocket[] = [];
     let fetches = 0;
     let now = 0;
@@ -252,6 +252,72 @@ describe("sign-in renewal", () => {
     await until(() => renews(socks[1]!).length === 1);
     expect(renews(socks[1]!)).toEqual(["new"]);
     expect(renews(socks[0]!)).toEqual([]);
+  });
+
+  test("failures retry with a growing wait, one at a time, and success resets it", async () => {
+    let n = 0;
+    const answers: (() => Promise<{ status: number; ticket?: string }>)[] = [
+      () => Promise.reject(new Error("offline")),
+      async () => ({ status: 502 }),
+      async () => ({ status: 200 }), // a 200 without a ticket (not our JSON)
+      async () => ({ status: 200, ticket: "t" }),
+      () => Promise.reject(new Error("offline")),
+      async () => ({ status: 200, ticket: "t2" }),
+    ];
+    const times: number[] = [];
+    const t0 = Date.now();
+    const { link, last, tick } = renewing({ renewMs: 60_000, renewRetryMs: 40, renewRetryMaxMs: 100 }, () => (times.push(Date.now() - t0), answers[n++]!()));
+    link.connect();
+    last().open();
+    await until(() => renews(last()).length === 1);
+    tick(30_000);
+    link.wake(); // the next renewal fails, and is retried after the first wait again
+    await until(() => renews(last()).length === 2);
+    expect(renews(last())).toEqual(["t", "t2"]);
+    const gaps = times.slice(1).map((t, i) => t - times[i]!);
+    // 40, 80, 100 (capped); after a success the wait starts at 40 again
+    expect(gaps[0]).toBeGreaterThanOrEqual(35);
+    expect(gaps[1]).toBeGreaterThanOrEqual(75);
+    expect(gaps[2]).toBeGreaterThanOrEqual(95);
+    expect(gaps[2]).toBeLessThan(160);
+    expect(gaps[4]).toBeGreaterThanOrEqual(35);
+    expect(gaps[4]).toBeLessThan(75);
+  });
+
+  test("a hung ticket fetch times out, frees the slot and is retried; its late answer is dropped", async () => {
+    const pending: ((v: { status: number; ticket?: string }) => void)[] = [];
+    const { link, last, fetches } = renewing({ renewMs: 60_000, renewTimeoutMs: 30, renewRetryMs: 20 }, () => new Promise((r) => pending.push(r)));
+    link.connect();
+    last().open();
+    await until(() => fetches() === 2);
+    pending[0]!({ status: 200, ticket: "late" });
+    pending[1]!({ status: 200, ticket: "fresh" });
+    await until(() => renews(last()).length === 1);
+    await Bun.sleep(20);
+    expect(renews(last())).toEqual(["fresh"]);
+  });
+
+  test("a 401/403 while /api/me still says allowed keeps renewing", async () => {
+    let n = 0;
+    const { link, last, auth } = renewing({ renewMs: 60_000, renewRetryMs: 20 }, () => (n++ === 0 ? { status: 403 } : { status: 200, ticket: "t" }), true);
+    link.connect();
+    last().open();
+    await until(() => renews(last()).length === 1);
+    expect(auth).toContain("ok");
+    expect(auth).not.toContain("notOwner");
+  });
+
+  test("a refused ticket with /api/me unreachable keeps retrying", async () => {
+    let n = 0;
+    const socks: FakeSocket[] = [];
+    const link = new Link(
+      { url: "ws://x/api/ws", open: () => (socks.push(new FakeSocket()), socks.at(-1)!), me: async () => Promise.reject(new Error("offline")), ticket: async () => (n++ === 0 ? { status: 401 } : { status: 200, ticket: "t" }) },
+      { renewMs: 60_000, renewRetryMs: 20 },
+    );
+    links.push(link);
+    link.connect();
+    socks[0]!.open();
+    await until(() => renews(socks[0]!).length === 1);
   });
 
   test("closed for an expired sign-in: reconnects and checks the sign-in", async () => {
