@@ -235,9 +235,10 @@ export interface Ops {
   /**
    * Starts a turn; a stored session goes live first (SPEC §4). In terminal mode: typed into the TUI,
    * then Enter (SPEC §9). `stop`: Stop and send now (the running turn is stopped first). Sending
-   * releases a queue held after Stop.
+   * releases a queue held after Stop. `clientId`: the browser's id for its optimistic copy of the
+   * message; the message the harness adds for it carries it (Msg.clientId) so the copy is replaced.
    */
-  send: { args: { sessionId: string; text: string; attachments?: Attachment[]; stop?: boolean }; result: null };
+  send: { args: { sessionId: string; text: string; attachments?: Attachment[]; stop?: boolean; clientId?: string }; result: null };
   /**
    * A message into the running turn (capabilities.canSteer); on a subagent, into its own turn
    * (subagents.steer "direct"), or passed on by the main agent (subagents.steer "via-parent", SPEC

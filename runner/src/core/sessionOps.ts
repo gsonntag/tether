@@ -43,7 +43,7 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
   ops.register("listModels", (a) => live.listModels(harness(a.harness), optStr(a.sessionId)));
   ops.register("listCommands", async (a) => ({ commands: await live.commands.list(str(a.sessionId, "sessionId")) }));
   ops.register("newSession", (a) =>
-    live.newSession({ harness: harness(a.harness), projectPath: str(a.projectPath, "A folder"), model: optStr(a.model), effort: optStr(a.effort), permissionMode: optStr(a.permissionMode), terminal: a.terminal === true, createFolder: a.createFolder === true, source: a.source }),
+    live.newSession({ harness: harness(a.harness), projectPath: str(a.projectPath, "A folder"), model: optStr(a.model), effort: optStr(a.effort), permissionMode: optStr(a.permissionMode), terminal: a.terminal === true, createFolder: a.createFolder === true, source: a.source }, true),
   );
   ops.register("checkFolder", (a) => checkFolder(str(a.projectPath, "A folder")));
   ops.register("listFolders", (a) => listFolders(str(a.path, "A folder")));
@@ -64,7 +64,7 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
   ops.register("send", async (a) => {
     const id = str(a.sessionId, "sessionId");
     const list = await files(id, a.attachments);
-    await live.send(id, typed(a.text), list, { stop: a.stop === true });
+    await live.send(id, typed(a.text), list, { stop: a.stop === true, ...(typeof a.clientId === "string" && a.clientId ? { clientId: a.clientId.slice(0, 100) } : {}) });
     live.attachments.markUsed(list);
     return null;
   });

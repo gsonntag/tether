@@ -63,6 +63,8 @@ export class Session {
   sending?: object;
   /** The message that started the turn, for a safe resend after throttling or plan exhaustion. */
   lastSend?: { text: string; attachments: Attachment[]; tether?: boolean };
+  /** the browser's id for the message being sent: the next message of the person's gets it (Msg.clientId) */
+  clientId?: string;
   /** this turn ran a tool or took a steer: resending it could repeat them */
   turnActed = false;
   /** this turn hit the plan's limit */
@@ -115,6 +117,11 @@ export class Session {
     }
     // The same error again, right after itself: one row is enough (a send's failure says so elsewhere).
     if (e.type === "msg" && !this.transcript.get(e.msg.id) && repeatsError(this.transcript.messages.at(-1), e.msg)) return null;
+    // The person's message for a send from a browser: tagged so its optimistic copy gives way.
+    if (this.clientId && e.type === "msg" && e.msg.role === "user" && !e.msg.origin && !e.msg.shell && !e.msg.relay && !this.transcript.get(e.msg.id)) {
+      e = { ...e, msg: { ...e.msg, clientId: this.clientId } };
+      this.clientId = undefined;
+    }
     // A notice is anchored to the message before it that the store has: not to another notice of
     // Tether's, which no store read has, so it would be pruned.
     const last = this.transcript.messages.findLast((m) => !isTetherNotice(m))?.id;

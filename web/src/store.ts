@@ -16,6 +16,7 @@ import { loadKnown, mergeRunners, reconnected, saveKnown, sortRunners, type Know
 import { setHomeFolders, type Watching } from "./sessionList";
 import { SessionModel, type SessionView, type Verdict } from "./sessionModel";
 import { resubscriber, Subscriptions } from "./subscriptions";
+import { pendingSender, reconcile, type PendingSend } from "./pendingSends";
 
 /** Messages per `history` page closing a gap (the runner's most). */
 const GAP_PAGE = 200;
@@ -52,6 +53,8 @@ interface State {
   modelLists: Record<string, ModelList>;
   /** open sessions, by runner and session */
   views: Record<string, SessionView>;
+  /** messages sent from this page whose own message hasn't come yet (pendingSends.ts), by runner and session */
+  pending: Record<string, PendingSend[]>;
   /** the new-session dialog */
   newSessionOpen: boolean;
   /** the sidebar shows only this folder's sessions */
@@ -80,6 +83,7 @@ export const useStore = create<State>(() => ({
   projects: {},
   modelLists: {},
   views: {},
+  pending: {},
   newSessionOpen: false,
   homeChats: {},
   homeWatch: {},
@@ -177,6 +181,52 @@ function act(runnerId: string, sessionId: string, v: Verdict) {
 function publish(runnerId: string, sessionId: string) {
   const entry = models.get(key(runnerId, sessionId));
   if (entry) set((s) => ({ views: { ...s.views, [key(runnerId, sessionId)]: entry.model.view } }));
+  settlePending(key(runnerId, sessionId));
+}
+
+/** Drops the pending copies whose own message has come. */
+function settlePending(k: string) {
+  const list = get().pending[k];
+  const view = get().views[k];
+  if (!list?.length || !view?.window) return;
+  const next = reconcile(list, view.window.messages, view.state?.queue);
+  if (next !== list) setPending(k, () => next);
+}
+
+function setPending(k: string, f: (list: PendingSend[]) => PendingSend[]) {
+  set((s) => {
+    const next = f(s.pending[k] ?? []);
+    const pending = { ...s.pending };
+    if (next.length) pending[k] = next;
+    else delete pending[k];
+    return { pending };
+  });
+}
+
+/**
+ * Sends a message optimistically: it shows in the chat at once as a pending copy, and the runner's
+ * message for it (tagged with the copy's clientId) replaces it. A failure leaves the copy marked
+ * failed, with Retry (retrySend) and Edit (dropPending, then the text back in the box).
+ */
+export const sendPending = pendingSender({
+  list: (k) => get().pending[k],
+  update: setPending,
+  newest: (k) => get().views[k]?.window?.messages.at(-1)?.id,
+  settle: settlePending,
+  send: (runnerId, args) => rpc(runnerId, "send", args),
+  failed: failedSend,
+  key,
+});
+
+/** Sends a failed copy again, in its place. */
+export function retrySend(runnerId: string, sessionId: string, clientId: string, send = sendPending) {
+  const p = get().pending[key(runnerId, sessionId)]?.find((x) => x.clientId === clientId);
+  if (p) send(runnerId, sessionId, p.text, p.attachments, { stop: p.stop, clientId });
+}
+
+/** Takes a pending copy out of the chat (Edit: its text goes back in the box). */
+export function dropPending(runnerId: string, sessionId: string, clientId: string) {
+  setPending(key(runnerId, sessionId), (l) => l.filter((p) => p.clientId !== clientId));
 }
 
 /** A runner's session list and projects, fetched again (it connected, or the list fell behind). */

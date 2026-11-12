@@ -7,7 +7,9 @@ import { AGENT_NAMES, HARNESS_LABELS } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { setSessionCovered } from "../presence";
 import { openSession, replaceSession } from "../route";
-import { failedSend, loadModels, loadOlder, modelListKey, openView, useStore, viewKey } from "../store";
+import { failedSend, loadModels, loadOlder, modelListKey, openView, sendPending, useStore, viewKey } from "../store";
+import { startRow } from "../pendingSends";
+import { PendingSends, StartStatus, usePending } from "./PendingSends";
 import { handoffPrompt } from "../terminal";
 import { Composer, type ComposerHandle } from "./Composer";
 import { QueueList } from "./QueueList";
@@ -42,6 +44,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   const linkOpen = useStore((s) => s.link === "open");
   const runnerOnline = useStore((s) => s.runners.find((r) => r.id === runnerId)?.online);
   const children = useChildren(runnerId, sessionId);
+  const pending = usePending(runnerId, sessionId);
   const composer = useRef<ComposerHandle>(null);
   const root = useRef<HTMLDivElement>(null);
   useFitViewport(root);
@@ -153,7 +156,9 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   // Requests open with no turn running (they came back after a runner restart) are busy too:
   // Stop (Esc) closes them and leaves the session idle. In the terminal the TUI takes what you type
   // whenever: never busy for the composer (SPEC §9).
-  const running = !inTerminal && (state.status === "running" || state.status === "waiting" || waiting);
+  // A message on its way counts too: the next one queues behind it, as it will once the runner says so.
+  const sendingNow = pending.some((p) => p.status === "sending");
+  const running = !inTerminal && (state.status === "running" || state.status === "waiting" || waiting || sendingNow);
 
   const shared = view.capabilities?.terminal === "shared";
   /**
@@ -197,7 +202,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   );
   const isChild = !!summary.parentSessionId;
   const offline = !linkOpen ? "Reconnecting…" : runnerOnline === false ? "The runner is offline." : undefined;
-  const empty = !running && view.window.messages.length === 0 && !view.window.hasOlder && (
+  const starting = !inTerminal && !isChild ? startRow({ state, pending, label: HARNESS_LABELS[summary.harness], hasMessages: view.window.messages.length > 0 }) : undefined;
+  const empty = !running && !starting && !pending.length && view.window.messages.length === 0 && !view.window.hasOlder && (
     <div className="t-inline-status" style={{ padding: "16px 0" }}>
       {isChild ? "Nothing here yet." : `No messages yet. What should ${agent} do?`}
     </div>
@@ -259,7 +265,12 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             <Button label="Keep working" size="sm" variant="secondary" onClick={() => setAsk(null)} />
           </div>
         )}
-        <Transcript key={k} window={view.window} onOlder={() => loadOlder(runnerId, sessionId)} footer={inTerminal ? empty : working || empty} />
+        <Transcript key={k} window={view.window} onOlder={() => loadOlder(runnerId, sessionId)} footer={
+            <>
+              <PendingSends runnerId={runnerId} sessionId={sessionId} list={pending} />
+              {inTerminal ? empty : starting ? <StartStatus row={starting} /> : working || empty}
+            </>
+          } />
         {terminalBar}
         {panel?.hidden && (
           // A phone, the shell tucked behind the chat: one tap back to it.
@@ -330,6 +341,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
               else if (kind === "queue") await rpc(runnerId, "queue", { sessionId, text, ...attachments });
               else await rpc(runnerId, "send", { sessionId, text, ...attachments, ...(kind === "stopSend" ? { stop: true } : {}) });
             }}
+            // In the terminal a message waits in the queue (its own row): no pending copy.
+            sendNow={inTerminal ? undefined : (kind, text, list) => void sendPending(runnerId, sessionId, text, list, { stop: kind === "stopSend" })}
             onStop={async () => {
               await rpc(runnerId, "interrupt", { sessionId });
             }}
