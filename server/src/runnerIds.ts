@@ -11,7 +11,8 @@
 export const OWNER_RUNNER_TOKEN = "runner";
 
 export function runnerIdAllowed(tokenName: string, id: string): boolean {
-  if (!tokenName) return false;
+  // A name with ":" would overlap another token's namespace ("runner-a" may claim "runner-a:b").
+  if (!tokenName || tokenName.includes(":")) return false;
   if (id === tokenName || id.startsWith(`${tokenName}:`)) return true;
   return tokenName === OWNER_RUNNER_TOKEN && !id.startsWith("runner-");
 }

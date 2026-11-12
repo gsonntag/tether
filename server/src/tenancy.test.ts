@@ -65,7 +65,11 @@ describe("TETHER_RUNNER_OWNERS", () => {
     expect(mayUseRunner(null, "anything", { id: "", email: "" })).toBe(true);
     expect(listedTenant(o, { id: "u9", email: "bob@example.com" })).toBe(true);
     expect(listedTenant(o, { id: "u9", email: "eve@example.com" })).toBe(false);
-    for (const bad of ["{", "[]", "{}", '{"alice":["a@x"]}', '{"runner-a":"a@x"}', '{"runner-a":[""]}', '{"runner-a":["anon:abc"]}', '{"runner-a":["svc:1"]}', '{"runner-a":[1]}'])
+    // lookalikes: the Kelvin sign lowercases to "k" in Unicode, never here
+    const k = parseRunnerOwners('{"runner-k":["kate@example.com"]}')!;
+    expect(mayUseRunner(k, "runner-k", { id: "", email: "\u212Aate@example.com" })).toBe(false);
+    expect(mayUseRunner(k, "runner-k", { id: "", email: "KATE@example.com" })).toBe(true);
+    for (const bad of ['{"runner-k":["\u212Aate@example.com"]}', '{"runner-a:b":["b@x"]}', '{"runner-a":[]}', "{", "[]", "{}", '{"alice":["a@x"]}', '{"runner-a":"a@x"}', '{"runner-a":[""]}', '{"runner-a":["anon:abc"]}', '{"runner-a":["svc:1"]}', '{"runner-a":[1]}'])
       expect(() => parseRunnerOwners(bad)).toThrow();
   });
 });

@@ -20,7 +20,12 @@ export interface Who {
   email: string;
 }
 
-const norm = (s: string) => s.trim().toLowerCase();
+/**
+ * ASCII-only case folding. Unicode lowercasing folds lookalikes (the Kelvin sign U+212A becomes
+ * "k"), so a non-ASCII value never matches anything, and map entries must be ASCII.
+ */
+const ASCII = /^[\x21-\x7e]+$/;
+const norm = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
 
 /**
  * The owner map from its env value: null when unset or blank (one tenant). Throws on anything
@@ -37,10 +42,11 @@ export function parseRunnerOwners(raw: string | undefined): RunnerOwners | null 
   if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("TETHER_RUNNER_OWNERS must be a JSON object of token name → list of people");
   const out = new Map<string, ReadonlySet<string>>();
   for (const [token, people] of Object.entries(v)) {
-    if (!/^runner(-|$)/.test(token)) throw new Error(`TETHER_RUNNER_OWNERS: "${token}" isn't a runner token name (runner or runner-<name>)`);
-    if (!Array.isArray(people) || people.some((p) => typeof p !== "string" || !p.trim() || p.trim().startsWith("anon:") || p.trim().startsWith("svc:")))
-      throw new Error(`TETHER_RUNNER_OWNERS: "${token}" needs a list of emails or user ids`);
-    out.set(token, new Set((people as string[]).map(norm)));
+    // No ":" in a name: runnerIds.ts lets token N claim "N:<anything>", so "runner-a" and "runner-a:b" would overlap.
+    if (!/^runner(-[^:\s]+)?$/.test(token)) throw new Error(`TETHER_RUNNER_OWNERS: "${token}" isn't a runner token name (runner or runner-<name>, no ":")`);
+    if (!Array.isArray(people) || !people.length || people.some((p) => typeof p !== "string" || !ASCII.test(p.trim()) || p.trim().startsWith("anon:") || p.trim().startsWith("svc:")))
+      throw new Error(`TETHER_RUNNER_OWNERS: "${token}" needs a list of emails or user ids (ASCII)`);
+    out.set(token, new Set((people as string[]).map((p) => norm(p.trim()))));
   }
   if (!out.size) throw new Error("TETHER_RUNNER_OWNERS is empty: unset it for a single-tenant app");
   return out;
@@ -51,7 +57,8 @@ export function mayUseRunner(owners: RunnerOwners | null | undefined, token: str
   if (!owners) return true;
   const people = owners.get(token);
   if (!people) return false;
-  return (!!who.id && people.has(norm(who.id))) || (!!who.email && people.has(norm(who.email)));
+  const match = (v: string) => !!v && ASCII.test(v) && people.has(norm(v));
+  return match(who.id) || match(who.email);
 }
 
 /** Whether this person is named anywhere in the map (so may sign in without being an app owner). */

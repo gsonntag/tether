@@ -1,6 +1,6 @@
 // A private process, outside the runner lifetime: sanitize the provider boundary before any
 // upstream error or stream can reach Codex's rollout, logs or tool environment.
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { AzurePricing } from "../../../../shared/azureRates";
 import { CostLedger, priceResponse } from "../../costs";
 import { spawn } from "node:child_process";
@@ -153,7 +153,8 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
   const server = Bun.serve({
     hostname: "127.0.0.1", port: 0,
     async fetch(req) {
-      if (req.headers.get("authorization") !== `Bearer ${bearer}`) return new Response("Unauthorized", { status: 401 });
+      const given = Buffer.from(req.headers.get("authorization") ?? ""), want = Buffer.from(`Bearer ${bearer}`);
+      if (given.length !== want.length || !timingSafeEqual(given, want)) return new Response("Unauthorized", { status: 401 });
       const url = new URL(req.url);
       if (!url.pathname.startsWith("/v1/")) return new Response("Not found", { status: 404 });
       const headers = upstreamHeaders(source, key, req.headers);
