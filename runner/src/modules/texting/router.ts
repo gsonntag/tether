@@ -6,10 +6,10 @@
 //
 // The Home agent can be texted too (homeLine.ts), when it runs. It has several homes (its chats):
 // `h` (the primary one, the Texts tab) and `h1`, `h2`, … (Home's other tabs). Its texts start with
-// "[home]" (the primary one) or "[h1]", "[h2]", …. Only while it runs, a text whose first word is
+// "[h]" (the primary one) or "[h1]", "[h2]", …. Only while it runs, a text whose first word is
 // one of these, in any case, followed by a space, a colon, a comma or nothing, is a command for it
 // (parseHome):
-// - "h …" / "home …" (and "@h", "[home]"): to the primary home; "h1 …" / "home1 …": to home 1.
+// - "h …" / "home …" (and "@h", "[h]"): to the primary home; "h1 …" / "home1 …": to home 1.
 // - "hn …" / "homenew …" / "home-new …": a new home, the rest its first message (at most
 //   MAX_EXTRA_HOMES besides h). Not "home new …": "Home new build is broken" is words to h.
 // - "hd1" / "hd 1" / "homedelete 1" / "home-delete 1", as the whole text: deletes home 1 (never `h`).
@@ -35,7 +35,7 @@ export const OPEN_MS = 30 * 60_000;
 /** The `sessionId` a Home agent text is noted under (`sent`). */
 export const HOME = HOME_SENDER;
 /** How a Home agent text starts. */
-export const HOME_TAG = "[home]";
+export const HOME_TAG = "[h]";
 export const HELD_MS = 10 * 60_000;
 /** How long after Tether's last text about a session a reply is still taken as being about it. */
 export const REPLY_MS = 30 * 60_000;
@@ -180,7 +180,7 @@ export class Router {
   /**
    * A home's text is going out (`about`: the session it's about, if it says; `home`: which home,
    * and its chat when it isn't the primary one): its text, marked so the person (and a threaded
-   * reply) can tell it apart: "[home] …", "[h1] …".
+   * reply) can tell it apart: "[h] …", "[h1] …".
    */
   stampHome(body: string, about?: string, home?: { n: number; chat: string }): string {
     this.state.homeLast = true;

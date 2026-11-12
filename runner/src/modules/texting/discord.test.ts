@@ -336,9 +336,9 @@ describe("the Discord connector", () => {
       writeFileSync(img, new Uint8Array(png));
       const f = fakeDiscord({ TETHER_DISCORD_TOKEN: TOKEN, TETHER_DISCORD_OWNER_IDS: ME, TETHER_DISCORD_CHANNEL_ID: CHAN });
       const { link } = await openIt(f);
-      await link.send({ text: "[home] here's the chart", images: [img] });
+      await link.send({ text: "[h] here's the chart", images: [img] });
       const form = f.calls.find((c) => c.form)!.form!;
-      expect(JSON.parse(String(form.get("payload_json")))).toEqual({ content: "[home] here's the chart", allowed_mentions: { parse: [] }, attachments: [{ id: 0, filename: "chart.png" }] });
+      expect(JSON.parse(String(form.get("payload_json")))).toEqual({ content: "[h] here's the chart", allowed_mentions: { parse: [] }, attachments: [{ id: 0, filename: "chart.png" }] });
       const file = form.get("files[0]") as File;
       expect([file.name, file.type, [...new Uint8Array(await file.arrayBuffer())]]).toEqual(["chart.png", "image/png", png]);
       // Not a real image (or not one at all): refused, nothing posted.
@@ -545,8 +545,8 @@ describe("review fixes", () => {
     expect(unmask("[2] Can I run it? y/n\nhttps://tether.example/#/s/a")).toBe("[2] Can I run it? y/n\nhttps://tether.example/#/s/a");
     const f = fakeDiscord({ TETHER_DISCORD_TOKEN: TOKEN, TETHER_DISCORD_OWNER_IDS: ME });
     const { link } = await openIt(f);
-    await link.send({ text: "[home] done: [PR](https://evil.example)" });
-    expect(f.calls.at(-1)!.body.content).toBe("[home] done: PR (https://evil.example)");
+    await link.send({ text: "[h] done: [PR](https://evil.example)" });
+    expect(f.calls.at(-1)!.body.content).toBe("[h] done: PR (https://evil.example)");
     await link.stop();
   });
 

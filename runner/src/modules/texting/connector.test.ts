@@ -201,7 +201,7 @@ describe("texting over several connectors", () => {
     await tick();
     expect(s.took).toEqual([["start the login fix", { mark: FROM_DISCORD }]]);
     expect(await s.line.phone!.send("ok, on it")).toBe(true);
-    expect(s.dc.sent.at(-1)!.text).toBe("[home] ok, on it");
+    expect(s.dc.sent.at(-1)!.text).toBe("[h] ok, on it");
     expect(s.im.sent).toEqual([]);
     // text_person from a session goes there too.
     expect((await s.line.phone!.text("claude:a", "PR is up")).isError).toBeUndefined();
@@ -310,9 +310,9 @@ describe("review fixes", () => {
     s.dc.hear({ text: "home: what's up" });
     await tick();
     expect(await s.line.phone!.send("not much")).toBe(true);
-    expect(s.dc.sent.at(-1)!.text).toBe("[home] not much");
+    expect(s.dc.sent.at(-1)!.text).toBe("[h] not much");
     expect((await s.line.phone!.text("home", "PR merged")).isError).toBeUndefined();
-    expect(s.im.sent.at(-1)!.text).toBe("[home] PR merged");
+    expect(s.im.sent.at(-1)!.text).toBe("[h] PR merged");
   });
 
   test("files never drop silently: held with the picker's text, a number with just files, with an answer", async () => {
@@ -561,12 +561,12 @@ describe("round 3", () => {
     s.t.turnStarted("claude:texts");
     // A report's outcome: private.
     expect(await s.line.phone!.send("done: PR #3")).toBe(true);
-    expect(s.dc.sent.at(-1)).toEqual({ text: "[home] done: PR #3" });
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[h] done: PR #3" });
     // The direct answer to their text: the channel, once.
     expect(await s.line.phone!.send("ok, on it", { answer: true })).toBe(true);
-    expect(s.dc.sent.at(-1)).toEqual({ text: "[home] ok, on it", place: "chan-1", shared: true });
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[h] ok, on it", place: "chan-1", shared: true });
     expect(await s.line.phone!.send("one more", { answer: true })).toBe(true);
-    expect(s.dc.sent.at(-1)).toEqual({ text: "[home] one more" });
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[h] one more" });
     // Sessions: a failure to the DM; the answer of the turn a channel message started there; after it, the DM.
     await s.t.attention("claude:a");
     s.dc.hear({ text: "1 why", place: "chan-1", shared: true });
@@ -704,7 +704,7 @@ describe("round 4: only the turn a channel message started answers in the channe
     s.t.said("claude:texts", user("[From Discord] hi"));
     s.t.turnStarted("claude:texts");
     expect(await s.line.phone!.send("hey", { answer: true })).toBe(true);
-    expect(s.dc.sent.at(-1)).toEqual({ text: "[home] hey", place: "chan-1", shared: true });
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[h] hey", place: "chan-1", shared: true });
     // A web-started (or report) turn after a channel message's turn: the DM.
     s.dc.hear({ text: "home: and?", place: "chan-1", shared: true });
     await tick();
@@ -1160,7 +1160,7 @@ describe("round 7: each home has its own channel claim", () => {
     expect(s.dc.sent.at(-1)!.place).not.toBe("chan-1");
     // h answers the channel message: the channel.
     expect(await s.line.phone!.send("hey", { answer: true })).toBe(true);
-    expect(s.dc.sent.at(-1)).toEqual({ text: "[home] hey", place: "chan-1", shared: true });
+    expect(s.dc.sent.at(-1)).toEqual({ text: "[h] hey", place: "chan-1", shared: true });
   });
 
   test("the mirror: h's DM turn runs while a channel message goes to h1", async () => {
@@ -1176,7 +1176,7 @@ describe("round 7: each home has its own channel claim", () => {
     s.t.said("claude:h1", user("u2", "[From Discord] hi"));
     s.t.turnStarted("claude:h1");
     expect(await s.line.phone!.send("your private answer", { answer: true })).toBe(true);
-    expect(s.dc.sent.at(-1)!.text).toBe("[home] your private answer");
+    expect(s.dc.sent.at(-1)!.text).toBe("[h] your private answer");
     expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
     expect(await s.line.phone!.send("hey", { answer: true, chat: "claude:h1" })).toBe(true);
     expect(s.dc.sent.at(-1)).toEqual({ text: "[h1] hey", place: "chan-1", shared: true });

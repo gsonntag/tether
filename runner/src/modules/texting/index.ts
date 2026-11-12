@@ -8,7 +8,7 @@
 // them, not the app: a Foliation app has no internet egress (server/src/push.ts).
 //
 // The person can text the Home agent too (homeLine.ts, router.ts): "home: ..." or plain words when
-// nothing else claims them go to its Texts chat, and its short replies come back as "[home] ..."
+// nothing else claims them go to its Texts chat, and its short replies come back as "[h] ..."
 // texts (homeAgent/index.ts decides which replies).
 //
 // An agent can text the person itself with its text_person tool (personText): a short text stamped with its session's
@@ -17,7 +17,7 @@
 // image, not too big; the bytes checked are the bytes sent).
 //
 // The Home agent has several homes (homeLine.ts: h, h1, h2, …; router.ts parses "hn", "h1 …",
-// "hd1"); a home's texts start "[home]" or "[h1]", and a reply goes back to the home that texted. A
+// "hd1"); a home's texts start "[h]" or "[h1]", and a reply goes back to the home that texted. A
 // reply right after one of a home's texts about a session is about that session (router.ts
 // REPLY_MS): it goes with a line saying which (homeLine.ts replyContext).
 //
@@ -370,7 +370,7 @@ export class Texter {
   }
 
   /**
-   * One of the Home agent's homes texts the person ("[home] ok, on it", "[h1] …"): whether it went. A
+   * One of the Home agent's homes texts the person ("[h] ok, on it", "[h1] …"): whether it went. A
    * threaded reply to it goes back to that home. `reply`: it answers what the person wrote it, so it
    * goes back the way that came; its own text (text_person) goes where Tether's texts go. `about`:
    * the session it's about, which a reply goes with. `chat`: the home's chat (none: the primary one).
@@ -498,7 +498,7 @@ export class Texter {
 
   /**
    * An agent's own text (its text_person tool): at most PERSON_TEXT_MAX characters, stamped with its
-   * session's number (or [home]) so a reply goes back to it. Sent even while the session is open in
+   * session's number (or [h]) so a reply goes back to it. Sent even while the session is open in
    * Tether: the agent was asked to text. What the tool answers the agent.
    */
   async personText(from: string, body: string, o: { image?: string; about?: string; chat?: string } = {}): Promise<{ text: string; isError?: boolean }> {

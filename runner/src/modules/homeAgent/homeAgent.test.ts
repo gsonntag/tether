@@ -1145,7 +1145,7 @@ test("the Home agent keeps its own style rules: none of the sessions' added inst
   expect(INSTRUCTIONS).toContain("text_person texts their phone");
 });
 
-test("text_person: the Home agent texts the person as [home], and a Texts turn that did isn't texted again", async () => {
+test("text_person: the Home agent texts the person as [h], and a Texts turn that did isn't texted again", async () => {
   const { line, sent, personTexts, runner, textsTab, tools, fake, chat, op, driverOf } = await texting();
   // From a Home tab in Tether: it texts.
   expect(await tools(chat).text_person!({ message: "PR #3 is merged" })).toContain("Texted");

@@ -477,7 +477,7 @@ describe("texting the Home agent", () => {
     return { ...s, line, took, tookFiles, setTextsChat: (id: string) => (textsChat = id) };
   }
 
-  test("a text with nothing open goes to it with a ✅, and its reply comes back as a [home] text", async () => {
+  test("a text with nothing open goes to it with a ✅, and its reply comes back as a [h] text", async () => {
     const { t, texts, took, told, hear, line } = withHome();
     await t.start();
     const reacted: string[] = [];
@@ -488,7 +488,7 @@ describe("texting the Home agent", () => {
     // No ack from Tether itself: the Home agent answers.
     expect(texts).toEqual([]);
     expect(await line.phone!.send("ok, on it")).toBe(true);
-    expect(texts).toEqual(["[home] ok, on it"]);
+    expect(texts).toEqual(["[h] ok, on it"]);
     expect(casualText(texts[0]!)).toBe(true);
     // A threaded reply to it goes back to the Home agent.
     await hear({ text: "also the docs", replyTo: "m1" });
@@ -607,7 +607,7 @@ describe("an agent texting the person (text_person)", () => {
     expect(texts).toEqual([]);
   });
 
-  test("the Home agent's goes out as [home], and a reply goes back to it", async () => {
+  test("the Home agent's goes out as [h], and a reply goes back to it", async () => {
     const line = new HomeLine();
     const took: string[] = [];
     line.home = fakeHome({ take: async (text) => void took.push(text) });
@@ -615,9 +615,15 @@ describe("an agent texting the person (text_person)", () => {
     await s.t.start();
     const r = await s.t.personText("home", "PR #12 is merged and live");
     expect(r.isError).toBeUndefined();
-    expect(s.texts).toEqual(["[home] PR #12 is merged and live"]);
+    expect(s.texts).toEqual(["[h] PR #12 is merged and live"]);
     await s.hear({ text: "thanks", replyTo: "m1" });
     expect(took).toEqual(["thanks"]);
+    // Starting with (or quoting) its "[h]" tag goes to it too, even with a session waiting.
+    s.say("claude:a", "Which?");
+    await s.t.turnEnded("claude:a");
+    await s.hear({ text: "[h] PR #12 is merged and live, nice" });
+    await s.hear({ text: "[H]also the docs" });
+    expect(took).toEqual(["thanks", "PR #12 is merged and live, nice", "also the docs"]);
   });
 });
 
@@ -844,7 +850,7 @@ describe("round 2: homes over text, image downloads, held images", () => {
     await hear({ text: "yes" });
     expect(took.at(-1)).toEqual(['(replying to your text about session claude:a, "secret plans" in /home/me/web) yes', { chat: "claude:home2" }]);
     await line.phone!.send("ok");
-    expect(texts.at(-1)).toBe("[home] ok");
+    expect(texts.at(-1)).toBe("[h] ok");
     await hear({ text: "and deploy", replyTo: id });
     expect(took.at(-1)).toEqual(["(replying to your text about session claude:a, \"secret plans\" in /home/me/web) and deploy", { chat: "claude:home2" }]);
     await hear({ text: "hd2" });

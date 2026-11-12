@@ -1333,13 +1333,13 @@ stay for an older web).
 
 *Texting the Home agent* (`modules/homeLine.ts` joins the texting and Home agent modules; an
 in-process line, not an op). The person can text the Home agent as well as sessions. Its texts start
-with `[home]`, like a session's `[n]`. Who a reply belongs to, in order:
+with `[h]`, like a session's `[n]`. Who a reply belongs to, in order:
 1. A threaded reply belongs to the sender of the message it answers: a session's text goes to that
-   session (a request's text answers only that request, #66), and a `[home]` text goes to the Home
+   session (a request's text answers only that request, #66), and a `[h]` text goes to the Home
    agent.
 2. While the Home agent runs (without it these are ordinary words for a session), a first word in
    any case followed by a space, `:`, `,` or nothing (`texting/router.ts` parseHome):
-   - `h`/`home` (`home …`, `Home, …`, `H: …`, `@h`, `[home]`): the primary home; `h1`/`home1`,
+   - `h`/`home` (`home …`, `Home, …`, `H: …`, `@h`, `[h]`, `[home]`): the primary home; `h1`/`home1`,
      `h2`, …: that home. The prefix and separator are taken off. Just `h1` sends a held text there,
      or aims the next one. A home that isn't open gets "There's no h5, your homes are h, h1, h3."
    - `hn`/`homenew`/`home-new`: a new home; the rest of the text (and its images) is its first
@@ -1374,7 +1374,7 @@ was deleted, so I sent it to h."). What goes to a home goes by its chat, not its
 restart) and go to browsers with the tabs (`HomeChatUpdate.labels`). When a Home chat moves to a new
 thread (a harness or source change), its number, and texting's record of its texts (threads, the
 last text, what it was about), go with it. A home's texts start
-`[home]` (primary) or `[h1]`, …. A tab the person has texted (or made with `hn`) answers by text
+`[h]` (primary) or `[h1]`, …. A tab the person has texted (or made with `hn`) answers by text
 like the Texts tab. Home shows each tab's name (h, h1, …), a **New Home** button, and on every tab
 but `h` a delete that asks first ("Delete h2? Its chat is archived and texts to h2 stop reaching
 it.") before closing the tab through the usual close (stopped if running, archived, its sessions
@@ -1448,7 +1448,7 @@ arrives as the person's message marked `[From iMessage] ` (`shared/fromTether.ts
 as theirs, labelled "via iMessage") and becomes the current tab.
 
 With **Reply by text** on (a Home agent setting next to Watch all sessions, default on), the Texts
-tab's last words go back as a `[home]` text, at most 600 characters, after:
+tab's last words go back as a `[h]` text, at most 600 characters, after:
 - a turn started by a text: mostly an acknowledgement ("ok, on it", "started X in web-coder") or
   the one question it needs answered;
 - a finished-turn report from a session that tab started or messaged: the outcome ("done: <PR
@@ -1464,14 +1464,14 @@ texted as a session's.
 session Tether runs has `text_person(message)` (§9a), and so does the Home agent. The Home agent is the
 main texter, the person's PM: when they're away or prefer texts (they texted it, asked "text me
 when done", or Reply by text is on) it texts short updates (what needs them, what shipped with a
-link, decisions), batching sessions into one text, never routine progress; replies to `[home]`
+link, decisions), batching sessions into one text, never routine progress; replies to `[h]`
 texts come back to it and it relays instructions with send_to_session. A session the Home agent
 drives (started or messaged it, the person hasn't stepped in) doesn't text: its `text_person`
 goes to the Home agent as a report (`homeLine.ts` relay) and the tool tells it to report back
 instead. A session the person runs themselves (or stepped into) texts directly. Requests' own
 texts are unchanged. A session's text
 is stamped with its number like any other (`[n] …`, status "texted you", the link as usual) and
-goes out even while the session is open in Tether; the Home agent's is a `[home]` text. Either is
+goes out even while the session is open in Tether; the Home agent's is a `[h]` text. Either is
 cut at 300 characters, and capped at 3 per sender and 10 in all per 10 minutes (a refused or
 failed one is the tool's error, and says to put it in the reply instead). A reply routes like a
 reply to any of Tether's texts (threaded, `n text`, the one open session; ✅, taken once), so it

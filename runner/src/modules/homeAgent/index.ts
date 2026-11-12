@@ -1111,7 +1111,7 @@ export class HomeAgent implements HomeEnd {
       },
       {
         name: "text_person",
-        description: `Texts the person in the messaging app Tether reaches them on, as "[home] <message>". One short sentence (cut at ${PERSON_TEXT_MAX} characters). Their reply comes back to your Texts tab. Pass session_id when the text is about one session: a reply right after it comes to you marked as about that session. Optionally send one image after the text (image: its absolute path; PNG, JPEG, GIF, WebP or HEIC, at most 10 MB; where the app takes images). Not for answering their texts: those replies are texted already.`,
+        description: `Texts the person in the messaging app Tether reaches them on, as "[h] <message>". One short sentence (cut at ${PERSON_TEXT_MAX} characters). Their reply comes back to your Texts tab. Pass session_id when the text is about one session: a reply right after it comes to you marked as about that session. Optionally send one image after the text (image: its absolute path; PNG, JPEG, GIF, WebP or HEIC, at most 10 MB; where the app takes images). Not for answering their texts: those replies are texted already.`,
         input: {
           message: z.string().min(1).describe("The text: one short sentence."),
           session_id: z.string().optional().describe("The session the text is about, if it's about one."),

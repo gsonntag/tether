@@ -108,7 +108,7 @@ export interface HomeEnd {
 /** Texting's end. */
 export interface PhoneEnd {
   /**
-   * Texts the person as one of the Home agent's chats ("[home] ok, on it"; "[h1] …" from home 1);
+   * Texts the person as one of the Home agent's chats ("[h] ok, on it"; "[h1] …" from home 1);
    * false when it didn't go (texting off, not connected). `answer`: it's the direct answer to a text
    * they sent, so it may go back to where they wrote it (a server channel); anything else goes to
    * them privately. `about`: the session the text is about, so a reply right after it is read as

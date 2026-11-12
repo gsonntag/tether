@@ -155,7 +155,7 @@ describe("the Home agent", () => {
   };
 
   test("a prefixed text goes to it, whatever is open, in every form", () => {
-    for (const text of ["home: start the login fix", "Home, start the login fix", "@home start the login fix", "[home] start the login fix", "  HOME:start the login fix"]) {
+    for (const text of ["home: start the login fix", "Home, start the login fix", "@home start the login fix", "[home] start the login fix", "[h] start the login fix", "[H]start the login fix", "[ h ] start the login fix", "  HOME:start the login fix"]) {
       const { r } = busy();
       expect([text, r.route(text, undefined, true)]).toEqual([text, { kind: "home", text: "start the login fix" }]);
     }
@@ -190,7 +190,7 @@ describe("the Home agent", () => {
 
   test("a threaded reply to a Home text goes to it, even with a session open", () => {
     const { r, clock } = setup();
-    expect(r.stampHome("started the login fix in web")).toBe("[home] started the login fix in web");
+    expect(r.stampHome("started the login fix in web")).toBe("[h] started the login fix in web");
     r.noteSent("h1", HOME);
     r.noteOut();
     r.stamp("a", "wants to run a command", ".", "req1");
@@ -246,6 +246,8 @@ describe("Home/H prefix", () => {
       ["[H] do x", "do x"],
       ["@home do x", "do x"],
       ["[home] do x", "do x"],
+      ["[h] do x", "do x"],
+      ["[h]", ""],
       ["Home", ""],
       ["home", ""],
       ["HOME", ""],
@@ -413,7 +415,7 @@ describe("several homes: h, h1, h2, …", () => {
     const { r, clock } = setup();
     expect(r.stampHome("PR is up, merge?", "claude:x", { n: 1, chat: "claude:h1" })).toBe("[h1] PR is up, merge?");
     r.noteSent("m1", HOME, undefined, "claude:x", "claude:h1");
-    expect(r.stampHome("ok", undefined, { n: 0, chat: "claude:t" })).toBe("[home] ok");
+    expect(r.stampHome("ok", undefined, { n: 0, chat: "claude:t" })).toBe("[h] ok");
     r.noteSent("m2", HOME);
     // The last text was h's: plain text answers h, nothing carried.
     expect(r.route("thanks", undefined, homes)).toEqual({ kind: "home", text: "thanks" });
