@@ -1,5 +1,6 @@
 // The page for a short link (`#/l/<code>`, ../shortLink.ts): asks the connected runners what it
-// opens, then replaces itself with the session. It says plainly when a code is unknown or expired,
+// opens, then shows the session under the same short URL (the code is kept in linkCache.ts, so
+// useRoute reads the page as the session). It says plainly when a code is unknown or expired,
 // when a runner that might have it is offline or not answering, and keeps listening either way.
 
 import { Button } from "@astryxdesign/core/Button";
@@ -9,7 +10,8 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { ClockIcon, LinkSlashIcon, SignalSlashIcon } from "@heroicons/react/24/outline";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { rpc, wakeLink } from "../connection";
-import { navigate, parseRoute, replaceSession } from "../route";
+import { linkCache } from "../linkCache";
+import { navigate } from "../route";
 import { ASK_TIMEOUT_MS, askRunner, Lookup } from "../shortLink";
 import { useStore } from "../store";
 
@@ -37,8 +39,7 @@ export function ShortLink({ code }: { code: string }) {
         // The runner asked is the one that has it, whatever the answer says.
         const { sessionId, wake } = l.answered(id, a, Date.now());
         if (wake) wakeLink();
-        const here = parseRoute(location.hash);
-        if (sessionId && here.page === "link" && here.code === code) replaceSession(id, sessionId);
+        if (sessionId) linkCache.remember(code, id, sessionId, false);
         else setNow(Date.now());
       });
     }

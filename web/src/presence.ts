@@ -6,6 +6,7 @@
 
 import { sendFrame } from "./connection";
 import { deviceId } from "./device";
+import { linkCache } from "./linkCache";
 import { parseRoute, presenceFor } from "./route";
 
 const homePage = (hash: string) => parseRoute(hash).page === "home";
@@ -39,6 +40,8 @@ export function tellPresence(force = false) {
 
 export function startPresence() {
   window.addEventListener("hashchange", () => tellPresence());
+  // A short link's session became known: the page now shows it.
+  linkCache.subscribe(() => tellPresence());
   document.addEventListener("visibilitychange", () => tellPresence());
   window.addEventListener("pagehide", () => tellPresence());
 }
