@@ -937,7 +937,7 @@ test("the prompt: one short end-goal question before a code change, unless done 
   // Not when the chat already says (a standing instruction, or a project rule) or it's clear from context.
   expect(INSTRUCTIONS).toContain("it isn't clear from context or from a standing instruction (one earlier in this chat");
   expect(INSTRUCTIONS).toContain(`"when any PR comes back, merge it and restart"`);
-  expect(INSTRUCTIONS).toContain(`"gavinsonntag.com: only the foliation branch"`);
+  expect(INSTRUCTIONS).toContain(`"my-site: only the staging branch"`);
   // An answer that holds from now on is kept for that project.
   expect(INSTRUCTIONS).toContain(`("always do X for jungle"), it's a standing instruction for that project for the rest of this chat`);
   // One question, not a questionnaire; not for read-only work.

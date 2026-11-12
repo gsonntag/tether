@@ -6,6 +6,7 @@ import { PROTOCOL_VERSION, type PushKeys } from "../../shared/protocol";
 import { malformedId, parseBrowserMessage, parseRunnerMessage } from "../../shared/wire";
 import { browserUser, DEV, isOwner, isRunner, viewerFrom, type Viewer } from "./identity";
 import { Relay } from "./relay";
+import { listedTenant, type RunnerOwners } from "./tenancy";
 
 type Conn = { kind: "browser" | "runner"; viewer: Viewer };
 
@@ -24,6 +25,8 @@ export interface AppOptions {
   identify?: (req: Request) => Promise<Viewer | null>;
   /** how often browser sockets past their sign-in deadline are closed (relay.sweep) */
   sweepMs?: number;
+  /** several tenants on this app (tenancy.ts, TETHER_RUNNER_OWNERS); absent: one tenant */
+  owners?: RunnerOwners | null;
 }
 
 /**
@@ -73,7 +76,13 @@ export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay
   const log = opts.log ?? ((l: string) => console.log(l));
   const dev = opts.dev ?? DEV;
   const identify = opts.identify ?? viewerFrom;
-  const relay = opts.relay ?? new Relay({ log, push: opts.push });
+  const owners = opts.owners ?? null;
+  const relay = opts.relay ?? new Relay({ log, push: opts.push, owners });
+  /**
+   * Who may open the app: its owners, and with an owner map, anyone it lists (whatever their app
+   * role). Never a service token, and never an anonymous visitor (no email, an anon: id).
+   */
+  const allowed = (v: Viewer | null): v is Viewer => isOwner(v) || (!!v && !v.service && !v.id.startsWith("anon:") && listedTenant(owners, v));
 
   const guard = (what: string, fn: () => void) => {
     try {
@@ -97,7 +106,7 @@ export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay
       const viewer = await identify(req);
       if (url.pathname === "/api/me") {
         if (!viewer) return Response.json({ error: "unauthenticated" }, { status: 401 });
-        return Response.json({ ...browserUser(viewer), allowed: isOwner(viewer), dev });
+        return Response.json({ ...browserUser(viewer), allowed: allowed(viewer), dev });
       }
       if (url.pathname === "/api/ws-ticket") {
         // Same checks as opening the socket: the ticket keeps a socket open (tickets.ts).
@@ -105,12 +114,12 @@ export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay
         if (req.method !== "GET") return new Response("GET only", { status: 405, headers: noStore });
         if (!originAllowed(req, opts.allowedOrigins)) return new Response("cross-origin request refused", { status: 403, headers: noStore });
         if (!viewer) return Response.json({ error: "unauthenticated" }, { status: 401, headers: noStore });
-        if (!isOwner(viewer)) return new Response("owners only", { status: 403, headers: noStore });
+        if (!allowed(viewer)) return new Response("owners only", { status: 403, headers: noStore });
         return Response.json({ ticket: relay.tickets.issue(viewer.id) }, { headers: noStore });
       }
       if (url.pathname === "/api/ws") {
         if (!originAllowed(req, opts.allowedOrigins)) return new Response("cross-origin socket refused", { status: 403 });
-        if (!isOwner(viewer)) return new Response("owners only", { status: 403 });
+        if (!allowed(viewer)) return new Response("owners only", { status: 403 });
         if (srv.upgrade(req, { data: { kind: "browser", viewer: viewer! } })) return;
         return new Response("expected a WebSocket", { status: 426 });
       }

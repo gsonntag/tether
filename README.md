@@ -160,6 +160,7 @@ Runner (`runner.env` in production, or the shell in dev):
 | `TETHER_TMUX_SOCKET` | `tether` | the tmux socket terminals use (`tmux -L <socket>`). Give a dev runner its own |
 | `TETHER_HIDE_PROJECTS` | | folders to leave out of the session lists |
 | `TETHER_PEERS` | | `0` turns off session-to-session messaging |
+| `TETHER_MAX_LIVE_SESSIONS` | no limit | the most sessions kept live at once; one more is refused with a clear error. Home chats, subagents and restart rejoins don't count. For shared hosts |
 | `TETHER_PHOTON_PROJECT_ID`, `TETHER_PHOTON_PROJECT_SECRET`, `TETHER_TEXT_PHONE` | | texting, instead of Settings → Messaging (these take precedence) |
 | `TETHER_DISCORD_TOKEN`, `TETHER_DISCORD_OWNER_IDS`, `TETHER_DISCORD_CHANNEL_ID` | | the Discord connector, instead of Settings → Messaging (these take precedence; owner ids comma-separated) |
 
@@ -178,6 +179,7 @@ Server:
 | `TETHER_ALLOWED_ORIGINS` | comma-separated extra origins allowed to open browser sockets. By default only the app's own host can |
 | `TETHER_DEV_RUNNER_TOKEN` | dev mode: the runner token (default `dev`) |
 | `TETHER_DEV_PICTURE` | dev mode: a profile picture URL for the fake owner (default none), to try the account avatar |
+| `TETHER_RUNNER_OWNERS` | several tenants on one app: JSON `{"runner-<name>": ["email or user id", …]}`. Each person sees and drives only the runners of tokens listing them, and listed people may sign in with any app role. Unset: every app owner sees every runner. See [docs/multi-tenant-test-plan.md](docs/multi-tenant-test-plan.md) |
 
 ## Development
 

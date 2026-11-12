@@ -1,12 +1,12 @@
 // A private process, outside the runner lifetime: sanitize the provider boundary before any
 // upstream error or stream can reach Codex's rollout, logs or tool environment.
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { AzurePricing } from "../../../../shared/azureRates";
 import { CostLedger, priceResponse } from "../../costs";
 import { spawn } from "node:child_process";
 import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { privateEnvironment, providerConfig, sourceProvider, type ApiSource } from "./sources";
+import { BEARER_FILE, privateEnvironment, providerConfig, sourceProvider, type ApiSource } from "./sources";
 import { upstreamFailure, upstreamHeaders, upstreamUrl } from "./upstream";
 import { safeRetryAt } from "../../rateLimit";
 
@@ -144,11 +144,17 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
   const deployment = process.env.TETHER_GATEWAY_DEPLOYMENT || undefined;
   const ledger = new CostLedger(join(home, "costs.json"));
   ledger.begin(id, true);
-  const bearer = `tether-private-${id}`; // A local capability; never the upstream credential.
+  // A local capability; never the upstream credential. Random, never derived from the session id:
+  // the id is on this process's command line, which every local user can read, and the proxy
+  // listens on a loopback port every local user can reach. The TUI reads it from the private home.
+  const bearer = `tether-private-${randomBytes(32).toString("hex")}`;
+  writeFileSync(join(home, BEARER_FILE), bearer, { mode: 0o600 });
+  chmodSync(join(home, BEARER_FILE), 0o600);
   const server = Bun.serve({
     hostname: "127.0.0.1", port: 0,
     async fetch(req) {
-      if (req.headers.get("authorization") !== `Bearer ${bearer}`) return new Response("Unauthorized", { status: 401 });
+      const given = Buffer.from(req.headers.get("authorization") ?? ""), want = Buffer.from(`Bearer ${bearer}`);
+      if (given.length !== want.length || !timingSafeEqual(given, want)) return new Response("Unauthorized", { status: 401 });
       const url = new URL(req.url);
       if (!url.pathname.startsWith("/v1/")) return new Response("Not found", { status: 404 });
       const headers = upstreamHeaders(source, key, req.headers);

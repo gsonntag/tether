@@ -1,0 +1,34 @@
+# Tether runner as a systemd user unit, one per person (Linux user). Install with:
+#   install -Dm644 deploy/tether-runner.service ~/.config/systemd/user/tether-runner.service
+#   systemctl --user daemon-reload && systemctl --user enable --now tether-runner
+# and `sudo loginctl enable-linger <user>` so it runs without a login.
+#
+# Code: ~/tether-prod, a checkout pinned to origin/main (never a checkout you edit).
+# Config: ~/.config/tether/runner.env (TETHER_URL, TETHER_TOKEN; see deploy/runner.env.example).
+[Unit]
+Description=Tether runner (coding agents for the Tether app)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/tether-prod/runner
+EnvironmentFile=%h/.config/tether/runner.env
+# tmux and the hooks socket go in the private runtime dir, never a /tmp path another user could pre-create.
+Environment=TMUX_TMPDIR=%t
+Environment=PATH=%h/.bun/bin:%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.bun/bin/bun src/index.ts
+Restart=always
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=15
+# Limits for a shared host. They cover the runner and the agents it spawns (Claude sessions,
+# their tools, dev servers). tmux terminals and the Codex daemon run in scopes of their own, so
+# give the user's whole slice a cap too (see docs/multi-tenant-test-plan.md, user-<uid>.slice).
+# Sized for a 16 GiB host with 3 tenants; scale with the host.
+MemoryHigh=3G
+MemoryMax=4G
+TasksMax=1024
+CPUWeight=100
+
+[Install]
+WantedBy=default.target

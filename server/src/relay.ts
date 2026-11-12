@@ -7,7 +7,8 @@
 // Sockets are abstract (send/close) so the routing is tested without a network.
 
 import { CLOSE_PROTOCOL, CLOSE_REAUTH, CLOSE_REPLACED, CLOSE_RUNNER_ID, CLOSE_TOO_SLOW, PROTOCOL_VERSION, TERMINAL_OPS, type BrowserToServer, type PushKeys, type OpName, type ResultMsg, type RunnerInfo, type RunnerToServer, type ServerToBrowser, type ServerToRunner, type User } from "../../shared/protocol";
-import { runnerIdAllowed, runnerIdRefusal } from "./runnerIds";
+import { fitCloseReason, runnerIdAllowed, runnerIdRefusal } from "./runnerIds";
+import { mayUseRunner, type RunnerOwners } from "./tenancy";
 import { Tickets } from "./tickets";
 
 export interface Socket {
@@ -28,6 +29,8 @@ export interface RelayOptions {
   reauthMs?: number;
   /** issues and checks renew tickets; by default its own, on this relay's clock */
   tickets?: Tickets;
+  /** several tenants on one app (tenancy.ts): who may use which runner token's runners; absent: everyone */
+  owners?: RunnerOwners | null;
 }
 
 /** A browser socket's sign-in lasts this long from connecting, then as long as its latest ticket. */
@@ -36,6 +39,8 @@ export const REAUTH_MS = 5 * 60_000;
 interface RunnerConn {
   sock: Socket;
   info: RunnerInfo;
+  /** the service token it connected with: with an owner map, it says whose runner this is */
+  token: string;
 }
 
 /**
@@ -52,6 +57,8 @@ interface Route {
 interface BrowserConn {
   /** who signed in on this socket: a renew ticket must be for them */
   viewerId: string;
+  /** their email, for the owner map (tenancy.ts) */
+  email: string;
   /** past this (the relay's clock), the socket is closed with CLOSE_REAUTH */
   deadline: number;
   /** a bad renew was already logged for this socket */
@@ -104,6 +111,7 @@ export class Relay {
   readonly tickets: Tickets;
   /** the viewers frame last sent to each runner, so only changes go out */
   private viewersSent = new Map<string, string>();
+  private readonly owners: RunnerOwners | null;
 
   constructor(opts: RelayOptions = {}) {
     this.push = opts.push;
@@ -113,19 +121,33 @@ export class Relay {
     this.now = opts.now ?? Date.now;
     this.reauthMs = opts.reauthMs ?? REAUTH_MS;
     this.tickets = opts.tickets ?? new Tickets({ now: this.now });
+    this.owners = opts.owners ?? null;
   }
 
-  runnerList(): RunnerInfo[] {
-    return [...this.runners.values()].map((r) => r.info);
+  /** Every runner, or with a browser, the ones it may see. */
+  runnerList(b?: BrowserConn): RunnerInfo[] {
+    return [...this.runners.values()].filter((r) => !b || this.mayUse(b, r)).map((r) => r.info);
+  }
+
+  /** Whether this browser's person may see and drive this runner (tenancy.ts). */
+  private mayUse(b: BrowserConn, r: RunnerConn): boolean {
+    return mayUseRunner(this.owners, r.token, { id: b.viewerId, email: b.email });
+  }
+
+  /** The runner with this id, if this browser may use it; otherwise it is as good as offline. */
+  private runnerFor(b: BrowserConn, runnerId: string | undefined): RunnerConn | undefined {
+    const r = runnerId === undefined ? undefined : this.runners.get(runnerId);
+    return r && this.mayUse(b, r) ? r : undefined;
   }
 
   // ---------------- browsers ----------------
 
   /** `viewerId`: the signed-in person's id (the identity token's sub), which renew tickets must match. */
   addBrowser(sock: Socket, user: User, protocol: number, viewerId = "") {
-    this.browsers.set(sock, { viewerId, deadline: this.now() + this.reauthMs, subs: new Map(), attaches: new Set() });
+    const b: BrowserConn = { viewerId, email: user.email, deadline: this.now() + this.reauthMs, subs: new Map(), attaches: new Set() };
+    this.browsers.set(sock, b);
     this.out(sock, { t: "hello", user, protocol, ...(this.push ? { push: { publicKey: this.push.publicKey } } : {}) });
-    this.out(sock, { t: "runners", runners: this.runnerList() });
+    this.out(sock, { t: "runners", runners: this.runnerList(b) });
   }
 
   removeBrowser(sock: Socket) {
@@ -163,15 +185,18 @@ export class Relay {
     if (msg.t === "ping") return this.out(sock, { t: "pong" });
     if (msg.t === "presence") {
       const was = b.presence?.runnerId;
-      b.presence = { deviceId: msg.deviceId, ...(msg.runnerId && msg.sessionId ? { runnerId: msg.runnerId, sessionId: msg.sessionId } : {}) };
+      // Presence on someone else's runner counts as looking at nothing.
+      const mine = !!msg.runnerId && !!this.runnerFor(b, msg.runnerId);
+      b.presence = { deviceId: msg.deviceId, ...(mine && msg.sessionId ? { runnerId: msg.runnerId, sessionId: msg.sessionId } : {}) };
       if (was && was !== msg.runnerId) this.sendViewers(was);
-      if (msg.runnerId) this.sendViewers(msg.runnerId);
+      if (mine) this.sendViewers(msg.runnerId!);
       return;
     }
     const m = msg;
 
     const reply = (r: Omit<ResultMsg, "t" | "id">) => this.out(sock, { t: "result", id: m.id, ...r });
-    const runner = this.runners.get(m.runnerId);
+    // Someone else's runner answers exactly like an offline one, so its id can't be probed.
+    const runner = this.runnerFor(b, m.runnerId);
     if (!runner) return reply({ ok: false, error: "That runner is offline." });
     const args = { ...(m.args as Record<string, unknown>) };
     let key: string | undefined;
@@ -275,12 +300,12 @@ export class Relay {
       }
       case "summary": {
         const s = JSON.stringify({ t: "summary", runnerId, summary: m.summary } satisfies ServerToBrowser);
-        for (const b of [...this.browsers.keys()]) this.raw(b, s);
+        for (const b of this.browsersOf(runnerId)) this.raw(b, s);
         return;
       }
       case "homeChat": {
         const s = JSON.stringify({ t: "homeChat", runnerId, rev: m.rev, ...(m.sessionId ? { sessionId: m.sessionId } : {}), ...(m.chats ? { chats: m.chats } : {}), ...(m.labels ? { labels: m.labels } : {}) } satisfies ServerToBrowser);
-        for (const b of [...this.browsers.keys()]) this.raw(b, s);
+        for (const b of this.browsersOf(runnerId)) this.raw(b, s);
         return;
       }
       case "term": {
@@ -342,6 +367,13 @@ export class Relay {
       sock.close(CLOSE_RUNNER_ID, reason);
       return;
     }
+    if (this.owners && !this.owners.has(token)) {
+      // Several tenants on this app, and nobody owns this token: nobody could use it, so refuse.
+      this.log(`refused runner ${logValue(info.id)} (${logValue(info.name)}): token ${logValue(token)} isn't in TETHER_RUNNER_OWNERS`);
+      if (this.runnerOf.has(sock)) this.removeRunner(sock);
+      sock.close(CLOSE_RUNNER_ID, fitCloseReason(`token "${token}" has no owner in TETHER_RUNNER_OWNERS on the server`));
+      return;
+    }
     const id = info.id;
     const prev = this.runners.get(id);
     if (prev && prev.sock !== sock) {
@@ -360,7 +392,7 @@ export class Relay {
     // A repeated hello on the same connection (harnesses changed) is the same connection: keeping
     // connectedAt tells browsers there's nothing to subscribe to again.
     const connectedAt = prev?.sock === sock ? prev.info.connectedAt : this.now();
-    this.runners.set(id, { sock, info: { ...info, connectedAt } });
+    this.runners.set(id, { sock, info: { ...info, connectedAt }, token });
     this.out(sock, { t: "welcome", ...(this.push ? { push: this.push } : {}) });
     // A new connection starts with no viewers: tell it all of them.
     if (prev?.sock !== sock) this.viewersSent.delete(id);
@@ -464,9 +496,21 @@ export class Relay {
     this.browsers.get(at.browser)?.attaches.delete(attachId);
   }
 
+  /** The browser sockets that may see this runner. */
+  private browsersOf(runnerId: string): Socket[] {
+    const r = this.runners.get(runnerId);
+    if (!r) return [];
+    return [...this.browsers].filter(([, b]) => this.mayUse(b, r)).map(([s]) => s);
+  }
+
   private broadcastRunners() {
-    const s = JSON.stringify({ t: "runners", runners: this.runnerList() } satisfies ServerToBrowser);
-    for (const b of [...this.browsers.keys()]) this.raw(b, s);
+    if (!this.owners) {
+      const s = JSON.stringify({ t: "runners", runners: this.runnerList() } satisfies ServerToBrowser);
+      for (const b of [...this.browsers.keys()]) this.raw(b, s);
+      return;
+    }
+    // Each person gets their own list.
+    for (const [sock, b] of [...this.browsers]) this.out(sock, { t: "runners", runners: this.runnerList(b) });
   }
 
   private out(sock: Socket, m: ServerToBrowser | ServerToRunner) {

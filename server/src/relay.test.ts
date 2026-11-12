@@ -735,6 +735,9 @@ describe("runner ids per token", () => {
   test("the owner token may claim any id outside other tokens' namespaces", () => {
     for (const id of ["instance-x", "runner", "runner:x", "3f2a-uuid", "tether-dev"]) expect(runnerIdAllowed("runner", id)).toBe(true);
     for (const id of ["runner-alice", "runner-alice:x", "runner-"]) expect(runnerIdAllowed("runner", id)).toBe(false);
+    // a token name with ":" would overlap another token's namespace
+    expect(runnerIdAllowed("runner-a:b", "runner-a:b")).toBe(false);
+    expect(runnerIdAllowed("runner-a", "runner-a:b")).toBe(true);
   });
 
   test("a runner-<name> token may claim only its own name and name:*", () => {

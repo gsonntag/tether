@@ -48,6 +48,8 @@ const runner = createRunner({
     // Dev stacks shorten these to see what comes after.
     ...(process.env.TETHER_EVICT_MS ? { evictMs: Number(process.env.TETHER_EVICT_MS) } : {}),
     ...(process.env.TETHER_IDLE_MS ? { idleMs: Number(process.env.TETHER_IDLE_MS) } : {}),
+    // A shared host: the most sessions this runner keeps live at once (unset or 0: no limit).
+    ...(Number(process.env.TETHER_MAX_LIVE_SESSIONS) > 0 ? { maxLive: Math.floor(Number(process.env.TETHER_MAX_LIVE_SESSIONS)) } : {}),
   },
   // Hooks of TUIs in terminal mode report here (terminal/hooks.ts); the path outlives restarts.
   terminal: { hookSocket: join(CONFIG_DIR, "hooks.sock") },
