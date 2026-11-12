@@ -189,6 +189,7 @@ export function createRunner(o: RunnerOptions) {
         const s = core.sessions.get(id);
         return s ? lookAt(s) : undefined;
       },
+      loaded: () => [...core.sessions.values()].map(lookAt),
       viewersOf: (id: string) => live.read.viewersOf(id),
       homeFolder: o.homeFolder,
       announceHomeChat: (u: HomeChatUpdate) => void conn.send({ t: "homeChat", ...u }),

@@ -89,6 +89,8 @@ export interface ModuleContext {
   runnerId: string;
   /** a session the runner has in memory */
   session(id: string): SessionLook | undefined;
+  /** every session the runner has in memory (a session that's running anything is) */
+  loaded?(): SessionLook[];
   /** acting on sessions */
   sessions: SessionActions;
   /** devices looking at a session (or one of its subagents) right now */

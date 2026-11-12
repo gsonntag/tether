@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Heading } from "@astryxdesign/core/Heading";
-import { statusLabel, type HarnessReport, type HarnessVersion } from "../../../shared/harnessUpdates";
+import { statusLabel, type AutoUpdateStatus, type HarnessReport, type HarnessVersion } from "../../../shared/harnessUpdates";
 import { rpc } from "../connection";
-import { canUpdate, checkedAgo, METHOD_LABELS, runLine, updateAllTargets, updating } from "../harnessUpdates";
+import { autoLines, canUpdate, checkedAgo, METHOD_LABELS, runLine, updateAllTargets, updating } from "../harnessUpdates";
 import { useStore } from "../store";
 import { useNow } from "./useNow";
 
@@ -63,6 +63,14 @@ export function HarnessUpdates() {
       patch(runnerId, { error: (e as Error)?.message || "Couldn't start the update." });
     }
   };
+  const setAuto = async (runnerId: string, on: boolean) => {
+    try {
+      const auto = await rpc(runnerId, "harnessAutoUpdate", { on });
+      setState((st) => ({ ...st, [runnerId]: { ...st[runnerId], error: undefined, report: st[runnerId]?.report && { ...st[runnerId]!.report!, auto } } }));
+    } catch (e) {
+      patch(runnerId, { error: (e as Error)?.message || "Couldn't change the setting." });
+    }
+  };
   const isOnline = (id: string) => online.some((r) => r.id === id);
   const targets = updateAllTargets(Object.fromEntries(Object.entries(state).map(([k, v]) => [k, v.report])), isOnline);
   const updateAll = async () => {
@@ -93,6 +101,7 @@ export function HarnessUpdates() {
           </div>
           {s.error && <div className="t-inline-status error" role="alert">{s.error}</div>}
           {r.online && s.report && <UpdatesTable report={s.report} disabled={disabled} onUpdate={(id) => void update(r.id, id)} />}
+          {r.online && s.report?.auto && <AutoUpdate status={s.report.auto} disabled={disabled} now={now} onChange={(on) => void setAuto(r.id, on)} />}
           {r.online && !s.report && !s.error && <div className="t-inline-status">Checking…</div>}
         </section>
       );
@@ -145,5 +154,27 @@ function Row({ h, disabled, onUpdate }: { h: HarnessVersion; disabled: boolean; 
         </tr>
       )}
     </tbody>
+  );
+}
+
+/** "Update all harnesses when all agents idle": the runner's setting, what it waits for, and its last run. */
+function AutoUpdate({ status, disabled, now, onChange }: { status: AutoUpdateStatus; disabled: boolean; now: number; onChange: (on: boolean) => void }) {
+  const lines = autoLines(status, now);
+  const last = status.last;
+  return (
+    <div className="t-updates-auto">
+      <label className="t-check">
+        <input type="checkbox" checked={status.enabled} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
+        <span>Update all harnesses when all agents idle <span className="t-updates-warning">(this may break Tether functionality!)</span></span>
+      </label>
+      {lines.waiting && <div className="t-updates-note">{lines.waiting}</div>}
+      {lines.last && <div className={`t-updates-result ${last && last.results.some((r) => !r.ok) ? "fail" : last?.results.length ? "ok" : ""}`}>{lines.last}</div>}
+      {last?.results.filter((r) => !r.ok && r.output).map((r) => (
+        <details key={r.id} className="t-updates-output">
+          <summary>{r.name} output</summary>
+          <pre>{r.output}</pre>
+        </details>
+      ))}
+    </div>
   );
 }
