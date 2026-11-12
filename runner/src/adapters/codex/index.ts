@@ -15,7 +15,7 @@ import { setCodexSetup } from "./setup";
 import { codexMove, importedMsgs } from "./move";
 import { knownMode, modeOf, modelList, UNKNOWN_MODE, type CodexModel } from "./modes";
 import { remembered } from "./remember";
-import { assertThreadSource, sourceBilling, sourceHome, sourceProvider, sourceSocket } from "./sources";
+import { assertThreadSource, privateBearerFile, sourceBilling, sourceHome, sourceProvider, sourceSocket } from "./sources";
 
 /**
  * Quitting Codex's TUI without stopping the thread's turn: Ctrl-C clears what's typed (or, with an
@@ -150,6 +150,10 @@ export const codexAdapter: Adapter = {
     for (const name of Object.keys(process.env)) if (/^(OPENAI_|AZURE_|ANTHROPIC_|TETHER_GATEWAY_)/.test(name)) remove.add(name);
     if (!source) remove.add("TETHER_CODEX_API_KEY");
     const command = opts.credential ? ["env", ...[...remove].flatMap((name) => ["-u", name]), ...argv] : argv;
-    return { argv: command, ...(source ? { env: { CODEX_HOME: sourceHome(source), TETHER_CODEX_API_KEY: `tether-private-${source.id}` } } : {}), quit: CODEX_QUIT };
+    if (!source) return { argv: command, quit: CODEX_QUIT };
+    // The proxy's bearer is read from its private file inside the pane, never put on a command
+    // line or in tmux's -e (both are readable by every local user while they run).
+    const withBearer = ["sh", "-c", 'TETHER_CODEX_API_KEY="$(cat "$0")"; export TETHER_CODEX_API_KEY; exec "$@"', privateBearerFile(source), ...command];
+    return { argv: withBearer, env: { CODEX_HOME: sourceHome(source) }, quit: CODEX_QUIT };
   },
 };

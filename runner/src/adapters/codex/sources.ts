@@ -27,6 +27,10 @@ export function assertThreadSource(thread: PrivateSource | undefined, credential
 }
 export const sourceHome = (source: PrivateSource) => join(DATA_DIR, "codex-keys", source.id);
 export const sourceSocket = (source: PrivateSource) => join(sourceHome(source), "s");
+/** In a private source's home: the random bearer its loopback proxy wants (privateHost.ts). */
+export const BEARER_FILE = "bearer";
+/** Where a private source's proxy bearer is kept (mode 600 in a 700 folder): a TUI reads it there. */
+export const privateBearerFile = (source: PrivateSource) => join(sourceHome(source), BEARER_FILE);
 const recordFile = (source: PrivateSource) => join(sourceHome(source), "daemon.json");
 const birthOf = (pid: number): string | undefined => {
   try { const stat = readFileSync(`/proc/${pid}/stat`, "utf8"); const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" "); return fields[0] === "Z" ? undefined : fields[19]; } catch { return undefined; }

@@ -111,7 +111,13 @@ export class LiveControl {
   constructor(
     private core: SessionCore,
     broker: RequestBroker,
-    private opts: { idleMs?: number; attachmentsDir?: string; credentials?: CredentialStore; costs?: CostLedger } = {},
+    private opts: {
+      idleMs?: number;
+      /** the most sessions live at once (TETHER_MAX_LIVE_SESSIONS); absent or 0: no limit */
+      maxLive?: number;
+      /** the Home agent's folder: its chats are never refused by maxLive, so Home always answers */
+      homeFolder?: string;
+      attachmentsDir?: string; credentials?: CredentialStore; costs?: CostLedger } = {},
   ) {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
     this.retries = new RetryControl(core, {
@@ -932,7 +938,8 @@ export class LiveControl {
       try {
         const s = await this.core.open(id);
         await this.core.load(s);
-        await this.ensureDriver(s, !!this.opts.credentials);
+        // A session that was live before the restart is never refused by the live-session limit.
+        await this.ensureDriver(s, !!this.opts.credentials, false);
         this.core.log(`rejoined ${id}`);
         // It finished while the runner was away.
         if (s.state.status === "idle" && !s.driver?.busy()) this.core.o.prefs.set(id, { running: undefined });
@@ -1181,8 +1188,27 @@ export class LiveControl {
     return this.ensureDriver(s, !!this.opts.credentials && !!s.state.terminal && !!s.capabilities.persistent);
   }
 
+  /**
+   * Why this session may not go live now (the runner's live-session limit is reached), or
+   * undefined. Subagents and the Home agent's chats don't count and are never refused.
+   */
+  private overLiveLimit(s: Session): string | undefined {
+    const max = this.opts.maxLive ?? 0;
+    if (max <= 0 || this.exemptFromLimit(s)) return undefined;
+    let live = 0;
+    for (const x of this.core.sessions.values()) if (x !== s && (x.driver || x.starting) && !this.exemptFromLimit(x)) live++;
+    if (live < max) return undefined;
+    return `This runner already has ${live} live sessions, its limit (TETHER_MAX_LIVE_SESSIONS=${max}). Stop one, or wait for one to go idle (${Math.round(this.idleMs / 60_000)} min after its turn ends), then send again.`;
+  }
+
+  private exemptFromLimit(s: Session): boolean {
+    const home = this.opts.homeFolder;
+    const path = s.summary.projectPath;
+    return !!s.summary.parentSessionId || (!!home && (path === home || path.startsWith(`${home}/`)));
+  }
+
   /** The session's driver, starting or resuming the harness when it isn't live. */
-  private ensureDriver(s: Session, observe = false): Promise<Driver> {
+  private ensureDriver(s: Session, observe = false, limited = true): Promise<Driver> {
     if (s.driver) {
       if (observe) return Promise.resolve(s.driver);
       if (!this.opts.credentials || this.revisionOf(s) === s.credentialRevision) return Promise.resolve(s.driver);
@@ -1196,6 +1222,8 @@ export class LiveControl {
     // Two processes must never drive one session (SPEC §8 handoff).
     const blocked = this.terminal?.blocked(s);
     if (blocked) return Promise.reject(new Error(blocked));
+    const full = s.starting || observe || !limited ? undefined : this.overLiveLimit(s);
+    if (full) return Promise.reject(new Error(full));
     s.starting ??= this.startDriver(s, observe).finally(() => {
       s.starting = undefined;
       this.core.scheduleEvict(s);

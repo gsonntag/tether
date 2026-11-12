@@ -55,7 +55,7 @@ export interface RunnerOptions {
   /** the request broker's policy steps (SPEC §7); none in the core */
   policy?: PolicyStep[];
   /** session core tuning, for tests */
-  core?: { discoverMs?: number; evictMs?: number; idleMs?: number; hideProjects?: string };
+  core?: { discoverMs?: number; evictMs?: number; idleMs?: number; hideProjects?: string; maxLive?: number };
   /**
    * Terminal mode (SPEC §8): Tether's tmux and where hooks report. index.ts turns it on (tmux on
    * TMUX_SOCKET, when installed); absent or false, the runner has no terminals (tests).
@@ -120,7 +120,7 @@ export function createRunner(o: RunnerOptions) {
   });
   // Open requests are kept in runner.json, so they survive a restart (SPEC §7).
   const broker = new RequestBroker(o.policy, { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (open, closed) => prefs.setRequests(open, closed), log: o.log });
-  const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, attachmentsDir: o.attachmentsDir, credentials: o.credentials, costs });
+  const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, maxLive: o.core?.maxLive, homeFolder: o.homeFolder, attachmentsDir: o.attachmentsDir, credentials: o.credentials, costs });
   if (o.credentials) {
     ops.register("credentials", () => o.credentials!.status());
     ops.register("setCredential", (a) => { const result = o.credentials!.set(a.source, a.key, a.endpoint, a.deployment, a.rates); live.credentialsChanged(); return result; });
