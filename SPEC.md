@@ -1433,8 +1433,8 @@ a .png/.jpg/.gif/.webp/.heic file, opened once without following a final symlink
 FIFO, checked on that handle (a regular file of at most 10 MB whose first bytes match), sent as the
 bytes checked (`Outbound.files`; a path handed to a connector, `Outbound.images`, is checked the
 same way). The file is read once, where it's sent. Every refusal says the same thing (no telling
-which paths exist), a try counts against the agent's text cap, and a session past 5 refusals in 10
-minutes has every image refused before anything goes; nothing goes. A relayed session's image path goes to the Home agent inside its report's fence,
+which paths exist), a refused image doesn't use up the agent's text cap, and a session past 5
+refusals in 10 minutes has every image refused before anything goes; nothing goes. A relayed session's image path goes to the Home agent inside its report's fence,
 on an `image path:` line that can't open or close a fence (`unfence`).
 
 On iMessage only texts from the person's own number are heard (`link.ts` fromOwner): the sender's

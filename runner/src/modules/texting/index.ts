@@ -55,7 +55,7 @@ import { IMESSAGE } from "./imessage";
 import { openSpectrum, PHOTON, type OpenLink } from "./link";
 import { HELD_MS, HOME, Router, type About } from "./router";
 import { heicNote, homeLabel, homeList, PERSON_TEXT_MAX, replyContext } from "../homeLine";
-import { DOWNLOAD, imagemagick, incomingImage, readOutgoingImage, sniffImage, sweepMagickTemp, type Convert, type OutImage } from "./images";
+import { DOWNLOAD, IMAGE_REFUSED, ImageFailures, imagemagick, incomingImage, readOutgoingImage, sniffImage, sweepMagickTemp, type Convert, type OutImage } from "./images";
 import { TextingStore } from "./store";
 import { TEXTS } from "./texts";
 import { replyForPeople } from "../../../../shared/checkIn";
@@ -169,6 +169,7 @@ export class Texter {
   private heldFrom?: { id?: number; place?: string };
   /** the last send / image send timed out (it may still have gone): the agent isn't told to resend */
   private unsure = false;
+  private imageFails = new ImageFailures(() => this.now());
   private imageUnsure = false;
   /** turns HEIC into JPEG and scales big images down (tests replace it) */
   convert: Convert = imagemagick;
@@ -506,13 +507,19 @@ export class Texter {
     const target = this.target();
     if (!target) return { text: "Texting isn't set up or connected in Tether, so nothing was sent. Say it in your reply instead.", isError: true };
     if (o.image && !target.connector.images) return { text: `${target.connector.label} can't take images from Tether. Nothing was sent.`, isError: true };
-    // Taken before an image is checked: a refused image counts as a try (no free probing of paths).
+    // Taken before an image is checked, and given back if it's refused (below).
     const why = this.caps.take(from);
     if (why) return { text: why, isError: true };
     let image: OutImage | undefined;
     if (o.image) {
-      const r = readOutgoingImage(o.image);
-      if ("problem" in r) return { text: `${r.problem} Nothing was sent.`, isError: true };
+      // A refused image isn't a text: it gives the cap back, and refusals are limited on their own
+      // (past ImageFailures.MAX in its window every image is refused unread: no probing paths).
+      const r = this.imageFails.allowed(from) ? readOutgoingImage(o.image) : { problem: IMAGE_REFUSED };
+      if ("problem" in r) {
+        this.imageFails.failed(from);
+        this.caps.undo(from);
+        return { text: `${r.problem} Nothing was sent.`, isError: true };
+      }
       image = r;
     }
     this.unsure = this.imageUnsure = false;
@@ -818,7 +825,8 @@ export class Texter {
     if (d.kind === "home") {
       const to = d.chat ? { chat: d.chat } : { n: 0 };
       const chat = home!.chatOf ? await home!.chatOf(to).catch(() => undefined) : home!.homes().find((h) => (d.chat ? h.chat === d.chat : h.n === 0))?.chat;
-      claim = this.homeKey(chat);
+      // A home that's gone (chat unknown) gets a key no turn has: never h's live claim.
+      claim = chat || !d.chat ? this.homeKey(chat) : `${HOME}:gone`;
     }
     // Any input ends a channel turn's claim; this one may start a new one (below).
     this.channelTurns.delete(claim);

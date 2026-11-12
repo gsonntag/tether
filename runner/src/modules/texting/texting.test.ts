@@ -12,6 +12,7 @@ import { AGENT_TEXT_MAX, AGENT_TEXT_MS, asksQuestion, FILES_ONLY, LINK_EVERY_MS,
 import { casualText, OK, TEXTS } from "./texts";
 import { fromOwner, inboundOf, PHOTON, senderPhone, timed, TIMED_OUT, type Inbound, type OpenLink } from "./link";
 import { HELD_MS } from "./router";
+import { IMAGE_REFUSED, ImageFailures } from "./images";
 import { normalPhone, TextingStore } from "./store";
 import { HEIC_NOTE, heicNote, HomeLine, PERSON_TEXT_MAX, type Home, type HomeEnd, type TakeVia, type TextedFile } from "../homeLine";
 import type { Attachment } from "../../../../shared/attachments";
@@ -929,12 +930,23 @@ describe("round 2: homes over text, image downloads, held images", () => {
     expect(heicNote([{ path: "/x", name: "IMG_9.heic", mimeType: "image/heic", size: 1 }])).toBe(`\n\n${HEIC_NOTE}`);
   });
 
-  test("a refused image counts against the agent's text cap", async () => {
+  test("a refused image doesn't use up the text cap; past the refusal limit every image is refused unread", async () => {
     const { t, texts } = setup();
     await t.start();
-    for (let i = 0; i < AGENT_TEXT_MAX; i++) expect((await t.personText("claude:a", "x", { image: "/etc/passwd" })).isError).toBe(true);
-    expect((await t.personText("claude:a", "plain")).text).toContain(`${AGENT_TEXT_MAX} times`);
-    expect(texts).toEqual([]);
+    for (let i = 0; i < ImageFailures.MAX; i++) expect((await t.personText("claude:a", "x", { image: "/etc/passwd" })).text).toStartWith(IMAGE_REFUSED);
+    // The cap is untouched: a plain text still goes.
+    expect((await t.personText("claude:a", "plain")).isError).toBeUndefined();
+    expect(texts.length).toBe(1);
+    // Past the limit even a real image is refused (unread), with the same words.
+    const dir = mkdtempSync(join(tmpdir(), "texting-refuse-"));
+    try {
+      const png = join(dir, "ok.png");
+      writeFileSync(png, Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32, 1)]));
+      expect((await t.personText("claude:a", "y", { image: png })).text).toStartWith(IMAGE_REFUSED);
+      expect(texts.length).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
