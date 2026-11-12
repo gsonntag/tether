@@ -22,3 +22,11 @@ test("the run's line", () => {
   expect(checkedAgo(0, 30_000)).toBe("Checked just now");
   expect(checkedAgo(0, 4 * 60_000)).toBe("Checked 4 min ago");
 });
+
+test("the auto-update's lines", async () => {
+  const { autoLines } = await import("./harnessUpdates");
+  expect(autoLines({ enabled: false }, 0)).toEqual({});
+  expect(autoLines({ enabled: true, waiting: { since: 0, harnesses: ["Codex"], why: "2 sessions are busy" } }, 0).waiting).toBe("Waiting for all agents to be idle to update Codex (2 sessions are busy).");
+  const last = { at: 0, results: [{ id: "codex", name: "Codex", from: "0.164.0", to: "0.167.1", ok: true }, { id: "claude", name: "Claude Code", from: "2.1.300", ok: false, error: "It exited with code 1." }] };
+  expect(autoLines({ enabled: true, last }, 2 * 60 * 60_000).last).toBe("Last auto-update 2 h ago: Codex 0.164.0 → 0.167.1; Claude Code failed: It exited with code 1. (still 2.1.300)");
+});

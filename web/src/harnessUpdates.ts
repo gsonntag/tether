@@ -1,6 +1,6 @@
 // Settings → Updates: the words and choices the page needs, kept pure for tests.
 
-import type { HarnessReport, HarnessVersion, InstallMethod } from "../../shared/harnessUpdates";
+import type { AutoUpdateStatus, HarnessReport, HarnessVersion, InstallMethod } from "../../shared/harnessUpdates";
 
 export const METHOD_LABELS: Record<InstallMethod, string> = {
   native: "Native installer",
@@ -36,4 +36,13 @@ export function runLine(h: HarnessVersion): string | undefined {
 export function checkedAgo(at: number, now: number): string {
   const min = Math.floor((now - at) / 60_000);
   return min < 1 ? "Checked just now" : min < 60 ? `Checked ${min} min ago` : `Checked ${Math.floor(min / 60)} h ago`;
+}
+
+/** The auto-update's lines: what it waits for, and its last run ("Last auto-update 2 h ago: Codex 0.164.0 → 0.167.1"). */
+export function autoLines(a: AutoUpdateStatus, now: number): { waiting?: string; last?: string } {
+  const ago = (at: number) => checkedAgo(at, now).replace(/^Checked /, "");
+  const waiting = a.enabled && a.waiting ? `Waiting for all agents to be idle to update ${a.waiting.harnesses.join(", ")} (${a.waiting.why}).` : undefined;
+  const l = a.last;
+  const parts = l ? [...l.results.map((r) => (r.ok ? `${r.name} ${r.from ?? "?"} → ${r.to ?? "?"}` : `${r.name} failed: ${r.error ?? "unknown error"} (still ${r.from ?? "on its old version"})`)), ...(l.aborted ? [l.aborted] : [])] : [];
+  return { ...(waiting ? { waiting } : {}), ...(l ? { last: `Last auto-update ${ago(l.at)}: ${parts.join("; ") || "nothing updated"}` } : {}) };
 }

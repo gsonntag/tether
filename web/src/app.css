@@ -3083,3 +3083,5 @@
   font-size: 13px;
 }
 .t-home-tab-confirm > span { flex: 1 1 auto; min-width: 0; }
+.t-updates-auto { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--t-border); }
+.t-updates-warning { color: var(--color-text-yellow, var(--color-warning)); font-weight: 600; }

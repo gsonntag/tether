@@ -134,6 +134,7 @@ export class UpdateChecker {
   private found = new Map<string, Found>();
   private runs = new Map<string, UpdateRun>();
   private chain: Promise<void> = Promise.resolve();
+  private done = new Map<string, Promise<void>>();
 
   constructor(
     private deps: CheckerDeps = realDeps,
@@ -225,7 +226,15 @@ export class UpdateChecker {
     const run: UpdateRun = { state: "queued", startedAt: this.deps.now(), output: "", command: commandLine(plan), from: f.installed };
     this.runs.set(id, run);
     this.chain = this.chain.then(() => this.execute(f, plan, run));
+    this.done.set(id, this.chain);
     return this.withRuns(report);
+  }
+
+  /** Updates a harness and waits for it to end: the run as it ended (auto-update). */
+  async updateAndWait(id: string): Promise<UpdateRun> {
+    await this.update(id);
+    await this.done.get(id);
+    return { ...this.runs.get(id)! };
   }
 
   private async execute(f: Found, plan: UpdatePlan, run: UpdateRun): Promise<void> {

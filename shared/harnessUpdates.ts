@@ -68,6 +68,29 @@ export interface HarnessReport {
   /** when the versions were last looked up (cached a few minutes) */
   checkedAt: number;
   harnesses: HarnessVersion[];
+  /** "Update all harnesses when all agents idle" (absent from a runner from before it) */
+  auto?: AutoUpdateStatus;
+}
+
+/** One harness an auto-update updated (or tried to). */
+export interface AutoUpdateResult {
+  id: string;
+  name: string;
+  from?: string;
+  to?: string;
+  ok: boolean;
+  error?: string;
+  /** the end of what the update printed */
+  output?: string;
+}
+
+/** The runner's auto-update: off by default; when on, it updates once every session is idle. */
+export interface AutoUpdateStatus {
+  enabled: boolean;
+  /** updates found and waiting for every session to be idle */
+  waiting?: { since: number; harnesses: string[]; why: string };
+  /** the last auto-update that ran (or stopped because a session started) */
+  last?: { at: number; results: AutoUpdateResult[]; aborted?: string };
 }
 
 const NUM = /(\d+)\.(\d+)(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?/;
