@@ -1123,6 +1123,12 @@ session: the harnesses that can run it, the sources set up for that harness (`bi
 that harness's models (Azure: its deployments). With nothing chosen it's Claude Code on the source a
 new session gets, with no model (the harness's default).
 
+**Modes.** Its own chats run in the mode chosen in that form, auto unless another is picked (on a
+Claude Code or model without auto, the nearest mode below). The sessions it starts (`start_session`)
+run in auto too, never full bypass: Claude Code's `auto`, and on Codex `auto@codex-reviews` (the
+auto preset, with Codex's own reviewer answering what it would ask). A session the person starts from
+New session keeps the mode they pick.
+
 The current chat takes a change at once, keeping its conversation: a model by `setModel`; a Claude
 source from its next start (`setSessionSource`, the same session); another harness, or another Codex
 source (a thread can't cross app-servers), by a Move (§15), whose new chat becomes current and gets
