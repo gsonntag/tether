@@ -1,7 +1,7 @@
 // The Home agent: a chat on Home that starts work in a project and sees it through. It is a Claude
 // session in its own folder (RunnerOptions.homeFolder) with Tether's tools (core/adapter.ts
-// AgentSetup): list the projects, look at one, start a session there with a prompt and full
-// permissions, list every session on the machine and read how any of them is doing, and send more
+// AgentSetup): list the projects, look at one, start a session there with a prompt in auto
+// mode, list every session on the machine and read how any of them is doing, and send more
 // to any session the lists show (send_to_session). Each time a session it started, or one it
 // messaged, ends a turn, its last reply goes to the chat as a message from Tether, so the agent can
 // keep it going until the task is done. A session the person steps into (types in it, or stops
@@ -76,8 +76,13 @@ const LIST_MAX = 50;
 export const WATCH = { quietMs: 20_000, maxMs: 90_000 };
 /** How much of a watched session's last reply its line carries. */
 const WATCH_REPLY_MAX = 280;
-/** Each harness's mode that runs without asking. */
-const AUTONOMOUS: Record<HarnessId, string> = { claude: "bypassPermissions", codex: "full-access" };
+/**
+ * The mode the sessions the agent starts run in, never full bypass: Claude Code's auto mode (a
+ * classifier decides what needs asking; on a Claude Code or model without it, the nearest mode
+ * below, as modeFor maps it), and for Codex its nearest equivalent, the auto preset (edits and
+ * commands inside the folder) with Codex's own reviewer answering what it would ask.
+ */
+export const SESSION_MODE: Record<HarnessId, string> = { claude: "auto", codex: "auto@codex-reviews" };
 /*
  * The agent's own chats run in the mode the person picks (HomeAgentSettings.mode), auto unless they
  * pick another. Whatever the mode, Claude's tools that touch anything are taken away
@@ -213,7 +218,7 @@ export const INSTRUCTIONS = `You are Tether's Home agent. The person talks to yo
 
 How to work:
 - Find the project with list_projects. Use project_overview when you need to know more about one. If more than one project could be meant, ask the person which in one short question. Never guess.
-- Start the work with start_session. The prompt is everything the session knows, so write a complete brief: the goal, the context the person gave you (quote their words where it matters), constraints, and what done means (for example: tests pass, it builds, the change is committed on a branch, a PR is opened, etc. only if they asked for it). Tell it to work autonomously through to completion without stopping to ask for confirmation, to verify its work before finishing, and to end with a short report: what it delivered (the PR link, or the merged commit), and the worktree and branch it made, if any. The session runs with full permissions.
+- Start the work with start_session. The prompt is everything the session knows, so write a complete brief: the goal, the context the person gave you (quote their words where it matters), constraints, and what done means (for example: tests pass, it builds, the change is committed on a branch, a PR is opened, etc. only if they asked for it). Tell it to work autonomously through to completion without stopping to ask for confirmation, to verify its work before finishing, and to end with a short report: what it delivered (the PR link, or the merged commit), and the worktree and branch it made, if any. The session runs in auto mode: routine work goes ahead without asking, but a safety check may block risky actions (destructive or outward-facing ones such as pushing, deploying or deleting), so when the task needs those, say in the brief that the person asked for them.
 - The end goal: before starting a session that changes code, know what "done" means for it. If the person hasn't said, and it isn't clear from context or from a standing instruction (one earlier in this chat, for example "when any PR comes back, merge it and restart", or a project rule such as "my-site: only the staging branch"), first ask one short question, offering these options on one line: "${END_GOALS}". Then put their answer in the brief. One quick question, never a list of them. Research, questions and other read-only tasks don't need it. If they say it holds from now on ("always do X for jungle"), it's a standing instruction for that project for the rest of this chat: don't ask again there.
 - When the person picks adversarial review, the brief must spell out the workflow, in these words (with the chosen delivery filled in): "${ADVERSARIAL_BRIEF}"
 - Use Claude Code unless the person asks for Codex. Leave the model at its default unless they name one.
@@ -993,7 +998,7 @@ export class HomeAgent implements HomeEnd {
       {
         name: "start_session",
         description:
-          "Starts a new coding session in a project with your prompt as its first message. It runs with full permissions (no approval prompts) and works on its own; you get a report each time it finishes a turn.",
+          "Starts a new coding session in a project with your prompt as its first message. It runs in auto mode (routine work goes ahead without approval prompts; a safety check may block risky actions) and works on its own; you get a report each time it finishes a turn.",
         input: {
           project_path: z.string().describe("The project's folder (from list_projects)."),
           prompt: z.string().min(1).describe("The complete brief for the session."),
@@ -1007,7 +1012,7 @@ export class HomeAgent implements HomeEnd {
           const folder = s.folder(a.project_path);
           if (resolve(folder) === resolve(this.folder)) throw new Error("That's your own folder, not a project.");
           const source = (await s.sources(harness)).default ?? "subscription";
-          const mode = AUTONOMOUS[harness];
+          const mode = harness === "claude" ? await this.modeFor(harness, SESSION_MODE.claude) : SESSION_MODE[harness];
           const id = await s.create({ harness, projectPath: folder, source, permissionMode: mode, ...(a.model ? { model: a.model } : {}) });
           this.state.children[id] = { chat, reports: 0 };
           this.save();

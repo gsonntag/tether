@@ -13,7 +13,7 @@ import { askQuestion, FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
 import { CredentialStore } from "../../credentials";
 import type { Msg, SessionSummary } from "../../../../shared/transcript";
-import { ADVERSARIAL_BRIEF, ago, END_GOALS, HomeAgent, homeAgentModule, inProject, INSTRUCTIONS, lastPrompt, lastRawReply, lastReply, MAX_REPORTS, REPLY_MAX, settingsOf, stateOf, TEXTED, TEXTS_TITLE } from ".";
+import { ADVERSARIAL_BRIEF, ago, END_GOALS, HomeAgent, homeAgentModule, inProject, INSTRUCTIONS, lastPrompt, lastRawReply, lastReply, MAX_REPORTS, REPLY_MAX, SESSION_MODE, settingsOf, stateOf, TEXTED, TEXTS_TITLE } from ".";
 import { ANSWER_TAG } from "./checkIn";
 import { claudeMove } from "../../adapters/claude/move";
 
@@ -79,7 +79,7 @@ test("the chat is current, and only its folder gets the tools", async () => {
   expect(s.instructions).toContain("No file lists, no cause analysis, no caveats");
 });
 
-test("start_session starts a session with full permissions, and its finished turn is reported to the chat", async () => {
+test("start_session starts a session in auto mode, and its finished turn is reported to the chat", async () => {
   const { runner, op, chat, tools, driverOf, project } = await setup();
   await op("send", { sessionId: chat, text: "fix the tests in project" });
   await until(() => runner.core.sessions.get(chat)?.state.status === "idle" && !!driverOf(chat));
@@ -87,7 +87,7 @@ test("start_session starts a session with full permissions, and its finished tur
   const child = /session (\S+) in/.exec(said)![1]!;
   const s = runner.core.sessions.get(child)!;
   expect(s.summary.projectPath).toBe(project);
-  expect(s.state.permissionMode).toBe("bypassPermissions");
+  expect(s.state.permissionMode).toBe("auto");
   expect(s.summary.title).toBe("Fix tests");
   expect(driverOf(child)!.sent[0]).toBe(`${FROM_TETHER}Fix the failing tests.`);
   // The chat gets a link to it.
@@ -660,6 +660,22 @@ test("auto on a Claude Code without it is its nearest mode below, as a move maps
   const r = await op("homeAgentSet", { harness: "claude", source: "subscription" });
   expect(r.settings.mode).toBe("acceptEdits");
   expect(runner.core.sessions.get(chat)!.state.permissionMode).toBe("acceptEdits");
+});
+
+test("the chat and the sessions it starts run in auto mode; never full bypass, on Codex either", async () => {
+  const { runner, chat, tools, project } = await setup();
+  expect(runner.core.sessions.get(chat)!.state.permissionMode).toBe("auto");
+  const child = /session (\S+) in/.exec(await tools(chat).start_session!({ project_path: project, prompt: "Go." }))![1]!;
+  expect(runner.core.sessions.get(child)!.state.permissionMode).toBe("auto");
+  expect(SESSION_MODE).toEqual({ claude: "auto", codex: "auto@codex-reviews" });
+});
+
+test("a session started on a Claude Code without auto gets its nearest mode below, not bypass", async () => {
+  const { runner, fake, chat, tools, project } = await setup();
+  fake.listModels = async () => ({ models: [{ id: "default", label: "Default" }], efforts: [], permissionModes: ["default", "acceptEdits", "plan", "bypassPermissions"].map((id) => ({ id, label: id })) });
+  (fake as Adapter).move = { ...claudeMove };
+  const child = /session (\S+) in/.exec(await tools(chat).start_session!({ project_path: project, prompt: "Go." }))![1]!;
+  expect(runner.core.sessions.get(child)!.state.permissionMode).toBe("acceptEdits");
 });
 
 test("settingsOf keeps only what's valid", () => {
