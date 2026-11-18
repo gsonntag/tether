@@ -17,6 +17,7 @@ class Forking extends FakeAdapter {
   forks: ForkRequest[] = [];
   copies: string[] = [];
   copyAll = false;
+  discarded: string[] = [];
   fork: Adapter["fork"];
   constructor() {
     super();
@@ -30,6 +31,7 @@ class Forking extends FakeAdapter {
         return id;
       },
       copyInstead: () => this.copyAll,
+      discard: async (n: string) => void this.discarded.push(n),
     };
   }
 }
@@ -106,6 +108,39 @@ describe("forking a session", () => {
     await runner.look.sessions.fork("claude:s1");
     expect(a.forks[0]!.upTo).toBe("a1");
     await expect(runner.look.sessions.fork("claude:s1", { messageId: "a2" })).rejects.toThrow("hasn't finished");
+  });
+
+  test("a TUI that took the session over may be mid-turn: only finished turns are forked", async () => {
+    const { a, runner } = setup();
+    const s = await runner.core.open("claude:s1");
+    s.setState({ mode: "terminal" });
+    await runner.look.sessions.fork("claude:s1");
+    expect(a.forks[0]!.upTo).toBe("a1");
+  });
+
+  test("a store that ends mid-turn (a turn outside Tether) forks through its last finished turn", async () => {
+    const { a, runner } = setup();
+    a.addStored("s2", [...convo, user("u3", "and 11")], { title: "Busy", projectPath: "/p" });
+    await runner.look.sessions.fork("claude:s2");
+    expect(a.forks[0]!.upTo).toBe("a2");
+  });
+
+  test("the original's key preferences come along; its plan-runs-out switch doesn't", async () => {
+    const { runner } = setup();
+    const s = await runner.core.open("claude:s1");
+    s.setState({ autoKey: true, lastKey: "anthropic", fallbackKeys: ["anthropic"] });
+    const id = await runner.look.sessions.fork("claude:s1");
+    const p = runner.core.o.prefs.get(id);
+    expect(p).toMatchObject({ lastKey: "anthropic", fallbackKeys: ["anthropic"] });
+    expect(p.autoKey).toBeUndefined();
+  });
+
+  test("a fork that can't be adopted is removed, not left half-made", async () => {
+    const { a, runner } = setup();
+    const sessions = { ...runner.look.sessions, notice: async () => { throw new Error("disk full"); } };
+    const forker = new Forker({ sessions: sessions as any, log: () => {} });
+    await expect(forker.fork("claude:s1")).rejects.toThrow("disk full");
+    expect(a.discarded).toEqual(["f1"]);
   });
 
   test("a subagent isn't forked, nor a harness that can't, nor an empty session", async () => {

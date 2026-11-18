@@ -202,8 +202,10 @@ export interface AdapterFork {
    * Starts no turn and bills nothing. Throws, leaving nothing, when it can't. Returns its native id.
    */
   fork(r: ForkRequest): Promise<string>;
-  /** The harness can't fork this one itself (Codex: a thread on a key's private app-server): its history is copied (§15's import) instead. */
+  /** The harness can't fork this one itself (Codex: a thread on a key's private app-server, or with history brought in): its history is copied (§15's import) instead. */
   copyInstead?(nativeId: string): boolean;
+  /** Removes a fork the module couldn't finish making (adopting it failed). */
+  discard?(nativeId: string, projectPath: string): Promise<void>;
 }
 
 /** The billing sources a harness can run on (SPEC "Credentials and billing safety"). */

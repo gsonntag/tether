@@ -6,7 +6,7 @@ import type { EventBus } from "../core/bus";
 import type { CoreEvents } from "../core/events";
 import type { OpRegistry } from "../core/ops";
 import type { Adapter, StartOpts } from "../core/adapter";
-import type { BillingSource, SourceChoices } from "../../../shared/credentials";
+import type { BillingSource, CredentialSource, SourceChoices } from "../../../shared/credentials";
 import type { HomeChatUpdate } from "../../../shared/protocol";
 import type { ForkedFrom } from "../../../shared/fork";
 import type { Attachment } from "../../../shared/attachments";
@@ -40,6 +40,8 @@ export interface SessionLook {
 export interface AdoptExtra {
   stored?: boolean;
   forkedFrom?: ForkedFrom;
+  /** a fork's: the original's key preferences (the switch itself is ticked per session, so it isn't carried) */
+  keys?: { lastKey?: BillingSource; fallbackKeys?: CredentialSource[] };
 }
 
 /** How to fork: the reply its conversation ends at (shared/fork.ts forkPoints); absent, all of it (the last finished turn while one runs). */
