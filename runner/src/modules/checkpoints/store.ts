@@ -14,6 +14,10 @@ export interface Checkpoint extends CheckpointInfo {
   after?: string;
   /** untracked paths the before snapshot left out (too big, unreadable): a restore to it never removes them */
   left?: string[];
+  /** how many it left out (`left` keeps the first LEFT_KEPT): past those, a restore to it removes no untracked file */
+  leftCount?: number;
+  /** a restore's undo: paths kept as raw bytes (no filters or line-ending conversion), written back the same way */
+  raw?: string[];
   /** the before snapshot took no untracked file: a restore to it removes none */
   noUntracked?: true;
   /** when the before snapshot started (a turn: `at` is when the turn did) */

@@ -11,6 +11,8 @@ export interface GitOut {
   err: string;
   /** stopped at maxBytes: `out` is what came before */
   cut: boolean;
+  /** stdout as it came (a blob's bytes) */
+  bytes: Buffer;
 }
 
 export interface GitOpts {
@@ -91,7 +93,8 @@ export async function git(cwd: string, args: string[], opts: GitOpts = {}): Prom
   const code = await p.exited;
   clearTimeout(timer);
   if (timedOut) throw new GitError("git took too long.", code, err);
-  const out = Buffer.concat(chunks).toString("utf8");
+  const bytes = Buffer.concat(chunks);
+  const out = bytes.toString("utf8");
   if (!cut && !ok.includes(code)) throw new GitError(err.trim().split("\n")[0] || `git exited with ${code}.`, code, err);
-  return { code, out, err, cut };
+  return { code, out, err, cut, bytes };
 }

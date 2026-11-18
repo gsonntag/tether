@@ -53,7 +53,7 @@ export interface CheckpointsOpts {
   now?: () => number;
 }
 
-const info = ({ before: _b, after: _a, left: _l, noUntracked: _n, snapAt: _s, ...rest }: Checkpoint): CheckpointInfo => rest;
+const info = ({ before: _b, after: _a, left: _l, leftCount: _c, noUntracked: _n, snapAt: _s, raw: _r, ...rest }: Checkpoint): CheckpointInfo => rest;
 const real = (p: string) => {
   try {
     return realpathSync(p);
@@ -62,16 +62,30 @@ const real = (p: string) => {
   }
 };
 const inside = (root: string, p: string) => p === root || p.startsWith(root.endsWith("/") ? root : `${root}/`);
-const snapOf = (c: Checkpoint, tree: string): Snap => ({ tree, ...(c.left ? { left: c.left } : {}), ...(c.noUntracked ? { noUntracked: true } : {}) });
+const snapOf = (c: Checkpoint, tree: string): Snap => ({ tree, ...(c.left ? { left: c.left, leftCount: c.leftCount } : {}), ...(c.noUntracked ? { noUntracked: true } : {}), ...(c.raw ? { raw: c.raw } : {}) });
 
-/** Why a restore can't run now, if it can't. */
-export function blockedWhy(look: SessionLook, others: OtherSession[] = []): string | undefined {
-  if (look.status === "running") return "The session is working. Wait for its turn to finish, or stop it.";
-  if (look.status === "waiting") return "The session is waiting on you. Answer it or stop it first.";
-  if (look.busy || look.background) return "The session is still running something (a command, a subagent or a background task).";
+/** What keeps a session from being restored under (or beside), if anything: why, in a few words. */
+function busyWhy(look: SessionLook): string | undefined {
+  if (look.status === "running") return "working";
+  if (look.status === "waiting") return "waiting on you";
+  if (look.busy || look.background) return "still running something (a command, a subagent or a background task)";
+  if (look.state.restartWait) return "waiting for its harness from before a restart";
+  if (look.state.retry) return "waiting to retry after a rate limit";
+  if (look.state.mode === "terminal") return "driven from its terminal";
+  return undefined;
+}
+
+/** Why a restore can't run now, if it can't: this session, or another live one in the repo. */
+export function blockedWhy(look: SessionLook, others: { s: OtherSession; look?: SessionLook }[] = []): string | undefined {
+  const why = busyWhy(look);
+  if (why === "working") return "The session is working. Wait for its turn to finish, or stop it.";
+  if (why === "waiting on you") return "The session is waiting on you. Answer it or stop it first.";
+  if (why) return `The session is ${why}. Wait for that first.`;
   if (look.state.queue?.length) return "The session has messages waiting to go. Send or cancel them first.";
-  const other = others.find((o) => o.status !== "idle");
-  if (other) return `“${other.title || "Another session"}” in this repository is ${other.status === "waiting" ? "waiting on you" : "working"}. Wait for it first.`;
+  for (const o of others) {
+    const w = o.look ? busyWhy(o.look) : o.s.status === "running" ? "working" : o.s.status === "waiting" ? "waiting on you" : undefined;
+    if (w) return `“${o.s.title || "Another session"}” in this repository is ${w}. Wait for it first.`;
+  }
   return undefined;
 }
 
@@ -215,7 +229,7 @@ export class Checkpoints {
         before,
         open: true,
         ...(late ? { late: true as const } : {}),
-        ...(snap.left ? { left: snap.left } : {}),
+        ...(snap.left ? { left: snap.left, leftCount: snap.leftCount } : {}),
         ...(snap.noUntracked ? { noUntracked: true as const } : {}),
         ...(t.prompt ? { prompt: t.prompt } : {}),
         ...(t.msgId ? { msgId: t.msgId } : {}),
@@ -283,7 +297,7 @@ export class Checkpoints {
     const sc = this.store.get(sessionId);
     const items = sc?.root === root ? sc.items : [];
     const others = this.others(sessionId, root);
-    const blocked = blockedWhy(look, others);
+    const blocked = blockedWhy(look, others.map((s) => ({ s, look: this.o.look(s.id) })));
     return { state: "ok", root, checkpoints: items.map(info).reverse(), others, ...(blocked ? { blocked } : {}) };
   }
 
@@ -318,19 +332,24 @@ export class Checkpoints {
     const look = await this.o.open(sessionId);
     const root = await repoRoot(look.summary.projectPath);
     if (!root) throw new Error("This folder isn't in a git repository.");
-    const blocked = () => blockedWhy(this.o.look(sessionId) ?? look, this.others(sessionId, root));
+    const blocked = () => blockedWhy(this.o.look(sessionId) ?? look, this.others(sessionId, root).map((s) => ({ s, look: this.o.look(s.id) })));
     const why = blocked();
     if (why) throw new Error(why);
     return this.serial(`s:${sessionId}`, () =>
       this.exclusive(root, async () => {
         const again = blocked();
         if (again) throw new Error(again);
-        // Checked and held with no await between: from here what's sent waits in the queue.
-        const release = this.o.hold?.(sessionId, "Restoring files…");
+        // Checked and held with no await between: from here what's sent to this session, or to
+        // another live one in the repo, waits in its queue (and `!` commands and the terminal refuse).
+        const releases: (() => void)[] = [];
         try {
+          for (const sid of [sessionId, ...this.others(sessionId, root).map((o) => o.id)]) {
+            const r = this.o.hold?.(sid, "Restoring files…");
+            if (r) releases.push(r);
+          }
           return await this.restoring(sessionId, root, id, blocked);
         } finally {
-          release?.();
+          releases.forEach((r) => r());
         }
       }),
     );
@@ -353,8 +372,9 @@ export class Checkpoints {
         open: true,
         to: target.id,
         toN: target.n,
-        ...(u.left ? { left: u.left } : {}),
+        ...(u.left ? { left: u.left, leftCount: u.leftCount } : {}),
         ...(u.noUntracked ? { noUntracked: true as const } : {}),
+        ...(u.raw ? { raw: u.raw } : {}),
       };
       sc.items.push(rec);
       sc.next++;

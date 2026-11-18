@@ -24,7 +24,7 @@
 // smudge ones, exactly as `git add` and `git checkout` would. The commands come from config, never
 // from the repo's files; the time limit bounds them. Hooks and fsmonitor never run (run.ts).
 
-import { access, constants, copyFile, lstat, readdir, readlink, rm, rmdir, stat, unlink, utimes } from "node:fs/promises";
+import { access, constants, copyFile, lstat, mkdir, readdir, readlink, rm, rmdir, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { dirname, join, sep } from "node:path";
 import { CHECKPOINT_FILE_BYTES_MAX, type Skipped } from "../../../../shared/checkpoints";
@@ -32,10 +32,12 @@ import { git, GitError } from "../git/run";
 
 /** Snapshot steps get longer than reads: `add` hashes every changed file. */
 export const SNAP_TIMEOUT_MS = 60_000;
-/** Forcing what a restore touches into its undo: no size cap, so a longer limit. */
-const FORCE_TIMEOUT_MS = 10 * 60_000;
-/** Paths a snapshot lists as left out, at most; past it, it counts as having taken no untracked file. */
+/** Each step of a restore (forcing paths into its undo, writing files): it holds sessions meanwhile. */
+const FORCE_TIMEOUT_MS = 60_000;
+/** Untracked paths a snapshot may leave out; past it, it takes no untracked file. */
 export const LEFT_MAX = 2000;
+/** Of those, the ones a checkpoint keeps (with their count): past them, a restore to it removes no untracked file. */
+export const LEFT_KEPT = 200;
 /** `ls-files --others` output read at most; past it untracked files aren't taken. */
 const OTHERS_BYTES_MAX = 16 * 1024 * 1024;
 
@@ -56,8 +58,12 @@ const ZERO = "0000000000000000000000000000000000000000";
 /** A snapshot: its tree, and what it didn't take. */
 export interface Snap {
   tree: string;
-  /** untracked paths left out (too big, unreadable) */
+  /** untracked paths left out (too big, unreadable), the first LEFT_KEPT */
   left?: string[];
+  /** how many were left out */
+  leftCount?: number;
+  /** paths held as raw bytes, no filters or line-ending conversion (a restore's undo): written back as such */
+  raw?: string[];
   /** no untracked file was taken (too many to list, or `left` past LEFT_MAX) */
   noUntracked?: true;
 }
@@ -114,7 +120,7 @@ async function snapInto(root: string, env: Record<string, string>, path: string)
     return { noUntracked: true };
   }
   await git(root, [...SAFE, "add", "-A", "--ignore-errors", "--", ".", ...left.map((p) => `:(exclude,literal)${p}`)], { ...o, ok: [0, 1] });
-  return left.length ? { left } : {};
+  return left.length ? { left: left.slice(0, LEFT_KEPT), leftCount: left.length } : {};
 }
 
 /** The working tree of the repo at `root` as a tree. Changes nothing but the object store. */
@@ -215,6 +221,26 @@ async function removeFile(root: string, p: string): Promise<boolean> {
   return true;
 }
 
+/** Writes paths of `tree` as their raw bytes (no smudge filter, no line-ending conversion). */
+async function writeRaw(root: string, tree: string, paths: string[]) {
+  const ls = (await git(root, ["ls-tree", "-r", "-z", tree, "--", ...paths.map((p) => `:(literal)${p}`)], { timeoutMs: FORCE_TIMEOUT_MS })).out.split("\0");
+  for (const l of ls) {
+    if (!l) continue;
+    const [meta, path] = [l.slice(0, l.indexOf("\t")), l.slice(l.indexOf("\t") + 1)];
+    const [mode, , sha] = meta.split(" ");
+    const abs = join(root, path);
+    const blob = (await git(root, ["cat-file", "blob", sha!], { timeoutMs: FORCE_TIMEOUT_MS, maxBytes: 4 * 1024 * 1024 * 1024 })).bytes;
+    // Never through what's there now (a symlink): it goes, then the file is made afresh.
+    await unlink(abs).catch(() => {});
+    await mkdir(dirname(abs), { recursive: true });
+    if (mode === "120000") await symlink(blob.toString("utf8"), abs);
+    else {
+      // As git checks files out: 666 or 777, less the umask.
+      await writeFile(abs, blob, { mode: mode === "100755" ? 0o777 : 0o666 });
+    }
+  }
+}
+
 export interface Restored {
   /** the undo: the files as they were, every path the restore touched exactly as it was */
   undo: Snap;
@@ -267,7 +293,8 @@ export async function restoreTo(root: string, target: Snap, tmpDir: string, undo
       else files.push({ path: c.path, mode: fileMode ? (st.mode & 0o111 ? "100755" : "100644") : modes.get(c.path) === "100755" ? "100755" : "100644" });
     }
     if (files.length) {
-      const shas = (await git(root, ["hash-object", "-w", "--stdin-paths"], { ...o, input: files.map((f) => f.path).join("\n") + "\n" })).out.trim().split("\n");
+      // Raw bytes: what's on disk, whatever filters or autocrlf would make of it (written back raw).
+      const shas = (await git(root, ["hash-object", "-w", "--no-filters", "--stdin-paths"], { ...o, input: files.map((f) => f.path).join("\n") + "\n" })).out.trim().split("\n");
       if (shas.length !== files.length) throw new GitError("Couldn't read the files to keep for the undo.", 1, "");
       files.forEach((f, i) => lines.push(`${f.mode} ${shas[i]}\t${f.path}`));
     }
@@ -275,20 +302,24 @@ export async function restoreTo(root: string, target: Snap, tmpDir: string, undo
     const tree = (await git(root, [...SAFE, "write-tree"], { env })).out.trim();
     const forced = new Set(touched.map((c) => c.path));
     const left = rest.left?.filter((p) => !forced.has(p) || skipped.has(p));
-    return { tree, ...(left?.length ? { left } : {}), ...(rest.noUntracked ? { noUntracked: true as const } : {}) };
+    const leftCount = (rest.leftCount ?? 0) - ((rest.left?.length ?? 0) - (left?.length ?? 0));
+    const raw = [...files.map((f) => f.path), ...lines.filter((l) => l.startsWith("120000 ")).map((l) => l.slice(l.indexOf("\t") + 1))];
+    return { tree, ...(left?.length || leftCount > 0 ? { left: left ?? [], leftCount } : {}), ...(rest.noUntracked ? { noUntracked: true as const } : {}), ...(raw.length ? { raw } : {}) };
   });
   await undo(u);
 
   const changes = (await treeDiff(root, u.tree, target.tree)).filter((c) => !skipped.has(c.path));
   for (const c of changes) if (c.gitlink) skip(c.path, "nested");
   const targetLeft = new Set(target.left);
-  const tracked = target.noUntracked ? new Set((await git(root, ["ls-files", "-z"])).out.split("\0")) : undefined;
+  const partial = target.noUntracked || (target.leftCount ?? 0) > (target.left?.length ?? 0);
+  const tracked = partial ? new Set((await git(root, ["ls-files", "-z"])).out.split("\0")) : undefined;
   let gone = changes.filter((c) => c.gone && !c.gitlink).map((c) => c.path);
   gone = gone.filter((p) => {
     if (targetLeft.has(p) || (tracked && !tracked.has(p))) return void skip(p, "notTaken");
     return true;
   });
   const writes = changes.filter((c) => !c.gone && !c.gitlink).map((c) => c.path);
+  const rawSet = new Set(target.raw);
   return withIndex(tmpDir, async (env) => {
     const o = { env, timeoutMs: FORCE_TIMEOUT_MS };
     await git(root, [...SAFE, "read-tree", target.tree], o);
@@ -305,7 +336,10 @@ export async function restoreTo(root: string, target: Snap, tmpDir: string, undo
         if (st?.isDirectory()) skip(p, "folder");
         else ok.push(p);
       }
-      if (ok.length) await git(root, [...SAFE, "checkout-index", "-f", "-z", "--stdin"], { ...o, input: ok.join("\0") + "\0" });
+      const raw = ok.filter((p) => rawSet.has(p));
+      const filtered = ok.filter((p) => !rawSet.has(p));
+      if (filtered.length) await git(root, [...SAFE, "checkout-index", "-f", "-z", "--stdin"], { ...o, input: filtered.join("\0") + "\0" });
+      if (raw.length) await writeRaw(root, target.tree, raw);
       return ok.length;
     };
     const isIgnoreFile = (p: string) => p === ".gitignore" || p.endsWith("/.gitignore");

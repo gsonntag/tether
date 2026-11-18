@@ -47,7 +47,7 @@ function setup(folder: string, now = () => Date.now()) {
   const others: SessionLook["summary"][] = [];
   const logs: string[] = [];
   const holds: string[] = [];
-  const c = new Checkpoints({ dir: temp(), look: () => look, open: async () => look, list: () => [look.summary, ...others], log: (l) => logs.push(l), now, hold: (id, why) => (holds.push(`hold ${id} ${why}`), () => holds.push(`release ${id}`)) });
+  const c = new Checkpoints({ dir: temp(), look: (id) => (id === "claude:s1" ? look : undefined), open: async () => look, list: () => [look.summary, ...others], log: (l) => logs.push(l), now, hold: (id, why) => (holds.push(`hold ${id} ${why}`), () => holds.push(`release ${id}`)) });
   const turn = async (work?: () => void, prompt = "do it") => {
     look.status = "running";
     c.turnStarted("claude:s1");
@@ -447,7 +447,8 @@ test("restore holds the session throughout, and is refused when it works in the 
   await expect(c.restore("claude:s1", "1")).rejects.toThrow(/waiting on you/);
   others[0]!.status = "idle";
   await c.restore("claude:s1", "1");
-  expect(holds).toEqual(["hold claude:s1 Restoring files…", "release claude:s1"]);
+  // The other live session in the repo is held too while files change.
+  expect(holds).toEqual(["hold claude:s1 Restoring files…", "hold codex:o Restoring files…", "release claude:s1", "release codex:o"]);
   expect(read(d, "a.txt")).toBe("one\ntwo\n");
 });
 
@@ -548,4 +549,77 @@ test("session ids map to ref names one to one", () => {
   }
   expect(refSafe("a".repeat(300)).length).toBeLessThanOrEqual(120);
   expect(refSafe("a".repeat(300))).not.toBe(refSafe("a".repeat(301)));
+});
+
+test("refused while the session waits on a restart, a rate-limit retry, or its terminal", async () => {
+  const d = repo();
+  const { c, look, turn } = setup(d);
+  await turn(() => writeFileSync(join(d, "a.txt"), "x\n"));
+  look.state.restartWait = true;
+  await expect(c.restore("claude:s1", "1")).rejects.toThrow(/restart/);
+  look.state.restartWait = undefined;
+  look.state.retry = { phase: "waiting" } as never;
+  await expect(c.restore("claude:s1", "1")).rejects.toThrow(/rate limit/);
+  look.state.retry = undefined;
+  look.state.mode = "terminal";
+  await expect(c.restore("claude:s1", "1")).rejects.toThrow(/terminal/);
+  expect(read(d, "a.txt")).toBe("x\n");
+});
+
+test("refused while another live session in the repo is busy (a command, a subagent, a retry), though idle", async () => {
+  const d = repo();
+  const other: SessionLook = { summary: { id: "codex:o", projectPath: d, title: "Other", mode: "live", status: "idle" } as never, status: "idle", requests: [], state: { queue: [] } as never, busy: true, background: false };
+  const look: SessionLook = { summary: { id: "claude:s1", projectPath: d, title: "S1", mode: "live", status: "idle" } as never, status: "idle", requests: [], state: { queue: [] } as never, busy: false, background: false };
+  const c = new Checkpoints({ dir: temp(), look: (id) => (id === "codex:o" ? other : look), open: async () => look, list: () => [look.summary, other.summary], log: () => {} });
+  look.status = "running";
+  c.turnStarted("claude:s1");
+  await c.settled("claude:s1");
+  look.status = "idle";
+  c.turnEnded("claude:s1");
+  await expect(c.restore("claude:s1", "1")).rejects.toThrow(/“Other” in this repository is still running something/);
+  other.busy = false;
+  other.state.retry = { phase: "waiting" } as never;
+  await expect(c.restore("claude:s1", "1")).rejects.toThrow(/“Other”.*rate limit/);
+});
+
+test("undo round trip under core.autocrlf=input: CRLF files come back byte for byte", async () => {
+  const d = repo();
+  sh(d, "config", "core.autocrlf", "input");
+  const { c, turn } = setup(d);
+  await turn(() => {
+    writeFileSync(join(d, "a.txt"), "x\r\ny\r\n");
+    writeFileSync(join(d, "crlf-new.txt"), "n\r\n");
+  });
+  const { between } = await roundTrip(d, c, "1");
+  expect(between["crlf-new.txt"]).toBeUndefined();
+  expect(read(d, "a.txt")).toBe("x\r\ny\r\n");
+  expect(read(d, "crlf-new.txt")).toBe("n\r\n");
+});
+
+test("a checkpoint keeps at most 200 left-out paths, with their count; past them a restore removes no untracked file", async () => {
+  const d = repo();
+  const { c, turn } = setup(d);
+  await turn(() => writeFileSync(join(d, "a.txt"), "changed\n"));
+  const rec = c.store.get("claude:s1")!.items[0]!;
+  rec.left = Array.from({ length: 200 }, (_, i) => `big${i}.bin`);
+  rec.leftCount = 250;
+  writeFileSync(join(d, "made-later.txt"), "m\n");
+  const r = await c.restore("claude:s1", "1");
+  expect(read(d, "made-later.txt")).toBe("m\n");
+  expect(r.skipped).toContainEqual({ path: "made-later.txt", why: "notTaken" });
+  expect(read(d, "a.txt")).toBe("one\ntwo\n");
+});
+
+test("a snapshot that leaves out many paths keeps the first 200 and the count", async () => {
+  const d = repo();
+  for (let i = 0; i < 205; i++) {
+    writeFileSync(join(d, `locked${i}.txt`), "x\n");
+    chmodSync(join(d, `locked${i}.txt`), 0);
+  }
+  const { c, turn } = setup(d);
+  await turn();
+  const rec = c.store.get("claude:s1")!.items[0]!;
+  expect(rec.left!.length).toBe(200);
+  expect(rec.leftCount).toBe(205);
+  for (let i = 0; i < 205; i++) chmodSync(join(d, `locked${i}.txt`), 0o644);
 });
