@@ -22,6 +22,7 @@ import { useChildren } from "./useChildren";
 import { useFitViewport } from "./useFitViewport";
 import { useTermCover } from "./useTermCover";
 import { PanelHandle } from "./WidthHandle";
+import { ChangesPane } from "./ChangesPane";
 import { billingForDisplay } from "../sourceMenu";
 import { RateLimitRetry } from "./RateLimitRetry";
 
@@ -60,6 +61,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     terminalNext = undefined;
     return { tab: "tui", wantTui: true, nonce: 1 };
   });
+  /** The Changes pane (SPEC §10 Changes): in the terminal panel's place, one or the other. */
+  const [changes, setChanges] = useState(false);
   // The agent's own interface (Claude Code, Codex) takes the whole screen; shells sit beside the chat.
   const cover = noRoom || panel?.tab === "tui";
   /** the question before handing a busy session to the terminal (SPEC §8) */
@@ -96,7 +99,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   // The TUI went away (Back to Tether, or it exited), whichever tab was in front: opening it again
   // is a new handoff, asked first when busy, never a reattach to what was (SPEC §8).
   // A panel over the chat covers the session: it doesn't count as looking at it (presence.ts).
-  const covering = !!panel && !panel.hidden && cover;
+  const covering = ((!!panel && !panel.hidden) || changes) && cover;
   useEffect(() => {
     setSessionCovered(covering);
     return () => setSessionCovered(false);
@@ -173,11 +176,13 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
       setPanel((p) => (p ? { ...p, tab: "tui", hidden: false } : p));
       return setAsk(q);
     }
+    setChanges(false);
     setPanel((p) => ({ tab: "tui", wantTui: true, stop, nonce: (p?.nonce ?? 0) + 1 }));
   };
   /** A project shell beside the chat (SPEC §8): the session stays live in Tether, nothing is handed over. */
   const openShell = () => {
     setAsk(null);
+    setChanges(false);
     setPanel((p) => ({ tab: SHELL_TAB, wantTui: !!p?.wantTui, nonce: (p?.nonce ?? 0) + 1 }));
   };
   const panelShown = !!panel && !panel.hidden;
@@ -198,6 +203,24 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     >
       <span aria-hidden>❯_</span>
       <span>Terminal</span>
+    </button>
+  );
+  // Changes: the folder's git diff beside the chat, in the terminal panel's place.
+  const changesChip = !summary.parentSessionId && (
+    <button
+      type="button"
+      className="t-chip t-chip-term t-chip-changes"
+      aria-label="Changes"
+      aria-pressed={changes}
+      title={changes ? undefined : "This folder's git changes, beside the chat"}
+      onClick={() => {
+        setAsk(null);
+        if (!changes) setPanel(null);
+        setChanges(!changes);
+      }}
+    >
+      <span aria-hidden>±</span>
+      <span>Changes</span>
     </button>
   );
   const isChild = !!summary.parentSessionId;
@@ -255,9 +278,9 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
 
   return (
     <SessionCtx.Provider value={ctx}>
-      <div className={`t-session-split${panel ? " with-terminal" : ""}${cover ? " t-term-cover" : ""}`} ref={rootRef}>
+      <div className={`t-session-split${panel || changes ? " with-terminal" : ""}${cover ? " t-term-cover" : ""}`} ref={rootRef}>
       <div className="t-session">
-        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move} />}{terminalChip}</>} capabilities={view.capabilities} />
+        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move} />}{changesChip}{terminalChip}</>} capabilities={view.capabilities} />
         {ask && !panelShown && (
           <div className="t-term-ask" role="group" aria-label="Open the terminal">
             <span>{ask.text}</span>
@@ -351,6 +374,21 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
         )}
       </div>
       {panel && !cover && <PanelHandle />}
+      {changes && !panel && !cover && <PanelHandle label="Resize changes" />}
+      {changes && !panel && (
+        <ChangesPane
+          runnerId={runnerId}
+          sessionId={sessionId}
+          status={state.status}
+          cover={cover}
+          onClose={() => setChanges(false)}
+          onSent={() => {
+            // On a phone the composer is under the pane: back to the chat with the message in the box.
+            if (cover) setChanges(false);
+            composer.current?.focus();
+          }}
+        />
+      )}
       {panel && (
         <TerminalPanel
           runnerId={runnerId}
