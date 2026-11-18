@@ -19,10 +19,10 @@ export const forkTitle = (title: string) => `${title.trim() || "Untitled"} (fork
 export const forkedNotice = (title: string) => `Forked from “${title.trim() || "Untitled"}”.`;
 
 /**
- * Where a fork can end: the assistant message that ends a finished turn. That is a reply with no
- * error, not streaming, ending on text (a reply ending on a tool call is mid-turn: the result comes
- * after it), followed by your next message, or by nothing when no turn is running. While a turn runs
- * (`running`), nothing after your latest message counts: that turn isn't finished.
+ * Where a fork can end: the assistant message that ends a turn (finished, or stopped: it ended).
+ * That is a reply with no error, not streaming, ending on text (a reply ending on a tool call is
+ * mid-turn: the result comes after it), followed by your next message, or by nothing when no turn
+ * is running. While a turn runs (`running`), nothing after your latest message counts.
  */
 export function forkPoints(msgs: Msg[], running: boolean): Set<string> {
   const out = new Set<string>();

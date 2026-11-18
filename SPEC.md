@@ -228,7 +228,7 @@ is dropped, so `plan` is always the plan's.
 `queue`, `editQueued`, `cancelQueued`, `interrupt`, `answerRequest`, `setModel`, `setEffort`,
 `setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `setSessionArchived`, `openTerminal`, `closeTerminal`,
 `terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands). The move module
-adds `moveOptions` and `moveSession` (§15).
+adds `moveOptions` and `moveSession` (§15), the fork module `forkSession` (§16).
 
 ## 6. Adapters
 
@@ -904,7 +904,7 @@ next (`LiveState.nextBilling`). Picking the session's own again calls it off. A 
 refuses it: the items are disabled with the reason as their description, and the op refuses too. When
 one of the harness's keys isn't set, the menu has **Add API key…**, which opens Credentials. A session
 on a key that was unset still shows that source, marked. A subagent's chip and a chip on a runner with
-no `billingSources` answer are plain text. There is one way in: the ⋯ menu has only Change session harness.
+no `billingSources` answer are plain text. There is one way in: of the ⋯ menu's items, only Change session harness touches the source.
 
 The menu opens with the **plan's usage**, whether the session is on the plan or a key, so you see it
 before switching: under the plan's name, each window the harness reported, "Week 64% · resets Nov 5,
@@ -1658,3 +1658,41 @@ it works in plan mode too.
 (`SessionActions`, `core/runner.ts`), which is thin wrappers over what's already there, and
 `SessionLook` says a bit more. Beyond those: `Adapter.move`, `capabilities.move`,
 `OverlayNotice.first`, and `core/moved.ts` for the folder's path. No session lifecycle code changed.
+
+## 16. Forking a session
+
+**Fork** in the session's ⋯ menu makes a new session with the same conversation, in the same folder,
+on the same harness and source, with the same model, effort and mode. **Fork from here** under a
+reply makes one whose conversation ends at that reply. The original is never changed, and the fork
+opens. It is a module (`runner/src/modules/fork/`, op `forkSession { sessionId, messageId? }`); other
+modules fork through `SessionActions.fork` (side chats, §7 of the T3 notes, build on it).
+
+**Fork points** (`shared/fork.ts`, the UI and runner alike): the assistant reply that ends a turn,
+that is a reply with no error, ending on text (one ending on a tool call is mid-turn), followed by
+your next message or by nothing. A stopped turn's reply counts: its turn ended. User messages,
+notices and errors aren't fork points. Desktop shows Fork from here on hover; touch, always.
+
+**While a turn runs** the running turn is never forked: its replies aren't fork points, and Fork
+takes the conversation through the last finished turn ("No turn has finished yet" when none has).
+A turn another Codex client runs counts as running.
+
+**Not forked:** a subagent (fork its main session; the fork's tool cards don't link the original's
+subagents); a session whose source change isn't confirmed yet (`nextBilling`: send first); a harness
+without `capabilities.fork`.
+
+| Harness | How |
+|---|---|
+| Claude Code | The Agent SDK's `forkSession` (a file operation: fresh entry ids, `forkedFrom` on each entry), `upToMessageId` the last entry of the reply's API message. Replies keep their message ids, so the fork must read back ending on that id (a whole fork: as many messages), else it's deleted |
+| Codex | `thread/fork` with `lastTurnId`, the reply's turn (inclusive), so nothing is rolled back: later turns are never copied. A reply followed by a message steered into its turn isn't a fork point here. Checked on 0.164: no turn starts, the rollout is written at once, turn ids are kept. The fork is read back (its last turn) and named, else archived |
+| Codex on a key | Its thread lives on a private app-server that serves one thread, so it's copied instead (`Adapter.fork.copyInstead`): §15's native import of the history through that reply, into a new thread on the same source. Tool calls travel as text and Tether's opening reads as a move's |
+
+**Billing.** A fork starts nothing and bills nothing: both harnesses fork in their stores. It's
+saved as the original's source (`SessionPrefs.source`) and settings, stored, and its first send
+starts it as any stored session, confirming the source first. Until then its chip shows what the
+original's latest start confirmed (copied in `claude-windows.json`, `codex-threads.json`). A key's
+copy starts that key's private app-server to make its thread, but no turn.
+
+**Links.** `SessionSummary.forkedFrom { sessionId, messageId?, title }` (`SessionPrefs.forkedFrom`):
+the header says "Forked from “<title>”", by the original's title now, and opens it. A notice under
+what the fork took says the same, with Open it. The original gets nothing.
+
