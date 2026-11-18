@@ -24,6 +24,7 @@
 // subscribe again for a fresh snapshot.
 
 import type { HarnessCommand } from "./commands";
+import type { DirList, FileRead, FindResult } from "./files";
 import type { DiffScope, GitDiff } from "./gitDiff";
 import type { CheckpointList, RestoreResult } from "./checkpoints";
 import type { GitActionResult, GitDraft, GitStatus, PrLookup } from "./gitActions";
@@ -80,6 +81,8 @@ export interface RunnerInfo {
   git?: boolean;
   /** it has git actions (gitStatus, Commit, Push, Open PR, the PR chip). Absent: an older runner */
   gitActions?: boolean;
+  /** it has the files module (listDir, readFile, findFiles: the Changes pane's Files tab). Absent: an older runner */
+  files?: boolean;
 }
 
 /** Runner-wide settings (the Settings page), kept in runner.json. */
@@ -224,6 +227,12 @@ export interface Ops {
   gitPush: { args: { sessionId: string; onDefault?: boolean }; result: GitActionResult };
   /** pushes if it needs to, then `gh pr create` against the default branch; the PR is recorded as the session's */
   gitOpenPr: { args: { sessionId: string; title: string; body: string }; result: GitActionResult };
+  /** a folder in the session's folder (`path` relative; "" is the folder), for the Files tab (SPEC §10 Files). Without `hidden`, no dot files or ignored ones. Read-only, only inside */
+  listDir: { args: { sessionId: string; path: string; hidden?: boolean }; result: DirList };
+  /** a file in the session's folder: text, an image (base64) or "binary"; over 1 MB `tooBig` unless `head` (a text file's first 1 MB). Read-only, only inside */
+  readFile: { args: { sessionId: string; path: string; maxBytes?: number; head?: boolean }; result: FileRead };
+  /** files in the session's folder whose path matches `query` (the Files tab's filter), best first. gitignored ones never */
+  findFiles: { args: { sessionId: string; query: string; hidden?: boolean }; result: FindResult };
   /** moves a session to another harness: a new session there; the old one stays as it is */
   moveSession: { args: { sessionId: string; harness: string; model?: string; effort?: string; source?: BillingSource }; result: { sessionId: string } };
 
