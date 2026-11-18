@@ -167,12 +167,13 @@ export class LiveControl {
    * which listeners (peers, Home agent, texting) skipped: its real end is now, as a stop. A Tether
    * send that replaces the chain neither holds the queue nor ends the turn: its own turn's end does.
    */
-  private cancelRetrySession(s: Session, o: { tether?: boolean } = {}) {
+  private cancelRetrySession(s: Session, o: { tether?: boolean; due?: "stopped" } = {}) {
     const waiting = (s.retry ?? this.core.o.prefs.get(s.id).retry)?.phase === "waiting";
     s.retrySuppressed = true;
     this.retries.clear(s);
     if (o.tether) return;
-    this.queue.hold(s, "stopped");
+    // Scheduled messages due behind the retry wait for you: you stopped it, or it was cancelled.
+    this.queue.hold(s, "stopped", { due: o.due ?? "retry" });
     if (waiting) this.core.o.bus.emit("turnEnded", { sessionId: s.id, stopped: true });
   }
 
@@ -491,6 +492,8 @@ export class LiveControl {
     this.core.touch(n, { title: title ?? s.summary.title });
     this.core.book.upsert([n.summary]);
     this.carryCost(s, n);
+    // What waits (scheduled messages too) goes on in the new thread, where the views go.
+    await this.queue.handOver(s.id, n.id).catch((e) => this.core.log(`${s.id}: its queue stayed: ${e?.message ?? e}`));
     await this.close(s, true);
     s.setState({ continuedIn: n.id, carried: true, nextBilling: undefined, sourceSwitchFailed: undefined });
   }
@@ -685,7 +688,7 @@ export class LiveControl {
 
   async interrupt(id: string) {
     const s = await this.core.open(id);
-    if (s.retry) this.cancelRetrySession(s);
+    if (s.retry) this.cancelRetrySession(s, { due: "stopped" });
     const parentId = s.summary.parentSessionId;
     if (parentId) {
       // A subagent: stop just it (SPEC §6a). Its main session's process runs it, however deep it is nested.
@@ -854,7 +857,7 @@ export class LiveControl {
       if (!quiet) {
         this.read.set(id, { failure: "Couldn't tell whether Claude Code from before the restart was still working." });
         s.apply({ type: "msg", msg: notice("Couldn't tell whether Claude Code from before the restart was still working. Send a message to carry on.", "warning") });
-        this.queue.hold(s, "restart");
+        this.queue.hold(s, "restart", { due: "restart" });
         return this.endWait(s);
       }
       await this.terminal?.settled(s);
@@ -909,7 +912,7 @@ export class LiveControl {
     if (s) {
       // One notice: a failed start already said why in the transcript.
       if (!s.state.error) s.apply({ type: "msg", msg: notice(`Couldn't continue after the restart: ${why}. Send a message to continue.`, "warning") });
-      this.queue.hold(s, "restart");
+      this.queue.hold(s, "restart", { due: "restart" });
       this.core.touch(s);
     }
   }
@@ -985,6 +988,7 @@ export class LiveControl {
     // What's open now is asked again after the restart: it stays saved.
     this.stopping = true;
     this.retries.stop();
+    this.queue.stop();
     this.desk.broker.freeze();
     await Promise.all([...this.core.sessions.values()].filter((s) => s.driver).map((s) => this.close(s)));
   }

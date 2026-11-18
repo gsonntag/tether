@@ -9,6 +9,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { AutoUpdateResult, AutoUpdateStatus, HarnessVersion, UpdateRun } from "../../../../shared/harnessUpdates";
 import type { SessionLook } from "..";
+import { waitingNow } from "../../../../shared/schedule";
 import type { UpdateChecker } from "./check";
 
 /** How often the versions are looked at again. */
@@ -31,7 +32,8 @@ interface Saved {
 export function sessionBusy(l: SessionLook): string | undefined {
   if (l.status === "running") return "running a turn";
   if (l.status === "waiting" || l.requests.length || l.state.requests.length) return "waiting on the person";
-  if (l.state.queue.length) return "has queued messages";
+  // A message scheduled for later doesn't hold an update: it waits in runner.json.
+  if (waitingNow(l.state.queue, Date.now())) return "has queued messages";
   if (l.state.retry) return "waiting to retry";
   if (l.state.terminal) return "open in a terminal";
   if (l.busy || l.background) return "running background work";

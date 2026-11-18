@@ -50,6 +50,12 @@ test("archived sessions: out of Recent unless searching, still on Home while the
   expect(inbox(sums).map((r) => `${r.id}:${r.inbox}`)).toEqual(["w:needs", "r:working"]);
 });
 
+test("a scheduled message: on Home as Scheduled (last, soonest first; not archived ones), never as needing you for that", () => {
+  const row = (id: string, over: object) => ({ id, harness: "claude", nativeId: id, projectPath: "/p", title: id, mode: "stored", status: "idle", updatedAt: 1, ...over });
+  const sums = { r1: { seq: 1, sessions: { a: row("a", { scheduledAt: 300 }), b: row("b", { scheduledAt: 200 }), c: row("c", { scheduledAt: 100, status: "running" }), d: row("d", { queuePaused: true }), e: row("e", { scheduledAt: 50, archived: true }) } } } as any;
+  expect(inbox(sums).map((r) => `${r.id}:${r.inbox}`)).toEqual(["d:needs", "c:working", "b:scheduled", "a:scheduled"]);
+});
+
 test("pinned sessions: their own group in pin order across runners, out of the rest; never an archived one", () => {
   const sums = {
     a: { epoch: "e", seq: 1, sessions: { x: s("x", 3, { pinned: 20 }), y: s("y", 5), w: s("w", 1, { pinned: 30, archived: true }) } },

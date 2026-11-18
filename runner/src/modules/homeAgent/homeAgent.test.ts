@@ -1384,3 +1384,18 @@ test("unfence can't leave or rebuild a run of three < or >", () => {
   }
   expect(unfence("a < b >> c")).toBe("a < b >> c");
 });
+
+test("scheduled messages (SPEC §9): one for later doesn't hold a message from the agent; one waiting for the person refuses it, saying why", async () => {
+  const { chat, tools, done, runner, driverOf } = await others();
+  const at = Date.now() + 60 * 60 * 1000;
+  await runner.live.queue.add(done, "Later on, deploy.", [], { at });
+  const st: string = await tools(chat).session_status!({ session_id: done });
+  expect(st).toContain("The person scheduled a message for");
+  expect(st).not.toContain("queued.");
+  expect(await tools(chat).send_to_session!({ session_id: done, message: "Add a test for it." })).toContain("Sent.");
+  await until(() => driverOf(done)!.sent.length === 2);
+  driverOf(done)!.sink.state({ status: "idle" });
+  const s = await runner.core.open(done);
+  s.setState({ queue: s.state.queue.map((m) => ({ ...m, at: Date.now() - 1000, held: "late" as const })) });
+  await expect(tools(chat).send_to_session!({ session_id: done, message: "more" })).rejects.toThrow("scheduled message waiting for the person (the runner was off for more than a day after its time)");
+});

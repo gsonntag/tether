@@ -1747,6 +1747,46 @@
 .t-queued-edit .t-input {
   flex: 1 1 200px;
 }
+/* Scheduled messages (SPEC §9 Scheduled sends): their time above the text. */
+.t-scheduled-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.t-scheduled-when {
+  font-size: 12px;
+  color: var(--t-muted);
+}
+.t-scheduled.stuck .t-scheduled-when {
+  color: var(--color-text-red, var(--color-error));
+}
+.t-queued-edit .t-send-later-input,
+.t-send-later-input {
+  flex: 0 1 auto;
+  min-width: 0;
+  width: auto;
+  font-size: 14px;
+}
+/* Send later: the picker above the message box. */
+.t-send-later {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 6px 2px;
+  font-size: 13px;
+}
+.t-send-later-title {
+  color: var(--t-muted);
+}
+.t-send-later-presets,
+.t-send-later-custom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
 
 .t-row.unread .t-row-title {
   font-weight: var(--font-weight-semibold, 600);

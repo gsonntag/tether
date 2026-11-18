@@ -6,6 +6,7 @@
 // or while a subagent of it runs. Its transcript is read from the harness's store on first open
 // (never kept on disk by Tether) and tailed while it's stored and watched.
 
+import { nextScheduled, unscheduled } from "../../../shared/schedule";
 import { accessSync, constants, existsSync, lstatSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -620,12 +621,16 @@ export class SessionCore {
    * a queue waiting for you, so neither one the terminal holds nor one the restart wait holds.
    */
   touch(s: Session, patch: Partial<SessionSummary> = {}) {
-    const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, archived: _archived, pinned: _pinned, retry: _retry, ...rest } = { ...s.summary, ...patch };
+    const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, archived: _archived, pinned: _pinned, retry: _retry, scheduledAt: _scheduledAt, ...rest } = { ...s.summary, ...patch };
     const beside = s.state.backgroundSubagents;
     const n = s.state.requests.length;
-    const q = s.state.queue.length;
+    // Scheduled messages (SPEC §9) aren't counted as queued: Home shows the next one's time, and one
+    // that came due but waits for you (`held`) is a paused queue.
+    const q = unscheduled(s.state.queue).length;
+    const at = nextScheduled(s.state.queue);
+    const stuck = s.state.queue.some((m) => m.held);
     const title = this.o.prefs.get(s.id).title;
-    s.summary = { ...rest, ...(s.state.retry ? { retry: s.state.retry } : {}), ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...(this.o.prefs.get(s.id).pinned ? { pinned: this.o.prefs.get(s.id).pinned } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait && !s.retry ? { queuePaused: true } : {}) };
+    s.summary = { ...rest, ...(s.state.retry ? { retry: s.state.retry } : {}), ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...(this.o.prefs.get(s.id).pinned ? { pinned: this.o.prefs.get(s.id).pinned } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(at !== undefined ? { scheduledAt: at } : {}), ...(stuck || (q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait && !s.retry) ? { queuePaused: true } : {}) };
     if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
   }
 }

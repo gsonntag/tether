@@ -31,6 +31,11 @@ export interface RunnerConfig {
   requests?: SavedRequest[];
   /** recently closed request ids, so an answer arriving after a restart is still told "Already answered." */
   closedRequests?: ClosedRequest[];
+  /**
+   * The runner was last seen running then (ms; kept while scheduled messages wait, SPEC §9): on
+   * start, the time since is when it was off.
+   */
+  aliveAt?: number;
 }
 
 /** What Tether keeps for a session: the settings picked for it, applied when it (re)starts. */
