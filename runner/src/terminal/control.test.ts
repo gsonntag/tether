@@ -157,6 +157,16 @@ const until = async (f: () => boolean, ms = 2000) => {
 const state = (core: SessionCore, id: string): LiveState => core.sessions.get(id)!.state;
 
 describe("handoff (Claude)", () => {
+  test("refused while a module holds the session (a checkpoint restore)", async () => {
+    const { adapter, core, live, term } = setup();
+    adapter.addStored("s1", []);
+    await core.open("claude:s1");
+    const release = live.hold("claude:s1", "Restoring files…");
+    await expect(term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 })).rejects.toThrow("Restoring files…");
+    expect(state(core, "claude:s1").mode).not.toBe("terminal");
+    release();
+  });
+
   test("idle: the driver closes, the TUI resumes the same session in tmux, the mode is terminal", async () => {
     const { adapter, tmux, core, live, term, modes, frames } = setup();
     adapter.addStored("s1", [{ id: "m1", role: "user", ts: 1, parts: [{ type: "text", text: "hi" }] }]);

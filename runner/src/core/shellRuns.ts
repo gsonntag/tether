@@ -152,6 +152,8 @@ export class ShellRuns {
     try {
       s = await this.core.open(sessionId);
       if (s.summary.parentSessionId) throw new Error("Run commands from the main session.");
+      const held = this.live.heldWhy(s.id);
+      if (held) throw new Error(held);
       const cwd = s.summary.projectPath;
       if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`The session's folder ${cwd} isn't there any more, so nothing ran.`);
       await this.core.load(s);

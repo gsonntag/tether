@@ -27,6 +27,8 @@ export interface QueueHost {
   send(sessionId: string, text: string, attachments: Attachment[]): Promise<void>;
   /** the session is in the quiet wait after a restart: nothing may go out yet */
   waiting(sessionId: string): boolean;
+  /** a module holds the session for a moment (live.ts `hold`): nothing goes out until it lets go */
+  paused?(sessionId: string): boolean;
 }
 
 export class MessageQueue {
@@ -202,7 +204,7 @@ export class MessageQueue {
     if (!s || this.draining.has(id) || !s.state.queue.length || s.state.queueHeld || s.retry || this.core.o.prefs.get(id).retry) return;
     // Background work doesn't hold it: this waits for the turn, and the main agent's is over.
     const busy = s.state.status !== "idle" && !s.driver?.onlyBackground?.();
-    if (s.state.mode === "terminal" || busy || s.sending || s.starting || this.host.waiting(id)) return;
+    if (s.state.mode === "terminal" || busy || s.sending || s.starting || this.host.waiting(id) || this.host.paused?.(id)) return;
     const [next, ...rest] = s.state.queue;
     this.draining.add(id);
     // Out of the shown queue at once (every device sees it go), but out of runner.json only once

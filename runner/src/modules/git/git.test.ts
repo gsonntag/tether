@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DIFF_FILE_LINES_MAX } from "../../../../shared/gitDiff";
 import { FRAME_BYTES_MAX, utf8Length } from "../../../../shared/limits";
+import { EventBus } from "../../core/bus";
 import { OpRegistry } from "../../core/ops";
 import { defaultBranch, gitDiff } from "./diff";
 import { gitModule } from ".";
@@ -276,7 +277,7 @@ test("the gitDiff op: the session's folder, a bad scope refused", async () => {
   writeFileSync(join(d, "a.txt"), "x\n");
   const ops = new OpRegistry();
   const look = { summary: { projectPath: d } } as never;
-  await gitModule.start({ ops, session: () => look, sessions: { open: async () => look } } as never);
+  await gitModule.start({ ops, bus: new EventBus(), dataDir: temp(), log: () => {}, session: () => look, sessions: { open: async () => look, list: () => [] } } as never);
   const r = await ops.handle("gitDiff", { sessionId: "s", scope: "uncommitted" });
   expect(r.ok && (r.data as { files: unknown[] }).files.length).toBe(1);
   expect(await ops.handle("gitDiff", { sessionId: "s", scope: "everything" })).toEqual({ ok: false, error: "Unknown diff scope." });

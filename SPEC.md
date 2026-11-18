@@ -228,7 +228,8 @@ is dropped, so `plan` is always the plan's.
 `queue`, `editQueued`, `cancelQueued`, `interrupt`, `answerRequest`, `setModel`, `setEffort`,
 `setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `setSessionArchived`, `openTerminal`, `closeTerminal`,
 `terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands). The move module
-adds `moveOptions` and `moveSession` (§15), the git module `gitDiff` (§10 Changes).
+adds `moveOptions` and `moveSession` (§15), the git module `gitDiff` (§10 Changes), `checkpoints`
+and `restoreCheckpoint` (§10 Checkpoints).
 
 ## 6. Adapters
 
@@ -1104,8 +1105,8 @@ source change switches in place, so there is nothing to wait for.
 **Changes** in the session header opens the folder's git diff where the terminal panel goes (one or
 the other): beside the transcript, a full-screen sheet on a phone. Only runners whose hello says
 `git: true` get the button. Scopes: **Uncommitted** (working tree and index against `HEAD`,
-untracked files included) and **Branch** (since the merge base with `origin/HEAD`, else `main` or
-`master`, committed or not). The `git` module's `gitDiff { sessionId, scope }` answers with files
+untracked files included), **Branch** (since the merge base with `origin/HEAD`, else `main` or
+`master`, committed or not) and **Turn** (Checkpoints below). The `git` module's `gitDiff { sessionId, scope }` answers with files
 (path, old path, status, added and removed lines, hunks), the branch and the base. It never writes:
 git as an argv in the session's folder, a timeout, optional locks off, no lazy fetch, no external
 diff or textconv, no inherited `GIT_DIR`-style or config variables; untracked files from `ls-files
@@ -1117,7 +1118,7 @@ only, files fill 3 MB of hunks in path order and the rest show counts, past 1,00
 a count, and after 30 s the files not reached show counts (`timedOut`). Binary files say so, as do
 names that aren't UTF-8, an untracked symlink (where it points), a folder outside a repo, a missing default branch and a branch with no
 history in common with it. It reads the folder itself, untracked files included, so it needs drive
-access: it is never a view-only op (`VIEW_OPS`).
+access: it is never a view-only op (`VIEW_OPS`), nor are `checkpoints` and `restoreCheckpoint`.
 
 The pane loads on opening, on a scope change, on Refresh, and when a turn ends or the link comes
 back; while a comment is being written those two wait until it's saved or cancelled, and "New
@@ -1136,7 +1137,70 @@ can be edited before it's sent; on a phone the sheet closes to show it. The comm
 as in the message box, until a message quoting their place is sent (the runner took it). **Take
 back**, editing a comment, or a box that no longer quotes it (a reload empties the box) puts it back
 in the tray. Later git views join this
-pane: a Turn scope, git actions in its header, a Files tab.
+pane: git actions in its header, a Files tab.
+
+### Checkpoints
+
+At each turn's start and end the git module's checkpoints snapshot the session's repo working tree
+(tracked and untracked files, never ignored ones) into a commit under
+`refs/tether/checkpoints/<session>/<n>` (the session id escaped one to one). Nothing the person uses
+changes: a temporary `GIT_INDEX_FILE` seeded with a copy of the real index, its mtime kept (its stat
+cache keeps it quick and racy entries stay racy; sparse entries stay), `add -A`, `write-tree`,
+`commit-tree` with a fixed identity and date, `update-ref`. Untracked files over 32 MB or unreadable
+are left out, and the checkpoint keeps the first 200 of them and their count; past 16 MB of
+untracked names (or 2,000 left out) the snapshot takes tracked files only and says so. No hooks or
+fsmonitor; clean filters the person's git config defines run as `git add` would run them (git-lfs
+keeps pointers), bounded by a time limit. Outside a repo nothing is taken. A turn resumed after an
+answer is the same turn, and so is a rate-limit retry (a different message sent instead starts a new
+one); a turn cut off by a restart is closed by the next start. A session whose folder is now in
+another repo starts a new list, and its refs in the old repo are deleted.
+
+**The refs are ordinary refs.** `git log --all`, `gitk --all` and `git for-each-ref` show them; `git
+push --mirror` (or a push of `refs/*`) sends them, and with them every snapshot's content, untracked
+unignored files included (a `.env` that isn't in `.gitignore`, say). A plain `git push`, `fetch` or
+clone never does. `git gc` keeps what they point at until they're pruned.
+
+**Ordering.** `turnStarted` comes as the core marks the session running, before the message goes to
+the harness; the snapshot starts then and is never awaited, so a turn doesn't wait on git. The agent
+needs a model round trip before its first write, so the before snapshot normally holds none of the
+turn's edits; on a very large repo its earliest writes could land in it, and a checkpoint whose before
+snapshot finished over 2 s after the turn started is marked **late** in the list. A session's
+snapshots run in order; snapshots in one repo run side by side, never during a restore there. Looking
+at a running turn snapshots outside that order, so it never delays a turn's start.
+
+**The Turn scope** lists the session's checkpoints, newest first, by time and the start of the
+prompt (`checkpoints { sessionId }`), and diffs the one picked: before → after, or before → the
+working tree while it runs (`gitDiff { scope: "turn", checkpoint }`). **Restore files to before this
+turn** (`restoreCheckpoint { sessionId, checkpointId }`) has the repo to itself and holds its
+folder (`holdFolder`): every main session whose folder is in the repo or holds it, stored ones and any made
+there meanwhile included. What's sent to one meanwhile waits in its queue and goes on release; a
+rate-limit retry due meanwhile waits too; `!` commands and opening the terminal refuse ("Restoring
+files…"). Each git step of it has a 60 s limit, and paths reach git on stdin only, never as arguments
+(thousands of them would pass the argv limit); files over 16 MB are streamed from git into a
+temporary file beside their path (`.tether-restore-…`, which snapshots and diffs leave out and the
+next restore sweeps if a crash left one) and renamed over it, never held in memory; folders emptied by
+removals go afterwards, deepest first. It first takes the undo:
+a snapshot of the files as they are, into which every path the restore will write or remove is
+forced exactly as it is on disk, as raw bytes (no filters, no line-ending conversion), whatever its
+size, ignore rules or index bits (assume-unchanged, skip-worktree), or its absence. That is saved as
+a restore checkpoint, listed like a turn, so **Undo restore** (a restore to its own before, writing
+those paths back as raw bytes) puts back byte for byte whatever the restore touched. Then the
+working tree goes back to the turn's before: files it made are removed (empty folders with them),
+ones it changed or deleted are written back. Left alone, and listed under the button: a path that
+can't be read into the undo, one the target snapshot left out (or any untracked path, when it took
+none or left out more than it lists), files the restored `.gitignore` ignores (tracked or not),
+nested repositories and anything in them, a folder where a file goes, a path under a symlink. The
+real index, `HEAD` and branches aren't touched, so commits and staged changes stay. No confirm (§2):
+the undo is the safety net. Refused while the session runs, waits on you, runs a command, subagent
+or background task, waits on its harness after a restart or on a rate-limit retry, is driven from
+its terminal, or has messages queued, and while any other live session in the same repo or in a folder
+holding it (folders compared as real paths) is in any of those states but the queue; checked again once the undo is
+saved, right before files change. The text under the button names the other live sessions in the
+repo.
+
+Kept 14 days and at most 200 per session (pruned as checkpoints are taken and at start). The list
+(times, prompts, commit ids, what was left out) is a JSON file per session in the module's folder; the
+snapshots are ordinary git objects, kept by the refs.
 
 ### Session names
 

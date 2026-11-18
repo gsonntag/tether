@@ -4,7 +4,7 @@
 // writes. Capped per file and overall (shared/gitDiff.ts): what's over shows its counts only.
 //
 // `diffRange` is the general part: the working tree (or a commit) against a base. Scopes are bases:
-// HEAD, the merge base with the default branch; a turn's checkpoints would be two commits.
+// HEAD, the merge base with the default branch; a turn's checkpoints are two commits (../checkpoints).
 
 import { lstat, open, readlink } from "node:fs/promises";
 import { join } from "node:path";
@@ -22,6 +22,7 @@ import {
   type GitDiff,
   type PatchFile,
 } from "../../../../shared/gitDiff";
+import { RESTORE_TMP_EXCLUDE } from "../../../../shared/checkpoints";
 import { git, GitError } from "./run";
 
 /** Flags every diff gets, so the repo's config can't change what we parse. */
@@ -149,7 +150,7 @@ export async function diffRange(root: string, base: string, opts: RangeOpts = {}
   });
   const untracked: DiffFile[] =
     opts.untracked && !opts.to
-      ? (await git(root, ["ls-files", "--others", "--exclude-standard", "-z"])).out
+      ? (await git(root, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", RESTORE_TMP_EXCLUDE])).out
           .split("\0")
           .filter((p) => p && !p.endsWith("/"))
           .map((path) => ({ path, status: "untracked", added: 0, removed: 0 }))
@@ -275,7 +276,7 @@ export async function diffRange(root: string, base: string, opts: RangeOpts = {}
 }
 
 /** A folder's changes in one of the pane's scopes. */
-export async function gitDiff(cwd: string, scope: DiffScope, caps?: Partial<Caps>): Promise<GitDiff> {
+export async function gitDiff(cwd: string, scope: Exclude<DiffScope, "turn">, caps?: Partial<Caps>): Promise<GitDiff> {
   const root = await repoRoot(cwd);
   if (!root) return { scope, state: "notRepo", files: [], added: 0, removed: 0 };
   const branch = await currentBranch(root);

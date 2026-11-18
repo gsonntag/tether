@@ -41,6 +41,9 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
 - **Changes** (SPEC §10): the session folder's git diff beside the chat, uncommitted or the whole
   branch. Click lines to comment, then **Send to agent** puts the comments in the composer as one
   message.
+- **Turn checkpoints** (SPEC §10): each turn's files are snapshotted under hidden git refs, so the
+  Changes pane's **Turn** scope shows what a turn changed, and **Restore files to before this turn**
+  puts them back (undoable). Your index, `HEAD` and stash are never touched.
 - **Change session harness** (SPEC §15): continues a session on the other harness, or on the same
   harness with another billing source. The old session stays as it was.
 
