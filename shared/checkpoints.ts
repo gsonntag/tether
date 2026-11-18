@@ -73,3 +73,9 @@ export const CHECKPOINTS_MAX = 200;
 export const CHECKPOINT_TTL_MS = 14 * 24 * 60 * 60_000;
 /** Untracked files bigger than this stay out of snapshots (and so restores leave them alone). */
 export const CHECKPOINT_FILE_BYTES_MAX = 32 * 1024 * 1024;
+
+/** A restore streams a big file into a temporary file beside it, named so; snapshots and diffs leave such files out, and the next restore sweeps any a crash left. */
+export const RESTORE_TMP_PREFIX = ".tether-restore-";
+export const RESTORE_TMP_RE = /^\.tether-restore-[0-9a-f]{12}$/;
+/** the pathspec that leaves them out */
+export const RESTORE_TMP_EXCLUDE = `:(exclude,glob)**/${RESTORE_TMP_PREFIX}*`;
