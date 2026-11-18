@@ -24,6 +24,7 @@
 // subscribe again for a fresh snapshot.
 
 import type { HarnessCommand } from "./commands";
+import type { DiffScope, GitDiff } from "./gitDiff";
 import type { MoveOptions } from "./move";
 import type { Attachment } from "./attachments";
 import type { AzureDeployment, BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
@@ -199,6 +200,8 @@ export interface Ops {
   listCommands: { args: { sessionId: string }; result: { commands: HarnessCommand[] } };
   /** where a session can move, and whether it can now (SPEC §15) */
   moveOptions: { args: { sessionId: string }; result: MoveOptions };
+  /** the session folder's git changes in a scope (the git module, SPEC §10 Changes). Read-only */
+  gitDiff: { args: { sessionId: string; scope: DiffScope }; result: GitDiff };
   /** moves a session to another harness: a new session there; the old one stays as it is */
   moveSession: { args: { sessionId: string; harness: string; model?: string; effort?: string; source?: BillingSource }; result: { sessionId: string } };
 
