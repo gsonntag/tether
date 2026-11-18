@@ -69,6 +69,15 @@ export interface GitDraft {
   note?: string;
 }
 
+/**
+ * How long the relay waits for a git action's answer (the usual wait is 2 minutes): the runner's own
+ * limits come to less (commit 120 s; push 90 s; Open PR: push, then gh's sign-in check, create and
+ * view), so the runner always answers first, even a failure.
+ */
+export const GIT_ACTION_RPC_MS = 6 * 60_000;
+/** Ops the relay waits longer for. */
+export const LONG_OPS: Readonly<Record<string, number>> = { gitCommit: GIT_ACTION_RPC_MS, gitPush: GIT_ACTION_RPC_MS, gitOpenPr: GIT_ACTION_RPC_MS };
+
 /** Output kept for showing a failure: its last lines, up to this many characters. */
 export const GIT_OUTPUT_MAX = 4000;
 

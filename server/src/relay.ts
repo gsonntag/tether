@@ -7,6 +7,7 @@
 // Sockets are abstract (send/close) so the routing is tested without a network.
 
 import { CLOSE_PROTOCOL, CLOSE_REAUTH, CLOSE_REPLACED, CLOSE_RUNNER_ID, CLOSE_TOO_SLOW, PROTOCOL_VERSION, TERMINAL_OPS, type BrowserToServer, type PushKeys, type OpName, type ResultMsg, type RunnerInfo, type RunnerToServer, type ServerToBrowser, type ServerToRunner, type User } from "../../shared/protocol";
+import { LONG_OPS } from "../../shared/gitActions";
 import { fitCloseReason, runnerIdAllowed, runnerIdRefusal } from "./runnerIds";
 import { mayUseRunner, type RunnerOwners } from "./tenancy";
 import { Tickets } from "./tickets";
@@ -19,6 +20,8 @@ export interface Socket {
 
 export interface RelayOptions {
   rpcTimeoutMs?: number;
+  /** ops that may take longer than rpcTimeoutMs (git actions), and how long */
+  longOps?: Readonly<Record<string, number>>;
   /** the protocol version runners must speak */
   protocol?: number;
   log?: (line: string) => void;
@@ -103,6 +106,7 @@ export class Relay {
   private pending = new Map<string, Pending>();
   private seq = 0;
   private readonly rpcTimeoutMs: number;
+  private readonly longOps: Readonly<Record<string, number>>;
   private readonly protocol: number;
   private readonly log: (line: string) => void;
   private readonly now: () => number;
@@ -116,6 +120,7 @@ export class Relay {
   constructor(opts: RelayOptions = {}) {
     this.push = opts.push;
     this.rpcTimeoutMs = opts.rpcTimeoutMs ?? 120_000;
+    this.longOps = opts.longOps ?? LONG_OPS;
     this.protocol = opts.protocol ?? PROTOCOL_VERSION;
     this.log = opts.log ?? (() => {});
     this.now = opts.now ?? Date.now;
@@ -241,7 +246,7 @@ export class Relay {
     }
 
     const id = `s${++this.seq}`;
-    const timer = setTimeout(() => this.settle(id, { ok: false, error: "The runner didn't answer in time." }), this.rpcTimeoutMs);
+    const timer = setTimeout(() => this.settle(id, { ok: false, error: "The runner didn't answer in time." }), Object.hasOwn(this.longOps, m.op) ? Math.max(this.rpcTimeoutMs, this.longOps[m.op]!) : this.rpcTimeoutMs);
     this.pending.set(id, { browser: sock, browserRpcId: m.id, runnerId: m.runnerId, op: m.op, key, route, timer });
     this.out(runner.sock, { t: "rpc", id, op: m.op, args });
   }
