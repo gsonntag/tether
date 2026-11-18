@@ -3,15 +3,17 @@
 // printed. Nothing here touches a repo.
 //
 // Scopes: `uncommitted` is the working tree and index against HEAD, untracked files included;
-// `branch` is everything since the merge base with the default branch, committed or not. A Turn
-// scope (checkpoints) adds a scope here and a range in the runner's git module, not a new shape.
+// `branch` is everything since the merge base with the default branch, committed or not; `turn` is
+// what one turn changed, between its checkpoints (shared/checkpoints.ts), or from its start to the
+// working tree while it runs.
 
-export type DiffScope = "uncommitted" | "branch";
+export type DiffScope = "uncommitted" | "branch" | "turn";
 export const DIFF_SCOPES: readonly { id: DiffScope; label: string }[] = [
   { id: "uncommitted", label: "Uncommitted" },
   { id: "branch", label: "Branch" },
+  { id: "turn", label: "Turn" },
 ];
-export const isDiffScope = (v: unknown): v is DiffScope => v === "uncommitted" || v === "branch";
+export const isDiffScope = (v: unknown): v is DiffScope => v === "uncommitted" || v === "branch" || v === "turn";
 
 export type FileStatus = "added" | "modified" | "deleted" | "renamed" | "copied" | "typechange" | "untracked";
 
@@ -42,8 +44,10 @@ export interface DiffFile {
 
 export interface GitDiff {
   scope: DiffScope;
-  /** `notRepo`: the folder isn't in a git repo. `noBase`: the branch scope has no default branch to compare with */
+  /** `notRepo`: the folder isn't in a git repo. `noBase`: the branch scope has no default branch to compare with, the turn scope no such checkpoint */
   state: "ok" | "notRepo" | "noBase";
+  /** the turn scope: the checkpoint shown */
+  checkpoint?: string;
   /** the repo's top folder */
   root?: string;
   /** the checked-out branch; none when detached or not a repo */

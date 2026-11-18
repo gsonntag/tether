@@ -1,18 +1,23 @@
-// The git module (SPEC §10 Changes): a session folder's git changes for the Changes pane. Reads
+// The git module (SPEC §10 Changes): a session folder's git changes for the Changes pane, and turn
+// checkpoints (../checkpoints, §10 Checkpoints), whose Turn scope gitDiff answers too. Diffs read
 // only; anyone who may look at the session may look at its diff. Later git features (commit, push,
-// a PR; turn checkpoints) add their ops here, beside gitDiff, on the same runner (run.ts).
+// a PR) add their ops here, beside gitDiff, on the same runner (run.ts).
 
 import { isDiffScope } from "../../../../shared/gitDiff";
 import type { Module } from "..";
+import { startCheckpoints } from "../checkpoints";
 import { gitDiff } from "./diff";
 
 export const gitModule: Module = {
   name: "git",
   start(ctx) {
-    ctx.ops.register("gitDiff", async ({ sessionId, scope }) => {
+    const { checkpoints, stop } = startCheckpoints(ctx);
+    ctx.ops.register("gitDiff", async ({ sessionId, scope, checkpoint }) => {
       if (!isDiffScope(scope)) throw new Error("Unknown diff scope.");
+      if (scope === "turn") return checkpoints.diff(sessionId, typeof checkpoint === "string" ? checkpoint : undefined);
       const s = ctx.session(sessionId) ?? (await ctx.sessions.open(sessionId));
       return gitDiff(s.summary.projectPath, scope);
     });
+    return stop;
   },
 };
