@@ -228,7 +228,7 @@ is dropped, so `plan` is always the plan's.
 `queue`, `editQueued`, `cancelQueued`, `interrupt`, `answerRequest`, `setModel`, `setEffort`,
 `setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `setSessionArchived`, `pinSession`, `openTerminal`, `closeTerminal`,
 `terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands). The move module
-adds `moveOptions` and `moveSession` (§15).
+adds `moveOptions` and `moveSession` (§15), the usage module `usage` (§10 Usage).
 
 ## 6. Adapters
 
@@ -1244,6 +1244,62 @@ The usage-limit error's retry timestamp is interpreted as runner UTC and display
 browser's local timezone, including the date and timezone label. When the provider gives only a time (the retry is
 within a day), it means the next such UTC time after the message. Native error text stays unchanged
 in the store. Ordinary transcript dates and user messages are not rewritten.
+
+### Usage
+
+**Settings → Usage** (`#/settings/usage`), per runner: the last 7 or 30 days. At the top, each
+harness's latest plan limits (`planLines`). Tiles: tokens; the API price of it all (est.); that
+price by source, plan, API keys and unknown, and how many requests went to providers; **Billed to API
+keys**, the ledger's (`costs.json`) whole-session totals for the sessions with usage in the range, so
+it can include earlier days; cache savings, cache reads at the full input price less what they cost.
+Then a bar chart by day (tokens stacked by input, output, cache write and cache read, or API price),
+its numbers behind a visible **Show the numbers** button, and tables by harness and model and by
+project (the top 8, the rest as one row, and TETHER_HIDE_PROJECTS folders and the Home agent's as one
+unnamed row). A table's first column stays put while a phone scrolls it sideways.
+
+A sum that leaves out requests with no price ends in **+** (a tile says how many), a source with
+nothing priced says **no price**, one with no requests **—**, and a dollar bar for such a day has a +
+over it: a partial subtotal is never shown as whole. When some logs couldn't be read (`scan.errors`),
+every dollar tile is a lower bound too: **+** and a note. No price: a model the tables don't list, a tier
+other than standard (Claude's `service_tier`, Codex's `thread_settings_applied`), a provider
+(Bedrock, Vertex, Foundry, a gateway or an auth token, Azure: they set their own prices), Codex over
+272K input, Sonnet 4.5 over 200K (its long-context beta's premium isn't listed: no price rather than
+a low one). Hosted
+tool fees (web search) aren't tokens and aren't counted. Prices: Anthropic's published first-party
+table (`shared/anthropicRates.ts`: 5-minute and 1-hour writes, Haiku 5.5's long-prompt rates, fast
+mode, US-only inference, the published dated ids of the 4.5 models) and OpenAI's Standard table
+(writes at the 30-minute default).
+
+Sources. Codex, per request from its rollout: a key's provider (`tether_openai`) or a private home is
+a key, any other provider is a provider, OpenAI's own whose token count after it carried plan limits
+(`rate_limits.plan_type`) is the plan, else unknown. Claude, as of Tether's last start of the session
+(`Adapter.latestStart`: its source and time; an "Anthropic auth token" start is a provider): that
+source from then on; before it unknown, since it may have been another. A Codex token count of rate
+limits only (no usage) marks only the record just before it.
+
+The `usage` module reads the harness stores, not Tether's records: each adapter's
+`usageStores()` (Claude's `projects/`, subagents included; Codex's `sessions/`, `archived_sessions/`
+and the private homes of Tether's key threads, `codex-keys/`). The ledger and the hidden folders come
+through `ModuleContext` (`apiCost`, `hiddenFolder`). A request is one record. Claude: one per message
+id and request id, at the largest counts its streamed entries carry; a compaction's own request isn't
+in the store. Codex: `token_usage_record` by response id; before a file's first one, each
+`token_count` whose running total moved (`last_token_usage`; a fork's inherited total isn't
+counted). Copies of a request in several files merge to their largest counts and belong to the file
+of the session the entry names.
+
+Nothing is read until the page first asks; then the scan runs in the background, again when the op is
+called over a minute after the last (or Refresh). Folders are walked by hand (an entry of unknown type is
+`lstat`ed): symlinks aren't followed, and a folder or file that can't be read is counted in `scan.errors`, which the page shows,
+without stopping the rest. One file at a time, in 4 MB chunks, yielding between them. Only a line
+whose first 2 KB has a parser's marker is decoded and parsed; a line over 64 MB is skipped (counted)
+without failing its file. Each file's records are cached in the module's data dir with its size,
+mtime, read offset (the end of its last whole line) and a hash of its first bytes: an unchanged file
+isn't opened, a grown one is read from the offset, a shrunk or replaced one from the start. Files and
+records older than 32 days are dropped. The cache is written only when something changed, and never
+after the runner stops. The op answers at once with what's read and `scan.running`, and the page
+polls while it runs. Days are calendar days in the browser's IANA zone (`timeZone`), so DST and
+quarter-hour zones bucket correctly. It reveals every project's activity: a drive op, and with
+shared runners it belongs in `MANAGE_OPS` (shared/access.ts), never to view-only access.
 
 ## 11. Phases
 

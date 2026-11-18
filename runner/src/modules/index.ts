@@ -9,6 +9,7 @@ import type { Adapter, StartOpts } from "../core/adapter";
 import type { BillingSource, SourceChoices } from "../../../shared/credentials";
 import type { HomeChatUpdate } from "../../../shared/protocol";
 import type { Attachment } from "../../../shared/attachments";
+import type { SessionCost } from "../../../shared/costs";
 import type { HarnessId, LiveState, Msg, ProjectInfo, RequestAnswer, RunStatus, SessionSummary } from "../../../shared/transcript";
 import { homeAgentModule } from "./homeAgent";
 import type { HomeLine } from "./homeLine";
@@ -19,6 +20,7 @@ import { peersModule } from "./peers";
 import { pushModule } from "./push";
 import { textingModule } from "./texting";
 import { updatesModule } from "./updates";
+import { usageModule } from "./usage";
 
 /** What a module may know about a session (read-only). */
 export interface SessionLook {
@@ -101,6 +103,10 @@ export interface ModuleContext {
   attachmentsDir?: string;
   /** the Home agent's folder (RunnerOptions.homeFolder); its sessions are left out of the lists */
   homeFolder?: string;
+  /** what Tether's API cost ledger holds for a session (undefined: no entry) */
+  apiCost?(sessionId: string): SessionCost | undefined;
+  /** a folder the lists hide (TETHER_HIDE_PROJECTS, the Home agent's) */
+  hiddenFolder?(path: string): boolean;
   /** tells every browser the Home agent's current chat changed (dropped while disconnected: browsers ask again on reconnect) */
   announceHomeChat?: (u: HomeChatUpdate) => void;
   /** texting ↔ the Home agent (homeLine.ts): one for the whole runner */
@@ -116,7 +122,7 @@ export interface Module {
 }
 
 /** The modules this runner loads, in order. */
-export const MODULES: Module[] = [pushModule, textingModule, moveModule, homeAgentModule, peersModule, updatesModule, linksModule];
+export const MODULES: Module[] = [pushModule, textingModule, moveModule, homeAgentModule, peersModule, updatesModule, linksModule, usageModule];
 
 export async function startModules(modules: Module[], ctx: (m: Module) => ModuleContext): Promise<() => void> {
   const stops: (() => void)[] = [];

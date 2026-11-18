@@ -205,6 +205,8 @@ export function createRunner(o: RunnerOptions) {
       loaded: () => [...core.sessions.values()].map(lookAt),
       viewersOf: (id: string) => live.read.viewersOf(id),
       homeFolder: o.homeFolder,
+      apiCost: (id: string) => (costs.has(id) ? costs.get(id) : undefined),
+      hiddenFolder: (path: string) => core.hidden(path),
       announceHomeChat: (u: HomeChatUpdate) => void conn.send({ t: "homeChat", ...u }),
       sessions: {
         adapters: () => o.adapters ?? [],

@@ -77,6 +77,13 @@ You add keys under **Settings → Credentials** and **Settings → Azure**, and 
 runner. New sessions start on the subscription. The header's billing chip shows the source and
 switches it, and API sessions show what they've cost in dollars.
 
+**Usage** (SPEC §10, *Usage*): **Settings → Usage** shows a runner's last 7 or 30 days of tokens
+(input, output, cache reads and writes) by day, by harness and model, and by project, read from
+Claude Code's and Codex's own logs, so CLI sessions count too. Dollars are estimates at published API
+prices, split into plan usage and API keys, next to what Tether's own ledgers billed to API keys and
+what caching saved. The plan's 5-hour and weekly limits are at the top. The logs are first read when
+you open the page, which can take a few seconds; after that only what's new is read.
+
 **Texting** (iMessage through [Photon Spectrum](https://photon.codes), or a Discord bot): the runner can text you when
 a session has a request, needs you in the terminal, fails, or ends its turn with a question. Nothing
 is texted for a session you're looking at in Tether. Each text starts with its session's number.

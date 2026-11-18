@@ -2,12 +2,12 @@
 //   #/                                 Home (runners)
 //   #/l/<code>                          a session, by its short link (runner modules/links): what the bar shows
 //   #/s/<runnerId>/<sessionId>          a session (both URI-encoded): old links, and until the session's code is known; then replaced by its #/l/…
-//   #/settings/credentials, #/settings/azure, #/settings/texting, #/settings/notifications, #/settings/agents, #/settings/updates   Settings' subpages
+//   #/settings/credentials, #/settings/azure, #/settings/texting, #/settings/notifications, #/settings/agents, #/settings/updates, #/settings/usage   Settings' subpages
 
 import { useSyncExternalStore } from "react";
 import { linkCache, type LinkCache } from "./linkCache";
 
-export type Route = { page: "home" } | { page: "credentials" } | { page: "azure" } | { page: "texting" } | { page: "notifications" } | { page: "agents" } | { page: "updates" } | { page: "session"; runnerId: string; sessionId: string; code?: string } | { page: "link"; code: string };
+export type Route = { page: "home" } | { page: "credentials" } | { page: "azure" } | { page: "texting" } | { page: "notifications" } | { page: "agents" } | { page: "updates" } | { page: "usage" } | { page: "session"; runnerId: string; sessionId: string; code?: string } | { page: "link"; code: string };
 
 export function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/");
@@ -16,6 +16,7 @@ export function parseRoute(hash: string): Route {
   if (parts[0] === "settings" && parts[1] === "notifications") return { page: "notifications" };
   if (parts[0] === "settings" && parts[1] === "agents") return { page: "agents" };
   if (parts[0] === "settings" && parts[1] === "updates") return { page: "updates" };
+  if (parts[0] === "settings" && parts[1] === "usage") return { page: "usage" };
   if (parts[0] === "credentials" || parts[0] === "settings") return { page: "credentials" };
   // Any code: one that can't be a code shows "doesn't exist" (ShortLink.tsx), not Home.
   if (parts[0] === "l" && parts[1]) return { page: "link", code: parts.slice(1).join("/").replace(/\/+$/, "") };
@@ -44,7 +45,7 @@ export function presenceFor(hash: string, visible: boolean, cache: Pick<LinkCach
 
 export function formatRoute(r: Route): string {
   if (r.page === "link" || (r.page === "session" && r.code)) return `#/l/${r.code}`;
-  return r.page === "session" ? `#/s/${encodeURIComponent(r.runnerId)}/${encodeURIComponent(r.sessionId)}` : r.page === "credentials" ? "#/settings/credentials" : r.page === "azure" ? "#/settings/azure" : r.page === "texting" ? "#/settings/texting" : r.page === "notifications" ? "#/settings/notifications" : r.page === "agents" ? "#/settings/agents" : r.page === "updates" ? "#/settings/updates" : "#/";
+  return r.page === "session" ? `#/s/${encodeURIComponent(r.runnerId)}/${encodeURIComponent(r.sessionId)}` : r.page === "credentials" ? "#/settings/credentials" : r.page === "azure" ? "#/settings/azure" : r.page === "texting" ? "#/settings/texting" : r.page === "notifications" ? "#/settings/notifications" : r.page === "agents" ? "#/settings/agents" : r.page === "updates" ? "#/settings/updates" : r.page === "usage" ? "#/settings/usage" : "#/";
 }
 
 export function navigate(r: Route) {
