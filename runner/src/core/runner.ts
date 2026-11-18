@@ -265,12 +265,16 @@ export function createRunner(o: RunnerOptions) {
         setArchived: async (id: string, archived: boolean) => core.setArchived(await core.open(id), archived),
         setWorktree: async (id: string, worktree: WorktreeRecord) => core.setWorktree(await core.open(id), worktree),
         worktree: (id: string) => prefs.get(id).worktree,
-        setup: async (id: string, command: string, run: Omit<SetupRun, "done"> = {}) => {
+        setup: async (id: string, command: string, { beforeRelease, ...run }: Omit<SetupRun, "done"> & { beforeRelease?: () => void } = {}) => {
           const s = await core.open(id);
           live.queue.setupStarted(s);
           let settle!: (v: { ok: boolean; why: string }) => void;
           const done = new Promise<{ ok: boolean; why: string }>((r) => (settle = r));
           const end = (ok: boolean, why: string) => {
+            // What the setup left, taken before anything waiting can reach the agent.
+            try {
+              beforeRelease?.();
+            } catch {}
             live.queue.setupEnded(s, ok);
             // Home shows it as needing you, whether or not anything waits.
             if (!ok) live.read.set(s.id, { failure: `${why} What you send waits: re-run the setup, or send anyway.` });

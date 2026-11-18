@@ -21,7 +21,7 @@ import type { SessionSummary } from "../../../../shared/transcript";
 import { ANSWER_TAG, parseAnswer, type Answer } from "../../../../shared/checkIn";
 import { childEnv } from "../../childEnv";
 import type { WorktreeRecord } from "../../config";
-import { ignoredIn, precious, removeWorktree, runGit as runArgv, shaOf, type Git as WorktreeGit } from "../worktrees/git";
+import { ignoredFiles, precious, removeWorktree, runGit as runArgv, shaOf, type Git as WorktreeGit } from "../worktrees/git";
 
 // The answer line and its parsing are shared: the transcript and previews hide that line.
 export { ANSWER_TAG, parseAnswer, type Answer };
@@ -102,8 +102,8 @@ async function mainRefs(git: Git, cwd: string): Promise<string[]> {
  * branch: never while another session's folder is in it, and only as git allows (a clean worktree:
  * `git worktree remove` without --force). Its HEAD must be in main (by ancestry or as equal patches,
  * which a rebase merge keeps; a squash of several commits may not match). Ignored files it would
- * delete must be regenerable folders (node_modules, dist, …) or have been there since it was set
- * up; others (a .env, a local database) keep it. Its branch goes only when that branch, too, is in
+ * delete must be in regenerable folders (node_modules, dist, …) or be unchanged since it was made
+ * and set up; others (a .env, a local database, one added or edited since) keep it. Its branch goes only when that branch, too, is in
  * main, by `update-ref -d` at the commit checked, so it can't have moved in between. Not removed: why.
  */
 export async function removeOwnWorktree(own: WorktreeRecord, others: string[], git: Git = runGit(), argv: WorktreeGit = runArgv): Promise<{ removed: boolean; why?: string; branchKept?: string; gone?: boolean }> {
@@ -117,9 +117,9 @@ export async function removeOwnWorktree(own: WorktreeRecord, others: string[], g
     const onBranch = (await git(path, "symbolic-ref", "--quiet", "--short", "HEAD")) === own.branch;
     const headMerged = onBranch ? branchMerged : mains.length > 0 && (await inMain(git, path, "HEAD", mains));
     if (!headMerged) return { removed: false, why: `its worktree ${path} has commits that aren't in main (it's on ${(await git(path, "rev-parse", "--abbrev-ref", "HEAD")) ?? "an unknown commit"})` };
-    const ignored = await ignoredIn(path, argv);
-    if (!ignored) return { removed: false, why: `Tether couldn't list the ignored files in its worktree ${path}` };
-    const lost = precious(ignored, own.known);
+    const ignored = ignoredFiles(path);
+    if (!ignored) return { removed: false, why: `Tether couldn't list the ignored files in its worktree ${path} (or there are too many to check)` };
+    const lost = precious(ignored, own.known && !Array.isArray(own.known) ? own.known : {});
     if (lost.length) return { removed: false, why: `removing its worktree ${path} would delete ignored files: ${lost.slice(0, 5).join(", ")}${lost.length > 5 ? ` and ${lost.length - 5} more` : ""}` };
   }
   const r = await removeWorktree(own.repo, path, own.branch, branchMerged ? { branchAt: branchSha } : {}, argv);

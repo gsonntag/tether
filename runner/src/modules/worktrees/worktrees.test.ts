@@ -11,7 +11,7 @@ import { saveConfig } from "../../config";
 import { FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
 import { Worktrees } from ".";
-import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredIn, precious, removeWorktree, repoOf, runGit, setupAt, taken, undoAdd, worktreesDir, type Git } from "./git";
+import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredFiles, precious, IGNORED_MAX, removeWorktree, repoOf, runGit, setupAt, taken, undoAdd, worktreesDir, type Git } from "./git";
 import { removeOwnWorktree } from "../homeAgent/checkIn";
 
 const cleanups: (() => void)[] = [];
@@ -177,13 +177,13 @@ describe("git", () => {
     expect(findSetup(a, b)).toBeUndefined();
     mkdirSync(join(b, ".tether"));
     writeFileSync(join(b, ".tether", "config.json"), JSON.stringify({ setup: "npm ci" }));
-    expect(findSetup(a, b)).toEqual({ label: "npm ci", command: "npm ci" });
+    expect(findSetup(a, b)).toMatchObject({ label: "npm ci", command: "npm ci" });
     mkdirSync(join(a, ".tether"));
     writeFileSync(join(a, ".tether", "setup"), "#!/bin/sh\necho hi\n");
     // Not executable: not a setup.
-    expect(findSetup(a, b)).toEqual({ label: "npm ci", command: "npm ci" });
+    expect(findSetup(a, b)).toMatchObject({ label: "npm ci", command: "npm ci" });
     chmodSync(join(a, ".tether", "setup"), 0o755);
-    expect(findSetup(a, b)).toEqual({ label: ".tether/setup", argv: [join(a, ".tether", "setup")], text: "#!/bin/sh\necho hi\n" });
+    expect(findSetup(a, b)).toMatchObject({ label: ".tether/setup", argv: [join(a, ".tether", "setup")], text: "#!/bin/sh\necho hi\n" });
     writeFileSync(join(b, ".tether", "config.json"), "{ not json");
     expect(findSetup(b)).toBeUndefined();
   });
@@ -391,6 +391,8 @@ describe("New worktree", () => {
     };
     await expect(addWorktree(r.dir, "tether/x", "main", intruding)).rejects.toThrow("git worktree add failed");
     expect(readFileSync(join(r.root, "app-worktrees", "x", "theirs.txt"), "utf8")).toBe("keep me");
+    // Our branch, if git made it before refusing the folder, goes (it was at our base).
+    expect(sh(r.dir, "branch", "--list", "tether/x")).toBe("");
     // The branch made meanwhile by someone else: git refuses, and their branch stays where it is.
     const other = sh(r.dir, "commit-tree", "-m", "theirs", `${sha}^{tree}`, "-p", sha);
     const racing: Git = async (cwd, args, ms) => {
@@ -543,32 +545,73 @@ describe("New worktree", () => {
     await expect(t.w.rerun(made.sessionId)).rejects.toThrow("isn't waiting");
   });
 
-  test("ignored files: regenerable folders and what setup left may go; others (a .env) keep the worktree", async () => {
+  test("ignored files: file by file outside regenerable folders; unchanged known ones may go, new or edited ones keep it", async () => {
     const r = repo();
-    writeFileSync(join(r.dir, ".gitignore"), "node_modules\n.env\ndata.db\nbuild\n");
+    writeFileSync(join(r.dir, ".gitignore"), "node_modules\n.env\ndata/\nbuild\n");
     sh(r.dir, "add", ".");
     sh(r.dir, "commit", "-qm", "ignore");
     const path = await addWorktree(r.dir, "tether/ig", "main");
-    mkdirSync(join(path, "node_modules"));
-    writeFileSync(join(path, "node_modules", "x"), "");
+    mkdirSync(join(path, "node_modules", "deep"), { recursive: true });
+    writeFileSync(join(path, "node_modules", "deep", "x"), "");
     mkdirSync(join(path, "pkg", "build"), { recursive: true });
     writeFileSync(join(path, "pkg", "build", "out"), "");
-    writeFileSync(join(path, "data.db"), "");
-    const ignored = (await ignoredIn(path))!;
-    expect(ignored.sort()).toEqual(["data.db", "node_modules/", "pkg/build/"]);
-    expect(precious(ignored)).toEqual(["data.db"]);
-    // data.db was there right after setup: it may go.
-    expect(precious(ignored, ["data.db"])).toEqual([]);
+    // What setup left: a data folder with a seed database.
+    mkdirSync(join(path, "data", "node_modules"), { recursive: true });
+    writeFileSync(join(path, "data", "seed.db"), "seed");
+    writeFileSync(join(path, "data", "node_modules", "y"), "");
+    const known = ignoredFiles(path)!;
+    expect(Object.keys(known)).toEqual(["data/seed.db"]);
+    expect(precious(known, known)).toEqual([]);
+    const own = { path, branch: "tether/ig", repo: r.dir, known };
+    // The reviewer's case: later a .env, a new file inside the known data/ folder, and an edit to the seed.
     writeFileSync(join(path, ".env"), "SECRET=1");
-    const own = { path, branch: "tether/ig", repo: r.dir, known: ["data.db"] };
+    writeFileSync(join(path, "data", "notes.db"), "mine");
+    await Bun.sleep(5);
+    writeFileSync(join(path, "data", "seed.db"), "seed, edited");
     const kept = await removeOwnWorktree(own, []);
-    expect(kept).toMatchObject({ removed: false });
-    expect(kept.why).toContain("would delete ignored files: .env");
-    expect(existsSync(join(path, ".env"))).toBe(true);
+    expect(kept.removed).toBe(false);
+    expect(kept.why).toContain("would delete ignored files: .env, data/notes.db, data/seed.db");
+    for (const f of [".env", "data/notes.db", "data/seed.db"]) expect(existsSync(join(path, f))).toBe(true);
+    // Back to only what setup left (the seed as it was): it goes.
     rmSync(join(path, ".env"));
-    expect(await removeOwnWorktree(own, [])).toEqual({ removed: true });
+    rmSync(join(path, "data", "notes.db"));
+    const again = { ...own, known: ignoredFiles(path)! };
+    expect(await removeOwnWorktree(again, [])).toEqual({ removed: true });
     expect(existsSync(path)).toBe(false);
     expect(sh(r.dir, "branch", "--list", "tether/ig")).toBe("");
+  });
+
+  test("ignored files: more than can be checked keeps the worktree", async () => {
+    const r = repo();
+    writeFileSync(join(r.dir, ".gitignore"), "logs/\n");
+    sh(r.dir, "add", ".");
+    sh(r.dir, "commit", "-qm", "ignore");
+    const path = await addWorktree(r.dir, "tether/many", "main");
+    mkdirSync(join(path, "logs"));
+    for (let i = 0; i <= IGNORED_MAX; i++) writeFileSync(join(path, "logs", `${i}`), "");
+    expect(ignoredFiles(path)).toBeUndefined();
+    expect((await removeOwnWorktree({ path, branch: "tether/many", repo: r.dir }, [])).why).toContain("too many");
+  }, 30_000);
+
+  test("what setup leaves is taken when it ends, before a waiting message reaches the agent", async () => {
+    const t = runnerFor();
+    const r = repo();
+    writeFileSync(join(r.dir, ".gitignore"), ".env\n");
+    mkdirSync(join(r.dir, ".tether"));
+    writeFileSync(join(r.dir, ".tether", "setup"), "#!/bin/sh\necho A=1 > .env\n");
+    chmodSync(join(r.dir, ".tether", "setup"), 0o755);
+    sh(r.dir, "add", ".");
+    sh(r.dir, "commit", "-qm", "setup");
+    // The agent writes to .env in its first turn.
+    t.adapter.script = (text) => (writeFileSync(join(r.root, "app-worktrees", "snap", ".env"), "A=1\nMINE=secret\n"), [say(`a-${text.length}`, "ok"), idle]);
+    const made = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/snap" });
+    await t.runner.live.send(made.sessionId, "edit .env");
+    await until(() => t.adapter.drivers.at(-1)?.sent.includes("edit .env") ?? false);
+    await until(() => !!t.runner.look.sessions.worktree!(made.sessionId)?.known?.[".env"]);
+    const rec = t.runner.look.sessions.worktree!(made.sessionId)!;
+    // Known as the setup left it (4 bytes), so the agent's edit counts as precious.
+    expect(rec.known![".env"]![0]).toBe(4);
+    expect(precious(ignoredFiles(made.path)!, rec.known)).toEqual([".env"]);
   });
 
   test("Archive done: a branch with work not in main is never deleted, even when HEAD moved to merged work", async () => {
@@ -600,5 +643,50 @@ describe("New worktree", () => {
     rmSync(p3, { recursive: true, force: true });
     expect(await removeOwnWorktree({ path: p3, branch: "tether/moved", repo: r.dir }, [])).toEqual({ removed: true, gone: true });
     expect(sh(r.dir, "branch", "--list", "tether/moved")).toBe("");
+  });
+
+  test("Re-run setup tapped twice runs it once", async () => {
+    const t = runnerFor();
+    const r = withSetup("#!/bin/sh\nexit 1\n");
+    const made = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/twice" });
+    await until(() => t.state(made.sessionId).setup === "failed");
+    const both = await Promise.allSettled([t.w.rerun(made.sessionId), t.w.rerun(made.sessionId)]);
+    expect(both.map((x) => x.status).sort()).toEqual(["fulfilled", "rejected"]);
+    await until(() => t.state(made.sessionId).setup === "failed");
+    expect(t.cards(made.sessionId)).toHaveLength(2);
+  });
+
+  test("setupId is the script's blob id (or a hash of the whole command); a long script is marked cut", async () => {
+    const r = withSetup(`#!/bin/sh\n${"echo x\n".repeat(400)}`);
+    const s = (await setupAt(r.dir, "main"))!;
+    expect(s.id).toBe(`blob:${sh(r.dir, "rev-parse", "main:.tether/setup")}`);
+    expect(s.cut).toBe(true);
+    expect(s.text!.length).toBe(2000);
+    // The same file read from the folder has the same id.
+    expect(findSetup(r.dir)!.id).toBe(s.id);
+    const t = runnerFor();
+    expect(await t.w.info(r.dir)).toMatchObject({ setupTextCut: true, setupId: s.id });
+    // Commands differing only past what's shown differ.
+    const long = "x".repeat(3000);
+    const q = repo();
+    mkdirSync(join(q.dir, ".tether"));
+    writeFileSync(join(q.dir, ".tether", "config.json"), JSON.stringify({ setup: `${long}a` }));
+    const id1 = findSetup(q.dir)!.id;
+    writeFileSync(join(q.dir, ".tether", "config.json"), JSON.stringify({ setup: `${long}b` }));
+    expect(findSetup(q.dir)!.id).not.toBe(id1);
+  });
+
+  test("the fetch: no prompts; ssh in batch mode unless the repo has its own ssh command", async () => {
+    const c = cloned();
+    const seen: { args: string[]; env?: Record<string, string> }[] = [];
+    const spy: Git = async (cwd, args, ms, env) => (seen.push({ args, env }), runGit(cwd, args, ms, env));
+    await fetchBase(c.dir, "origin/main", spy);
+    const f = seen.find((x) => x.args.includes("fetch"))!;
+    expect(f.args.slice(0, 2)).toEqual(["-c", "credential.interactive=false"]);
+    expect(f.env).toEqual({ GIT_SSH_COMMAND: "ssh -o BatchMode=yes" });
+    sh(c.dir, "config", "core.sshCommand", "ssh -i ~/.ssh/other");
+    seen.length = 0;
+    await fetchBase(c.dir, "origin/main", spy);
+    expect(seen.find((x) => x.args.includes("fetch"))!.env).toEqual({});
   });
 });

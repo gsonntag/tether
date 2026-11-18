@@ -89,7 +89,7 @@ export interface SessionActions {
    * Runs a new worktree's setup in the session's folder as a card (core/shellRuns.ts): until it
    * ends, sends wait held; a failure keeps them held. Answers once it has started.
    */
-  setup?(id: string, command: string, run?: Omit<SetupRun, "done">): Promise<{ done: Promise<{ ok: boolean; why: string }> }>;
+  setup?(id: string, command: string, run?: Omit<SetupRun, "done"> & { beforeRelease?: () => void }): Promise<{ done: Promise<{ ok: boolean; why: string }> }>;
 }
 
 export interface ModuleContext {

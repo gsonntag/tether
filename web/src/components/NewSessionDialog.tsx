@@ -298,7 +298,10 @@ export function NewSessionDialog() {
                 {ws.setupText && (
                   <details className="t-ws-setup">
                     <summary>Runs .tether/setup there first; your first message waits for it</summary>
-                    <pre className="t-pre">{ws.setupText}</pre>
+                    <pre className="t-pre">
+                      {ws.setupText}
+                      {ws.setupTextCut ? "\n… (cut here: only the start is shown)" : ""}
+                    </pre>
                   </details>
                 )}
               </>

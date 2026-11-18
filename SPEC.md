@@ -105,7 +105,8 @@ claim any id not starting with `runner-` (`CLOSE_RUNNER_ID` otherwise; server/sr
   hash of text with no usable words, else `wt-<random>`). Creates in one repo run one at a time.
   `newWorktreeSession` resolves the base, `origin/HEAD`, else `origin/main|master`, else local
   `main|master`, else `HEAD`; for `origin/<x>` it first runs `git fetch origin <x>` (best effort: 15 s,
-  no prompts, ssh in batch mode; failed: as last fetched; the dialog says when that was). Then
+  no prompts: `credential.interactive=false`, `GCM_INTERACTIVE=never`, ssh in batch mode unless
+  the repo or environment sets its own ssh command; failed: as last fetched; the dialog says when). Then
   `git worktree add --no-track -b <branch> <repo>-worktrees/<slug> <sha>` from the main checkout. A
   name git doesn't take as typed (`@`, `@{…}`, …), or a branch (local or on a remote) or folder that
   exists, is refused. A failed add undoes only what it made: never a path or branch git refused as
@@ -114,12 +115,15 @@ claim any id not starting with `runner-` (`CLOSE_RUNNER_ID` otherwise; server/sr
   process group, with time limits and no prompts; `worktree add` runs the repo's post-checkout hook,
   as a person's would (the agent gets the same access there anyway). Then `newSession` in it (a
   failed start undoes it the same way), and runner.json records `worktree: {path, branch, repo,
-  known}` on the session: its own (`known`: the ignored files there once made and set up). The
+  known}` on the session: its own (`known`: each ignored file there once it was made, and when the
+  setup ends, before anything waiting goes to the agent, with its size and time). The
   summary carries `worktreeOf` (the main checkout) for grouping. **Setup:** `.tether/setup`
   (executable, run directly) or `.tether/config.json`'s `"setup"` (via `$SHELL -c`), the worktree's
-  own (the base's, which the dialog reads from git and shows; the dialog sends back its `setupId`,
-and a create whose fetched base has another setup is refused with the new one named, nothing
-made; the Home agent's runs whatever the base has) before the main checkout's, runs in
+  own (the base's, which the dialog reads from git and shows, marked when cut short; the dialog
+sends back its `setupId`: the script's blob id, or a hash of the whole command; a create whose
+fetched base has another setup is refused with the new one named, nothing made. It's a "what you
+saw is what runs" check, not a trust boundary: the repo's code runs either way. The Home agent's
+runs whatever the base has) before the main checkout's, runs in
   the worktree with `TETHER_WORKTREE`, `TETHER_REPO` and `TETHER_BRANCH` as a `!` card (§9) marked
   `setup`, whose output never goes to the agent (state `done`), for at most 30 minutes (then
   stopped, failed). A terminal start in a repo with a setup is refused (its TUI wouldn't wait).
@@ -1191,9 +1195,10 @@ done, merged and cleaned up is archived, as the archive button does it (`Session
 A worktree Tether made for the session (§4, runner.json's `worktree`) the session is told to leave;
 once the answer passes, Tether removes it itself and then archives. Its HEAD must be in main (by
 ancestry or as equal patches: a rebase merge counts, a squash of several commits may not). Ignored
-files it would delete must be regenerable folders (`node_modules`, `dist`, `build`, `target`,
-`.venv`, `venv`, `__pycache__`, `.next`, `.turbo`, `coverage`, `.cache`) or `known`; anything else (a
-`.env`, a local database) keeps it, named in the reason. Then `git worktree remove` without
+files it would delete, file by file, must be in regenerable folders (`node_modules`, `dist`, `build`,
+`target`, `.venv`, `venv`, `__pycache__`, `.next`, `.turbo`, `coverage`, `.cache`) or `known` and
+unchanged (same size and time); anything else (a `.env`, a local database, a file added or edited
+since, more than 20,000 to check) keeps it, named in the reason. Then `git worktree remove` without
 `--force` (a clean worktree only), and its branch by `update-ref -d` at the commit checked to be in
 main, so it can't have moved in between; a branch with work not in main stays. A worktree folder
 already gone (moved or deleted) is said so, and git's record pruned. One git won't remove keeps the

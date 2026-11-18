@@ -9,8 +9,9 @@
 // origin/<x> it fetches that branch, best effort (15 s, no prompts); a failed fetch leaves the base
 // as the last fetch left it.
 
-import { spawn, type ChildProcess } from "node:child_process";
-import { accessSync, constants, existsSync, readdirSync, readFileSync, rmdirSync, statSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
+import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, rmdirSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { childEnv } from "../../childEnv";
 import { folderForBranch, hashSlug, randomSlug, slugOf, WORKTREE_BRANCH_PREFIX } from "../../../../shared/worktree";
@@ -21,7 +22,7 @@ export interface GitResult {
   err: string;
 }
 
-export type Git = (cwd: string, args: string[], ms?: number) => Promise<GitResult>;
+export type Git = (cwd: string, args: string[], ms?: number, env?: Record<string, string>) => Promise<GitResult>;
 
 /** How long a quick git question may take. */
 const QUICK_MS = 10_000;
@@ -32,11 +33,11 @@ export const ADD_MS = 5 * 60_000;
  * git in a folder: argv, no shell, no prompts, a time limit. It runs in a process group of its own,
  * so a hook still running at the limit is killed with it.
  */
-export const runGit: Git = (cwd, args, ms = QUICK_MS) =>
+export const runGit: Git = (cwd, args, ms = QUICK_MS, extra = {}) =>
   new Promise((done) => {
     let p: ChildProcess;
     try {
-      p = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"], detached: true, env: childEnv({ GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", SSH_ASKPASS: "" }) });
+      p = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"], detached: true, env: childEnv({ GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", SSH_ASKPASS: "", GCM_INTERACTIVE: "never", ...extra }) });
     } catch (e) {
       return done({ ok: false, out: "", err: (e as Error).message });
     }
@@ -115,7 +116,10 @@ export const FETCH_MS = 15_000;
 export async function fetchBase(main: string, base: string, git: Git = runGit): Promise<boolean> {
   const m = /^origin\/(.+)$/.exec(base);
   if (!m) return false;
-  return (await git(main, ["-c", "core.sshCommand=ssh -o BatchMode=yes", "fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${m[1]}:refs/remotes/origin/${m[1]}`], FETCH_MS)).ok;
+  // ssh in batch mode (no passphrase or host-key prompt), unless the repo or the person chose their own ssh.
+  const own = process.env.GIT_SSH_COMMAND || process.env.GIT_SSH || (await git(main, ["config", "--get", "core.sshCommand"])).out;
+  const env: Record<string, string> = own ? {} : { GIT_SSH_COMMAND: "ssh -o BatchMode=yes" };
+  return (await git(main, ["-c", "credential.interactive=false", "fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${m[1]}:refs/remotes/origin/${m[1]}`], FETCH_MS, env)).ok;
 }
 
 /** When origin was last fetched here (FETCH_HEAD's time), or undefined. */
@@ -186,7 +190,11 @@ export async function addWorktree(main: string, branch: string, base: string, gi
   const r = await git(main, ["worktree", "add", "--no-track", "-b", branch, path, baseSha], ADD_MS);
   if (!r.ok) {
     // Refused because the folder or the branch exists (someone else's, made meanwhile): never touched.
-    if (!/already exists/i.test(r.err)) await undoAdd(main, path, branch, baseSha, git);
+    // A branch of that name made meanwhile: someone else's; leave both. Only the folder in the way
+    // (made meanwhile): git may already have made our branch, which goes only while at our base.
+    if (/a branch named .* already exists/i.test(r.err)) {
+    } else if (/already exists/i.test(r.err)) await git(main, ["update-ref", "-d", `refs/heads/${branch}`, baseSha]);
+    else await undoAdd(main, path, branch, baseSha, git);
     if (!parentBefore) rmEmpty(parent);
     throw new Error(`git worktree add failed: ${lastLines(r.err) || "no reason given"}`);
   }
@@ -218,22 +226,66 @@ function rmEmpty(dir: string) {
 /** Ignored folders that only hold what a build or an install makes again: Archive done may delete them. */
 export const REGENERABLE = new Set(["node_modules", "dist", "build", "target", ".venv", "venv", "__pycache__", ".next", ".turbo", "coverage", ".cache"]);
 
-/** A worktree's ignored files and folders (`ls-files -o -i --directory`), as git lists them ("dir/" for a folder). */
-export async function ignoredIn(path: string, git: Git = runGit): Promise<string[] | undefined> {
-  const r = await git(path, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], 30_000);
-  if (!r.ok) return undefined;
-  const all = r.out.split("\0").filter(Boolean);
-  // A folder git lists beside what's ignored inside it ("pkg/" with "pkg/build/") adds nothing.
-  return all.filter((p) => !(p.endsWith("/") && all.some((q) => q !== p && q.startsWith(p))));
+/** An ignored file as it was: its size and modification time. */
+export type FileStamp = [size: number, mtimeMs: number];
+/** Ignored files by path (relative to the worktree), outside regenerable folders. */
+export type IgnoredFiles = Record<string, FileStamp>;
+
+/** At most this many ignored files are looked at; more: can't tell (the worktree is kept). */
+export const IGNORED_MAX = 20_000;
+
+const regenerable = (rel: string) => rel.replace(/\/$/, "").split("/").some((seg) => REGENERABLE.has(seg));
+
+/**
+ * A worktree's ignored files, each with its size and time, outside regenerable folders (which are
+ * never walked). Synchronous, so it can be taken at an exact moment (a setup's end, before anything
+ * waiting goes to the agent). git names the ignored paths (`ls-files -o -i --directory`, so an
+ * ignored folder is one entry); folders are then walked file by file, links not followed.
+ * Undefined: git failed, or there are more than IGNORED_MAX.
+ */
+export function ignoredFiles(path: string): IgnoredFiles | undefined {
+  const r = spawnSync("git", ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], { cwd: path, encoding: "utf8", timeout: 30_000, maxBuffer: 64 * 1024 * 1024, env: childEnv({ GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" }) });
+  if (r.status !== 0 || typeof r.stdout !== "string") return undefined;
+  const out: IgnoredFiles = {};
+  let n = 0;
+  const add = (rel: string): boolean => {
+    if (regenerable(rel)) return true;
+    let st;
+    try {
+      st = lstatSync(join(path, rel));
+    } catch {
+      return true;
+    }
+    if (st.isDirectory()) {
+      let names: string[];
+      try {
+        names = readdirSync(join(path, rel));
+      } catch {
+        return false;
+      }
+      return names.every((name) => add(`${rel.replace(/\/$/, "")}/${name}`));
+    }
+    if (++n > IGNORED_MAX) return false;
+    out[rel] = [st.size, st.mtimeMs];
+    return true;
+  };
+  for (const rel of r.stdout.split("\0").filter(Boolean)) if (!add(rel)) return undefined;
+  return out;
 }
 
 /**
- * The ignored files removing a worktree would lose: all but regenerable folders (anywhere in the
- * tree) and what was already there right after it was made and set up (`known`).
+ * The ignored files removing a worktree would lose: all but those in regenerable folders and those
+ * unchanged (same size and time) since it was made and set up (`known`). A file added or edited
+ * since, even inside a folder that was there, counts.
  */
-export function precious(ignored: string[], known: string[] = []): string[] {
-  const k = new Set(known);
-  return ignored.filter((p) => !k.has(p) && !p.replace(/\/$/, "").split("/").some((seg) => REGENERABLE.has(seg)));
+export function precious(now: IgnoredFiles, known: IgnoredFiles = {}): string[] {
+  return Object.entries(now)
+    .filter(([rel, [size, mtime]]) => {
+      const k = known[rel];
+      return !(Array.isArray(k) && k[0] === size && k[1] === mtime);
+    })
+    .map(([rel]) => rel)
+    .sort();
 }
 
 /**
@@ -267,11 +319,20 @@ export interface Setup {
   argv?: string[];
   /** a command, run by $SHELL -c */
   command?: string;
-  /** the script's text (shown before it's made) */
+  /** the script's text (shown before it's made), its first SETUP_TEXT_MAX characters */
   text?: string;
+  /** the text is cut short */
+  cut?: boolean;
+  /** which setup this is: the script's blob id, or a hash of the whole command ("what you saw") */
+  id: string;
 }
 
-const SETUP_TEXT_MAX = 2000;
+export const SETUP_TEXT_MAX = 2000;
+
+/** git's blob id of some bytes (what `git hash-object` gives in a SHA-1 repo). */
+const blobId = (b: Buffer) => createHash("sha1").update(`blob ${b.length}\0`).update(b).digest("hex");
+const commandId = (cmd: string) => `cmd:${createHash("sha256").update(cmd).digest("hex")}`;
+const shown = (text: string) => ({ text: text.slice(0, SETUP_TEXT_MAX), ...(text.length > SETUP_TEXT_MAX ? { cut: true } : {}) });
 
 const configCommand = (json: string): string | undefined => {
   try {
@@ -294,12 +355,13 @@ export function findSetup(...dirs: string[]): Setup | undefined {
     try {
       if (statSync(script).isFile()) {
         accessSync(script, constants.X_OK);
-        return { label: ".tether/setup", argv: [script], text: readFileSync(script, "utf8").slice(0, SETUP_TEXT_MAX) };
+        const bytes = readFileSync(script);
+        return { label: ".tether/setup", argv: [script], ...shown(bytes.toString("utf8")), id: `blob:${blobId(bytes)}` };
       }
     } catch {}
     try {
       const cmd = configCommand(readFileSync(join(dir, ".tether", "config.json"), "utf8"));
-      if (cmd) return { label: cmd, command: cmd };
+      if (cmd) return { label: cmd, command: cmd, id: commandId(cmd) };
     } catch {}
   }
   return undefined;
@@ -311,14 +373,14 @@ export function findSetup(...dirs: string[]): Setup | undefined {
  */
 export async function setupAt(main: string, ref: string, git: Git = runGit): Promise<Setup | undefined> {
   const tree = await git(main, ["ls-tree", ref, ".tether/setup", ".tether/config.json"]);
-  const mode = /^(\d+) blob \S+\t\.tether\/setup$/m.exec(tree.out)?.[1];
-  if (mode === "100755") {
-    const text = await git(main, ["cat-file", "blob", `${ref}:.tether/setup`]);
-    return { label: ".tether/setup", text: text.out.slice(0, SETUP_TEXT_MAX) };
+  const entry = /^(\d+) blob (\S+)\t\.tether\/setup$/m.exec(tree.out);
+  if (entry?.[1] === "100755") {
+    const text = await git(main, ["cat-file", "blob", entry[2]!]);
+    return { label: ".tether/setup", ...shown(text.out), id: `blob:${entry[2]}` };
   }
   if (/\t\.tether\/config\.json$/m.test(tree.out)) {
     const cmd = configCommand((await git(main, ["cat-file", "blob", `${ref}:.tether/config.json`])).out);
-    if (cmd) return { label: cmd, command: cmd };
+    if (cmd) return { label: cmd, command: cmd, id: commandId(cmd) };
   }
   return findSetup(main);
 }

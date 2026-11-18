@@ -56,12 +56,21 @@ export function ShellCard({ msg }: { msg: Msg }) {
     if (el && follow.current) el.scrollTop = el.scrollHeight;
   }, [output]);
 
+  /** a Re-run setup or Send anyway on its way: the buttons wait for it */
+  const [acting, setActing] = useState(false);
+  const actingNow = useRef(false);
   const act = async (f: () => Promise<unknown>) => {
+    if (actingNow.current) return;
+    actingNow.current = true;
+    setActing(true);
     setError(undefined);
     try {
       await f();
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      actingNow.current = false;
+      setActing(false);
     }
   };
 
@@ -139,8 +148,8 @@ export function ShellCard({ msg }: { msg: Msg }) {
         </div>
         {setupFailed && (
           <div className="t-shellcard-actions">
-            <Button label="Re-run setup" size="sm" variant="secondary" onClick={() => void act(() => rpc(runnerId, "rerunSetup", { sessionId }))} />
-            <Button label="Send anyway" size="sm" variant="secondary" onClick={() => void act(() => rpc(runnerId, "resumeQueue", { sessionId }))} />
+            <Button label="Re-run setup" size="sm" variant="secondary" isDisabled={acting} onClick={() => void act(() => rpc(runnerId, "rerunSetup", { sessionId }))} />
+            <Button label="Send anyway" size="sm" variant="secondary" isDisabled={acting} onClick={() => void act(() => rpc(runnerId, "resumeQueue", { sessionId }))} />
           </div>
         )}
       </div>

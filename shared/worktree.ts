@@ -23,7 +23,12 @@ export type WorkspaceInfo =
       setup?: string;
       /** .tether/setup's text, to show what will run */
       setupText?: string;
-      /** setupId of what's shown: newWorktreeSession's `expectSetup` */
+      /** setupText is only the script's start */
+      setupTextCut?: boolean;
+      /**
+       * which setup is shown ("" for none): the script's blob id, or a hash of the whole command.
+       * newWorktreeSession's `expectSetup`: a "what you saw is what runs" check, not a trust boundary
+       */
       setupId: string;
       /** the base is origin's: it's fetched right before the worktree is made; this is when it last was (ms) */
       fetchedAt?: number;
@@ -82,14 +87,6 @@ export function hashSlug(text: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193) >>> 0;
   return `wt-${h.toString(16).padStart(8, "0").slice(0, 6)}`;
-}
-
-/**
- * What identifies a setup as shown ("" for none): the dialog sends it back, and a create whose
- * fetched base has another setup is refused rather than running one nobody saw.
- */
-export function setupId(setup?: { label: string; text?: string; command?: string }): string {
-  return setup ? hashSlug(JSON.stringify([setup.label, setup.text ?? "", setup.command ?? ""])).slice(3) : "";
 }
 
 /** The folder name for a branch: its slug part ("tether/fix-login" -> "fix-login", "a/b" -> "a-b"). */

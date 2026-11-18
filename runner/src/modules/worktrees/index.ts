@@ -18,12 +18,13 @@
 import type { Module, ModuleContext, SessionActions } from "..";
 import type { OpArgs } from "../../../../shared/protocol";
 import type { WorkspaceInfo, WorktreeMade } from "../../../../shared/worktree";
-import { SETUP_MAX_MS, setupId } from "../../../../shared/worktree";
+import { SETUP_MAX_MS } from "../../../../shared/worktree";
 import type { WorktreeRecord } from "../../config";
-import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredIn, lastFetched, repoOf, runGit, setupAt, shaOf, undoAdd, worktreePath, type Git, type Setup } from "./git";
+import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredFiles, lastFetched, repoOf, runGit, setupAt, shaOf, undoAdd, worktreePath, type Git, type IgnoredFiles, type Setup } from "./git";
 
-/** At most this many ignored paths are remembered as there after setup. */
-const KNOWN_MAX = 500;
+/** At most this many ignored files are remembered as there after setup (more: the rest count as new). */
+const KNOWN_MAX = 5000;
+const capped = (k: IgnoredFiles): IgnoredFiles => Object.fromEntries(Object.entries(k).slice(0, KNOWN_MAX));
 
 export class Worktrees {
   /** creates in progress, by repo: one at a time, so two can't pick (or clean up) the same branch */
@@ -66,8 +67,8 @@ export class Worktrees {
       base,
       branch,
       path: worktreePath(repo.main, branch),
-      ...(setup ? { setup: setup.label, ...(setup.text ? { setupText: setup.text } : {}) } : {}),
-      setupId: setupId(setup),
+      ...(setup ? { setup: setup.label, ...(setup.text !== undefined ? { setupText: setup.text } : {}), ...(setup.cut ? { setupTextCut: true } : {}) } : {}),
+      setupId: setup?.id ?? "",
       ...(remote ? { remote: true } : {}),
       ...(fetchedAt ? { fetchedAt } : {}),
     };
@@ -103,7 +104,7 @@ export class Worktrees {
       if (!sha) throw new Error(`There's no ${base} to start from.`);
       const setup = await setupAt(repo.main, sha, this.git);
       // The setup shown in the dialog came from before this fetch: one nobody saw never runs.
-      if (typeof expectSetup === "string" && setupId(setup) !== expectSetup)
+      if (typeof expectSetup === "string" && (setup?.id ?? "") !== expectSetup)
         throw new Error(setup ? `The setup changed on origin since you looked. Nothing was made. It's now ${setup.text ? `.tether/setup:\n${setup.text}` : `\`${setup.label}\``}\nCheck it, then create again.` : "The setup changed on origin since you looked: there's none now. Nothing was made; create again.");
       // A terminal starts its TUI at once: nothing would wait for the setup.
       if (args.terminal && setup) throw new Error(`This repo has a setup (${setup.label}) that runs before the first message, which a terminal start can't wait for. Start it in Tether, or in This folder.`);
@@ -112,6 +113,8 @@ export class Worktrees {
       return { base, branch, path, sha, ...(fetched !== undefined ? { fetched } : {}) };
     });
     const { base, branch, path, sha } = made;
+    // What's ignored there before anyone works in it (a hook's output, say): Archive done may delete it while unchanged.
+    const known = ignoredFiles(path);
     let sessionId: string;
     try {
       ({ sessionId } = await this.o.newSession({ ...rest, projectPath: path }));
@@ -120,37 +123,52 @@ export class Worktrees {
       await undoAdd(repo.main, path, branch, sha, this.git);
       throw e;
     }
-    const known = await ignoredIn(path, this.git);
-    await this.o.sessions.setWorktree?.(sessionId, { path, branch, repo: repo.main, ...(known?.length ? { known: known.slice(0, KNOWN_MAX) } : {}) });
+    await this.o.sessions.setWorktree?.(sessionId, { path, branch, repo: repo.main, ...(known && Object.keys(known).length ? { known: capped(known) } : {}) });
     this.o.log?.(`${sessionId}: made worktree ${path} on ${branch} from ${base}${made.fetched === false ? " (fetch failed: as last fetched)" : ""}`);
     const setup = findSetup(path, repo.main);
     if (setup) await this.runSetup(sessionId, { path, branch, repo: repo.main }, setup);
     return { sessionId, path, branch, base, ...(setup ? { setup: setup.label } : {}), ...(made.fetched !== undefined ? { fetched: made.fetched } : {}) };
   }
 
-  /** Runs the setup as the session's card; when it ends, what it left (ignored) is remembered as the worktree's. */
+  /**
+   * Runs the setup as the session's card. When it ends, what it left (ignored files, with their
+   * size and time) is taken at once, before anything waiting goes to the agent, and remembered as
+   * the worktree's.
+   */
   private async runSetup(sessionId: string, rec: WorktreeRecord, setup: Setup) {
     if (!this.o.sessions.setup) return;
     const env = { TETHER_WORKTREE: rec.path, TETHER_REPO: rec.repo, TETHER_BRANCH: rec.branch };
-    const { done } = await this.o.sessions.setup(sessionId, setup.label, { ...(setup.argv ? { argv: setup.argv } : {}), env, maxMs: this.o.setupMs ?? SETUP_MAX_MS });
+    let after: IgnoredFiles | undefined;
+    const beforeRelease = () => void (after = ignoredFiles(rec.path));
+    const { done } = await this.o.sessions.setup(sessionId, setup.label, { ...(setup.argv ? { argv: setup.argv } : {}), env, maxMs: this.o.setupMs ?? SETUP_MAX_MS, beforeRelease });
     void done.then(async ({ ok, why }) => {
       this.o.log?.(`${sessionId}: setup ${ok ? "done" : `failed: ${why}`}`);
-      const known = await ignoredIn(rec.path, this.git);
       const now = this.o.sessions.worktree?.(sessionId);
-      if (known && now) await this.o.sessions.setWorktree?.(sessionId, { ...now, known: [...new Set([...(now.known ?? []), ...known])].slice(0, KNOWN_MAX) }).catch(() => {});
+      const had = now?.known && !Array.isArray(now.known) ? now.known : {};
+      if (after && now) await this.o.sessions.setWorktree?.(sessionId, { ...now, known: capped({ ...had, ...after }) }).catch(() => {});
     });
   }
 
   /** Re-run setup, after it failed (or a restart cut it off). */
   async rerun(sessionId: string) {
-    const rec = this.o.sessions.worktree?.(sessionId);
-    if (!rec) throw new Error("This session isn't in a worktree Tether made.");
-    const look = await this.o.sessions.open(sessionId);
-    if (look.state.setup !== "failed") throw new Error(look.state.setup === "running" ? "The setup is already running." : "The setup isn't waiting to run again.");
-    const setup = findSetup(rec.path, rec.repo);
-    if (!setup) throw new Error(`There's no setup in ${rec.path} any more.`);
-    await this.runSetup(sessionId, rec, setup);
+    // Claimed before anything waits: a double tap runs it once.
+    if (this.rerunning.has(sessionId)) throw new Error("The setup is already running.");
+    this.rerunning.add(sessionId);
+    try {
+      const rec = this.o.sessions.worktree?.(sessionId);
+      if (!rec) throw new Error("This session isn't in a worktree Tether made.");
+      const look = await this.o.sessions.open(sessionId);
+      if (look.state.setup !== "failed") throw new Error(look.state.setup === "running" ? "The setup is already running." : "The setup isn't waiting to run again.");
+      const setup = findSetup(rec.path, rec.repo);
+      if (!setup) throw new Error(`There's no setup in ${rec.path} any more.`);
+      await this.runSetup(sessionId, rec, setup);
+    } finally {
+      this.rerunning.delete(sessionId);
+    }
   }
+
+  /** sessions whose Re-run setup is on its way (until the setup has started) */
+  private rerunning = new Set<string>();
 }
 
 export const worktreesModule: Module = {
