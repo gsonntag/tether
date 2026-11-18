@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DIFF_FILE_LINES_MAX } from "../../../../shared/gitDiff";
+import { FRAME_BYTES_MAX, utf8Length } from "../../../../shared/limits";
 import { OpRegistry } from "../../core/ops";
 import { defaultBranch, gitDiff } from "./diff";
 import { gitModule } from ".";
@@ -152,7 +153,7 @@ test("caps: past the overall budget the rest show counts only; past the file cap
   sh(d, "add", ".");
   sh(d, "commit", "-qm", "three");
   for (const n of ["f1", "f2", "f3"]) writeFileSync(join(d, `${n}.txt`), "y\n".repeat(50));
-  const r = await gitDiff(d, "uncommitted", { totalBytes: 500 });
+  const r = await gitDiff(d, "uncommitted", { totalBytes: 800 });
   expect(r.files.map((f) => [f.path, f.tooLarge ?? "shown", f.added, f.removed])).toEqual([
     ["f1.txt", "shown", 50, 50],
     ["f2.txt", "total", 50, 50],
@@ -164,6 +165,81 @@ test("caps: past the overall budget the rest show counts only; past the file cap
   expect(few.more).toBe(2);
 });
 
+test("paths with spaces: tracked, renamed and untracked files all get their hunks", async () => {
+  const d = repo();
+  writeFileSync(join(d, "my notes.txt"), "a\nb\n");
+  writeFileSync(join(d, "old name.txt"), "1\n2\n3\n4\n5\n6\n");
+  sh(d, "add", ".");
+  sh(d, "commit", "-qm", "spaces");
+  writeFileSync(join(d, "my notes.txt"), "a\nB\n");
+  sh(d, "mv", "old name.txt", "new name.txt");
+  writeFileSync(join(d, "new name.txt"), "1\n2\n3\n4\n5\nsix\n");
+  writeFileSync(join(d, "fresh file.md"), "hi\n");
+  const f = byPath(await gitDiff(d, "uncommitted"));
+  expect(f["my notes.txt"]!.hunks?.[0]!.lines).toEqual([" a", "-b", "+B"]);
+  expect(f["new name.txt"]).toMatchObject({ status: "renamed", oldPath: "old name.txt" });
+  expect(f["new name.txt"]!.hunks).toBeDefined();
+  expect(f["fresh file.md"]!.hunks?.[0]!.lines).toEqual(["+hi"]);
+  expect(Object.values(f).some((x) => x.tooLarge)).toBe(false);
+});
+
+test("one file with a huge line is too large on its own; the files after it still show", async () => {
+  const d = repo();
+  writeFileSync(join(d, "a.min.js"), "x\n");
+  writeFileSync(join(d, "b.txt"), "b\n");
+  writeFileSync(join(d, "c.txt"), "c\n");
+  sh(d, "add", ".");
+  sh(d, "commit", "-qm", "three");
+  writeFileSync(join(d, "a.min.js"), "y".repeat(4 * 1024 * 1024) + "\n");
+  writeFileSync(join(d, "b.txt"), "B\n");
+  writeFileSync(join(d, "c.txt"), "C\n");
+  writeFileSync(join(d, "a0-new.min.js"), "z".repeat(2 * 1024 * 1024) + "\n");
+  const f = byPath(await gitDiff(d, "uncommitted"));
+  expect(f["a.min.js"]).toMatchObject({ tooLarge: "file", added: 1, removed: 1 });
+  expect(f["a0-new.min.js"]).toMatchObject({ tooLarge: "file", added: 1 });
+  expect(f["b.txt"]!.hunks).toBeDefined();
+  expect(f["c.txt"]!.hunks).toBeDefined();
+});
+
+test("CJK text: the answer stays inside a frame, measured in UTF-8 JSON", async () => {
+  const d = repo();
+  const text = (n: number) => Array.from({ length: 2500 }, (_, i) => `${n}:${i} ` + "漢字かなカナ한글".repeat(8)).join("\n") + "\n";
+  for (let n = 0; n < 5; n++) writeFileSync(join(d, `t${n}.txt`), "old\n");
+  sh(d, "add", ".");
+  sh(d, "commit", "-qm", "cjk");
+  for (let n = 0; n < 5; n++) writeFileSync(join(d, `t${n}.txt`), text(n));
+  for (let n = 0; n < 5; n++) writeFileSync(join(d, `u${n}.txt`), text(n + 5));
+  const r = await gitDiff(d, "uncommitted");
+  expect(r.files.filter((f) => f.hunks).length).toBeGreaterThan(0);
+  expect(r.files.filter((f) => f.tooLarge === "total").length).toBeGreaterThan(0);
+  expect(utf8Length(JSON.stringify(r))).toBeLessThan(FRAME_BYTES_MAX);
+  // Path order fills the budget: every shown file comes before every cut one.
+  const firstCut = r.files.findIndex((f) => f.tooLarge === "total");
+  expect(r.files.slice(firstCut).every((f) => !f.hunks)).toBe(true);
+});
+
+test("odd names: '-', a path both deleted and untracked, a name that isn't UTF-8", async () => {
+  const d = repo();
+  writeFileSync(join(d, "-"), "dash\n");
+  sh(d, "rm", "-q", "--cached", "a.txt");
+  writeFileSync(Buffer.from([...Buffer.from(join(d, "bad-")), 0xff, 0x2e, 0x74]), "x\n");
+  const r = await gitDiff(d, "uncommitted");
+  const dash = r.files.find((f) => f.path === "-");
+  expect(dash!.hunks?.[0]!.lines).toEqual(["+dash"]);
+  expect(r.files.filter((f) => f.path === "a.txt").map((f) => f.status).sort()).toEqual(["deleted", "untracked"]);
+  const bad = r.files.find((f) => f.path.startsWith("bad-"));
+  expect(bad).toMatchObject({ badPath: true });
+  expect(bad!.hunks).toBeUndefined();
+});
+
+test("out of time: the files not reached show their counts only", async () => {
+  const d = repo();
+  writeFileSync(join(d, "a.txt"), "x\n");
+  const r = await gitDiff(d, "uncommitted", { timeMs: 0 });
+  expect(r.timedOut).toBe(true);
+  expect(r.files[0]).toMatchObject({ path: "a.txt", tooLarge: "total", added: 1 });
+});
+
 test("the gitDiff op: the session's folder, a bad scope refused", async () => {
   const d = repo();
   writeFileSync(join(d, "a.txt"), "x\n");
@@ -173,4 +249,5 @@ test("the gitDiff op: the session's folder, a bad scope refused", async () => {
   const r = await ops.handle("gitDiff", { sessionId: "s", scope: "uncommitted" });
   expect(r.ok && (r.data as { files: unknown[] }).files.length).toBe(1);
   expect(await ops.handle("gitDiff", { sessionId: "s", scope: "everything" })).toEqual({ ok: false, error: "Unknown diff scope." });
+  expect(await ops.handle("gitDiff", { sessionId: 5, scope: "uncommitted" })).toEqual({ ok: false, error: "sessionId is required." });
 });

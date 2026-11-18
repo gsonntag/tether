@@ -88,6 +88,7 @@ export function createRunner(o: RunnerOptions) {
     protocol: PROTOCOL_VERSION,
     harnesses: await harnesses,
     ...(o.homeFolder ? { homeFolder: o.homeFolder } : {}),
+    git: true,
   });
 
   const conn = new Connection({

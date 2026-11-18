@@ -56,6 +56,9 @@ describe("wire", () => {
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, homeFolder: "/home/me/.config/tether/home" } })) as any).runner.homeFolder).toBe("/home/me/.config/tether/home");
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, homeFolder: 3 } })) as any).runner.homeFolder).toBeUndefined();
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, homeFolder: "rel" } })) as any).runner.homeFolder).toBeUndefined();
+    // The git module's flag is kept; anything but true is dropped.
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, git: true } })) as any).runner.git).toBe(true);
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, git: "yes" } })) as any).runner.git).toBeUndefined();
     for (const bad of [{ id: "x" }, { ...runner, harnesses: "no" }, { ...runner, protocol: "1" }, { ...runner, hostname: 3 }, { ...runner, id: "" }, null])
       expect(parseRunnerMessage(JSON.stringify({ t: "hello", runner: bad }))).toBeNull();
   });

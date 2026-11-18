@@ -5,6 +5,11 @@
 // Scopes: `uncommitted` is the working tree and index against HEAD, untracked files included;
 // `branch` is everything since the merge base with the default branch, committed or not. A Turn
 // scope (checkpoints) adds a scope here and a range in the runner's git module, not a new shape.
+//
+// Sizes are what the text costs in the answer's JSON (UTF-8, escaped: shared/limits.ts jsonBytes),
+// since that is what a frame is measured in.
+
+import { jsonBytes } from "./limits";
 
 export type DiffScope = "uncommitted" | "branch";
 export const DIFF_SCOPES: readonly { id: DiffScope; label: string }[] = [
@@ -34,6 +39,8 @@ export interface DiffFile {
   added: number;
   removed: number;
   binary?: true;
+  /** its name isn't UTF-8: it can't be shown or looked up by name */
+  badPath?: true;
   /** no hunks: the file alone is over the caps, or the diff as a whole is ("total") */
   tooLarge?: "file" | "total";
   /** none when binary or too large */
@@ -53,16 +60,22 @@ export interface GitDiff {
   files: DiffFile[];
   /** files left out past DIFF_FILES_MAX */
   more?: number;
+  /** git ran out of time: the files not reached show their counts only ("total") */
+  timedOut?: true;
   added: number;
   removed: number;
 }
 
 /** A file with more changed lines than this shows its counts only. */
 export const DIFF_FILE_LINES_MAX = 3000;
-/** Nor a file whose hunks come to more than this (UTF-16 code units, near enough bytes). */
+/** Nor a file whose hunks come to more than this, in JSON bytes. */
 export const DIFF_FILE_BYTES_MAX = 512 * 1024;
-/** Hunks across all files: past this, the rest show their counts only (well inside a frame). */
-export const DIFF_TOTAL_BYTES_MAX = 1536 * 1024;
+/** Hunks across all files, in JSON bytes: past this, the rest show their counts only (inside a 4 MB frame). */
+export const DIFF_TOTAL_BYTES_MAX = 3 * 1024 * 1024;
+/** What one line costs in the answer beyond its text: quotes and a comma. */
+const LINE_COST = 3;
+/** A path git printed from bytes that aren't UTF-8. */
+export const isBadPath = (p: string) => p.includes("\uFFFD");
 /** Files listed at most. */
 export const DIFF_FILES_MAX = 1000;
 
@@ -116,7 +129,12 @@ export function parseNumstat(out: string): Map<string, { added: number; removed:
   for (let i = 0; i < t.length; ) {
     const rec = t[i++];
     if (!rec) continue;
-    const [a, r, p] = rec.split("\t");
+    // Only the first two tabs separate: a path may hold tabs.
+    const t1 = rec.indexOf("\t");
+    const t2 = rec.indexOf("\t", t1 + 1);
+    const a = rec.slice(0, t1);
+    const r = rec.slice(t1 + 1, t2);
+    const p = rec.slice(t2 + 1);
     // A rename: the paths follow as their own fields, old then new.
     const path = p ? p : (i++, t[i++]!);
     m.set(path, { added: a === "-" ? 0 : Number(a) || 0, removed: r === "-" ? 0 : Number(r) || 0, binary: a === "-" });
@@ -134,7 +152,7 @@ export interface PatchFile {
   removed: number;
   binary: boolean;
   hunks: DiffHunk[];
-  /** the hunks' text length */
+  /** what the hunks cost in JSON bytes */
   size: number;
   /** cut off where the output ended */
   partial: boolean;
@@ -152,6 +170,9 @@ function gitLinePath(rest: string): string | undefined {
   const n = (rest.length - 5) / 2;
   return Number.isInteger(n) && n > 0 ? rest.slice(0, 2 + n) : undefined;
 }
+
+/** A ---/+++ path: git ends one with a space in it with a tab. */
+const headerPath = (s: string) => unquote(s.endsWith("\t") ? s.slice(0, -1) : s);
 
 const strip = (p: string, prefix: string) => (p.startsWith(prefix) ? p.slice(prefix.length) : p);
 
@@ -173,7 +194,7 @@ export function parsePatch(out: string): PatchFile[] {
   let named = false;
   const finish = () => {
     if (!f) return;
-    if (!named) {
+    if (!named && !f.path) {
       const p = plus && plus !== "/dev/null" ? strip(plus, "b/") : minus && minus !== "/dev/null" ? strip(minus, "a/") : undefined;
       if (p) f.path = p;
     }
@@ -186,7 +207,7 @@ export function parsePatch(out: string): PatchFile[] {
       const op = l[0] ?? " ";
       if (op === "\\") {
         hunk.lines.push(l);
-        f!.size += l.length + 1;
+        f!.size += jsonBytes(l) + LINE_COST;
         continue;
       }
       if (op === "+") (newLeft--, f!.added++);
@@ -194,7 +215,7 @@ export function parsePatch(out: string): PatchFile[] {
       else (oldLeft--, newLeft--);
       const line = l === "" ? " " : l;
       hunk.lines.push(line);
-      f!.size += line.length + 1;
+      f!.size += jsonBytes(line) + LINE_COST;
       continue;
     }
     hunk = undefined;
@@ -213,9 +234,9 @@ export function parsePatch(out: string): PatchFile[] {
       oldLeft = hunk.oldLines;
       newLeft = hunk.newLines;
       f.hunks.push(hunk);
-      f.size += l.length + 1;
-    } else if (l.startsWith("--- ")) minus = unquote(l.slice(4));
-    else if (l.startsWith("+++ ")) plus = unquote(l.slice(4));
+      f.size += jsonBytes(l) + 64;
+    } else if (l.startsWith("--- ")) minus = headerPath(l.slice(4));
+    else if (l.startsWith("+++ ")) plus = headerPath(l.slice(4));
     else if (l.startsWith("new file mode")) f.status = "added";
     else if (l.startsWith("deleted file mode")) f.status = "deleted";
     else if (l.startsWith("rename from ") || l.startsWith("copy from ")) {

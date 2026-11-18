@@ -46,7 +46,23 @@ export async function git(cwd: string, args: string[], opts: GitOpts = {}): Prom
       stdout: "pipe",
       stderr: "pipe",
       // The folder decides the repo: nothing inherited points git elsewhere.
-      env: childEnv({ GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GIT_PAGER: "cat", LC_ALL: "C", GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined, GIT_EXTERNAL_DIFF: undefined }),
+      // No lazy fetch: a partial clone never goes to the network for a diff.
+      env: childEnv({
+        GIT_OPTIONAL_LOCKS: "0",
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_NO_LAZY_FETCH: "1",
+        GIT_PAGER: "cat",
+        LC_ALL: "C",
+        GIT_DIR: undefined,
+        GIT_WORK_TREE: undefined,
+        GIT_INDEX_FILE: undefined,
+        GIT_OBJECT_DIRECTORY: undefined,
+        GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
+        GIT_COMMON_DIR: undefined,
+        GIT_EXTERNAL_DIFF: undefined,
+        GIT_CONFIG_PARAMETERS: undefined,
+        GIT_CONFIG_COUNT: undefined,
+      }),
     });
   } catch (e) {
     throw new GitError((e as NodeJS.ErrnoException).code === "ENOENT" ? "The session's folder isn't there, or git isn't installed." : String((e as Error).message), -1, "");
