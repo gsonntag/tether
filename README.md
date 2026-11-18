@@ -30,6 +30,9 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
   harness's own commands and skills. Text starting with `!` runs a shell command in the session's
   folder right away, and its card has a Stop button. You can attach images and files by pasting,
   dropping, the file picker or the camera.
+- **Send later** (SPEC §9): schedule a message from the send menu (in 1 hour, tonight, tomorrow
+  morning or any time). It waits in the queue with its time, survives runner restarts (sent late on
+  start, or held for you if it's over a day late), and can be edited, sent now or cancelled.
 - **Requests** (SPEC §7): permission prompts, questions and plans go to every device watching the
   session, and the first answer wins. A plan opens in a review view where you can comment on it.
 - **Stop a running command:** while the agent waits on a shell command, a Stop button on the

@@ -620,7 +620,22 @@ Later, a Claude `PreToolUse` hook can route terminal approvals through the same 
   Background work doesn't hold it: "this turn" is the main agent's (§6a).
 - A steer can't be taken back once the harness has it.
 - Desktop keys: Enter send or steer, Tab queue (when the box has text), ⌘/Ctrl+Enter stop and send now,
-  Shift+Enter newline, Esc stop (empty box). On phones Enter is a newline and buttons send.
+  Alt+Enter send later, Shift+Enter newline, Esc stop (empty box). On phones Enter is a newline and buttons send.
+- **Scheduled sends.** **Send later…** in the send menu (the phone's + menu; Alt+Enter) opens a picker
+  above the box: in 1 hour, tonight 9 PM, tomorrow 9 AM (this morning before 5 AM), or a custom
+  date/time, in the browser's time zone, sent as an absolute time (`queue` with `at`, at most a year
+  ahead). The message waits in the queue (`QueuedMessage.at`, runner.json) as a **Scheduled** group,
+  soonest first, with its time; any device can edit its text and time, send it now or cancel it
+  (`scheduleQueued`: a new time, or null for now). It is apart from the rest of the queue: it never
+  holds or releases the other messages, and holds (Stop, a failed turn, a restart) are about them, so
+  when due it goes next even if they're paused. It does wait for a running turn or request, the
+  terminal (Back to Tether), the quiet wait after a restart and a rate limit retry. It goes through
+  the normal send path (same source and checks); a send that fails says why and keeps the message,
+  waiting for you (`held`). One timer serves all, armed for the next time and never longer than a
+  minute, so long waits and clock jumps (sleep, NTP) are safe. Due while the runner was off: sent
+  on start with a notice ("It was for 9:00 PM; sent at 9:14 PM", whenever it goes 2+ minutes late);
+  more than 24 hours late: held for you instead. Home lists a session with one scheduled last, as
+  Scheduled with its time; one held for you is a paused queue (Needs you).
 - **Shell commands** (P5b): text starting with `!` is a shell command (below).
 - **Attachments** (images and files, by paste, drop, picker or camera) are in the core because phone
   screenshots are a main use. Chunks go over RPC and are stored under
