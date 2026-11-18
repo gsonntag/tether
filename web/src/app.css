@@ -1410,6 +1410,15 @@
   gap: 4px 16px;
   align-items: center;
 }
+/* New session's Workspace: this folder, or a new worktree (SPEC §4). */
+.t-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.t-ws-note {
+  overflow-wrap: anywhere;
+}
 /* A setting that can't be changed here now (a handoff TUI drives). */
 .t-chip-off {
   opacity: 0.6;

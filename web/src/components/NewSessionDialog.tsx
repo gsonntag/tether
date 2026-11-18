@@ -4,6 +4,7 @@ import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { findModel, modelLabel, prettyModel } from "../../../shared/labels";
 import type { BillingSource, SourceChoices } from "../../../shared/credentials";
 import type { ActiveClone, FolderCheck } from "../../../shared/protocol";
+import type { WorkspaceInfo } from "../../../shared/worktree";
 import { CLAUDE_UNSET, HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { CHECK_DELAY_MS, folderBlocked } from "../folderCheck";
@@ -63,6 +64,10 @@ export function NewSessionDialog() {
   const [adding, setAdding] = useState(false);
   /** a clone still running from before the dialog was closed: Add project opens on it */
   const [resume, setResume] = useState<ActiveClone>();
+  /** whether the folder is in git, and what New worktree would make there (SPEC §4); nothing: not offered */
+  const [ws, setWs] = useState<WorkspaceInfo>();
+  const [workspace, setWorkspace] = useState<"folder" | "worktree">("folder");
+  const [branch, setBranch] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   /** what's there to bill to. Nothing from an older runner: no picker, and the runner decides */
@@ -117,6 +122,19 @@ export function NewSessionDialog() {
     return () => clearTimeout(t);
   }, [open, rid, typed]);
 
+  // An existing folder: is it in git? (A runner too old to say: no Workspace choice.)
+  const existing = check?.state === "exists" ? check.path : undefined;
+  useEffect(() => {
+    setWs(undefined);
+    if (!open || !rid || !existing) return;
+    let gone = false;
+    void rpc(rid, "workspaceInfo", { projectPath: existing })
+      .then((w) => !gone && setWs(w))
+      .catch(() => {});
+    return () => void (gone = true);
+  }, [open, rid, existing]);
+  const inWorktree = workspace === "worktree" && !!ws?.git;
+
   const shown = useMemo(() => {
     const q = path.trim().toLowerCase();
     const list = q ? projects.filter((p) => p.path.toLowerCase().includes(q) || p.name.toLowerCase().includes(q)) : projects;
@@ -133,13 +151,18 @@ export function NewSessionDialog() {
       if (folderBlocked(check ?? (await checkPath(checkId.current)), createFolder)) return;
       // Enter before the sources came back: what's shown first is what starts.
       const billTo = source ?? (await sourcesAsked.current)?.default;
-      const { sessionId } = await rpc(rid, "newSession", { harness, projectPath: typed, ...(billTo ? { source: billTo } : {}), ...(check?.state === "missing" && createFolder ? { createFolder: true } : {}), ...(deployments ? { model: deployment } : modelOk && model !== "default" ? { model } : {}), permissionMode: validMode, ...(inTerminal ? { terminal: true } : {}) });
+      const common = { harness, projectPath: typed, ...(billTo ? { source: billTo } : {}), ...(deployments ? { model: deployment } : modelOk && model !== "default" ? { model } : {}), permissionMode: validMode, ...(inTerminal ? { terminal: true } : {}) };
+      const { sessionId } = inWorktree
+        ? await rpc(rid, "newWorktreeSession", { ...common, ...(branch.trim() ? { branch: branch.trim() } : {}) })
+        : await rpc(rid, "newSession", { ...common, ...(check?.state === "missing" && createFolder ? { createFolder: true } : {}) });
       try {
         localStorage.setItem(modeKey(harness), validMode);
         localStorage.setItem(HARNESS_KEY, harness);
       } catch {}
       close();
       setPath("");
+      setBranch("");
+      setWorkspace("folder");
       if (inTerminal) openTerminalOf(rid, sessionId);
       else focusComposerOf(rid, sessionId);
       openSession(rid, sessionId);
@@ -222,6 +245,38 @@ export function NewSessionDialog() {
           </div>
         )}
         {check?.error && !(check.state === "relative" && shown.length > 0) && <div className="t-form-error">{check.error}</div>}
+        {ws?.git && !adding && (
+          <div className="t-workspace">
+            <span className="t-field-label" id="t-new-ws">
+              Workspace
+            </span>
+            <div className="t-seg" role="radiogroup" aria-labelledby="t-new-ws">
+              {(["folder", "worktree"] as const).map((w) => (
+                <button type="button" role="radio" aria-checked={workspace === w} key={w} className={`t-seg-opt${workspace === w ? " on" : ""}`} onClick={() => setWorkspace(w)}>
+                  {w === "folder" ? "This folder" : "New worktree"}
+                </button>
+              ))}
+            </div>
+            {inWorktree && (
+              <>
+                <label>
+                  <span className="t-field-label">Branch</span>
+                  <input className="t-search" placeholder={ws.branch} value={branch} autoComplete="off" spellCheck={false} onChange={(e) => setBranch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void create()} />
+                </label>
+                <span className="t-inline-status t-ws-note">
+                  A new folder beside the repo, from {ws.base}
+                  {ws.setup ? (
+                    <>
+                      . Runs <code>{ws.setup}</code> there first; your first message waits for it.
+                    </>
+                  ) : (
+                    "."
+                  )}
+                </span>
+              </>
+            )}
+          </div>
+        )}
         {adding && rid && (
           <AddProject
             key={resume?.cloneId ?? "new"}

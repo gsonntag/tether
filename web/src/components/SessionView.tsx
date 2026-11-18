@@ -332,7 +332,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             agent={agent}
             uploadTo={{ runnerId, sessionId }}
             loadCommands={view.capabilities?.commands ? () => rpc(runnerId, "listCommands", { sessionId }).then((r) => r.commands) : undefined}
-            shell={{ folder: summary.projectPath, heldBy: state.restartWait ? "restartWait" : state.queueHeld ? state.queueHeldBy : undefined }}
+            shell={{ folder: summary.projectPath, heldBy: state.restartWait ? "restartWait" : state.setup === "running" ? "setupRunning" : state.queueHeld ? state.queueHeldBy : undefined }}
             onSend={async (kind, text, list) => {
               const attachments = list.length ? { attachments: list } : {};
               // A `!` command: runs now, whatever the agent does (SPEC §9 Shell commands).

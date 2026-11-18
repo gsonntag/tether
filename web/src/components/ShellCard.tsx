@@ -1,6 +1,7 @@
 // A `!` command you ran from the composer (SPEC §9 Shell commands): the command, its output as it
 // streams, how it ended, and where the output is on its way to the agent:
 //   Running ──► Waiting in queue ──► Sent to Claude        (or Not sent, with why)
+// A new worktree's setup (SPEC §4) is one too, whose output stays here: Running ──► Setup done (or failed).
 
 import { useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
@@ -19,6 +20,7 @@ const HELD: Record<NonNullable<LiveState["queueHeldBy"]>, string> = {
   stopped: "paused after Stop",
   failed: "paused after a failed turn",
   restart: "paused after a restart",
+  setup: "held for the worktree's setup",
 };
 
 export function ShellCard({ msg }: { msg: Msg }) {
@@ -59,8 +61,13 @@ export function ShellCard({ msg }: { msg: Msg }) {
   const running = run.state === "running";
   const ended = running ? undefined : endedHow(run);
   const failed = !running && (run.stopped || run.cutOff || !!run.signal || (run.exitCode ?? 0) !== 0);
-  const where =
-    run.state === "running"
+  const where = run.setup
+    ? running
+      ? "Setting up the new worktree · your first message waits for it"
+      : failed
+        ? "Setup failed · your message waits: send it anyway, or send something new"
+        : "Setup done"
+    : run.state === "running"
       ? `Running · the output goes to ${agent} when it finishes`
       : run.state === "queued"
         ? `Waiting in queue · goes to ${agent} ${held ? `(${held})` : busy ? "when this turn ends" : "next"}`
@@ -72,7 +79,7 @@ export function ShellCard({ msg }: { msg: Msg }) {
     <div className="t-msg shellrun" data-state={run.state}>
       <div className={`t-shellcard${failed ? " failed" : ""}`}>
         <div className="t-shellcard-head">
-          <span className="t-shellcard-who">You ran</span>
+          <span className="t-shellcard-who">{run.setup ? "Worktree setup" : "You ran"}</span>
           <code className="t-shellcard-cmd" title={tool?.command}>
             <span aria-hidden>$ </span>
             {tool?.command}
@@ -104,7 +111,7 @@ export function ShellCard({ msg }: { msg: Msg }) {
         )}
         {(run.omitted ?? 0) > 0 && !running && (
           <div className="t-shellcard-note">
-            {formatSize(run.bytes ?? 0)} of output; the middle {formatSize(run.omitted!)} isn't kept. {agent} gets the start and the end.
+            {formatSize(run.bytes ?? 0)} of output; the middle {formatSize(run.omitted!)} isn't kept.{run.setup ? "" : ` ${agent} gets the start and the end.`}
           </div>
         )}
         {error && <div className="t-inline-status error">{error}</div>}
