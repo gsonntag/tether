@@ -96,3 +96,15 @@ test("a folder can't be held while a session in it works", async () => {
   go();
   await sending;
 });
+
+test("holding a folder holds a session whose folder holds it", async () => {
+  const { adapter, live, core } = setup();
+  const parent = mkdtempSync(join(tmpdir(), "tether-holdp-"));
+  mkdirSync(join(parent, "repo"));
+  adapter.addStored("up", [], { projectPath: parent });
+  await core.open("claude:up");
+  const release = live.holdFolder(join(parent, "repo"), "Restoring files…");
+  expect(live.heldWhy("claude:up")).toBe("Restoring files…");
+  release();
+  expect(live.heldWhy("claude:up")).toBeUndefined();
+});

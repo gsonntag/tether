@@ -704,21 +704,19 @@ export class LiveControl {
     const s = this.core.sessions.get(id);
     if (!s || s.summary.parentSessionId) return undefined;
     const p = realOf(s.summary.projectPath);
-    for (const [root, why] of this.heldFolders) if (p === root || p.startsWith(root.endsWith("/") ? root : `${root}/`)) return why;
+    for (const [root, why] of this.heldFolders) if (overlaps(p, root)) return why;
     return undefined;
   }
 
   /**
-   * Holds every main session whose folder is in `folder`, loaded or not, and any made there meanwhile
-   * (a checkpoint restore changing a repo's files): as `hold`. Refused while one there is working.
+   * Holds every main session whose folder is in `folder` or holds it (its agent can edit it there),
+   * loaded or not, and any made there meanwhile (a checkpoint restore changing a repo's files): as
+   * `hold`. Refused while one of them is working.
    */
   holdFolder(folder: string, why: string): () => void {
     const root = realOf(folder);
     if (this.heldFolders.has(root)) throw new Error(this.heldFolders.get(root));
-    const inside = (s: Session) => {
-      const p = realOf(s.summary.projectPath);
-      return !s.summary.parentSessionId && (p === root || p.startsWith(root.endsWith("/") ? root : `${root}/`));
-    };
+    const inside = (s: Session) => !s.summary.parentSessionId && overlaps(realOf(s.summary.projectPath), root);
     for (const s of this.core.sessions.values()) {
       if (inside(s) && (s.state.status !== "idle" || s.sending || s.starting)) throw new Error(`“${s.summary.title || AGENT_NAMES[s.summary.harness]}” is working.`);
     }
@@ -1952,4 +1950,10 @@ function realOf(p: string): string {
   } catch {
     return p;
   }
+}
+
+/** One folder is the other or inside it, either way round. */
+function overlaps(a: string, b: string): boolean {
+  const under = (x: string, y: string) => x === y || x.startsWith(y.endsWith("/") ? y : `${y}/`);
+  return under(a, b) || under(b, a);
 }
