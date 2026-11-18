@@ -251,7 +251,7 @@ export function createRunner(o: RunnerOptions) {
         list: () => core.book.list(),
         archived: async () => (await core.listSessions({ archived: true, limit: 2000 })).sessions,
         folder: (path: string) => core.folder(path),
-        hold: (id: string, why: string) => live.hold(id, why),
+        holdFolder: (folder: string, why: string) => live.holdFolder(folder, why),
         queue: (id: string, text: string, attachments: Attachment[] = []) => (live.attachments.markUsed(attachments), live.queue.add(id, text, attachments)),
         recent: async (id: string, limit: number) => {
           const s = await core.open(id);
