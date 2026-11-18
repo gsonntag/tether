@@ -43,7 +43,8 @@ export function BillingMarker({ billing }: { billing?: Billing }) {
 }
 
 /** `canPin`: its runner takes pinSession (runners.ts canPin). */
-export function SessionRow({ row, now, selected, child, runnerLabel, canPin }: { row: Row; now: number; selected: boolean; child?: boolean; runnerLabel?: string; canPin?: boolean }) {
+/** `hideProject`: shown under its project's subheader (Recent), so the meta line leaves it out. */
+export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hideProject }: { row: Row; now: number; selected: boolean; child?: boolean; runnerLabel?: string; canPin?: boolean; hideProject?: boolean }) {
   const close = () => useStore.setState({ sidebarOpen: false });
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleBusy, setTitleBusy] = useState(false);
@@ -180,8 +181,8 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin }: {
         </span>
         <span className="t-row-meta">
           {child ? <span>{row.agentType ?? "subagent"}</span> : <HarnessGlyph harness={row.harness} />}
-          {!child && <span className="t-proj">{folderName(row.projectPath)}</span>}
-          {runnerLabel && <span className="t-proj">· {runnerLabel}</span>}
+          {!child && !hideProject && <span className="t-proj">{folderName(row.projectPath)}</span>}
+          {runnerLabel && <span className="t-proj">{hideProject ? "" : "· "}{runnerLabel}</span>}
           <span>· {shortAgo(row.updatedAt, now)}</span>
           {archived && <span className="t-archived">· Archived</span>}
           {row.missing && <span className="t-archived">· Not found on this computer</span>}

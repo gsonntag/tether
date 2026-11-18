@@ -39,3 +39,10 @@ test("a pinned session its runner can't find: dimmed, marked, no archive, still 
   expect(html).toMatch(/class="t-row-open"[^>]*disabled=""/);
   expect(html).toContain('aria-pressed="true"');
 });
+
+test("under a project's subheader the row leaves the project out", () => {
+  expect(render(row())).toContain('<span class="t-proj">web</span>');
+  const grouped = renderToStaticMarkup(<SessionRow row={row()} now={2} selected={false} canPin hideProject runnerLabel="box" />);
+  expect(grouped).not.toContain('<span class="t-proj">web</span>');
+  expect(grouped).toContain('<span class="t-proj">box</span>');
+});

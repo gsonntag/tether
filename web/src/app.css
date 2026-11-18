@@ -59,6 +59,29 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.t-group-head {
+  all: unset;
+  box-sizing: border-box;
+  display: block;
+  padding: 8px 8px 2px;
+  font-size: 12px;
+  color: var(--t-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  border-radius: var(--radius-element, 6px);
+}
+.t-group-head:hover {
+  color: var(--color-text-primary);
+}
+.t-group-head:focus-visible {
+  outline: 2px solid var(--color-accent);
+}
+/* touch: a finger-sized target, the text as small as on desktop */
+@media (hover: none), (pointer: coarse) {
+  .t-group-head { padding-top: 16px; min-height: 32px; } /* 16 + 12px text + 2 + line gap */
+}
 .t-rows {
   display: flex;
   flex-direction: column;
