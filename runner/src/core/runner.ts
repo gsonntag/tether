@@ -260,7 +260,7 @@ export function createRunner(o: RunnerOptions) {
           // The session's own source, as its next start would use it: a missing key stops here.
           const credential = live.credentialFor(s.summary.harness, live.sourceOf(s), live.deploymentOf(s));
           // On a key, what it cost goes in the session's API ledger with its turns'.
-          const onCost = credential && credential.source !== "subscription" ? (c: SessionCost) => live.sideCost(s, c) : undefined;
+          const onCost = credential && credential.source !== "subscription" ? (c: SessionCost) => void live.sideCost(s.id, c) : undefined;
           return adapter.ask(s.summary.projectPath, prompt, { ...opts, ...(credential ? { credential } : {}), ...(onCost ? { onCost } : {}) });
         },
         holdFolder: (folder: string, why: string) => live.holdFolder(folder, why),

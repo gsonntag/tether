@@ -1498,9 +1498,18 @@ export class LiveControl {
    * one running report of its own in the session's API ledger (SPEC "API session dollars"). A query
    * whose spend wasn't reported leaves that report, and so the total, partial.
    */
-  sideCost(s: Session, spent: SessionCost) {
+  async sideCost(id: string, spent: SessionCost) {
     const costs = this.opts.costs;
-    if (!costs || s.summary.parentSessionId) return;
+    if (!costs) return;
+    // Looked up now, not when the query started: the session may have been unloaded or reloaded since.
+    const s = this.core.sessions.get(id) ?? (await this.core.open(id).catch(() => undefined));
+    if (!s) {
+      try {
+        costs.report(id, "side-queries", addSideCost(costs.reportOf(id, "side-queries"), spent));
+      } catch {}
+      return;
+    }
+    if (s.summary.parentSessionId) return;
     try {
       this.startCost(s);
       const cost = costs.report(s.id, "side-queries", addSideCost(costs.reportOf(s.id, "side-queries"), spent));
