@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { forkPoints, wholeForkPoint } from "../../../../shared/fork";
 import { setConnector } from "./daemon";
 import { codexFork, forkTurn } from "./fork";
+import { FORK_SOURCE_GONE, forkError } from "./forkGone";
 import { historyMsgs } from "./items";
 import { remember, remembered, rememberIn } from "./remember";
 import { CodexRpc } from "./rpc";
@@ -13,12 +14,12 @@ const ORIG = "01a187c7-9ae6-7631-b0cc-596277bb8c13";
 const TURNS: any[] = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "approval-steer-turns.json"), "utf8"));
 
 /** A scripted daemon with threads: thread/fork copies turns through lastTurnId, as the real one does. */
-function daemon(fail?: string) {
+function daemon(fail?: string, message = `${fail} failed`) {
   const threads = new Map<string, any[]>([[ORIG, TURNS]]);
   const sent: any[] = [];
   const rpc = new CodexRpc();
   const answer = (method: string, p: any): unknown => {
-    if (method === fail) throw new Error(`${method} failed`);
+    if (method === fail) throw new Error(message);
     if (method === "thread/read") return { thread: { id: p.threadId, cwd: "/p", status: { type: "idle" } } };
     if (method === "thread/turns/list") return { data: threads.get(p.threadId) ?? [], nextCursor: null };
     if (method === "thread/fork") {
@@ -123,5 +124,19 @@ describe("forking a Codex thread", () => {
     const d = daemon();
     await codexFork.discard!("fork-9", "/p");
     expect(d.calls("thread/archive")).toEqual([{ threadId: "fork-9" }]);
+  });
+});
+
+describe("a fork whose original rollout was removed", () => {
+  test("opening it says so plainly, as does reading its history", async () => {
+    rememberIn(undefined);
+    const { CodexDriver } = await import("./driver");
+    const { TestSink } = await import("./testSink");
+    const { threadTurns } = await import("./discovery");
+    daemon("thread/resume", "thread/resume failed: missing source rollout");
+    await expect(CodexDriver.open("fork-1", "/tmp", {}, new TestSink() as any, true)).rejects.toThrow(FORK_SOURCE_GONE);
+    daemon("thread/turns/list", "missing source rollout");
+    await expect(threadTurns("fork-1")).rejects.toThrow(FORK_SOURCE_GONE);
+    expect(forkError(new Error("other"))).toEqual(new Error("other"));
   });
 });

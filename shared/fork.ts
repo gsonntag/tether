@@ -61,3 +61,15 @@ export function wholeForkPoint(msgs: Msg[], running: boolean): { upTo?: string }
   for (let i = msgs.length - 1; i >= 0; i--) if (points.has(msgs[i]!.id)) return { upTo: msgs[i]!.id };
   return undefined;
 }
+
+/**
+ * What a whole fork's notice adds when it stops short of the end (`upTo`, from wholeForkPoint): the
+ * turn after it that it leaves out, and why. Undefined when it took everything.
+ */
+export function leftOutNote(msgs: Msg[], upTo: string | undefined, running: boolean): string | undefined {
+  if (!upTo) return undefined;
+  const after = msgs.slice(msgs.findIndex((m) => m.id === upTo) + 1).filter((m) => m.role !== "notice");
+  if (!after.length) return undefined;
+  const why = running ? "running" : after.some((m) => m.role === "assistant" && m.error) ? "failed" : "unfinished";
+  return `Forked through the last finished turn; the ${why} turn after it isn't included.`;
+}

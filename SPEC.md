@@ -1681,7 +1681,9 @@ takes the conversation through the last finished turn ("No turn has finished yet
 That's a turn in Tether, one another Codex client runs, and anything while a handoff harness's TUI
 has the session (Claude's: Tether doesn't follow its turns). And Fork of a whole session whose store
 doesn't end on a fork point (a turn in the CLI, outside Tether, ending on your message or mid-reply;
-a failed turn) takes it through the last fork point too.
+a failed turn) takes it through the last fork point too. A whole fork that stops short says so in
+its notice: "Forked through the last finished turn; the failed (unfinished, running) turn after it
+isn't included."
 
 **Not forked:** a subagent (fork its main session; the fork's tool cards don't link the original's
 subagents); a session whose source change isn't confirmed yet (`nextBilling`: send first); a harness
@@ -1690,7 +1692,7 @@ without `capabilities.fork`.
 | Harness | How |
 |---|---|
 | Claude Code | The Agent SDK's `forkSession` (a file operation: fresh entry ids, `forkedFrom` on each entry), `upToMessageId` the last entry of the reply's API message (a moved-in `<moved>` reply too; only `<synthetic>` ones aren't replies). Replies keep their message ids, so the fork must read back ending on that id (a whole fork: as many messages), else it's deleted. Across a compaction, as recorded, too |
-| Codex | `thread/fork` with `lastTurnId`, the reply's turn (inclusive), so nothing is rolled back: later turns are never copied. A reply followed by a message steered into its turn isn't a fork point here. Checked on daemon 0.169.1: no turn starts, turn ids are kept, and the fork's rollout holds only its own lines, its `session_meta` pointing at the original's (`forked_from_id`, `forked_from_ordinal_exclusive`). The fork is read back (its last turn) and named, else archived |
+| Codex | `thread/fork` with `lastTurnId`, the reply's turn (inclusive), so nothing is rolled back: later turns are never copied. A reply followed by a message steered into its turn isn't a fork point here. Checked on daemon 0.169.1: no turn starts, turn ids are kept, and the fork's rollout holds only its own lines, its `session_meta` pointing at the original's (`forked_from_id`, `forked_from_ordinal_exclusive`). The fork is read back (its last turn) and named, else archived. So a fork reads its history from the original's rollout: archiving the original is safe, Codex refuses to delete an original a fork refers to, and removing its file by hand breaks the fork, whose opening (or history) then says "This fork's original history is gone (its Codex rollout was removed)." (the daemon's `missing source rollout`) |
 | Codex, copied | Copied instead (`Adapter.fork.copyInstead`) with §15's native import of the history through that reply, into a new thread on the same source: a thread on a key's private app-server, which serves one thread; and a thread with history brought in (a move's import, a source change), as its fork wouldn't show that history (Tether reads it from the thread's own rollout head: checked, a fork reads none back). So Fork right after a source change copies it whole. Tool calls travel as text and Tether's opening reads as a move's |
 
 A fork that can't be adopted once made (its settings, its notice) is removed from the store

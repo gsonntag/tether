@@ -5,7 +5,7 @@
 // SessionActions.fork (side chats, §7).
 
 import { parseSessionId } from "../../../../shared/ids";
-import { forkedNotice, forkPoints, forkTitle, wholeForkPoint, type ForkedFrom } from "../../../../shared/fork";
+import { forkedNotice, forkPoints, forkTitle, leftOutNote, wholeForkPoint, type ForkedFrom } from "../../../../shared/fork";
 import { HARNESS_LABELS, type Msg } from "../../../../shared/transcript";
 import type { Adapter, StartOpts } from "../../core/adapter";
 import { Mover } from "../move";
@@ -64,7 +64,7 @@ export class Forker {
     const { lastKey, fallbackKeys } = look.state;
     const extra: AdoptExtra = { stored: true, forkedFrom, keys: { ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}) } };
     const name = forkTitle(title);
-    const notice: Msg = { id: `n-forked-from-${id}`, role: "notice", level: "info", ts: Date.now(), parts: [{ type: "text", text: forkedNotice(title) }], link: { sessionId: id, label: "Open it" } };
+    const notice: Msg = { id: `n-forked-from-${id}`, role: "notice", level: "info", ts: Date.now(), parts: [{ type: "text", text: [forkedNotice(title), o.messageId ? undefined : leftOutNote(msgs, upTo, running)].filter(Boolean).join(" ") }], link: { sessionId: id, label: "Open it" } };
     /** Where the fork's own conversation begins: under what it took from the original. */
     const mark = async (forked: string) => {
       const after = (await a!.readHistory(parseSessionId(forked)!.nativeId, projectPath).catch(() => [] as Msg[])).at(-1)?.id;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { forkPoints, forkTitle, wholeForkPoint } from "./fork";
+import { forkPoints, forkTitle, leftOutNote, wholeForkPoint } from "./fork";
 import type { Msg } from "./transcript";
 
 const user = (id: string, text = "q"): Msg => ({ id, role: "user", ts: 1, parts: [{ type: "text", text }] });
@@ -44,6 +44,15 @@ describe("fork points", () => {
     expect(wholeForkPoint([user("u1"), reply("a1"), user("u2"), calling("a2")], false)).toEqual({ upTo: "a1" });
     expect(wholeForkPoint([user("u1"), reply("a1"), user("u2"), { ...reply("a2"), error: "boom" }], false)).toEqual({ upTo: "a1" });
     expect(wholeForkPoint([user("u1")], false)).toBeUndefined();
+  });
+  test("a whole fork that stops short says which turn it leaves out", () => {
+    const failed = [user("u1"), reply("a1"), user("u2"), { ...reply("a2"), error: "boom" }];
+    expect(leftOutNote(failed, wholeForkPoint(failed, false)!.upTo, false)).toBe("Forked through the last finished turn; the failed turn after it isn't included.");
+    const cut = [user("u1"), reply("a1"), user("u2"), calling("a2")];
+    expect(leftOutNote(cut, "a1", false)).toBe("Forked through the last finished turn; the unfinished turn after it isn't included.");
+    expect(leftOutNote(cut, "a1", true)).toBe("Forked through the last finished turn; the running turn after it isn't included.");
+    expect(leftOutNote(cut, undefined, false)).toBeUndefined();
+    expect(leftOutNote([user("u1"), reply("a1"), notice("n")], "a1", false)).toBeUndefined();
   });
   test("titles", () => {
     expect(forkTitle("Fix the build")).toBe("Fix the build (fork)");

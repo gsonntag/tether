@@ -81,6 +81,7 @@ describe("forking a session", () => {
     // A notice under what it took, pointing back.
     const msgs = (await runner.core.load(f)).newest(50).messages;
     expect(msgs.at(-1)).toMatchObject({ role: "notice", link: { sessionId: "claude:s1" } });
+    // It took everything, so it says no more.
     expect((msgs.at(-1)!.parts[0] as any).text).toBe("Forked from “Numbers”.");
     // The original is as it was.
     expect((await a.readHistory("s1")).map((m) => m.id)).toEqual(["u1", "a1", "u2", "a2"]);
@@ -123,6 +124,10 @@ describe("forking a session", () => {
     a.addStored("s2", [...convo, user("u3", "and 11")], { title: "Busy", projectPath: "/p" });
     await runner.look.sessions.fork("claude:s2");
     expect(a.forks[0]!.upTo).toBe("a2");
+    // Its notice says what it left out.
+    const f = await runner.core.open("claude:f1");
+    const n = (await runner.core.load(f)).newest(50).messages.at(-1)!;
+    expect((n.parts[0] as any).text).toBe("Forked from “Busy”. Forked through the last finished turn; the unfinished turn after it isn't included.");
   });
 
   test("the original's key preferences come along; its plan-runs-out switch doesn't", async () => {
