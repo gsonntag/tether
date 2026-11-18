@@ -244,8 +244,10 @@ because your shell may carry production values. For UI work without a model,
 
 1. **App.** The Foliation app is defined in `foliation.json`, and `.folignore` leaves out `runner/`
    and `docs/`. The backend's build context is the repository root, not `server/`, because the
-   server imports `shared/` at runtime. Its dependencies install from `server/`. Only the app's
-   owners can use the UI, because it runs commands on their machines. The app deploys from `main`,
+   server imports `shared/` at runtime. Its dependencies install from `server/`. The app's owners
+   see every runner. People the app is shared with in Foliation see only the runners an owner
+   shares with them in Settings → Runners, to drive or only view (SPEC §3, "Sharing runners"),
+   because a runner runs commands on its owner's machine. The app deploys from `main`,
    so merging a PR deploys the web app and server.
 2. **Runner token.** Create an app service token named `runner` or `runner-<name>`, e.g.
    `fol tokens create tether --service runner --role editor`. The token's name limits which
