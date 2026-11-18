@@ -3,7 +3,7 @@
 // Bring back asks it for a summary and puts that in the session's own box. Close archives it; the
 // session's Side chats chip opens it again.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu";
 import { Icon } from "@astryxdesign/core/Icon";
@@ -72,21 +72,66 @@ export function SideChatChips({ chats, onOpen }: { chats: Row[]; onOpen: (id: st
   );
 }
 
+/** The focusable things inside `el`, in order. */
+const focusables = (el: HTMLElement) => [...el.querySelectorAll<HTMLElement>('button:not([disabled]), textarea:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')];
+
+/**
+ * A sheet over the session (no room beside it): a modal dialog. Focus starts inside and stays there
+ * (Tab and Shift+Tab wrap); Escape tucks it away.
+ */
+export function useSheet(el: React.RefObject<HTMLElement | null>, on: boolean, onEscape: () => void) {
+  const esc = useRef(onEscape);
+  esc.current = onEscape;
+  useEffect(() => {
+    const root = el.current;
+    if (!on || !root) return;
+    if (!root.contains(document.activeElement)) focusables(root)[0]?.focus();
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !e.defaultPrevented) {
+        e.preventDefault();
+        esc.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const list = focusables(root);
+      if (!list.length) return;
+      const first = list[0]!;
+      const last = list.at(-1)!;
+      if (e.shiftKey && (document.activeElement === first || !root.contains(document.activeElement))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !root.contains(document.activeElement))) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", key);
+    return () => document.removeEventListener("keydown", key);
+  }, [on]);
+}
+
 export function SideChatPanel({
   runnerId,
   side,
+  sheet = false,
   onBringBack,
   onClose,
+  onTuck,
 }: {
   runnerId: string;
   side: SideState;
+  /** over the session, full screen (a phone): a modal dialog, Escape tucks it away */
+  sheet?: boolean;
   /** the summary, for the session's box */
   onBringBack: (text: string) => void;
   onClose: (id: string | undefined) => void;
+  onTuck?: () => void;
 }) {
   const id = "id" in side ? side.id : undefined;
+  const root = useRef<HTMLElement>(null);
+  useSheet(root, sheet, () => onTuck?.());
   return (
-    <aside className="t-side-chat" aria-label="Side chat">
+    <aside ref={root} className="t-side-chat" aria-label="Side chat" {...(sheet ? { role: "dialog", "aria-modal": true } : {})}>
       {id ? (
         <SideChat key={id} runnerId={runnerId} sessionId={id} onBringBack={onBringBack} onClose={() => onClose(id)} />
       ) : (
@@ -187,7 +232,7 @@ function SideChat({ runnerId, sessionId, onBringBack, onClose }: { runnerId: str
             canSteer={!!view.capabilities?.canSteer}
             agent={agent}
             placeholder="Ask on the side (read only)"
-            disabled={!linkOpen ? "Reconnecting…" : undefined}
+            disabled={!linkOpen ? "Reconnecting…" : bringing ? "Writing a summary…" : undefined}
             uploadTo={{ runnerId, sessionId }}
             onSend={async (kind, text, list) => {
               const attachments = list.length ? { attachments: list } : {};

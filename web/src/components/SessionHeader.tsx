@@ -130,7 +130,9 @@ export function SessionHeader({
             {(efforts.length > 0 || state.effort) && (
               <ChoiceMenu name="Effort" value={state.effort} label={locked ? `Set in the terminal (last seen: ${effortLabel(state.effort)})` : nextTurn(effortLabel(state.effort), turn?.effort, state.effort)} disabled={locked} choices={efforts} onOpen={ensureModels} onPick={(effort) => void call(rpc(runnerId, "setEffort", { sessionId: session.id, effort }))} />
             )}
-            <ChoiceMenu
+            {session.sideOf ? (
+              <span className="t-chip t-chip-info" title="A side chat reads; it can't change anything (SPEC §16a)">Read only</span>
+            ) : <ChoiceMenu
               name="Mode"
               value={state.permissionMode}
               // While Claude's TUI drives, its mode comes from its status line and hooks: the last they showed.
@@ -139,7 +141,7 @@ export function SessionHeader({
               choices={models?.permissionModes ?? []}
               onOpen={ensureModels}
               onPick={(mode) => void call(rpc(runnerId, "setPermissionMode", { sessionId: session.id, mode }))}
-            />
+            />}
           </>
         )}
         <SubagentChips runnerId={runnerId} children={children} />

@@ -1,17 +1,25 @@
 import { expect, test } from "bun:test";
 import type { HarnessCapabilities, SessionSummary } from "../../shared/transcript";
 import { btwQuestion, canSideChat, withBtw } from "./sideChat";
-import { awaitedSessions, inbox, recentSessions, sideChatsOf, waitingOn } from "./sessionList";
+import { awaitedSessions, inbox, recentSessions, setHomeFolders, sideChatsOf, waitingOn } from "./sessionList";
+import { canFork } from "./fork";
 
 const caps = (over: Partial<HarnessCapabilities> = {}): HarnessCapabilities => ({ canSteer: true, terminal: "handoff", subagents: { view: true, stop: true, steer: false }, fork: true, readOnlyMode: "plan", ...over });
 
 test("side chats are offered on a main session that forks, on a harness with a read-only mode", () => {
-  expect(canSideChat({}, caps(), {})).toBe(true);
-  expect(canSideChat({ sideOf: "claude:a" }, caps(), {})).toBe(false);
-  expect(canSideChat({ parentSessionId: "claude:a" }, caps(), {})).toBe(false);
-  expect(canSideChat({}, caps({ readOnlyMode: undefined }), {})).toBe(false);
-  expect(canSideChat({}, caps({ fork: undefined }), {})).toBe(false);
-  expect(canSideChat({}, caps(), { nextBilling: { kind: "plan", label: "Claude plan" } })).toBe(false);
+  expect(canSideChat("r", { projectPath: "/p" }, caps(), {})).toBe(true);
+  expect(canSideChat("r", { projectPath: "/p", sideOf: "claude:a" }, caps(), {})).toBe(false);
+  expect(canSideChat("r", { projectPath: "/p", parentSessionId: "claude:a" }, caps(), {})).toBe(false);
+  expect(canSideChat("r", { projectPath: "/p" }, caps({ readOnlyMode: undefined }), {})).toBe(false);
+  expect(canSideChat("r", { projectPath: "/p" }, caps({ fork: undefined }), {})).toBe(false);
+  expect(canSideChat("r", { projectPath: "/p" }, caps(), { nextBilling: { kind: "plan", label: "Claude plan" } })).toBe(false);
+  // Not on the Home agent's chats.
+  setHomeFolders([{ id: "r", homeFolder: "/home-agent" }]);
+  expect(canSideChat("r", { projectPath: "/home-agent" }, caps(), {})).toBe(false);
+  expect(canSideChat("other", { projectPath: "/home-agent" }, caps(), {})).toBe(true);
+  setHomeFolders([]);
+  // A side chat isn't forked either.
+  expect(canFork({ sideOf: "claude:a" }, caps(), {})).toBe(false);
 });
 
 test("/btw is Tether's: first in the menu, and the box's question when side chats are offered", () => {
@@ -52,6 +60,11 @@ test("the panel opens at once, read only, while the fork is made", async () => {
   expect(html).toContain("Read only");
   expect(html).toContain("Opening a read-only fork to ask it");
   expect(html).toContain('aria-label="Close side chat"');
+  expect(html).not.toContain('role="dialog"');
+  // Over the session (a phone): a modal dialog.
+  const sheet = renderToStaticMarkup(createElement(SideChatPanel, { runnerId: "r", side: { opening: true, question: "" }, sheet: true, onBringBack: () => {}, onClose: () => {} }));
+  expect(sheet).toContain('role="dialog"');
+  expect(sheet).toContain('aria-modal="true"');
   const row = (id: string, archived?: boolean) => ({ id, harness: "claude", nativeId: id, projectPath: "/p", title: id, mode: "stored", status: "idle", updatedAt: 1, runnerId: "r", sideOf: "a", ...(archived ? { archived } : {}) }) as any;
   expect(renderToStaticMarkup(createElement(SideChatChips, { chats: [row("b"), row("c", true)], onOpen: () => {} }))).toContain("Side chats");
   expect(renderToStaticMarkup(createElement(SideChatChips, { chats: [], onOpen: () => {} }))).toBe("");

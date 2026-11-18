@@ -46,7 +46,8 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
 - **Side chats** (SPEC §16a): `/btw <question>` (or Side chat in the session menu) asks a read-only
   fork of the session in a panel beside it (a sheet on a phone) while the session keeps working.
   **Bring back** puts the side chat's summary in the session's box to edit and send; closing it
-  archives it, and the header's Side chats reopens it. Side chats stay out of the lists.
+  stops and archives it, and the header's Side chats reopens it. Side chats stay out of the lists; on
+  Claude Code they have no shell, MCP tools or subagents, on Codex a read-only sandbox with MCP off.
 
 **Home.** Home has an inbox of sessions that need you, failed, finished or are working. It also has
 the runners and the **Home agent**, a chat that starts sessions in your projects and sees them

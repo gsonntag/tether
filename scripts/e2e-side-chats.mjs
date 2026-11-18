@@ -11,7 +11,7 @@
 //           Bring back tucks it away with the summary in the box
 //   codex   on a phone: /btw on Codex, which can't write either
 
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 const { chromium } = await import(process.env.PLAYWRIGHT ?? "/home/ubuntu/foliation/web/site/node_modules/playwright/index.mjs");
@@ -136,6 +136,18 @@ async function bringBack(p) {
   }, 150_000);
 }
 
+/** Tether's peers MCP servers this runner's Codex threads run (one per loaded thread; Codex's say `codex:*`). */
+const codexPeerServers = () =>
+  readdirSync("/proc")
+    .filter((d) => /^\d+$/.test(d))
+    .filter((pid) => {
+      try {
+        return readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("tether-f7/runner/src/modules/peers/mcp.ts") && readFileSync(`/proc/${pid}/environ`, "utf8").includes("TETHER_PEERS_ID=codex:*");
+      } catch {
+        return false;
+      }
+    }).length;
+
 let claudeMain;
 let claudeWord;
 
@@ -226,6 +238,14 @@ const steps = {
     const answer = await replyAfter(p, side.id, n);
     if (!answer.includes(claudeWord)) fail(`the phone's side chat doesn't know the word: ${answer}`);
     await shot(p, "phone-side");
+    if ((await p.locator(".t-side-chat").getAttribute("role")) !== "dialog") fail("the phone's sheet isn't a dialog");
+    await p.keyboard.press("Escape");
+    await p.locator(".t-side-chat").waitFor({ state: "detached", timeout: 10_000 });
+    if ((await sideChats(p, claudeMain)).find((s) => s.id === side.id)?.archived) fail("Escape archived it");
+    await press(p, p.getByRole("button", { name: /^Side chats/ }));
+    await press(p, p.getByRole("menuitem", { name: side.title }).first());
+    await p.locator(".t-side-chat").waitFor({ timeout: 10_000 });
+    ok("Escape tucks the sheet away; Side chats brings it back");
     const draft = await bringBack(p);
     await p.locator(".t-side-chat").waitFor({ state: "detached", timeout: 10_000 });
     if (!(await mainBox(p).isVisible())) fail("the main box isn't showing after Bring back");
@@ -242,11 +262,16 @@ const steps = {
     const word = token("CHARLIE");
     await send(p, mainBox(p), `Remember the code word ${word}. Reply with exactly: noted. Do not run any commands.`);
     await replyAfter(p, id, 0);
+    const before = codexPeerServers();
     await send(p, mainBox(p), "/btw What code word did I ask you to remember? Reply with only the word.");
     const side = await panelSide(p, id);
     const answer = await replyAfter(p, side.id, 1);
     if (!answer.includes(word)) fail(`the Codex side chat doesn't know the word: ${answer}`);
     const sv = await viewOf(p, side.id);
+    const after = codexPeerServers();
+    if (before < 1) fail("the main Codex thread runs no Tether MCP server (nothing to compare with)");
+    if (after !== before) fail(`the Codex side chat got Tether's MCP server (${before} → ${after})`);
+    ok(`the Codex side chat runs no MCP server of Tether's (${before} before, ${after} after; its session has one)`);
     if (sv.state.permissionMode !== "never+read-only") fail(`the Codex side chat runs in ${sv.state.permissionMode}`);
     const refused = await cantWrite(p, side.id, replies(sv).length, `side-codex-${Date.now()}.txt`);
     await shot(p, "codex-side-refused");
