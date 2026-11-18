@@ -253,6 +253,14 @@ export function createRunner(o: RunnerOptions) {
         archived: async () => (await core.listSessions({ archived: true, limit: 2000 })).sessions,
         folder: (path: string) => core.folder(path),
         hold: (id: string, why: string) => live.hold(id, why),
+        ask: async (id: string, prompt: string, opts: { system: string; timeoutMs: number }) => {
+          const s = await core.open(id);
+          const adapter = core.adapter(s.summary.harness);
+          if (!adapter.ask) throw new Error("This session's harness can't generate text.");
+          // The session's own source, as its next start would use it: a missing key stops here.
+          const credential = live.credentialFor(s.summary.harness, live.sourceOf(s), live.deploymentOf(s));
+          return adapter.ask(s.summary.projectPath, prompt, { ...opts, ...(credential ? { credential } : {}) });
+        },
         queue: (id: string, text: string, attachments: Attachment[] = []) => (live.attachments.markUsed(attachments), live.queue.add(id, text, attachments)),
         recent: async (id: string, limit: number) => {
           const s = await core.open(id);

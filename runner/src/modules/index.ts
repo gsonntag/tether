@@ -79,6 +79,8 @@ export interface SessionActions {
   interrupt(id: string): Promise<void>;
   /** keeps a session out of Recent (or puts it back), as the archive button does */
   setArchived(id: string, archived: boolean): Promise<void>;
+  /** a one-shot side query on the session's harness and source (Adapter.ask): never a turn, nothing in its transcript. Rejects when its harness can't, or its source can't be confirmed */
+  ask?(id: string, prompt: string, opts: { system: string; timeoutMs: number }): Promise<string>;
   /** holds an idle, loaded session for a while (a checkpoint restore): what's sent to it waits in its queue, held, until the release */
   hold?(id: string, why: string): () => void;
 }

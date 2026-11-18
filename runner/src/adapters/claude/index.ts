@@ -10,6 +10,7 @@ import { movedDir } from "../../core/moved";
 import { CLAUDE_BIN } from "./bin";
 import { chainContext, keepBilling, keptBilling, keptPlan } from "./context";
 import { HARNESS_KEYS } from "../../../../shared/credentials";
+import { claudeAsk } from "./ask";
 import { claudeAuthSettings, claudeLoggedIn, claudeTerminalScripts, prepareClaudeTerminal } from "./credentials";
 import { claudeNeverStarted, claudeProjects, claudeSessionInfo, claudeSessions, claudeStoredMode, claudeSubagents } from "./discovery";
 import { ClaudeDriver } from "./driver";
@@ -164,6 +165,7 @@ export const claudeAdapter: Adapter = {
   async available() {
     return !!CLAUDE_BIN;
   },
+  ask: claudeAsk,
 
   listProjects: claudeProjects,
   listSessions: claudeSessions,
