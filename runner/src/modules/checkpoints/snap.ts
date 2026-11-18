@@ -28,7 +28,7 @@ import { access, constants, copyFile, lstat, mkdir, readdir, readlink, rm, rmdir
 import { randomBytes } from "node:crypto";
 import { dirname, join, sep } from "node:path";
 import { CHECKPOINT_FILE_BYTES_MAX, type Skipped } from "../../../../shared/checkpoints";
-import { git, GitError } from "../git/run";
+import { git, GitError, type GitOpts } from "../git/run";
 
 /** Snapshot steps get longer than reads: `add` hashes every changed file. */
 export const SNAP_TIMEOUT_MS = 60_000;
@@ -54,6 +54,16 @@ const IDENTITY = {
 const SAFE = ["-c", "core.splitIndex=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false"];
 
 const ZERO = "0000000000000000000000000000000000000000";
+
+/** Listings that grow with the repo: read whole (up to 1 GB), never taken cut short. */
+const WHOLE = 1024 * 1024 * 1024;
+async function whole(root: string, args: string[], opts: GitOpts = {}) {
+  const r = await git(root, args, { maxBytes: WHOLE, ...opts });
+  if (r.cut) throw new GitError("git printed too much.", 0, "");
+  return r;
+}
+
+// Paths never go on git's command line (an argv limit is soon reached with thousands): stdin only.
 
 /** A snapshot: its tree, and what it didn't take. */
 export interface Snap {
@@ -119,7 +129,8 @@ async function snapInto(root: string, env: Record<string, string>, path: string)
     await git(root, [...SAFE, "add", "-u", "--ignore-errors", "--", "."], { ...o, ok: [0, 1] });
     return { noUntracked: true };
   }
-  await git(root, [...SAFE, "add", "-A", "--ignore-errors", "--", ".", ...left.map((p) => `:(exclude,literal)${p}`)], { ...o, ok: [0, 1] });
+  const specs = [".", ...left.map((p) => `:(exclude,literal)${p}`)];
+  await git(root, [...SAFE, "add", "-A", "--ignore-errors", "--pathspec-from-file=-", "--pathspec-file-nul"], { ...o, ok: [0, 1], input: specs.join("\0") + "\0" });
   return left.length ? { left: left.slice(0, LEFT_KEPT), leftCount: left.length } : {};
 }
 
@@ -163,7 +174,7 @@ interface Change {
 
 /** `diff-tree -r --raw` between two trees: each path that differs. */
 async function treeDiff(root: string, a: string, b: string): Promise<Change[]> {
-  const out = (await git(root, ["diff-tree", "-r", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", a, b], { timeoutMs: SNAP_TIMEOUT_MS })).out.split("\0");
+  const out = (await whole(root, ["diff-tree", "-r", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", a, b], { timeoutMs: SNAP_TIMEOUT_MS })).out.split("\0");
   const list: Change[] = [];
   for (let i = 0; i + 1 < out.length; i += 2) {
     const meta = out[i]!;
@@ -221,24 +232,55 @@ async function removeFile(root: string, p: string): Promise<boolean> {
   return true;
 }
 
-/** Writes paths of `tree` as their raw bytes (no smudge filter, no line-ending conversion). */
-async function writeRaw(root: string, tree: string, paths: string[]) {
-  const ls = (await git(root, ["ls-tree", "-r", "-z", tree, "--", ...paths.map((p) => `:(literal)${p}`)], { timeoutMs: FORCE_TIMEOUT_MS })).out.split("\0");
-  for (const l of ls) {
-    if (!l) continue;
-    const [meta, path] = [l.slice(0, l.indexOf("\t")), l.slice(l.indexOf("\t") + 1)];
-    const [mode, , sha] = meta.split(" ");
-    const abs = join(root, path);
-    const blob = (await git(root, ["cat-file", "blob", sha!], { timeoutMs: FORCE_TIMEOUT_MS, maxBytes: 4 * 1024 * 1024 * 1024 })).bytes;
-    // Never through what's there now (a symlink): it goes, then the file is made afresh.
-    await unlink(abs).catch(() => {});
-    await mkdir(dirname(abs), { recursive: true });
-    if (mode === "120000") await symlink(blob.toString("utf8"), abs);
-    else {
-      // As git checks files out: 666 or 777, less the umask.
-      await writeFile(abs, blob, { mode: mode === "100755" ? 0o777 : 0o666 });
+/** Blobs read per `cat-file --batch` call, at most (bytes; one bigger blob goes alone). */
+const BATCH_BYTES = 64 * 1024 * 1024;
+
+/** Blobs' bytes, by id: one `cat-file --batch` per BATCH_BYTES. */
+async function readBlobs(root: string, blobs: { sha: string; size: number }[], each: (sha: string, bytes: Buffer) => Promise<void>) {
+  for (let i = 0; i < blobs.length; ) {
+    const batch: string[] = [];
+    let size = 0;
+    while (i < blobs.length && (!batch.length || size + blobs[i]!.size <= BATCH_BYTES)) {
+      size += blobs[i]!.size;
+      batch.push(blobs[i++]!.sha);
+    }
+    const out = (await whole(root, ["cat-file", "--batch"], { timeoutMs: FORCE_TIMEOUT_MS, maxBytes: size + batch.length * 100 + WHOLE, input: batch.join("\n") + "\n" })).bytes;
+    let at = 0;
+    for (const sha of batch) {
+      const nl = out.indexOf(10, at);
+      const head = out.subarray(at, nl).toString("utf8").split(" ");
+      if (head[1] !== "blob") throw new GitError(`A snapshot's file is missing (${sha}).`, 1, "");
+      const n = Number(head[2]);
+      await each(sha, out.subarray(nl + 1, nl + 1 + n));
+      at = nl + 1 + n + 1;
     }
   }
+}
+
+/** Writes paths of `tree` as their raw bytes (no smudge filter, no line-ending conversion). */
+async function writeRaw(root: string, tree: string, paths: string[]) {
+  const want = new Set(paths);
+  const entries: { path: string; mode: string; sha: string; size: number }[] = [];
+  for (const l of (await whole(root, ["ls-tree", "-r", "-l", "-z", tree], { timeoutMs: FORCE_TIMEOUT_MS })).out.split("\0")) {
+    const tab = l.indexOf("\t");
+    if (tab < 0 || !want.has(l.slice(tab + 1))) continue;
+    const [mode, type, sha, size] = l.slice(0, tab).split(/ +/);
+    if (type === "blob") entries.push({ path: l.slice(tab + 1), mode: mode!, sha: sha!, size: Number(size) || 0 });
+  }
+  const bySha = new Map<string, typeof entries>();
+  for (const e of entries) bySha.set(e.sha, [...(bySha.get(e.sha) ?? []), e]);
+  const blobs = [...bySha.values()].map((l) => ({ sha: l[0]!.sha, size: l[0]!.size }));
+  await readBlobs(root, blobs, async (sha, blob) => {
+    for (const e of bySha.get(sha) ?? []) {
+      const abs = join(root, e.path);
+      // Never through what's there now (a symlink): it goes, then the file is made afresh.
+      await unlink(abs).catch(() => {});
+      await mkdir(dirname(abs), { recursive: true });
+      if (e.mode === "120000") await symlink(blob.toString("utf8"), abs);
+      // As git checks files out: 666 or 777, less the umask.
+      else await writeFile(abs, blob, { mode: e.mode === "100755" ? 0o777 : 0o666 });
+    }
+  });
 }
 
 export interface Restored {
@@ -267,11 +309,12 @@ export async function restoreTo(root: string, target: Snap, tmpDir: string, undo
     const fileMode = (await git(root, ["config", "--bool", "core.fileMode"], { ok: [0, 1] })).out.trim() !== "false";
     const modes = new Map<string, string>();
     if (!fileMode) {
-      const ls = (await git(root, ["ls-files", "-s", "-z"], o)).out.split("\0");
+      const ls = (await whole(root, ["ls-files", "-s", "-z"], o)).out.split("\0");
       for (const l of ls) if (l) modes.set(l.slice(l.indexOf("\t") + 1), l.slice(0, 6));
     }
     const lines: string[] = [];
     const files: { path: string; mode: string }[] = [];
+    const links: { path: string; target: string }[] = [];
     for (const c of touched) {
       if (c.gitlink) {
         skip(c.path, "nested");
@@ -286,24 +329,34 @@ export async function restoreTo(root: string, target: Snap, tmpDir: string, undo
       const st = why ? undefined : await lstat(join(root, c.path)).catch(() => undefined);
       if (!st) lines.push(`0 ${ZERO}\t${c.path}`);
       else if (st.isDirectory()) skip(c.path, "folder");
-      else if (st.isSymbolicLink()) {
-        const sha = (await git(root, ["hash-object", "-w", "--stdin", "--no-filters"], { ...o, input: await readlink(join(root, c.path)) })).out.trim();
-        lines.push(`120000 ${sha}\t${c.path}`);
-      } else if (!st.isFile() || c.path.includes("\n") || !(await access(join(root, c.path), constants.R_OK).then(() => true, () => false))) skip(c.path, "unreadable");
+      else if (st.isSymbolicLink()) links.push({ path: c.path, target: await readlink(join(root, c.path)) });
+      else if (!st.isFile() || c.path.includes("\n") || !(await access(join(root, c.path), constants.R_OK).then(() => true, () => false))) skip(c.path, "unreadable");
       else files.push({ path: c.path, mode: fileMode ? (st.mode & 0o111 ? "100755" : "100644") : modes.get(c.path) === "100755" ? "100755" : "100644" });
     }
-    if (files.length) {
-      // Raw bytes: what's on disk, whatever filters or autocrlf would make of it (written back raw).
-      const shas = (await git(root, ["hash-object", "-w", "--no-filters", "--stdin-paths"], { ...o, input: files.map((f) => f.path).join("\n") + "\n" })).out.trim().split("\n");
-      if (shas.length !== files.length) throw new GitError("Couldn't read the files to keep for the undo.", 1, "");
-      files.forEach((f, i) => lines.push(`${f.mode} ${shas[i]}\t${f.path}`));
+    // Raw bytes: what's on disk, whatever filters or autocrlf would make of it (written back raw).
+    // A symlink's target goes through a file of its own in tmpDir, so all hash in one call.
+    const linkFiles = await Promise.all(links.map(async (l, i) => {
+      const f = join(tmpDir, `link-${randomBytes(6).toString("hex")}-${i}`);
+      await writeFile(f, l.target);
+      return f;
+    }));
+    try {
+      const hashed = [...files.map((f) => f.path), ...linkFiles];
+      if (hashed.length) {
+        const shas = (await whole(root, ["hash-object", "-w", "--no-filters", "--stdin-paths"], { ...o, input: hashed.join("\n") + "\n" })).out.trim().split("\n");
+        if (shas.length !== hashed.length) throw new GitError("Couldn't read the files to keep for the undo.", 1, "");
+        files.forEach((f, i) => lines.push(`${f.mode} ${shas[i]}\t${f.path}`));
+        links.forEach((l, i) => lines.push(`120000 ${shas[files.length + i]}\t${l.path}`));
+      }
+    } finally {
+      await Promise.all(linkFiles.map((f) => rm(f, { force: true })));
     }
     if (lines.length) await git(root, [...SAFE, "update-index", "-z", "--index-info"], { ...o, input: lines.join("\0") + "\0" });
     const tree = (await git(root, [...SAFE, "write-tree"], { env })).out.trim();
     const forced = new Set(touched.map((c) => c.path));
     const left = rest.left?.filter((p) => !forced.has(p) || skipped.has(p));
     const leftCount = (rest.leftCount ?? 0) - ((rest.left?.length ?? 0) - (left?.length ?? 0));
-    const raw = [...files.map((f) => f.path), ...lines.filter((l) => l.startsWith("120000 ")).map((l) => l.slice(l.indexOf("\t") + 1))];
+    const raw = [...files.map((f) => f.path), ...links.map((l) => l.path)];
     return { tree, ...(left?.length || leftCount > 0 ? { left: left ?? [], leftCount } : {}), ...(rest.noUntracked ? { noUntracked: true as const } : {}), ...(raw.length ? { raw } : {}) };
   });
   await undo(u);
@@ -312,7 +365,7 @@ export async function restoreTo(root: string, target: Snap, tmpDir: string, undo
   for (const c of changes) if (c.gitlink) skip(c.path, "nested");
   const targetLeft = new Set(target.left);
   const partial = target.noUntracked || (target.leftCount ?? 0) > (target.left?.length ?? 0);
-  const tracked = partial ? new Set((await git(root, ["ls-files", "-z"])).out.split("\0")) : undefined;
+  const tracked = partial ? new Set((await whole(root, ["ls-files", "-z"])).out.split("\0")) : undefined;
   let gone = changes.filter((c) => c.gone && !c.gitlink).map((c) => c.path);
   gone = gone.filter((p) => {
     if (targetLeft.has(p) || (tracked && !tracked.has(p))) return void skip(p, "notTaken");
@@ -346,7 +399,7 @@ export async function restoreTo(root: string, target: Snap, tmpDir: string, undo
     // The target's ignore rules first: a file they ignore was never in its snapshot, so it stays.
     let written = await checkout(writes.filter(isIgnoreFile));
     if (gone.length) {
-      const ign = await git(root, ["check-ignore", "--no-index", "-z", "--stdin"], { input: gone.join("\0") + "\0", ok: [0, 1] });
+      const ign = await whole(root, ["check-ignore", "--no-index", "-z", "--stdin"], { input: gone.join("\0") + "\0", ok: [0, 1], timeoutMs: FORCE_TIMEOUT_MS });
       const ignored = new Set(ign.out.split("\0").filter(Boolean));
       gone = gone.filter((p) => (ignored.has(p) ? void skip(p, "ignored") : true));
     }

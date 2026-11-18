@@ -47,7 +47,7 @@ function setup(folder: string, now = () => Date.now()) {
   const others: SessionLook["summary"][] = [];
   const logs: string[] = [];
   const holds: string[] = [];
-  const c = new Checkpoints({ dir: temp(), look: (id) => (id === "claude:s1" ? look : undefined), open: async () => look, list: () => [look.summary, ...others], log: (l) => logs.push(l), now, hold: (id, why) => (holds.push(`hold ${id} ${why}`), () => holds.push(`release ${id}`)) });
+  const c = new Checkpoints({ dir: temp(), look: (id) => (id === "claude:s1" ? look : undefined), open: async () => look, list: () => [look.summary, ...others], log: (l) => logs.push(l), now, holdFolder: (f, why) => (holds.push(`hold ${f} ${why}`), () => holds.push(`release ${f}`)) });
   const turn = async (work?: () => void, prompt = "do it") => {
     look.status = "running";
     c.turnStarted("claude:s1");
@@ -447,8 +447,8 @@ test("restore holds the session throughout, and is refused when it works in the 
   await expect(c.restore("claude:s1", "1")).rejects.toThrow(/waiting on you/);
   others[0]!.status = "idle";
   await c.restore("claude:s1", "1");
-  // The other live session in the repo is held too while files change.
-  expect(holds).toEqual(["hold claude:s1 Restoring files…", "hold codex:o Restoring files…", "release claude:s1", "release codex:o"]);
+  // The whole repo is held while files change: every session in it, the other one too.
+  expect(holds).toEqual([`hold ${d} Restoring files…`, `release ${d}`]);
   expect(read(d, "a.txt")).toBe("one\ntwo\n");
 });
 
@@ -623,3 +623,21 @@ test("a snapshot that leaves out many paths keeps the first 200 and the count", 
   expect(rec.leftCount).toBe(205);
   for (let i = 0; i < 205; i++) chmodSync(join(d, `locked${i}.txt`), 0o644);
 });
+
+test("thousands of long paths: no path goes on git's command line, and the undo round-trips them all", async () => {
+  const d = repo();
+  const n = 3000;
+  // About 2.2 MB of path names: past Linux's 2 MB argv limit, were they passed as arguments.
+  const dir = (i: number) => `${"d".repeat(240)}${i % 10}/${"e".repeat(240)}`;
+  const path = (i: number) => `${dir(i)}/${"f".repeat(240)}${i}`;
+  for (let i = 0; i < 10; i++) mkdirSync(join(d, dir(i)), { recursive: true });
+  for (let i = 0; i < n; i++) writeFileSync(join(d, path(i)), `before ${i}\n`);
+  const { c, turn } = setup(d);
+  await turn(() => {
+    for (let i = 0; i < n; i++) writeFileSync(join(d, path(i)), `after ${i}\r\n`);
+  });
+  const { r, between } = await roundTrip(d, c, "1");
+  expect(r.written).toBe(n);
+  expect(between[path(2345)]!.split(":")[1]).toBe(Buffer.from("before 2345\n").toString("base64"));
+  expect(read(d, path(2345))).toBe("after 2345\r\n");
+}, 120_000);

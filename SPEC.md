@@ -1171,10 +1171,12 @@ at a running turn snapshots outside that order, so it never delays a turn's star
 **The Turn scope** lists the session's checkpoints, newest first, by time and the start of the
 prompt (`checkpoints { sessionId }`), and diffs the one picked: before → after, or before → the
 working tree while it runs (`gitDiff { scope: "turn", checkpoint }`). **Restore files to before this
-turn** (`restoreCheckpoint { sessionId, checkpointId }`) has the repo to itself and holds the
-session and every other live session in the repo (`hold`: what's sent meanwhile waits in its queue
-and goes on release; a rate-limit retry due meanwhile waits too; `!` commands and opening the
-terminal refuse, "Restoring files…"). Each git step of it has a 60 s limit. It first takes the undo:
+turn** (`restoreCheckpoint { sessionId, checkpointId }`) has the repo to itself and holds its
+folder (`holdFolder`): every main session whose folder is in the repo, stored ones and any made
+there meanwhile included. What's sent to one meanwhile waits in its queue and goes on release; a
+rate-limit retry due meanwhile waits too; `!` commands and opening the terminal refuse ("Restoring
+files…"). Each git step of it has a 60 s limit, and paths reach git on stdin only, never as arguments
+(thousands of them would pass the argv limit). It first takes the undo:
 a snapshot of the files as they are, into which every path the restore will write or remove is
 forced exactly as it is on disk, as raw bytes (no filters, no line-ending conversion), whatever its
 size, ignore rules or index bits (assume-unchanged, skip-worktree), or its absence. That is saved as
