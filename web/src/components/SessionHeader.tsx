@@ -24,6 +24,7 @@ export function SessionHeader({
   models,
   children,
   extra,
+  sideChats,
   capabilities,
 }: {
   runnerId: string;
@@ -32,6 +33,8 @@ export function SessionHeader({
   models?: ModelList;
   children: Row[];
   extra?: React.ReactNode;
+  /** its side chats' chip (SPEC §16a), beside its subagents' */
+  sideChats?: React.ReactNode;
   capabilities?: HarnessCapabilities;
 }) {
   const [error, setError] = useState<string>();
@@ -100,7 +103,7 @@ export function SessionHeader({
       <div className="t-header-sub" title={session.projectPath}>
         {isChild ? `Subagent${session.agentType ? ` · ${session.agentType}` : ""} · ${session.projectPath}` : session.projectPath}
       </div>
-      {session.forkedFrom && <ForkedFrom runnerId={runnerId} from={session.forkedFrom} />}
+      {session.sideOf ? <SideOf runnerId={runnerId} parentId={session.sideOf} /> : session.forkedFrom && <ForkedFrom runnerId={runnerId} from={session.forkedFrom} />}
       <div className={`t-chips${paid ? " t-paid-chips" : ""}`}>
         <BillingChip runnerId={runnerId} session={session} state={state} capabilities={capabilities} onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))} onAutoKey={(on) => void call(rpc(runnerId, "setAutoKey", { sessionId: session.id, on }))} />
         {nextBilling && <span className={`t-chip t-chip-info t-next-source${isApiBilling(nextBilling) ? " t-next-api" : ""}`} title={`${nextBilling.label} from the next start`}>Next: {nextBilling.label}</span>}
@@ -127,7 +130,9 @@ export function SessionHeader({
             {(efforts.length > 0 || state.effort) && (
               <ChoiceMenu name="Effort" value={state.effort} label={locked ? `Set in the terminal (last seen: ${effortLabel(state.effort)})` : nextTurn(effortLabel(state.effort), turn?.effort, state.effort)} disabled={locked} choices={efforts} onOpen={ensureModels} onPick={(effort) => void call(rpc(runnerId, "setEffort", { sessionId: session.id, effort }))} />
             )}
-            <ChoiceMenu
+            {session.sideOf ? (
+              <span className="t-chip t-chip-info" title="A side chat reads; it can't change anything (SPEC §16a)">Read only</span>
+            ) : <ChoiceMenu
               name="Mode"
               value={state.permissionMode}
               // While Claude's TUI drives, its mode comes from its status line and hooks: the last they showed.
@@ -136,10 +141,11 @@ export function SessionHeader({
               choices={models?.permissionModes ?? []}
               onOpen={ensureModels}
               onPick={(mode) => void call(rpc(runnerId, "setPermissionMode", { sessionId: session.id, mode }))}
-            />
+            />}
           </>
         )}
         <SubagentChips runnerId={runnerId} children={children} />
+        {sideChats}
         {/* Last in the row: where chips scroll sideways, these go out of view first. */}
         {!isChild && state.context && (
           <span className="t-chip t-chip-info t-context-chip" title={contextDetail(state.context)}>
@@ -190,6 +196,18 @@ export function ForkedFrom({ runnerId, from }: { runnerId: string; from: NonNull
     <div className="t-header-fork">
       <button type="button" className="t-link" title="Open the session this was forked from" onClick={() => openSession(runnerId, from.sessionId)}>
         Forked from {title ? `“${title}”` : "another session"}
+      </button>
+    </div>
+  );
+}
+
+/** A side chat opened on its own (SPEC §16a): the session it's beside. */
+function SideOf({ runnerId, parentId }: { runnerId: string; parentId: string }) {
+  const title = useStore((s) => s.summaries[runnerId]?.sessions[parentId]?.title);
+  return (
+    <div className="t-header-fork">
+      <button type="button" className="t-link" title="Open the session this side chat is beside" onClick={() => openSession(runnerId, parentId)}>
+        Read-only side chat of {title ? `“${title}”` : "another session"}
       </button>
     </div>
   );

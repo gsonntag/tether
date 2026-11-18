@@ -6,6 +6,7 @@
 
 import { randomUUID } from "node:crypto";
 import { FROM_TETHER } from "../../../shared/fromTether";
+import { SIDE_READ_ONLY } from "../../../shared/sideChat";
 import { parseSessionId } from "../../../shared/ids";
 import { approveMessage, notesMessage, PLAN_MODE } from "../../../shared/plan";
 import { HARNESS_LABELS, type Msg, type Request, type RequestAnswer } from "../../../shared/transcript";
@@ -172,6 +173,9 @@ export class RequestDesk {
   async ask(s: Session, r: RequestAsk, signal?: AbortSignal): Promise<Decision> {
     const chain = this.chain(s);
     const root = this.core.sessions.get(chain.at(-1)!) ?? s;
+    // A side chat (SPEC §16a) is read-only whatever it asks: nothing that would change something, or
+    // leave its mode (a plan's approval), is put to anyone. Questions still are.
+    if (r.kind === "approval" && this.core.o.prefs.get(root.id).sideOf) return { allow: false, reason: SIDE_READ_ONLY };
     // Approving a plan goes back to the mode the session had before plan mode, when that's known.
     const back = r.plan !== undefined ? this.hooks.beforePlan(root.id) : undefined;
     if (back && back !== PLAN_MODE) {

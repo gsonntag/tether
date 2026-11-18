@@ -21,6 +21,11 @@ export interface StartOpts {
   model?: string;
   effort?: string;
   permissionMode?: string;
+  /**
+   * A side chat (SPEC §16a): the harness refuses anything but reading, whatever its mode and the
+   * person's own settings allow. A harness whose read-only mode is enforced by itself needs nothing more.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -193,6 +198,8 @@ export interface ForkRequest {
   projectPath: string;
   upTo?: string;
   title: string;
+  /** a side chat's fork (SPEC §16a): made the way a read-only session is loaded (StartOpts.readOnly) */
+  readOnly?: boolean;
 }
 
 /** Forking sessions (SPEC §16); with `capabilities.fork`. */

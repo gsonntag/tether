@@ -636,7 +636,7 @@ export class HomeAgent implements HomeEnd {
     if (c && !c.released) return false;
     const look = this.ctx.session(id);
     if (!look) return false;
-    return !look.summary.archived && !look.summary.parentSessionId && resolve(look.summary.projectPath) !== resolve(this.folder);
+    return !look.summary.archived && !look.summary.parentSessionId && !look.summary.sideOf && resolve(look.summary.projectPath) !== resolve(this.folder);
   }
 
   /** Puts a session's news in the next watch report: the newest per session, sent once things go quiet. */
@@ -942,6 +942,7 @@ export class HomeAgent implements HomeEnd {
     if (!look) throw new Error(`There's no session ${id}.`);
     if (resolve(look.summary.projectPath) === resolve(this.folder)) throw new Error("That's one of your own chats.");
     if (look.summary.parentSessionId) throw new Error("That's a subagent of another session: message its session instead.");
+    if (look.summary.sideOf) throw new Error("That's a side chat of another session: message its session instead.");
     if (look.summary.mode === "terminal" || look.state.mode === "terminal" || look.state.terminal) throw new Error("That session is open in a terminal: the person is working in it there. Leave it to them.");
     if (look.requests.length || look.state.requests.length) throw new Error(`That session is waiting for the person${look.state.requests[0] ? ` (${asks(look.state.requests[0])})` : ""}. Only they can answer it, in that session.`);
     if (look.summary.queuePaused || look.state.queueHeld) throw new Error("That session's queue is paused (after a Stop, a failure or a restart): it waits for the person.");

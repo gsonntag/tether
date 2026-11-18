@@ -19,6 +19,7 @@ import { forkModule } from "./fork";
 import { moveModule } from "./move";
 import { peersModule } from "./peers";
 import { pushModule } from "./push";
+import { sideChatsModule } from "./sideChats";
 import { textingModule } from "./texting";
 import { updatesModule } from "./updates";
 
@@ -40,6 +41,8 @@ export interface SessionLook {
 export interface AdoptExtra {
   stored?: boolean;
   forkedFrom?: ForkedFrom;
+  /** a side chat (SPEC §16a): the session it's beside */
+  sideOf?: string;
   /** a fork's: the original's key preferences (the switch itself is ticked per session, so it isn't carried) */
   keys?: { lastKey?: BillingSource; fallbackKeys?: CredentialSource[] };
 }
@@ -47,6 +50,12 @@ export interface AdoptExtra {
 /** How to fork: the reply its conversation ends at (shared/fork.ts forkPoints); absent, all of it (the last finished turn while one runs). */
 export interface ForkOptions {
   messageId?: string;
+  /** the fork's permission mode instead of the original's (a side chat's read-only one) */
+  permissionMode?: string;
+  /** its title instead of "<title> (fork)" */
+  title?: string;
+  /** a side chat (SPEC §16a): beside the original, left out of the lists */
+  sideOf?: string;
 }
 
 /** What a module may do with sessions, through the core's own paths (SPEC §2.1). */
@@ -60,6 +69,8 @@ export interface SessionActions {
   carrier(make: (id: string, source: BillingSource) => Promise<string>): void;
   /** a fork of a session (SPEC §16): a new stored session with its conversation, through `messageId` when given. Its id */
   fork(id: string, o?: ForkOptions): Promise<string>;
+  /** a session went on under another id (a Move): its side chats (SPEC §16a) are beside that one now */
+  moveSides?(from: string, to: string): void;
   /** what makes forks (the fork module) */
   forker(make: (id: string, o: ForkOptions) => Promise<string>): void;
   /** a new session; its first send starts it */
@@ -135,7 +146,7 @@ export interface Module {
 }
 
 /** The modules this runner loads, in order. */
-export const MODULES: Module[] = [pushModule, textingModule, moveModule, forkModule, homeAgentModule, peersModule, updatesModule, linksModule];
+export const MODULES: Module[] = [pushModule, textingModule, moveModule, forkModule, sideChatsModule, homeAgentModule, peersModule, updatesModule, linksModule];
 
 export async function startModules(modules: Module[], ctx: (m: Module) => ModuleContext): Promise<() => void> {
   const stops: (() => void)[] = [];

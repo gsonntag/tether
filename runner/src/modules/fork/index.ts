@@ -7,6 +7,7 @@
 import { parseSessionId } from "../../../../shared/ids";
 import { forkedNotice, forkPoints, forkTitle, leftOutNote, wholeForkPoint, type ForkedFrom } from "../../../../shared/fork";
 import { HARNESS_LABELS, type Msg } from "../../../../shared/transcript";
+import { SIDE_KEEPS } from "../../../../shared/sideChat";
 import type { Adapter, StartOpts } from "../../core/adapter";
 import { Mover } from "../move";
 import { movedBase } from "../../core/moved";
@@ -15,6 +16,7 @@ import type { AdoptExtra, ForkOptions, Module, ModuleContext, SessionLook } from
 /** Why a session can't be forked at all (a running turn isn't a reason: its finished part is forked). */
 export function forkRefusal(s: SessionLook, a: Adapter | undefined): string | undefined {
   if (s.summary.parentSessionId) return "A subagent can't be forked. Fork its main session.";
+  if (s.summary.sideOf) return SIDE_KEEPS.fork;
   if (!a?.capabilities.fork || !a.fork) return `${HARNESS_LABELS[s.summary.harness] ?? s.summary.harness} sessions can't be forked yet.`;
   // The fork takes the session's source: one that isn't confirmed yet can't be shown on it.
   if (s.state.nextBilling) return "Its new source isn't confirmed yet. Send it a message first.";
@@ -25,7 +27,7 @@ export class Forker {
   constructor(
     private ctx: Pick<ModuleContext, "sessions" | "log">,
     /** a fork the harness can't make itself: a copy of the history (Mover.copy) */
-    private copy?: (id: string, upTo: string | undefined, title: string, extra: AdoptExtra) => Promise<string>,
+    private copy?: (id: string, upTo: string | undefined, title: string, extra: AdoptExtra, permissionMode?: string) => Promise<string>,
   ) {}
 
   private adapter(h: string) {
@@ -62,8 +64,8 @@ export class Forker {
     const forkedFrom: ForkedFrom = { sessionId: id, ...(upTo ? { messageId: upTo } : {}), title };
     // The original's key preferences go with it; its plan-runs-out switch is ticked per session, so it doesn't.
     const { lastKey, fallbackKeys } = look.state;
-    const extra: AdoptExtra = { stored: true, forkedFrom, keys: { ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}) } };
-    const name = forkTitle(title);
+    const extra: AdoptExtra = { stored: true, forkedFrom, ...(o.sideOf ? { sideOf: o.sideOf } : {}), keys: { ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}) } };
+    const name = o.title ?? forkTitle(title);
     const notice: Msg = { id: `n-forked-from-${id}`, role: "notice", level: "info", ts: Date.now(), parts: [{ type: "text", text: [forkedNotice(title), o.messageId ? undefined : leftOutNote(msgs, upTo, running)].filter(Boolean).join(" ") }], link: { sessionId: id, label: "Open it" } };
     /** Where the fork's own conversation begins: under what it took from the original. */
     const mark = async (forked: string) => {
@@ -73,12 +75,13 @@ export class Forker {
     let forked: string;
     if (a!.fork!.copyInstead?.(nativeId)) {
       if (!this.copy) throw new Error("This session can't be forked here.");
-      forked = await this.copy(id, upTo, name, extra);
+      forked = await this.copy(id, upTo, name, extra, o.permissionMode);
       await mark(forked).catch((e) => this.ctx.log(`the fork ${forked} has no notice: ${e?.message ?? e}`));
     } else {
-      const { model, effort, permissionMode } = look.state;
+      const { model, effort } = look.state;
+      const permissionMode = o.permissionMode ?? look.state.permissionMode;
       const opts: StartOpts = { ...(model && model !== "default" ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) };
-      const made = await a!.fork!.fork({ nativeId, projectPath, ...(upTo ? { upTo } : {}), title: name });
+      const made = await a!.fork!.fork({ nativeId, projectPath, ...(upTo ? { upTo } : {}), title: name, ...(o.sideOf ? { readOnly: true } : {}) });
       try {
         forked = await this.ctx.sessions.adopt(harness, made, projectPath, opts, await this.ctx.sessions.sourceOf(id), undefined, extra);
         await mark(forked);
@@ -107,7 +110,7 @@ export const forkModule: Module = {
   start(ctx) {
     // A copy keeps its history where moves do (core/moved.ts): the harness may be told to read it there.
     const mover = new Mover({ ...ctx, dataDir: movedBase() });
-    const forker = new Forker(ctx, (id, upTo, title, extra) => mover.copy(id, upTo, title, extra));
+    const forker = new Forker(ctx, (id, upTo, title, extra, mode) => mover.copy(id, upTo, title, extra, mode));
     ctx.sessions.forker((id, o) => forker.fork(id, o));
     ctx.ops.register("forkSession", async (a) => ({ sessionId: await ctx.sessions.fork(String(a.sessionId ?? ""), typeof a.messageId === "string" && a.messageId ? { messageId: a.messageId } : {}) }));
   },

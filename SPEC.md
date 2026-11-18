@@ -1666,7 +1666,7 @@ on the same harness and source, with the same model, effort and mode. **Fork fro
 reply makes one whose conversation ends at that reply. The original is never changed, and the fork
 opens ("Forking…" in the chat meanwhile). It is a module (`runner/src/modules/fork/`, op
 `forkSession { sessionId, messageId? }`); other modules fork through `SessionActions.fork` (side
-chats, §7 of the T3 notes, build on it).
+chats, §16a, build on it).
 
 **Fork points** (`shared/fork.ts`, the UI and runner alike): the assistant reply that ends a turn,
 that is a reply with no error, ending on text (one ending on a tool call is mid-turn), followed by
@@ -1714,3 +1714,52 @@ as it's ticked per session.
 kept across a source change like the session's other settings): the header says "Forked from
 “<title>”", by the original's title now, and opens it. A notice under what the fork took says the
 same, with Open it. The original gets nothing.
+
+## 16a. Side chats
+
+`/btw <question>` in a session's box, or **Side chat** in its ⋯ menu, opens a panel beside the
+transcript (where the terminal panel goes; when there's no room, as on a phone, a full-screen sheet
+over the session: a modal dialog that keeps focus, Escape tucks it away) holding a **side chat**: a
+fork (§16) through the last finished turn, read-only, asked the question. The session keeps working
+undisturbed: a running turn is allowed and never forked. It is a module
+(`runner/src/modules/sideChats/`, ops `openSideChat { sessionId, question? } → { sessionId }`,
+`bringBack { sessionId } → { text }`, `closeSideChat { sessionId }`).
+
+- **`/btw` is Tether's.** It's first in the `/` menu of a session that can have side chats
+  (`canSideChat`: it forks, its harness has `capabilities.readOnlyMode`, it isn't a side chat, a
+  subagent or one of the Home agent's chats; the runner refuses the same). The page intercepts it
+  whatever the session is doing (send, steer, queue); it never reaches the harness. With files
+  attached it's refused with a note under the box, which keeps them. Where side chats aren't
+  offered it goes as typed.
+- **A side chat** is a session with `SessionSummary.sideOf` (`SessionPrefs.sideOf`, indexed in
+  prefs), titled "Side chat: <question>". It's left out of every list: Recent, projects, search,
+  archived, Home's inbox and waiting line, and what modules list or reach (peers, the Home agent's
+  lists, watch, check-in and send). Nothing of it is pushed. The session's header shows **Side chats
+  N**, closed ones too (`listSessions { sideOf }`, from the prefs index); picking one opens it in the
+  panel (a closed one is unarchived). When the session goes on under a new id (a source change's new
+  thread, a renewed id, a Move) its side chats follow (`moveSides`); a side chat's own successor stays one.
+  Opened on its own, its header says "Read-only side chat of “<title>”", with a Read only chip for
+  the Mode and no Terminal, Change session harness, Fork or source switch.
+- **Read-only, by the harness.** Started with `StartOpts.readOnly`. In the core, both harnesses: its
+  mode can't change ("A side chat stays read-only."), its approvals (a plan's included) are refused
+  without asking anyone, questions still come to you; it can't change source or the plan-runs-out
+  switch, move, be forked, run `!` commands or open a terminal, and takes no `/` command (sent,
+  steered or queued: a custom command's text can run shell lines before the model sees it).
+
+| Harness | Mode | Enforced by |
+|---|---|---|
+| Claude Code | `default` (Ask first) | A PreToolUse hook (`adapters/claude/readOnly.ts`) denying every tool but a fixed list that only reads: Read, Grep, Glob, LS, NotebookRead, WebSearch, TodoWrite, ToolSearch, AskUserQuestion. No WebFetch (it would send what was read anywhere), no shell at all (a list of "reading" commands doesn't survive quoting and options), no MCP tool (Tether's included), no subagents. It fails closed: anything it can't read is denied. A hook's deny stands over modes, allow rules and the auto classifier. The person's own hooks (settings, plugins: a Stop or PostToolUse hook could write) are off (`disableAllHooks`); the SDK's gate still runs (checked on 2.1.327). A read outside the folder asks, and the core refuses it. Plan mode isn't used: on 2.1.327 it let `echo hello > f` run without asking (the person's default being auto), and ran its turns on Sonnet instead of the session's model. The system prompt says it's a read-only side chat |
+| Codex | `never+read-only` | Codex's read-only sandbox, with no approvals to escape it. MCP servers, apps, plugins and hooks run outside the sandbox, so the thread is made (a fork, or a copy's `thread/start`) and resumed (`adapters/codex/readOnly.ts`) with every server in the person's config turned off by name (`config/read`; a config it can't read fails the start), `features.apps`, `plugins`, `multi_agent` and `hooks` off, and without Tether's own server. After each resume the daemon must say, on every page of `mcpServerStatus/list` for the thread, that each server it knows is `disabled`, `failed` or `cancelled` with no tools (not started or unknown counts as on): a thread another client loaded keeps that client's config, so anything else fails the start. `config/read` takes no thread, so the features turned off at load can't be read back (apps would show as their own server). Checked with a stdio MCP server in a temporary CODEX_HOME: the session starts it, the side chat doesn't and can't call it |
+
+  WebSearch stays (Claude): a query can carry some of what it read. Read-only holds only inside
+  Tether: the side chat's id resumed in the harness's own terminal (`claude --resume`, `codex
+  resume`) runs ungated, in whatever mode that terminal picks.
+- **Bring back** runs a turn in the side chat, Tether's ("[From Tether] Bring back: summarize …
+  in at most 5 short lines"), waits for the end of the turn that message started (100 s at most),
+  and returns "From a side chat:\n\n<its reply after that message>", which the page puts in the
+  session's box as a draft to edit and send (`putDraft`; on a phone the sheet tucks away so the box
+  shows). It's never queued or sent by itself: the person decides what goes into a working session.
+  Refused while the side chat is answering; its box is off meanwhile.
+- **Close** (×) stops a turn it runs, then archives it. Closed while it's still being made, the
+  fork is closed when it arrives. Side chats opens it again.
+- **Billing** is the fork's: the session's source, model and effort; its turns are real turns.

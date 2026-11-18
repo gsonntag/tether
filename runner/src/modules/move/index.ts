@@ -8,6 +8,7 @@ import { parseSessionId } from "../../../../shared/ids";
 import { archiveMarkdown, budgetFor, contextNote, contextOpening, imageName, mapMode, movedFrom, movedTo, PORTABLE_VERSION, planImport, type MoveOptions, type MoveTarget, type PortableSession, type PortableSubagent } from "../../../../shared/move";
 import type { BillingSource } from "../../../../shared/credentials";
 import { HARNESS_LABELS, type HarnessId, type Msg } from "../../../../shared/transcript";
+import { SIDE_KEEPS } from "../../../../shared/sideChat";
 import type { Adapter, StartOpts } from "../../core/adapter";
 import { movedDir } from "../../core/moved";
 import { levelOf } from "../../core/permissionLevel";
@@ -21,6 +22,7 @@ const STORE_QUIET_MS = 3_000;
 /** Why a session can't move now. */
 export function refusal(s: SessionLook): string | undefined {
   if (s.summary.parentSessionId) return "A subagent moves with its main session.";
+  if (s.summary.sideOf) return SIDE_KEEPS.move;
   if (s.state.mode === "terminal" || s.state.terminal) return "Close the terminal first.";
   if (s.state.requests.length || s.requests.length) return "Answer the open request first.";
   if (s.status !== "idle") return "Wait for the turn to end, or stop it.";
@@ -219,6 +221,8 @@ export class Mover {
       const stayed = background ? " Background work stayed there." : "";
       await this.ctx.sessions.notice(moved.sessionId, notice(`n-moved-from-${id}`, `${movedFrom(name(from, own))}${note ? ` ${note}` : ""}${stayed}`, id), moved.after ? { after: moved.after } : { first: true });
       await this.ctx.sessions.notice(id, notice(`n-moved-to-${moved.sessionId}`, movedTo(name(target, source)), moved.sessionId));
+      // Its side chats (SPEC §16a) go under the session it went on in (on their own harness, as they were).
+      this.ctx.sessions.moveSides?.(id, moved.sessionId);
       this.ctx.log(`moved ${id} to ${moved.sessionId}: ${moved.kept} of ${moved.total} messages in context`);
       return { sessionId: moved.sessionId };
     } finally {
@@ -258,7 +262,7 @@ export class Mover {
    * `upTo` (all of it when absent), imported into a new session on the same harness, source and
    * settings, stored: nothing starts until its first send.
    */
-  async copy(id: string, upTo: string | undefined, title: string, extra: AdoptExtra): Promise<string> {
+  async copy(id: string, upTo: string | undefined, title: string, extra: AdoptExtra, mode?: string): Promise<string> {
     const { look, adapter } = await this.source(id);
     if (!adapter.move?.importHistory) throw new Error(`${labelOf(adapter.id)} can't copy a session.`);
     const portable = await exportSession(adapter, look);
@@ -268,8 +272,10 @@ export class Mover {
       portable.messages = portable.messages.slice(0, end + 1);
     }
     portable.from.title = title;
-    const { model, effort, permissionMode } = look.state;
-    const opts: StartOpts = { ...(model && model !== "default" ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) };
+    const { model, effort } = look.state;
+    const permissionMode = mode ?? look.state.permissionMode;
+    // A side chat's copy (SPEC §16a) is made read-only from its thread's first load.
+    const opts: StartOpts = { ...(model && model !== "default" ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}), ...(extra.sideOf ? { readOnly: true } : {}) };
     const made = await this.native(adapter, portable, opts, false, await this.ctx.sessions.sourceOf(id), undefined, { ...extra, stored: true });
     this.ctx.log(`copied ${id} to ${made.sessionId} as a fork: ${made.kept} of ${made.total} messages in context`);
     return made.sessionId;

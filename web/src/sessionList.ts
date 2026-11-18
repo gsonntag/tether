@@ -25,13 +25,16 @@ const rows = (summaries: Record<string, SummaryState>): Row[] =>
       .map((x) => ({ ...x, status: shownStatus(x), runnerId })),
   );
 
+/** A row the lists show: not a subagent (under its parent) nor a side chat (under its session, SPEC §16a). */
+export const listed = (r: Pick<SessionSummary, "parentSessionId" | "sideOf">) => !r.parentSessionId && !r.sideOf;
+
 const newestFirst = (a: Row, b: Row) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
 
 /** Recent sessions across runners and projects, newest first; subagents are left out (they sit under their parent). */
 export function recentSessions(summaries: Record<string, SummaryState>, query = ""): Row[] {
   const q = query.trim().toLowerCase();
   return rows(summaries)
-    .filter((r) => !r.parentSessionId && (!r.archived || !!q) && (!q || r.title.toLowerCase().includes(q)))
+    .filter((r) => listed(r) && (!r.archived || !!q) && (!q || r.title.toLowerCase().includes(q)))
     .sort(newestFirst);
 }
 
@@ -48,7 +51,7 @@ export function childrenOf(summaries: Record<string, SummaryState>, runnerId: st
  */
 export function waitingOn(summaries: Record<string, SummaryState>, runnerId: string): Row[] {
   return rows(summaries)
-    .filter((r) => r.runnerId === runnerId && !r.parentSessionId && ((r.requests ?? 0) > 0 || (r.mode === "terminal" && r.status === "waiting")))
+    .filter((r) => r.runnerId === runnerId && listed(r) && ((r.requests ?? 0) > 0 || (r.mode === "terminal" && r.status === "waiting")))
     .sort((a, b) => a.updatedAt - b.updatedAt);
 }
 
@@ -71,7 +74,7 @@ const needsPerson = (r: SessionSummary) => (r.requests ?? 0) > 0 || r.status ===
 export function awaitedSessions(summaries: Record<string, SummaryState>, runnerId: string, w: Watching): { rows: Row[]; needs: number } {
   const follows = new Set(w.following ?? []);
   const out = rows(summaries).filter(
-    (r) => r.runnerId === runnerId && !r.parentSessionId && !r.archived && (w.watchAll || follows.has(r.id)) && (r.status === "running" || needsPerson(r)),
+    (r) => r.runnerId === runnerId && listed(r) && !r.archived && (w.watchAll || follows.has(r.id)) && (r.status === "running" || needsPerson(r)),
   );
   out.sort((a, b) => Number(needsPerson(b)) - Number(needsPerson(a)) || a.updatedAt - b.updatedAt || a.id.localeCompare(b.id));
   return { rows: out, needs: out.filter(needsPerson).length };
@@ -81,6 +84,13 @@ export { needsPerson };
 
 /** "Waiting for 3 sessions to finish…" */
 export const waitingLine = (n: number) => `Waiting for ${n} session${n === 1 ? "" : "s"} to finish…`;
+
+/** A session's side chats that the summaries know (SPEC §16a), newest first. */
+export function sideChatsOf(summaries: Record<string, SummaryState>, runnerId: string, sessionId: string): Row[] {
+  return rows(summaries)
+    .filter((r) => r.runnerId === runnerId && r.sideOf === sessionId)
+    .sort(newestFirst);
+}
 
 /** Merges two lists by session (the later one wins), newest first. */
 export function mergeRows(a: Row[], b: Row[]): Row[] {
@@ -105,7 +115,7 @@ export interface InboxRow extends Row {
 export function inbox(summaries: Record<string, SummaryState>): InboxRow[] {
   const out: InboxRow[] = [];
   for (const r of rows(summaries)) {
-    if (r.parentSessionId) continue;
+    if (!listed(r)) continue;
     const kind: InboxKind | undefined =
       (r.requests ?? 0) > 0 || r.status === "waiting" || (r.queuePaused && r.status === "idle") ? "needs" : r.unread === "failed" ? "failed" : r.unread === "finished" && !r.backgroundSubagents ? "finished" : r.status === "running" ? "working" : undefined;
     if (kind) out.push({ ...r, inbox: kind });

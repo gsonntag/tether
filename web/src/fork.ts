@@ -12,8 +12,8 @@ export function forkRunning(state: Pick<LiveState, "status" | "mode" | "terminal
 }
 
 /** The session menu has Fork: a main session whose harness forks, on a confirmed source. */
-export function canFork(session: Pick<SessionSummary, "parentSessionId">, capabilities: HarnessCapabilities | undefined, state: Pick<LiveState, "nextBilling">): boolean {
-  return !session.parentSessionId && !!capabilities?.fork && !state.nextBilling;
+export function canFork(session: Pick<SessionSummary, "parentSessionId" | "sideOf">, capabilities: HarnessCapabilities | undefined, state: Pick<LiveState, "nextBilling">): boolean {
+  return !session.parentSessionId && !session.sideOf && !!capabilities?.fork && !state.nextBilling;
 }
 
 /** What a fork's header calls its original: its title now when it's listed, else as it was forked. */

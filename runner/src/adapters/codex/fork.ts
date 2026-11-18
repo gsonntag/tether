@@ -21,6 +21,7 @@ import type { AdapterFork, ForkRequest } from "../../core/adapter";
 import { threadTurns } from "./discovery";
 import { remember, remembered } from "./remember";
 import { threadCall } from "./sources";
+import { readOnlyLoad } from "./readOnly";
 
 /** The turn a fork through transcript message `upTo` ends with. Throws when that message doesn't end one. */
 export function forkTurn(turns: any[], upTo: string): string {
@@ -43,12 +44,14 @@ export const codexFork: AdapterFork = {
 
   discard: async (nativeId) => void (await forget(nativeId)),
 
-  async fork({ nativeId, upTo, title }: ForkRequest) {
+  async fork({ nativeId, projectPath, upTo, title, readOnly }: ForkRequest) {
     if (codexFork.copyInstead!(nativeId)) throw new Error("This thread is copied, not forked.");
     const turns = await threadTurns(nativeId);
     const lastTurnId = upTo ? forkTurn(turns, upTo) : turns.at(-1)?.id;
     if (!lastTurnId) throw new Error("Nothing to fork yet.");
-    const r: any = await threadCall(nativeId, "thread/fork", { threadId: nativeId, lastTurnId, excludeTurns: true });
+    // A side chat is loaded read-only from the start (readOnly.ts): the daemon keeps a loaded thread's config.
+    const load = readOnly ? await readOnlyLoad((m, p) => threadCall(nativeId, m, p), projectPath) : {};
+    const r: any = await threadCall(nativeId, "thread/fork", { threadId: nativeId, lastTurnId, excludeTurns: true, ...load });
     const id: string | undefined = r?.thread?.id;
     if (!id) throw new Error("Codex didn't make the fork.");
     try {

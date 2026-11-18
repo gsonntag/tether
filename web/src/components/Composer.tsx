@@ -80,6 +80,8 @@ export const Composer = forwardRef<
     shell?: { folder: string; heldBy?: string };
     /** the session's commands and skills (none: no menu) */
     loadCommands?: () => Promise<HarnessCommand[]>;
+    /** why this can't go as it is (said under the box, which keeps it), else undefined */
+    refuse?: (text: string, files: number) => string | undefined;
     onSend: (kind: SendKind, text: string, attachments: Attachment[]) => Promise<void>;
     /**
      * Send and Stop and send now, optimistically: the box clears at once and the message shows in
@@ -91,7 +93,7 @@ export const Composer = forwardRef<
     /** a send or Stop failed: the chat shows it */
     onFailed: (message: string) => void;
   }
->(function Composer({ draftKey, billing, running, waiting, disabled, placeholder, mainFree = false, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, loadCommands, onSend, sendNow, onStop, onFailed }, ref) {
+>(function Composer({ draftKey, billing, running, waiting, disabled, placeholder, mainFree = false, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, loadCommands, refuse, onSend, sendNow, onStop, onFailed }, ref) {
   const [text, setText] = useState(() => drafts.get(draftKey) ?? "");
   const [files, setFilesState] = useState<Pending[]>(() => draftFiles.get(draftKey) ?? []);
   const [busy, setBusy] = useState(false);
@@ -261,6 +263,8 @@ export const Composer = forwardRef<
     const t = text.trim();
     if ((!t && !ready.length) || busy || disabled) return;
     if (uploading) return setHint("Wait for the files to finish uploading.");
+    const refused = refuse?.(t, ready.length);
+    if (refused) return setHint(refused);
     if (steerOnly && kind !== "steer") kind = "steer";
     setBusy(true);
     setHint(undefined);

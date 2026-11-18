@@ -43,6 +43,11 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
 - **Fork** (SPEC §16): the session menu's Fork makes a new session with the same conversation, folder,
   harness, source and settings; **Fork from here** on a reply that ends a turn makes one whose
   conversation ends there. The original is never changed, and nothing runs until you send.
+- **Side chats** (SPEC §16a): `/btw <question>` (or Side chat in the session menu) asks a read-only
+  fork of the session in a panel beside it (a sheet on a phone) while the session keeps working.
+  **Bring back** puts the side chat's summary in the session's box to edit and send; closing it
+  stops and archives it, and the header's Side chats reopens it. Side chats stay out of the lists; on
+  Claude Code they have no shell, MCP tools or subagents, on Codex a read-only sandbox with MCP off.
 
 **Home.** Home has an inbox of sessions that need you, failed, finished or are working. It also has
 the runners and the **Home agent**, a chat that starts sessions in your projects and sees them
@@ -132,9 +137,9 @@ dial out, so your machines need no inbound port. SPEC §3 has the details.
 
 | Dir | What |
 |---|---|
-| `shared/` | The wire protocol (`protocol.ts`), transcript model (`transcript.ts`), and helpers used by all three: credentials, costs, move, fork, commands, plan, sync |
+| `shared/` | The wire protocol (`protocol.ts`), transcript model (`transcript.ts`), and helpers used by all three: credentials, costs, move, fork, side chats, commands, plan, sync |
 | `server/` | Bun relay on Foliation: identity, RPC forwarding, session subscriptions, summary broadcast, terminal routing (`relay.ts`), Web Push keys (`push.ts`) |
-| `runner/` | Bun runner. `src/core/`: connection, event bus, ops and the session core (`sessions.ts`, `live.ts`, `queue.ts`, `requests.ts`, `transcript.ts`). `src/adapters/claude/` (Agent SDK) and `src/adapters/codex/` (app-server daemon, private hosts for API sources). `src/terminal/`: PTY and tmux. `src/modules/`: `homeAgent`, `peers`, `texting` (its connectors: `imessage.ts`, `discord.ts`), `push`, `move`, `fork` |
+| `runner/` | Bun runner. `src/core/`: connection, event bus, ops and the session core (`sessions.ts`, `live.ts`, `queue.ts`, `requests.ts`, `transcript.ts`). `src/adapters/claude/` (Agent SDK) and `src/adapters/codex/` (app-server daemon, private hosts for API sources). `src/terminal/`: PTY and tmux. `src/modules/`: `homeAgent`, `peers`, `texting` (its connectors: `imessage.ts`, `discord.ts`), `push`, `move`, `fork`, `sideChats` |
 | `web/` | React + Vite + Astryx UI |
 | `scripts/` | End-to-end checks, a fake runner, probes |
 | `docs/` | `acceptance/` manual checks per phase and feature, `notes/`, [`ISSUES.md`](docs/ISSUES.md) backlog |

@@ -36,7 +36,8 @@ export function useSources(runnerId: string, harness: HarnessId, wanted: boolean
  */
 export function BillingChip({ runnerId, session, state, capabilities, onSwitch, onAutoKey, standalone }: { runnerId: string; session: SessionSummary; state: LiveState; capabilities?: HarnessCapabilities; onSwitch: (source: BillingSource) => void; onAutoKey?: (on: boolean) => void; standalone?: boolean }) {
   const [editingFallback, setEditingFallback] = useState(false);
-  const changeable = standalone || (!session.parentSessionId && !!capabilities?.sourceSwitch);
+  // A side chat keeps its session's source (SPEC §16a).
+  const changeable = standalone || (!session.parentSessionId && !session.sideOf && !!capabilities?.sourceSwitch);
   const { choices, refresh } = useSources(runnerId, session.harness, changeable);
   const billing = billingForDisplay(state) ?? UNKNOWN_BILLING;
   const usage = usageChip(billing, state.plan);
@@ -51,7 +52,7 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
   // The plan's figures whatever the session draws from, by the plan's own name, so a key session sees them before switching.
   const planName = choices.options.find((o) => o.source === "subscription")?.billing.label;
   const plan = planName ? planLines(state.plan) : [];
-  const autoKey = standalone || !onAutoKey ? undefined : autoKeyItem(session.harness, state, choices);
+  const autoKey = standalone || !onAutoKey || session.sideOf ? undefined : autoKeyItem(session.harness, state, choices);
   return (
     <>
       <DropdownMenu
