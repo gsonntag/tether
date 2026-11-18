@@ -1001,7 +1001,8 @@ set/unset status and optional last four characters, plus Azure's endpoint and de
 browser clears the password field when submitting. Keys never belong in session prefs, summaries,
 transcripts, notifications, logs or argv. Subprocesses receive them by private file or environment.
 The relay forwards credential RPCs without recording their arguments. Error paths redact submitted
-and retired keys; terminal output is redacted before it is encoded for transport.
+and retired keys; terminal output is redacted before it is encoded for transport. The runner's own
+token (`TETHER_TOKEN`) is registered as a secret too, so no op answer or terminal output carries it.
 
 A change to a session's key or source applies at the next process start. A running turn finishes
 using its original source and label. Before an idle live session's next send, Tether closes the old
@@ -1293,30 +1294,48 @@ Files is the session folder as a tree, a folder at a time (`listDir { sessionId,
 folders first, then by name; 2,000 entries, the rest counted), a filter by name, and a viewer. The
 eye toggle (per device) shows dot files and, in a repo, what git ignores (`check-ignore`), dimmed;
 outside a repo heavy folders (`node_modules`, `.venv`, `dist`, …) count as ignored. `.git` is never
-listed. `findFiles { sessionId, query, hidden? }` ranks paths by name (exact, prefix, substring, then
-the path, words, letters in order), 200 best: in a repo from `ls-files --cached --others
---exclude-standard` (ignored files never match), outside one a walk that follows no links and skips
-heavy folders (50,000 files or 3 s); a folder's list is kept 5 s. `readFile { sessionId, path,
+listed. `findFiles { sessionId, query, hidden?, fresh? }` ranks paths by name (exact, prefix,
+substring, then the path, words, letters in order), 200 best: in a repo from `ls-files --cached
+--others --exclude-standard` (ignored files never match; nested repos and gitlinks aren't files),
+outside one a walk that follows no links and skips heavy folders (50,000 files or 3 s, then
+`partial`); a folder's list is kept 5 s, and Refresh asks `fresh`. `readFile { sessionId, path,
 maxBytes?, head? }` answers text (UTF-8, no NUL in the first 8 KB, under 3 MB of JSON), an image
-(png, jpg, gif, webp, svg, avif, bmp, ico, checked by its bytes; base64) or "binary". Over 1 MB it's
-the size only; a text file's first 1 MB on asking (`head`). The viewer: text in a `<pre>` with line
-numbers, Markdown preview (Markdown.tsx, remote images not loaded) or Raw, images as an `<img>`
-from a `data:` URL (SVG too, so its scripts never run). **Mention** (in the viewer, and `@` on a
-row; always there on touch) adds `@path` (quoted with spaces; a folder `path/`) to the message box's
-last line; on a phone the box isn't focused, so no keyboard comes up. Opened folders and the open
-file load again on Refresh and when a turn ends.
+(png, jpg, gif, webp, svg, avif, bmp, ico, checked by its bytes; base64) or "binary"; only as many
+bytes as the file says it has are read. Over 1 MB it's the size only; a text file's first 1 MB on
+asking (`head`), shown even if it isn't all UTF-8 or is mostly control characters (decoded with
+U+FFFD, cut to fit, `lossy`, said above it). The viewer: text in a `<pre>` with line numbers, a
+note when it holds bidirectional or control characters; Markdown preview (Markdown.tsx, remote
+images not loaded) or Raw, where a relative link opens that file in the viewer, `#heading` scrolls,
+and a link out of the folder is refused (nothing navigates the app); images as an `<img>` from a
+`data:` URL (SVG too, so its scripts never run). **Mention** (in the viewer, `@` on a row: on hover,
+always on touch, the `@` key on a focused row) adds `@path` (`@"path"` when it has spaces and no `"`;
+a folder `path/`) to the message box's last line; on a phone the box isn't focused, so no keyboard
+comes up. The tree is an ARIA tree: one tab stop, arrows move, Right and Left open and close,
+Enter or Space opens. Opened folders (four at a time) and the open file load again on Refresh and
+when a turn ends; while the tab is hidden, when it's next shown.
 
-Only inside the folder: a path must be relative, without `..`, `.` or empty names, NUL, `~` or a
-drive, under 4,096 characters; then its real path (every link resolved) must be the folder's real
-path or under it. A link is listed as a link, saying whether it points to a file or folder inside
-(opened as that), outside (never read through or listed into) or nowhere (broken, or a loop). A
-file opens with `O_NOFOLLOW | O_NONBLOCK` (a FIFO never blocks) and must be a regular file, and once
-open its real path is resolved again and must still be inside and the same file (device and inode),
-so a link swapped in meanwhile is refused. Names that aren't UTF-8 are listed, marked, and can't be
-opened. Nothing is written or run but `git rev-parse`, `check-ignore` and `ls-files` (run.ts's
-hardening). Text passes the runner's secret redaction like every op result. A `.env` isn't
-blocked: it's the person's machine, behind the eye toggle. All three ops read the folder (secrets
-included), so they need drive access and are never view-only (`VIEW_OPS`).
+Only inside the folder. A path must be relative, without `..`, `.` or empty names, NUL, `~` or a
+drive, under 4,096 characters, and its real path (every link resolved) must be inside the folder's
+real path; that gives the plain refusals. What's guaranteed rests on the open handle, not the path:
+a file opens `O_NOFOLLOW | O_NONBLOCK` (a FIFO never blocks; it must be a regular file), a folder
+`O_DIRECTORY | O_NOFOLLOW`, and on Linux the kernel's path for the handle (`/proc/self/fd/N`) must
+be inside the folder; a folder is then listed, and its entries' sizes and links looked at, through
+that handle, and the filter's walk opens each folder the same way. So on Linux a link swapped in
+anywhere on the path at any moment yields a refusal, never a byte or a name from outside (a test
+races a swapper against all three ops). Elsewhere (macOS has no `/proc`, and `F_GETPATH` needs a
+variadic `fcntl` bun:ffi can't call) it is best effort: after opening, the path is resolved again
+and must be inside and the same file (device and inode), which narrows the window but can't close
+it. Links are listed as links: to a file or folder inside (opened as that), else `outside` (never
+read through or listed into, and whether its target exists isn't said); `broken` only for a target
+inside by its text (missing, a loop). Names that aren't UTF-8 are listed, marked, and can't be
+opened. Hard links aren't links: a hard link inside to a file outside reads as inside. Every stat,
+realpath and readlink waits 5 s at most. Nothing is written or run but `git rev-parse`,
+`check-ignore` and `ls-files` (run.ts's hardening). A `.env` and the like aren't blocked or hidden
+from a reader: it's the person's machine, behind the eye toggle. (Op answers pass the runner's
+redaction of its own secrets, its token and stored keys, which keeps those from leaving through a
+view of `/proc/self/environ` or a file holding one; it protects nothing else in a file.) All three
+ops read the folder, secrets included, so they need drive access and are never view-only
+(`VIEW_OPS`).
 
 ### Session names
 
