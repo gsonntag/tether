@@ -37,6 +37,7 @@ const runner = createRunner({
   token,
   runnerId: config.runnerId,
   name: displayName(config),
+  defaultName: displayName({ ...config, name: undefined }),
   version: pkg.version,
   detectHarnesses: () => detectHarnesses(),
   adapters: [claudeAdapter, codexAdapter],

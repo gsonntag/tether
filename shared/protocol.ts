@@ -155,6 +155,8 @@ export interface Ops {
   runnerSettings: { args: Record<string, never>; result: RunnerSettings };
   /** changes the given settings; live sessions follow at once */
   setRunnerSettings: { args: RunnerSettings; result: RunnerSettings };
+  /** renames the runner (kept in runner.json; browsers see it at once). Blank: back to the default name */
+  setRunnerName: { args: { name: string }; result: { name: string } };
   /** Each harness's installed and newest version and how it was installed (cached a few minutes; `refresh` looks again). Updates in progress show on their rows */
   harnessVersions: { args: { refresh?: boolean }; result: HarnessReport };
   /** "Update all harnesses when all agents idle": `on` turns it on or off (kept on the runner, default off); none just answers */

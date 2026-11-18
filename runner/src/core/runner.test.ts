@@ -46,3 +46,36 @@ test("the core hears about connects and disconnects on its bus", async () => {
   expect(seen).toEqual(["connected", "disconnected", "connected"]);
   expect(r.epoch).toMatch(/^[0-9a-f-]{36}$/);
 }, 15_000);
+
+test("setRunnerName renames in runner.json and says hello again; blank goes back to the default", async () => {
+  const { mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const file = join(mkdtempSync(join(tmpdir(), "tether-rename-")), "runner.json");
+  writeFileSync(file, JSON.stringify({ runnerId: "u2", sessions: {} }));
+  const hellos: string[] = [];
+  const s = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: (req, srv) => (srv.upgrade(req, { data: undefined }) ? undefined : new Response("no", { status: 400 })),
+    websocket: {
+      message(ws, raw) {
+        const m = JSON.parse(String(raw));
+        if (m.t === "hello") (hellos.push(m.runner.name), ws.send(JSON.stringify({ t: "welcome" })));
+      },
+    },
+  });
+  stops.push(() => s.stop(true));
+  const r = createRunner({ url: `http://127.0.0.1:${s.port}`, token: "t", runnerId: "u2", name: "Teal Quail", defaultName: "Teal Quail", version: "0", detectHarnesses: async () => [], log: () => {}, prefsFile: file });
+  stops.push(() => r.stop());
+  r.start();
+  await until(() => hellos.length === 1);
+  expect(await r.ops.handle("setRunnerName", { name: "  Work\nbox  " })).toEqual({ ok: true, data: { name: "Work box" } });
+  await until(() => hellos.length === 2);
+  expect(hellos[1]).toBe("Work box");
+  const saved = JSON.parse(readFileSync(file, "utf8"));
+  expect(saved.name).toBe("Work box");
+  expect(saved.runnerId).toBe("u2");
+  expect(await r.ops.handle("setRunnerName", { name: "" })).toEqual({ ok: true, data: { name: "Teal Quail" } });
+  expect(JSON.parse(readFileSync(file, "utf8")).name).toBeUndefined();
+}, 15_000);
