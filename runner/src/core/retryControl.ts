@@ -8,6 +8,8 @@ import { isSavedRetry, RETRY_DEADLINE_MS, RETRY_MAX_ATTEMPTS, retryTime, type Sa
 interface RetryHost {
   identity(s: Session): { fingerprint: string; scope: string };
   blocked(s: Session): boolean;
+  /** a module holds the session for a moment (live.ts `hold`): the retry waits for the release */
+  held?(s: Session): boolean;
   revision(s: Session): string | undefined;
   send(s: Session, retry: SavedRetry): Promise<void>;
 }
@@ -116,6 +118,11 @@ export class RetryControl {
   private async run(s: Session, r: SavedRetry) {
     if (this.stopping || s.retry !== r || r.phase !== "waiting") return;
     if (this.core.now() >= r.deadline) return this.fail(s, "The rate limit retry deadline was reached.");
+    if (this.host.held?.(s)) {
+      s.retryTimer = setTimeout(() => void this.run(s, r), 250);
+      s.retryTimer.unref?.();
+      return;
+    }
     if (this.host.blocked(s) || s.state.status !== "idle" || s.driver?.busy() || r.fingerprint !== this.host.identity(s).fingerprint) return this.fail(s, "The session changed while a rate limit retry was waiting. Send a message to continue.");
     // A harness may finish its turn before the send promise resolves. Do not race that send.
     if (s.sending || s.starting) {

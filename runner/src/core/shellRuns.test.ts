@@ -71,6 +71,15 @@ function setup(o: { dir?: string } = {}) {
 }
 
 describe("! commands", () => {
+  test("refused while a module holds the session", async () => {
+    const t = setup();
+    await t.core.open("claude:s1");
+    const release = t.live.hold("claude:s1", "Restoring files…");
+    await expect(t.runs.run("claude:s1", "echo hi")).rejects.toThrow("Restoring files…");
+    release();
+    await t.runs.run("claude:s1", "true");
+  });
+
   test("run now, stream into the card, and go to the agent when done", async () => {
     const t = setup();
     // (The session subscribed, as the composer's view is.)

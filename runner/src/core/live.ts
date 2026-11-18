@@ -125,7 +125,8 @@ export class LiveControl {
     this.retries = new RetryControl(core, {
       identity: (s) => this.retryIdentity(s),
       revision: (s) => core.adapter(s.summary.harness).storeRevision?.(s.summary.nativeId, s.summary.projectPath),
-      blocked: (s) => s.state.mode === "terminal" || !!s.state.terminal || !!s.state.requests.length || !!this.terminal?.blocked(s) || !!core.o.prefs.get(s.id).nextSource || this.restartWaits.has(s.id) || this.holds.has(s.id),
+      blocked: (s) => s.state.mode === "terminal" || !!s.state.terminal || !!s.state.requests.length || !!this.terminal?.blocked(s) || !!core.o.prefs.get(s.id).nextSource || this.restartWaits.has(s.id),
+      held: (s) => this.holds.has(s.id),
       send: (s, r) => this.send(s.id, r.text, r.attachments, { tether: r.tether, retryId: r.id }),
     });
     this.desk = new RequestDesk(core, broker, {
@@ -692,6 +693,11 @@ export class LiveControl {
    * Holds an idle session (modules: a checkpoint restore): sends queue and the queue waits until the
    * release, which lets it go on. Refused unless it's idle with nothing being sent.
    */
+  /** why the session is held, when it is (shell commands and the terminal refuse meanwhile) */
+  heldWhy(id: string): string | undefined {
+    return this.holds.get(id);
+  }
+
   hold(id: string, why: string): () => void {
     const s = this.core.sessions.get(id);
     if (s && (s.state.status !== "idle" || s.sending || s.starting)) throw new Error(`${AGENT_NAMES[s.summary.harness]} is working.`);

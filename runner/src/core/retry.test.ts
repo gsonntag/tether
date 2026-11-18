@@ -62,6 +62,23 @@ function fastRetry(live: LiveControl, calls: { attempt: number; deadline: number
 }
 
 describe("automatic rate limit retry integration", () => {
+  test("a retry due while a module holds the session waits for the release, then goes", async () => {
+    const { adapter, core, live } = setup();
+    adapter.addStored("held", []);
+    live.retries.gapMs = 1;
+    live.retries.time = (_a, now) => now + 100;
+    adapter.script = () => ((adapter.drivers[0]?.sent.length ?? 0) <= 1 ? [limit(1)] : [say("answer", "recovered"), idle]);
+    await live.send("claude:held", "prompt");
+    const s = await core.open("claude:held");
+    await until(() => !!s.retry);
+    const release = live.hold("claude:held", "Restoring files…");
+    await Bun.sleep(400);
+    expect(adapter.drivers[0]!.sent.length).toBe(1);
+    expect(s.retry?.phase).toBe("waiting");
+    release();
+    await until(() => adapter.drivers[0]!.sent.length === 2 && !s.retry);
+  });
+
   test("retries the same message through multiple limits and retains the attempt budget", async () => {
     const { adapter, core, live } = setup();
     adapter.addStored("multi", []);
