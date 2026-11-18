@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { hostname, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { displayName, loadConfig, saveConfig } from "./config";
+import { displayName, isGeneratedHostname, loadConfig, niceName, saveConfig } from "./config";
 
 const dir = () => mkdtempSync(join(tmpdir(), "tether-config-"));
 
@@ -29,7 +29,7 @@ test("an existing id is used as is; the name defaults to the hostname", () => {
   saveConfig({ runnerId: "tether-dev" }, file);
   const cfg = loadConfig(file);
   expect(cfg.runnerId).toBe("tether-dev");
-  expect(displayName(cfg)).toBe(hostname());
+  expect(displayName(cfg, "gavins-mbp")).toBe("gavins-mbp");
   expect(displayName({ runnerId: "x", name: "Laptop" })).toBe("Laptop");
 });
 
@@ -37,4 +37,14 @@ test("a corrupt file is an error, not a silent reset", () => {
   const file = join(dir(), "runner.json");
   writeFileSync(file, "{");
   expect(() => loadConfig(file)).toThrow(/Can't read/);
+});
+
+test("cloud-made hostnames get a stable friendly name instead", () => {
+  for (const h of ["instance-20260403-0633", "instance-1", "ip-172-31-5-9", "ip-172-31-5-9.ec2.internal", "a1b2c3d4e5f6", "localhost", "vm-1234"])
+    expect(isGeneratedHostname(h)).toBe(true);
+  for (const h of ["gavins-mbp", "devbox", "Gavins-MacBook-Pro.local", "studio"]) expect(isGeneratedHostname(h)).toBe(false);
+  const name = displayName({ runnerId: "abc" }, "instance-20260403-0633");
+  expect(name).toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/);
+  expect(name).toBe(niceName("abc"));
+  expect(displayName({ runnerId: "abc", name: "Laptop" }, "instance-1")).toBe("Laptop");
 });
