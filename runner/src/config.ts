@@ -118,6 +118,11 @@ export function loadConfig(file = CONFIG_FILE): RunnerConfig {
 export const displayName = (cfg: RunnerConfig, host = hostname()) =>
   (typeof cfg.name === "string" && cfg.name.trim()) || (isGeneratedHostname(host) ? niceName(cfg.runnerId) : host);
 
+/** A runner name as typed: trimmed, one line, at most 60 characters. Blank: none. */
+export function cleanRunnerName(v: unknown): string {
+  return typeof v === "string" ? v.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 60).trim() : "";
+}
+
 /** Hostnames a provider or container runtime made up, not a person: they say nothing in a list of computers. */
 export function isGeneratedHostname(host: string): boolean {
   const h = host.trim().toLowerCase().split(".")[0] ?? "";

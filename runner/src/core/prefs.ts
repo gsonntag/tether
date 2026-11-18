@@ -63,6 +63,15 @@ export class Prefs {
   }
 
 
+  /** Sets runner.json's `name` (blank removes it): written at once. */
+  setName(name: string) {
+    this.flush();
+    const cfg = read(this.file);
+    if (!cfg.runnerId) return;
+    const { name: _, ...rest } = cfg;
+    saveConfig({ ...rest, runnerId: cfg.runnerId, ...(name ? { name } : {}) }, this.file);
+  }
+
   /** The open requests saved last time. */
   requests(): SavedRequest[] {
     return [...this.open];

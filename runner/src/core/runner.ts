@@ -21,6 +21,7 @@ import { OpRegistry } from "./ops";
 import { NoticeStore } from "./notices";
 import { Prefs } from "./prefs";
 import { readRunnerSettingsFrom } from "./runnerSettings";
+import { cleanRunnerName } from "../config";
 import { registerSessionOps } from "./sessionOps";
 import { registerShellOps, ShellRuns } from "./shellRuns";
 import type { Session } from "./session";
@@ -37,6 +38,8 @@ export interface RunnerOptions {
   token: string;
   runnerId: string;
   name: string;
+  /** the name a blank rename goes back to (the hostname, or a friendly one); `name` when absent */
+  defaultName?: string;
   version: string;
   detectHarnesses: () => Promise<HarnessInfo[]>;
   /** how often to look for installed or removed harnesses */
@@ -76,9 +79,10 @@ export function createRunner(o: RunnerOptions) {
   ops.register("ping", () => ({ runnerId: o.runnerId, at: Date.now() }));
 
   let harnesses = o.detectHarnesses();
+  let name = o.name;
   const helloInfo = async (): Promise<Omit<RunnerInfo, "connectedAt">> => ({
     id: o.runnerId,
-    name: o.name,
+    name,
     hostname: hostname(),
     version: o.version,
     protocol: PROTOCOL_VERSION,
@@ -134,6 +138,14 @@ export function createRunner(o: RunnerOptions) {
   }
   ops.register("runnerSettings", () => prefs.settings());
   ops.register("setRunnerSettings", (a) => prefs.setSettings({ ...(typeof a?.backgroundSubagents === "boolean" ? { backgroundSubagents: a.backgroundSubagents } : {}), ...(typeof a?.conciseReplies === "boolean" ? { conciseReplies: a.conciseReplies } : {}) }));
+  ops.register("setRunnerName", async (a) => {
+    const typed = cleanRunnerName(a?.name);
+    prefs.setName(typed);
+    name = typed || o.defaultName || o.name;
+    // A repeated hello on the same connection just updates what the browsers see.
+    conn.send({ t: "hello", runner: await helloInfo() });
+    return { name };
+  });
   registerSessionOps(ops, core, live);
   const shellRuns = new ShellRuns(core, live, { shell: (o.terminal || undefined)?.shell });
   registerShellOps(ops, shellRuns);

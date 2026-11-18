@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Heading } from "@astryxdesign/core/Heading";
@@ -128,6 +128,36 @@ function RunnerRow({ runner, linkOpen }: { runner: KnownRunner; linkOpen: boolea
   const waiting = useMemo(() => waitingOn(summaries, runner.id), [summaries, runner.id]);
   const harnesses = runner.harnesses.map((h) => `${HARNESS_LABELS[h.id] ?? h.id} ${h.version}`).join(" · ") || "No harnesses found";
   const host = runner.hostname !== runner.name ? `${runner.hostname} · ` : "";
+  const [renaming, setRenaming] = useState(false);
+  const [renameBusy, setRenameBusy] = useState(false);
+  const nameInput = useRef<HTMLInputElement>(null);
+  const editingName = useRef(false);
+  useEffect(() => { if (renaming) { nameInput.current?.focus(); nameInput.current?.select(); } }, [renaming]);
+  const finishName = (save: boolean) => {
+    if (!editingName.current) return;
+    editingName.current = false;
+    const name = nameInput.current?.value.trim() ?? "";
+    setRenaming(false);
+    // Blank goes back to the default name.
+    if (save && name !== runner.name) {
+      setRenameBusy(true);
+      rpc(runner.id, "setRunnerName", { name })
+        .catch((e) => setCheck(`Couldn't rename: ${(e as Error).message}`))
+        .finally(() => setRenameBusy(false));
+    }
+  };
+  const canRename = linkOpen && runner.online;
+  const label = renaming ? (
+    <input ref={nameInput} className="t-title-input" aria-label="Computer name" placeholder="Name (blank for default)" defaultValue={runner.name} maxLength={60} onBlur={() => finishName(true)} onKeyDown={(e) => {
+      if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); finishName(e.key === "Enter"); }
+    }} />
+  ) : canRename ? (
+    <button type="button" className="t-title-button t-runner-name" title="Rename" aria-label={`Rename computer: ${runner.name || runner.id}`} disabled={renameBusy} onClick={() => { editingName.current = true; setRenaming(true); }}>
+      {runner.name || runner.id}
+    </button>
+  ) : (
+    runner.name || runner.id
+  );
 
   const ping = async () => {
     const t0 = performance.now();
@@ -141,7 +171,7 @@ function RunnerRow({ runner, linkOpen }: { runner: KnownRunner; linkOpen: boolea
 
   return (
     <ListItem
-      label={runner.name || runner.id}
+      label={label}
       startContent={<RunnerDot runner={runner} now={now} />}
       description={
         <VStack gap={0.5}>
