@@ -23,17 +23,10 @@ export const VIEW_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "listProjects",
   "listSessions",
   "homeAgent",
+  // A short link's session (making one, linkFor, stores a code: not a view op).
   "resolveLink",
-  "linkFor",
-  // The session folder's changes and files: read-only, only inside it.
-  "gitDiff",
-  "checkpoints",
-  "gitStatus",
-  "gitPr",
-  "listDir",
-  "readFile",
-  "findFiles",
-  "fileChanges",
+  // Never the git or files modules' ops: they read the session's folder itself, secrets too
+  // (runner/src/modules/git and files say so).
 ]);
 
 /**
@@ -58,6 +51,12 @@ export const MANAGE_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "testConnector",
   "harnessAutoUpdate",
   "harnessUpdate",
+  // The Home agent is the owner's own: what it runs on, texting its replies to their phone, its
+  // check-ins and what it watches. People it's shared with may chat with it, not reconfigure it.
+  "homeAgentSet",
+  "homeAgentReplyByText",
+  "homeAgentCheckIn",
+  "homeAgentWatch",
 ]);
 
 /** Whether this access level may use this op. */

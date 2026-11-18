@@ -188,9 +188,11 @@ export class Relay {
       this.out(sock, { t: "termEnd", attachId: at, reason: "You no longer have access to drive this computer." });
     }
     if (detach.length) this.out(r.sock, { t: "detach", attachIds: detach });
-    // Requests it may no longer make fail now; ones it still may (a viewer's reads) carry on.
+    // Requests it may no longer make fail now, so no answer (a subscribe's snapshot included) reaches
+    // someone who lost the runner; ones it still may (a viewer's reads) carry on. A failed subscribe
+    // whose route is gone tells the runner `unwatched` (settleSubscribe).
     for (const [pid, p] of this.pending)
-      if (p.browser === sock && p.runnerId === id && p.op !== "subscribe" && (!a || !accessAllows(a, p.op))) this.settle(pid, { ok: false, error: "Your access to this computer changed." });
+      if (p.browser === sock && p.runnerId === id && (!a || (p.op !== "subscribe" && !accessAllows(a, p.op)))) this.settle(pid, { ok: false, error: "Your access to this computer changed." });
     if (b.presence?.runnerId === id) {
       b.presence = { deviceId: b.presence.deviceId };
       this.sendViewers(id);

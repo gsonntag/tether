@@ -137,6 +137,29 @@ describe("sharing runners", () => {
     expect(w.editor.take("event")).toEqual([]);
   });
 
+  test("a subscribe in flight when access goes never delivers its snapshot", () => {
+    const w = world();
+    w.r1.take();
+    w.rpc(w.editor, "1", "box", "subscribe", { sessionId: "s" });
+    const [sub] = w.r1.take("rpc");
+    w.editor.take();
+    w.hello([]);
+    expect(w.editor.take("result")).toEqual([expect.objectContaining({ id: "1", ok: false })]);
+    expect(w.r1.take("unwatched")).toEqual([expect.objectContaining({ sessionIds: ["s"] })]);
+    w.relay.onRunnerMessage(w.r1, { t: "result", id: sub.id, ok: true, data: { secret: 1 } });
+    expect(w.editor.take()).toEqual([]);
+  });
+
+  test("viewers can't read the folder or make links; editors can't reconfigure the Home agent", () => {
+    const w = world();
+    w.r1.take();
+    for (const op of ["readFile", "listDir", "gitDiff", "linkFor"]) w.rpc(w.viewer, op, "box", op, { sessionId: "s", path: ".env" });
+    for (const op of ["homeAgentSet", "homeAgentReplyByText", "homeAgentWatch", "homeAgentCheckIn"]) w.rpc(w.editor, op, "box", op, {});
+    expect(w.r1.take("rpc")).toEqual([]);
+    expect(w.viewer.take("result").every((m) => !m.ok)).toBe(true);
+    expect(w.editor.take("result").every((m) => !m.ok)).toBe(true);
+  });
+
   test("a role change on Foliation applies at the next renew", () => {
     const w = world();
     w.editor.take();

@@ -3,6 +3,7 @@
 // archives the ones git agrees are, and the result shows under Sessions until it's dismissed. While
 // one runs (from here, another device, or the Home agent's chat) the button says so and waits.
 
+import { accessOf } from "../runners";
 import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
@@ -21,7 +22,8 @@ const POLL_MS = 3000;
 
 /** The runner with the Home agent, as Home's chat picks it. */
 export function useHomeRunner() {
-  const runner = useStore((s) => s.runners.find((r) => r.online && r.homeFolder));
+  // Archive done (homeAgentCheckIn) is the runner's owner's (shared/access.ts MANAGE_OPS).
+  const runner = useStore((s) => s.runners.find((r) => r.online && r.homeFolder && accessOf(r) === "manage"));
   const linkOpen = useStore((s) => s.link === "open");
   return linkOpen ? runner : undefined;
 }

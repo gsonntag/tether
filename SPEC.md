@@ -81,7 +81,9 @@ with on Foliation (editor or viewer) may sign in but sees only the runners an ow
 them in Settings → Runners, each "Can drive" or "Can view" (read sessions only); a Foliation viewer
 share only ever views. The list lives on the runner (runner.json `sharedWith`, op
 `setRunnerAccess`) and the relay enforces it on every frame (shared/access.ts: `VIEW_OPS`, and
-`MANAGE_OPS` that stay the owner's: sharing, name, keys, texting, updates, runner settings). A
+`MANAGE_OPS` that stay the owner's: sharing, name, keys, texting, updates, runner settings, the
+Home agent's settings). View never includes the git or files modules' ops (they read the folder,
+secrets too) or making short links. A
 change applies at once; a Foliation role change at the next renew ticket, which carries the role.
 Public-link visitors and app calls never get in. A person's app user token (`fol app-token
 tether`, Foliation contracts/app-user-tokens.md: the identity carries `tok: true` with their current

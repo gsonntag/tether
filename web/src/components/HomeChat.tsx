@@ -129,7 +129,7 @@ export function HomeChat() {
     <section className={expanded ? "t-home-chat expanded" : "t-home-chat"} aria-label="Home agent">
       <div className="t-home-chat-head">
         {expanded && <span className="t-home-chat-title">Home agent</span>}
-        {agent && agent.runnerId === rid && (
+        {agent && agent.runnerId === rid && accessOf(runner) === "manage" && (
           <HomeAgentPickers
             runnerId={rid!}
             sessionId={current ?? undefined}
@@ -323,6 +323,8 @@ function HomeTabs({ runnerId, chats, labels, tab, onShow, onClose }: { runnerId:
 
 function ChatView({ runnerId, sessionId, onReset }: { runnerId: string; sessionId: string; onReset: () => Promise<void> }) {
   const k = viewKey(runnerId, sessionId);
+  // What the Home agent watches is its owner's (shared/access.ts MANAGE_OPS).
+  const mine = useStore((s) => accessOf(s.runners.find((r) => r.id === runnerId)) === "manage");
   useEffect(() => openView(runnerId, sessionId), [runnerId, sessionId]);
   useEffect(() => {
     setHomeChat({ runnerId, sessionId });
@@ -357,7 +359,7 @@ function ChatView({ runnerId, sessionId, onReset }: { runnerId: string; sessionI
                 <div className="t-inline-status" style={{ padding: "8px 0 12px" }}>
                   <Spinner size="sm" /> Working…
                 </div>
-              ) : running ? undefined : (
+              ) : running || !mine ? undefined : (
                 <HomeWaiting runnerId={runnerId} />
               )}
             </>
