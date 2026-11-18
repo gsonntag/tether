@@ -45,6 +45,7 @@ import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type Request, ty
 import type { BillingSource, SourceOption } from "../../../../shared/credentials";
 import { HOME_AGENT_MODE, type HomeAgentSettings } from "../../../../shared/protocol";
 import { mapMode } from "../../../../shared/move";
+import { waitingNow } from "../../../../shared/schedule";
 import type { Adapter, AgentSetup, AgentTool } from "../../core/adapter";
 import type { Module, ModuleContext } from "..";
 import { heicNote, HOME_SENDER, homeLabel, MAX_EXTRA_HOMES, PERSON_TEXT_MAX, type Home, type HomeEnd, type HomeTarget, type TakeVia } from "../homeLine";
@@ -952,7 +953,7 @@ export class HomeAgent implements HomeEnd {
     if (revived) await s.setArchived(id, false);
     // Behind a turn (or messages) that isn't this one's: that turn's end isn't the report.
     // A rate limit retry waiting is the previous turn, not over yet.
-    const behind = look.status !== "idle" || look.state.queue.length > 0 || !!look.state.retry;
+    const behind = look.status !== "idle" || waitingNow(look.state.queue, Date.now()) || !!look.state.retry;
     const next: Child = c?.chat === chat && !c.released ? c : { chat, reports: 0, ...(c && !c.messaged ? {} : { messaged: true }) };
     if (behind) next.queued = true;
     this.state.children[id] = next;

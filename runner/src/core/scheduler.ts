@@ -1,0 +1,69 @@
+// One timer for every scheduled message (SPEC §9 Scheduled sends). Not one per message: a timer set
+// for days overflows (Bun's, like Node's, fire at once past ~24.8 days), and a clock that jumps
+// (a laptop waking, NTP) would leave them wrong. This one is set for the next time anything is due,
+// and never for more than a minute: each time it fires it looks again at the clock and re-arms.
+
+/** The longest the timer waits before looking again (clock jumps, a machine that slept). */
+export const SCHEDULE_TICK_MS = 60_000;
+
+export interface SchedulerHost {
+  now(): number;
+  /** the soonest time something is due; `now` or earlier: something due hasn't gone yet */
+  next(): number | undefined;
+  /** sends (or queues next) whatever is due */
+  fire(): void;
+}
+
+export class Scheduler {
+  private timer?: ReturnType<typeof setTimeout>;
+  /** when the armed timer fires */
+  private at?: number;
+  /** the runner is stopping: never armed again */
+  private off = false;
+
+  constructor(
+    private host: SchedulerHost,
+    private timers: { set: typeof setTimeout; clear: typeof clearTimeout } = { set: setTimeout, clear: clearTimeout },
+  ) {}
+
+  /** Looks at what's scheduled again (call after any change): the timer is set for the next one. */
+  arm() {
+    if (this.off) return;
+    const next = this.host.next();
+    if (next === undefined) return this.stop();
+    const now = this.host.now();
+    // Something due that couldn't go yet (the turn runs, the terminal drives): its own triggers send
+    // it (a turn's end, Back to Tether); this only looks again in a while, in case one is missed.
+    const wait = next <= now ? SCHEDULE_TICK_MS : Math.min(next - now, SCHEDULE_TICK_MS);
+    const at = now + wait;
+    // Already set for that time or sooner.
+    if (this.timer && this.at !== undefined && this.at <= at && this.at > now) return;
+    this.stop();
+    this.at = at;
+    this.timer = this.timers.set(() => this.tick(), wait);
+    (this.timer as { unref?: () => void }).unref?.();
+  }
+
+  /** The timer fired (or a test's clock moved): what's due goes, and it's set again. */
+  tick() {
+    this.timer = undefined;
+    this.at = undefined;
+    try {
+      this.host.fire();
+    } finally {
+      this.arm();
+    }
+  }
+
+  /** For good (the runner stops). */
+  halt() {
+    this.off = true;
+    this.stop();
+  }
+
+  stop() {
+    if (this.timer) this.timers.clear(this.timer);
+    this.timer = undefined;
+    this.at = undefined;
+  }
+}
