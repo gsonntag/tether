@@ -229,7 +229,8 @@ is dropped, so `plan` is always the plan's.
 `setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `setSessionArchived`, `openTerminal`, `closeTerminal`,
 `terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands). The move module
 adds `moveOptions` and `moveSession` (§15), the git module `gitDiff` (§10 Changes), `checkpoints`
-and `restoreCheckpoint` (§10 Checkpoints).
+and `restoreCheckpoint` (§10 Checkpoints), the files module `listDir`, `readFile` and `findFiles`
+(§10 Files).
 
 ## 6. Adapters
 
@@ -1136,8 +1137,7 @@ lines say "removed; lines in HEAD" or the branch's base) over its lines in a dif
 can be edited before it's sent; on a phone the sheet closes to show it. The comments stay, marked
 as in the message box, until a message quoting their place is sent (the runner took it). **Take
 back**, editing a comment, or a box that no longer quotes it (a reload empties the box) puts it back
-in the tray. Git actions (below) sit under its header; a Files tab
-would be a later git view.
+in the tray. Git actions (below) sit under its header; Files (below) is a tab beside Changes.
 
 ### Checkpoints
 
@@ -1284,6 +1284,39 @@ at a time per repo (its top folder, whichever of its folders asks). The relay wa
 the runner's answer, failure included, always arrives. All of these ops need drive access (they read
 the folder and write to it and its remote): none may be view-only (`VIEW_OPS` in shared/access.ts,
 on branches that have it). Out of scope: replying to review comments, GitLab and Bitbucket.
+
+### Files
+
+Runners whose hello says `files: true` give the Changes pane a **Changes | Files** tab row in place
+of its title (kept per device; Files, once opened, stays mounted, so switching tabs keeps its place).
+Files is the session folder as a tree, a folder at a time (`listDir { sessionId, path, hidden? }`:
+folders first, then by name; 2,000 entries, the rest counted), a filter by name, and a viewer. The
+eye toggle (per device) shows dot files and, in a repo, what git ignores (`check-ignore`), dimmed;
+outside a repo heavy folders (`node_modules`, `.venv`, `dist`, …) count as ignored. `.git` is never
+listed. `findFiles { sessionId, query, hidden? }` ranks paths by name (exact, prefix, substring, then
+the path, words, letters in order), 200 best: in a repo from `ls-files --cached --others
+--exclude-standard` (ignored files never match), outside one a walk that follows no links and skips
+heavy folders (50,000 files or 3 s); a folder's list is kept 5 s. `readFile { sessionId, path,
+maxBytes?, head? }` answers text (UTF-8, no NUL in the first 8 KB, under 3 MB of JSON), an image
+(png, jpg, gif, webp, svg, avif, bmp, ico, checked by its bytes; base64) or "binary". Over 1 MB it's
+the size only; a text file's first 1 MB on asking (`head`). The viewer: text in a `<pre>` with line
+numbers, Markdown preview (Markdown.tsx, remote images not loaded) or Raw, images as an `<img>`
+from a `data:` URL (SVG too, so its scripts never run). **Mention** (in the viewer, and `@` on a
+row; always there on touch) adds `@path` (quoted with spaces; a folder `path/`) to the message box's
+last line; on a phone the box isn't focused, so no keyboard comes up. Opened folders and the open
+file load again on Refresh and when a turn ends.
+
+Only inside the folder: a path must be relative, without `..`, `.` or empty names, NUL, `~` or a
+drive, under 4,096 characters; then its real path (every link resolved) must be the folder's real
+path or under it. A link is listed as a link, saying whether it points to a file or folder inside
+(opened as that), outside (never read through or listed into) or nowhere (broken, or a loop). A
+file opens with `O_NOFOLLOW | O_NONBLOCK` (a FIFO never blocks) and must be a regular file, and once
+open its real path is resolved again and must still be inside and the same file (device and inode),
+so a link swapped in meanwhile is refused. Names that aren't UTF-8 are listed, marked, and can't be
+opened. Nothing is written or run but `git rev-parse`, `check-ignore` and `ls-files` (run.ts's
+hardening). Text passes the runner's secret redaction like every op result. A `.env` isn't
+blocked: it's the person's machine, behind the eye toggle. All three ops read the folder (secrets
+included), so they need drive access and are never view-only (`VIEW_OPS`).
 
 ### Session names
 
