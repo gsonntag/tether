@@ -1,10 +1,10 @@
-// The HTTP and WebSocket front of the server: authenticates browsers (owners only, same-origin)
+// The HTTP and WebSocket front of the server: authenticates browsers (owners and shared people, same-origin)
 // and runners (an app service token), then hands every parsed frame to the relay.
 
 import type { Server, ServerWebSocket } from "bun";
 import { PROTOCOL_VERSION, type PushKeys } from "../../shared/protocol";
 import { malformedId, parseBrowserMessage, parseRunnerMessage } from "../../shared/wire";
-import { browserUser, DEV, isOwner, isRunner, viewerFrom, type Viewer } from "./identity";
+import { browserUser, DEV, isOwner, isRunner, isSharedPerson, viewerFrom, type Viewer } from "./identity";
 import { Relay } from "./relay";
 import { listedTenant, type RunnerOwners } from "./tenancy";
 
@@ -79,10 +79,12 @@ export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay
   const owners = opts.owners ?? null;
   const relay = opts.relay ?? new Relay({ log, push: opts.push, owners });
   /**
-   * Who may open the app: its owners, and with an owner map, anyone it lists (whatever their app
-   * role). Never a service token, and never an anonymous visitor (no email, an anon: id).
+   * Who may open the app: its owners, people it is shared with (editors and viewers, who see only
+   * the runners shared with them: shared/access.ts), and with an owner map, anyone it lists
+   * (whatever their app role). Never a service token, and never an anonymous visitor.
    */
-  const allowed = (v: Viewer | null): v is Viewer => isOwner(v) || (!!v && !v.service && !v.id.startsWith("anon:") && listedTenant(owners, v));
+  const allowed = (v: Viewer | null): v is Viewer =>
+    isOwner(v) || isSharedPerson(v) || (!!v && !v.service && !v.guest && !v.id.startsWith("anon:") && listedTenant(owners, v));
 
   const guard = (what: string, fn: () => void) => {
     try {
@@ -115,7 +117,7 @@ export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay
         if (!originAllowed(req, opts.allowedOrigins)) return new Response("cross-origin request refused", { status: 403, headers: noStore });
         if (!viewer) return Response.json({ error: "unauthenticated" }, { status: 401, headers: noStore });
         if (!allowed(viewer)) return new Response("owners only", { status: 403, headers: noStore });
-        return Response.json({ ticket: relay.tickets.issue(viewer.id) }, { headers: noStore });
+        return Response.json({ ticket: relay.tickets.issue(viewer.id, viewer.role) }, { headers: noStore });
       }
       if (url.pathname === "/api/ws") {
         if (!originAllowed(req, opts.allowedOrigins)) return new Response("cross-origin socket refused", { status: 403 });
@@ -137,7 +139,7 @@ export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay
       closeOnBackpressureLimit: true,
       maxPayloadLength: 16 * 1024 * 1024,
       open(ws) {
-        if (ws.data.kind === "browser") guard("browser open", () => relay.addBrowser(ws, browserUser(ws.data.viewer), PROTOCOL_VERSION, ws.data.viewer.id));
+        if (ws.data.kind === "browser") guard("browser open", () => relay.addBrowser(ws, browserUser(ws.data.viewer), PROTOCOL_VERSION, ws.data.viewer.id, ws.data.viewer.role));
         // Its token's name limits which runner ids its hellos may claim (runnerIds.ts).
         else guard("runner open", () => relay.addRunner(ws, ws.data.viewer.name));
       },

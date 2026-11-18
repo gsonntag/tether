@@ -9,6 +9,7 @@
 import { CLOSE_PROTOCOL, CLOSE_REAUTH, CLOSE_REPLACED, CLOSE_RUNNER_ID, CLOSE_TOO_SLOW, PROTOCOL_VERSION, TERMINAL_OPS, type BrowserToServer, type PushKeys, type OpName, type ResultMsg, type RunnerInfo, type RunnerToServer, type ServerToBrowser, type ServerToRunner, type User } from "../../shared/protocol";
 import { LONG_OPS } from "../../shared/gitActions";
 import { fitCloseReason, runnerIdAllowed, runnerIdRefusal } from "./runnerIds";
+import { accessAllows, grantedAccess, type RunnerAccess } from "../../shared/access";
 import { mayUseRunner, type RunnerOwners } from "./tenancy";
 import { Tickets } from "./tickets";
 
@@ -60,8 +61,10 @@ interface Route {
 interface BrowserConn {
   /** who signed in on this socket: a renew ticket must be for them */
   viewerId: string;
-  /** their email, for the owner map (tenancy.ts) */
+  /** their email, for the owner map (tenancy.ts) and runners' share lists (shared/access.ts) */
   email: string;
+  /** their Foliation role on the app (owner, editor, viewer); renew tickets keep it current */
+  role: string;
   /** past this (the relay's clock), the socket is closed with CLOSE_REAUTH */
   deadline: number;
   /** a bad renew was already logged for this socket */
@@ -129,14 +132,34 @@ export class Relay {
     this.owners = opts.owners ?? null;
   }
 
-  /** Every runner, or with a browser, the ones it may see. */
+  /** Every runner, or with a browser, the ones it may see, as that person sees them. */
   runnerList(b?: BrowserConn): RunnerInfo[] {
-    return [...this.runners.values()].filter((r) => !b || this.mayUse(b, r)).map((r) => r.info);
+    if (!b) return [...this.runners.values()].map((r) => r.info);
+    const out: RunnerInfo[] = [];
+    for (const r of this.runners.values()) {
+      const a = this.access(b, r);
+      if (!a) continue;
+      // Only its owners learn who else it's shared with.
+      const { shared: _, ...info } = r.info;
+      out.push(a === "manage" ? r.info : { ...info, access: a });
+    }
+    return out;
   }
 
-  /** Whether this browser's person may see and drive this runner (tenancy.ts). */
+  /**
+   * What this browser's person may do on this runner (shared/access.ts). Its owners manage it: with
+   * an owner map, the people listed for its token (tenancy.ts); without one, the app's owners.
+   * Anyone else gets what the runner's share list grants them, or nothing.
+   */
+  private access(b: BrowserConn, r: RunnerConn): RunnerAccess | null {
+    const who = { id: b.viewerId, email: b.email };
+    if (this.owners ? mayUseRunner(this.owners, r.token, who) : b.role === "owner") return "manage";
+    return grantedAccess(r.info.shared, b.email, b.role);
+  }
+
+  /** Whether this browser's person may see this runner at all. */
   private mayUse(b: BrowserConn, r: RunnerConn): boolean {
-    return mayUseRunner(this.owners, r.token, { id: b.viewerId, email: b.email });
+    return this.access(b, r) !== null;
   }
 
   /** The runner with this id, if this browser may use it; otherwise it is as good as offline. */
@@ -145,11 +168,45 @@ export class Relay {
     return r && this.mayUse(b, r) ? r : undefined;
   }
 
+  /**
+   * After a runner's share list or a person's role changed: drops what this browser may no longer
+   * have on it. No access: its subscriptions and terminals. View only: its terminals and presence.
+   */
+  private reconcile(sock: Socket, b: BrowserConn, r: RunnerConn) {
+    const a = this.access(b, r);
+    const id = r.info.id;
+    if (!a) {
+      const gone = [...b.subs.keys()].filter((k) => k.startsWith(`${id}\u0000`) && this.unsubscribe(sock, b, k));
+      this.tellUnwatched(gone);
+    }
+    if (a === "drive" || a === "manage") return;
+    const detach: string[] = [];
+    for (const at of [...b.attaches]) {
+      if (this.attaches.get(at)?.runnerId !== id) continue;
+      this.dropAttach(at);
+      detach.push(at);
+      this.out(sock, { t: "termEnd", attachId: at, reason: "You no longer have access to drive this computer." });
+    }
+    if (detach.length) this.out(r.sock, { t: "detach", attachIds: detach });
+    // Requests it may no longer make fail now, so no answer (a subscribe's snapshot included) reaches
+    // someone who lost the runner; ones it still may (a viewer's reads) carry on. A failed subscribe
+    // whose route is gone tells the runner `unwatched` (settleSubscribe).
+    for (const [pid, p] of this.pending)
+      if (p.browser === sock && p.runnerId === id && (!a || (p.op !== "subscribe" && !accessAllows(a, p.op)))) this.settle(pid, { ok: false, error: "Your access to this computer changed." });
+    if (b.presence?.runnerId === id) {
+      b.presence = { deviceId: b.presence.deviceId };
+      this.sendViewers(id);
+    }
+  }
+
   // ---------------- browsers ----------------
 
-  /** `viewerId`: the signed-in person's id (the identity token's sub), which renew tickets must match. */
-  addBrowser(sock: Socket, user: User, protocol: number, viewerId = "") {
-    const b: BrowserConn = { viewerId, email: user.email, deadline: this.now() + this.reauthMs, subs: new Map(), attaches: new Set() };
+  /**
+   * `viewerId`: the signed-in person's id (the identity token's sub), which renew tickets must match.
+   * `role`: their Foliation role on the app; app owners manage every runner (without an owner map).
+   */
+  addBrowser(sock: Socket, user: User, protocol: number, viewerId = "", role = "owner") {
+    const b: BrowserConn = { viewerId, email: user.email, role, deadline: this.now() + this.reauthMs, subs: new Map(), attaches: new Set() };
     this.browsers.set(sock, b);
     this.out(sock, { t: "hello", user, protocol, ...(this.push ? { push: { publicKey: this.push.publicKey } } : {}) });
     this.out(sock, { t: "runners", runners: this.runnerList(b) });
@@ -183,15 +240,17 @@ export class Relay {
     // A valid ticket is fresh proof of sign-in, so it counts even just past the deadline (before
     // the sweep got there). Anything else past the deadline closes the socket.
     if (msg.t === "renew") {
-      if (!this.renew(b, msg.ticket) && this.now() >= b.deadline) this.expire(sock);
+      if (!this.renew(sock, b, msg.ticket) && this.now() >= b.deadline) this.expire(sock);
       return;
     }
     if (this.now() >= b.deadline) return this.expire(sock);
     if (msg.t === "ping") return this.out(sock, { t: "pong" });
     if (msg.t === "presence") {
       const was = b.presence?.runnerId;
-      // Presence on someone else's runner counts as looking at nothing.
-      const mine = !!msg.runnerId && !!this.runnerFor(b, msg.runnerId);
+      // Presence on someone else's runner counts as looking at nothing, and so does a viewer's:
+      // looking on must not hold back the owner's notifications.
+      const r = msg.runnerId ? this.runnerFor(b, msg.runnerId) : undefined;
+      const mine = !!r && this.access(b, r) !== "view";
       b.presence = { deviceId: msg.deviceId, ...(mine && msg.sessionId ? { runnerId: msg.runnerId, sessionId: msg.sessionId } : {}) };
       if (was && was !== msg.runnerId) this.sendViewers(was);
       if (mine) this.sendViewers(msg.runnerId!);
@@ -203,6 +262,9 @@ export class Relay {
     // Someone else's runner answers exactly like an offline one, so its id can't be probed.
     const runner = this.runnerFor(b, m.runnerId);
     if (!runner) return reply({ ok: false, error: "That runner is offline." });
+    const level = this.access(b, runner)!;
+    if (!accessAllows(level, m.op))
+      return reply({ ok: false, error: level === "view" ? "You can view this computer's sessions, not change them." : "Only this computer's owner can do that." });
     const args = { ...(m.args as Record<string, unknown>) };
     let key: string | undefined;
     let route: Route | undefined;
@@ -251,11 +313,19 @@ export class Relay {
     this.out(runner.sock, { t: "rpc", id, op: m.op, args });
   }
 
-  /** A valid ticket for this socket's own viewer keeps it signed in until the ticket runs out. */
-  private renew(b: BrowserConn, ticket: string): boolean {
+  /**
+   * A valid ticket for this socket's own viewer keeps it signed in until the ticket runs out, with
+   * the role it was issued for: a share changed on Foliation applies here at the next renew.
+   */
+  private renew(sock: Socket, b: BrowserConn, ticket: string): boolean {
     const t = this.tickets.verify(ticket);
     if (t && b.viewerId && t.sub === b.viewerId) {
       b.deadline = Math.max(b.deadline, t.exp);
+      if (t.role !== undefined && t.role !== b.role) {
+        b.role = t.role;
+        for (const r of [...this.runners.values()]) this.reconcile(sock, b, r);
+        this.out(sock, { t: "runners", runners: this.runnerList(b) });
+      }
       return true;
     }
     // Never log the ticket itself.
@@ -398,6 +468,9 @@ export class Relay {
     // connectedAt tells browsers there's nothing to subscribe to again.
     const connectedAt = prev?.sock === sock ? prev.info.connectedAt : this.now();
     this.runners.set(id, { sock, info: { ...info, connectedAt }, token });
+    // Its share list may have changed: whoever lost access loses its routes now.
+    const now = this.runners.get(id)!;
+    for (const [s, b] of [...this.browsers]) this.reconcile(s, b, now);
     this.out(sock, { t: "welcome", ...(this.push ? { push: this.push } : {}) });
     // A new connection starts with no viewers: tell it all of them.
     if (prev?.sock !== sock) this.viewersSent.delete(id);
@@ -509,11 +582,6 @@ export class Relay {
   }
 
   private broadcastRunners() {
-    if (!this.owners) {
-      const s = JSON.stringify({ t: "runners", runners: this.runnerList() } satisfies ServerToBrowser);
-      for (const b of [...this.browsers.keys()]) this.raw(b, s);
-      return;
-    }
     // Each person gets their own list.
     for (const [sock, b] of [...this.browsers]) this.out(sock, { t: "runners", runners: this.runnerList(b) });
   }

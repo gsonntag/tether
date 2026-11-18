@@ -191,13 +191,15 @@ const people: Record<string, Viewer> = {
   owner: { id: "u-owner", email: "owner@example.com", name: "Operator", role: "owner", service: false, picture: "" },
   alice: { id: "u-alice", email: "alice@example.com", name: "Alice", role: "viewer", service: false, picture: "" },
   eve: { id: "u-eve", email: "eve@example.com", name: "Eve", role: "editor", service: false, picture: "" },
+  pub: { id: "u-pub", email: "pub@example.com", name: "Pub", role: "viewer", service: false, picture: "", guest: true },
+  none: { id: "u-none", email: "none@example.com", name: "None", role: "", service: false, picture: "" },
   anon: { id: "anon:abc", email: "", name: "", role: "viewer", service: false, picture: "" },
   svc: { id: "svc:9", email: "alice@example.com", name: "runner-alice", role: "editor", service: true, picture: "" },
 };
 const identify = async (req: Request) => people[req.headers.get("x-test-as") ?? ""] ?? null;
 
 describe("front door with several tenants", () => {
-  test("listed people may sign in with any role; unlisted non-owners, anonymous visitors and tokens may not", async () => {
+  test("listed people may sign in with any role, shared people too; anonymous visitors, public-link guests and tokens may not", async () => {
     const { server, stop } = startApp({ port: 0, hostname: "127.0.0.1", log: () => {}, dev: false, identify, owners: parseRunnerOwners('{"runner-alice":["alice@example.com"]}') });
     stops.push(stop);
     const url = `http://127.0.0.1:${server.port}`;
@@ -205,19 +207,22 @@ describe("front door with several tenants", () => {
     for (const path of ["/api/ws-ticket"]) {
       expect(await status("alice", path)).toBe(200);
       expect(await status("owner", path)).toBe(200);
-      for (const who of ["eve", "anon", "svc"]) expect(await status(who, path)).toBe(403);
+      // An editor share: in, seeing only runners shared with them.
+      expect(await status("eve", path)).toBe(200);
+      for (const who of ["anon", "svc", "pub", "none"]) expect(await status(who, path)).toBe(403);
     }
-    expect(await status("eve", "/api/ws")).toBe(403);
     expect(await status("anon", "/api/ws")).toBe(403);
+    expect(await status("pub", "/api/ws")).toBe(403);
     expect((await (await fetch(`${url}/api/me`, { headers: { "X-Test-As": "alice" } })).json()).allowed).toBe(true);
-    expect((await (await fetch(`${url}/api/me`, { headers: { "X-Test-As": "eve" } })).json()).allowed).toBe(false);
+    expect((await (await fetch(`${url}/api/me`, { headers: { "X-Test-As": "pub" } })).json()).allowed).toBe(false);
   });
 
-  test("without an owner map only app owners get in", async () => {
+  test("without an owner map app owners and shared people get in", async () => {
     const { server, stop } = startApp({ port: 0, hostname: "127.0.0.1", log: () => {}, dev: false, identify });
     stops.push(stop);
     const status = async (who: string) => (await fetch(`http://127.0.0.1:${server.port}/api/ws-ticket`, { headers: { "X-Test-As": who } })).status;
     expect(await status("owner")).toBe(200);
-    expect(await status("alice")).toBe(403);
+    expect(await status("alice")).toBe(200);
+    for (const who of ["anon", "pub", "none", "svc"]) expect(await status(who)).toBe(403);
   });
 });

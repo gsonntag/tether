@@ -76,7 +76,23 @@ tether/
   web/        React UI
 ```
 
-**Who may connect.** A browser must be an app owner when it opens its socket, and keeps proving
+**Sharing runners.** The app's owners see and manage every runner. Anyone else the app is shared
+with on Foliation (editor or viewer) may sign in but sees only the runners an owner shared with
+them in Settings → Runners, each "Can drive" or "Can view" (read sessions only); a Foliation viewer
+share only ever views. The list lives on the runner (runner.json `sharedWith`, op
+`setRunnerAccess`) and the relay enforces it on every frame (shared/access.ts: `VIEW_OPS`, and
+`MANAGE_OPS` that stay the owner's: sharing, name, keys, texting, updates, runner settings, the
+Home agent's settings). View never includes the git or files modules' ops (they read the folder,
+secrets too) or making short links. A
+change applies at once; a Foliation role change at the next renew ticket, which carries the role.
+Public-link visitors and app calls never get in. A person's app user token (`fol app-token
+tether`, Foliation contracts/app-user-tokens.md: the identity carries `tok: true` with their current
+role) is that person: the same sign-in, tickets and runner sharing as their browser, with no Origin
+header to check. The server verifies identities with Foliation's own claim rules
+(server/src/claims.ts), tested against Foliation's identity vectors (server/src/testdata). With
+TETHER_RUNNER_OWNERS, a runner's listed people are its owners.
+
+**Who may connect.** A browser must be an app owner or shared person when it opens its socket, and keeps proving
 it: the page fetches a short-lived ticket from `GET /api/ws-ticket` (an ordinary request the edge
 signs afresh) every 2 minutes and sends it as `renew`. A socket without a valid ticket for 5
 minutes is closed (`CLOSE_REAUTH`), so a revoked share loses access within minutes. A runner's

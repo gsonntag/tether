@@ -4,6 +4,7 @@
 // dev: browsers are a fake owner and runners present TETHER_DEV_RUNNER_TOKEN.
 
 import type { User } from "../../shared/protocol";
+import { checkClaims, wellFormed } from "./claims";
 import { createLocalJWKSet, createRemoteJWKSet, errors, jwtVerify, type JWTVerifyGetKey } from "jose";
 
 export interface Viewer {
@@ -18,6 +19,16 @@ export interface Viewer {
    * "Profile pictures"). A new picture gets a new URL, so the next token carries the change.
    */
   picture: string;
+  /**
+   * Not a person with a share on the app: a public-link visitor (`pub`, even one who shared their
+   * identity) or another app calling (`caller`). Such a visitor never uses a runner.
+   */
+  guest?: boolean;
+  /**
+   * An app user token (`tok`, contracts/app-user-tokens.md): the person's command-line tool acting
+   * as them with their current role. Runner sharing applies to it exactly as to their browser.
+   */
+  token?: boolean;
 }
 
 const env = process.env;
@@ -53,20 +64,36 @@ export async function viewerFrom(req: Request): Promise<Viewer | null> {
   }
   const token = req.headers.get("x-foliation-user");
   if (!token) return null;
+  return verifyIdentity(token, keys, { issuer: env.FOLIATION_ISSUER!, audience: env.FOLIATION_AUDIENCE ?? "" });
+}
+
+/**
+ * A Foliation identity token as a Viewer, or null when it isn't valid: jose checks the signature,
+ * issuer, audience and times, claims.ts the rules between claims (Foliation's vectors cover both).
+ */
+export async function verifyIdentity(token: string, getKey: JWTVerifyGetKey, opts: { issuer: string; audience: string; currentDate?: Date }): Promise<Viewer | null> {
+  if (!wellFormed(token)) return null;
   try {
-    const { payload } = await jwtVerify(token, keys, {
-      issuer: env.FOLIATION_ISSUER,
-      audience: env.FOLIATION_AUDIENCE,
+    const { payload } = await jwtVerify(token, getKey, {
+      issuer: opts.issuer,
+      audience: opts.audience,
       algorithms: ["EdDSA"],
       clockTolerance: 5,
+      ...(opts.currentDate ? { currentDate: opts.currentDate } : {}),
     });
+    // jose takes an audience array; Foliation's is always one string.
+    if (typeof payload.aud !== "string") return null;
+    const c = checkClaims(payload as Record<string, unknown>, opts.audience, (opts.currentDate?.getTime() ?? Date.now()) / 1000);
+    if (!c) return null;
     return {
-      id: String(payload.sub),
-      email: String(payload.email ?? ""),
-      name: String(payload.name ?? ""),
-      role: String(payload.role ?? ""),
-      service: payload.svc === true,
-      picture: typeof payload.picture === "string" ? payload.picture : "",
+      id: c.sub,
+      email: c.email,
+      name: c.name,
+      role: c.role,
+      service: c.svc,
+      picture: c.picture,
+      guest: c.pub || c.anon || c.app,
+      ...(c.tok ? { token: true } : {}),
     };
   } catch {
     return null;
@@ -74,10 +101,16 @@ export async function viewerFrom(req: Request): Promise<Viewer | null> {
 }
 
 /** What a browser is told about who it is signed in as (no picture key when there is none). */
-export const browserUser = (v: Viewer): User => ({ name: v.name, email: v.email, ...(v.picture ? { picture: v.picture } : {}) });
+export const browserUser = (v: Viewer): User => ({ name: v.name, email: v.email, ...(v.picture ? { picture: v.picture } : {}), ...(v.role ? { role: v.role } : {}) });
 
-/** Browsers: only the app's owners (it runs shell commands on your machines). */
-export const isOwner = (v: Viewer | null) => !!v && !v.service && v.role === "owner";
+/** Browsers: the app's owners (it runs shell commands on your machines). */
+export const isOwner = (v: Viewer | null) => !!v && !v.service && !v.guest && v.role === "owner";
+
+/**
+ * Someone the app is shared with (editor or viewer): they may sign in, and see only the runners an
+ * owner shared with them (shared/access.ts). Never a service token, app call or public-link visitor.
+ */
+export const isSharedPerson = (v: Viewer | null) => !!v && !v.service && !v.guest && !v.id.startsWith("anon:") && !!v.email && (v.role === "editor" || v.role === "viewer");
 
 /** Runners: a service token named runner or runner-* with the editor role. */
 export const isRunner = (v: Viewer | null) => !!v && v.service && v.role === "editor" && /^runner(-|$)/.test(v.name);

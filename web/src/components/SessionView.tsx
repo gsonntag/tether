@@ -1,3 +1,4 @@
+import { accessOf } from "../runners";
 import { SessionMenu } from "./MoveDialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
@@ -54,6 +55,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   /** and its git actions (Commit, Push, Open PR, the PR chip) */
   const runnerGitActions = useStore((s) => !!s.runners.find((r) => r.id === runnerId)?.gitActions);
   const runnerFiles = useStore((s) => !!s.runners.find((r) => r.id === runnerId)?.files);
+  // Shared with you to view only (shared/access.ts): the transcript, with no way to change it.
+  const viewOnly = useStore((s) => accessOf(s.runners.find((r) => r.id === runnerId)) === "view");
   const children = useChildren(runnerId, sessionId);
   const pending = usePending(runnerId, sessionId);
   const composer = useRef<ComposerHandle>(null);
@@ -369,6 +372,11 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             <span aria-hidden>❯_</span> {panel.tab === "tui" ? `Back to ${HARNESS_LABELS[summary.harness]}` : "Back to the shell"}
           </button>
         )}
+        {viewOnly ? (
+          <div className="t-composer">
+            <div className="t-composer-inner t-inline-status">View only: this runner is shared with you to read, not to send.</div>
+          </div>
+        ) : <>
         <RequestDock runnerId={runnerId} sessionId={sessionId} requests={state.requests} root={summary.projectPath} />
         {!isChild && <QueueList runnerId={runnerId} sessionId={sessionId} state={state} messages={view.window.messages} />}
         {!isChild && retry && (
@@ -453,6 +461,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             onFailed={(message) => failedSend(runnerId, sessionId, message)}
           />
         )}
+        </>}
       </div>
       {side && !panel && !changes && (
         <SideChatPanel

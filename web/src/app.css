@@ -3370,3 +3370,9 @@
 .t-usage-table th[scope="row"], .t-usage-table thead th:first-child { position: sticky; left: 0; z-index: 1; background: var(--color-background-surface); }
 .t-usage-unpriced { color: var(--t-muted); }
 .t-usage-note { margin: 0; font-size: 12px; color: var(--t-muted); }
+/* Settings → Runners: a runner's name and who it's shared with */
+.t-settings-note { margin: 0 0 12px; color: var(--color-text-secondary); }
+.t-runner-card { display: flex; flex-direction: column; gap: 10px; }
+.t-share-list { display: flex; flex-direction: column; gap: 6px; }
+.t-share-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.t-share-email { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }

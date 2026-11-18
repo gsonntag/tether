@@ -6,6 +6,7 @@
 // device's (homeTabs.ts).
 // Expand puts it over the whole window (Escape or Collapse brings it back), remembered per device.
 
+import { accessOf } from "../runners";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { HOME_COMMANDS, isHomeReset } from "../../../shared/commands";
 import { Button } from "@astryxdesign/core/Button";
@@ -48,7 +49,9 @@ function openLayer(): boolean {
 export function HomeChat() {
   const runners = useStore((s) => s.runners);
   const linkOpen = useStore((s) => s.link === "open");
-  const runner = runners.find((r) => r.online && r.homeFolder);
+  // Your own runner's Home agent, else one shared with you to drive; never one you may only view.
+  const homes = runners.filter((r) => r.online && r.homeFolder);
+  const runner = homes.find((r) => accessOf(r) === "manage") ?? homes.find((r) => accessOf(r) === "drive");
   const rid = runner?.id;
   const conn = `${rid}:${runner?.connectedAt}:${linkOpen}`;
   /** the tabs and current chat (kept in sync across devices by the runner's homeChat broadcasts): undefined while asking */
@@ -126,7 +129,7 @@ export function HomeChat() {
     <section className={expanded ? "t-home-chat expanded" : "t-home-chat"} aria-label="Home agent">
       <div className="t-home-chat-head">
         {expanded && <span className="t-home-chat-title">Home agent</span>}
-        {agent && agent.runnerId === rid && (
+        {agent && agent.runnerId === rid && accessOf(runner) === "manage" && (
           <HomeAgentPickers
             runnerId={rid!}
             sessionId={current ?? undefined}
@@ -320,6 +323,8 @@ function HomeTabs({ runnerId, chats, labels, tab, onShow, onClose }: { runnerId:
 
 function ChatView({ runnerId, sessionId, onReset }: { runnerId: string; sessionId: string; onReset: () => Promise<void> }) {
   const k = viewKey(runnerId, sessionId);
+  // What the Home agent watches is its owner's (shared/access.ts MANAGE_OPS).
+  const mine = useStore((s) => accessOf(s.runners.find((r) => r.id === runnerId)) === "manage");
   useEffect(() => openView(runnerId, sessionId), [runnerId, sessionId]);
   useEffect(() => {
     setHomeChat({ runnerId, sessionId });
@@ -354,7 +359,7 @@ function ChatView({ runnerId, sessionId, onReset }: { runnerId: string; sessionI
                 <div className="t-inline-status" style={{ padding: "8px 0 12px" }}>
                   <Spinner size="sm" /> Working…
                 </div>
-              ) : running ? undefined : (
+              ) : running || !mine ? undefined : (
                 <HomeWaiting runnerId={runnerId} />
               )}
             </>

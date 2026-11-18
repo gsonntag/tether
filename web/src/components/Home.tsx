@@ -11,7 +11,7 @@ import { Text } from "@astryxdesign/core/Text";
 import { CheckIcon, ComputerDesktopIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { HARNESS_LABELS } from "../../../shared/transcript";
 import { rpc } from "../connection";
-import type { KnownRunner } from "../runners";
+import { accessOf, type KnownRunner } from "../runners";
 import { openSession } from "../route";
 import { folderName, inbox, waitingOn, type InboxKind, type InboxRow } from "../sessionList";
 import { BillingMarker, HarnessGlyph, shortAgo } from "./SessionRow";
@@ -25,6 +25,8 @@ import { whenLabel } from "../schedule";
 export function Home() {
   const runners = useStore((s) => s.runners);
   const linkOpen = useStore((s) => s.link === "open");
+  const role = useStore((s) => s.user?.role);
+  const shared = !!role && role !== "owner";
 
   return (
     <Layout
@@ -43,8 +45,8 @@ export function Home() {
               {runners.length === 0 ? (
                 <EmptyState
                   icon={<Icon icon={ComputerDesktopIcon} size="lg" />}
-                  title={linkOpen ? "No runner has connected yet" : "Connecting…"}
-                  description={linkOpen ? "Start the runner on a machine with TETHER_URL and TETHER_TOKEN set, and it shows up here." : undefined}
+                  title={!linkOpen ? "Connecting…" : shared ? "No runners shared with you yet" : "No runner has connected yet"}
+                  description={!linkOpen ? undefined : shared ? "Ask the owner to share a runner with you in Settings → Runners." : "Start the runner on a machine with TETHER_URL and TETHER_TOKEN set, and it shows up here."}
                 />
               ) : (
                 <List hasDividers>
@@ -148,7 +150,7 @@ function RunnerRow({ runner, linkOpen }: { runner: KnownRunner; linkOpen: boolea
         .finally(() => setRenameBusy(false));
     }
   };
-  const canRename = linkOpen && runner.online;
+  const canRename = linkOpen && runner.online && accessOf(runner) === "manage";
   const label = renaming ? (
     <input ref={nameInput} className="t-title-input" aria-label="Computer name" placeholder="Name (blank for default)" defaultValue={runner.name} maxLength={60} onBlur={() => finishName(true)} onKeyDown={(e) => {
       if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); finishName(e.key === "Enter"); }
