@@ -1,45 +1,32 @@
 // The Changes pane (SPEC §10 Changes): the session folder's git changes beside the transcript (over
 // it on a phone), from the runner's git module. Scopes: Uncommitted, Branch and Turn (a turn's
 // checkpoints, with Restore: TurnBar.tsx). It loads on opening, on a scope change, when a turn ends
-// (and, in the Turn scope, starts), and on Refresh. Lines take comments (DiffFile.tsx), which
-// collect in the tray at the bottom and stay in this browser per session; Send to agent puts them in
-// the composer as one message, to edit and send.
+// (and, in the Turn scope, starts; later, if a comment is being written), and on Refresh. Lines take
+// comments (DiffFile.tsx), which collect in the tray at the bottom and stay in this browser per
+// session; Send to agent puts them in the composer as one message, to edit and send, and they stay
+// until a message carrying them is sent (reviewStore.ts).
 //
 // The pane is the place later git views join: git actions (commit, push, a PR) go in the header's
 // actions, and Files a tab beside Changes.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { create } from "zustand";
 import { Button } from "@astryxdesign/core/Button";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { ArrowPathIcon, XMarkIcon } from "@heroicons/react/24/solid";
 import type { CheckpointList } from "../../../shared/checkpoints";
-import { DIFF_SCOPES, isDiffScope, type DiffScope, type GitDiff, type NumberedLine } from "../../../shared/gitDiff";
+import { DIFF_SCOPES, isDiffScope, numberLines, type DiffScope, type GitDiff } from "../../../shared/gitDiff";
 import type { RunStatus } from "../../../shared/transcript";
 import { rpc } from "../connection";
-import { readComments, reviewKey, reviewMessage, selectionOf, writeComments, type LineComment } from "../review";
+import { findLines, reviewKey, reviewMessage, unhand, unhandMissing, type LineComment } from "../review";
+import { updateComments, useComments, useUnsaved } from "../reviewStore";
 import { useStore, viewKey } from "../store";
-import { putDraft } from "./Composer";
-import { CommentCard, Counts, DiffFileView, type Sel } from "./DiffFile";
+import { draftOf, putDraft } from "./Composer";
+import { CommentCard, Counts, DiffFileView, fileKey, type Sel } from "./DiffFile";
 import { TurnBar } from "./TurnBar";
 import { useFitViewport } from "./useFitViewport";
 import "./ChangesPane.css";
-
-// ---------- comments (this browser, per session) ----------
-
-const useReviews = create<Record<string, LineComment[]>>(() => ({}));
-
-function useComments(key: string): LineComment[] {
-  const l = useReviews((s) => s[key]);
-  return useMemo(() => l ?? readComments(localStorage, key), [l, key]);
-}
-
-function setComments(key: string, list: LineComment[]) {
-  useReviews.setState({ [key]: list });
-  writeComments(localStorage, key, list);
-}
 
 // ---------- the scope, per device ----------
 
@@ -55,6 +42,7 @@ function storedScope(): DiffScope {
 
 /** Past this many lines, files start folded (a phone stays quick). */
 const OPEN_LINES_MAX = 2000;
+const NONE: LineComment[] = [];
 
 const touchScreen = () => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
 
@@ -83,8 +71,10 @@ export function ChangesPane({
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [sel, setSel] = useState<Sel | null>(null);
-  /** files folded or unfolded against the default */
-  const [flipped, setFlipped] = useState<Set<string>>(new Set());
+  /** files (by fileKey) folded or unfolded by hand: kept across refreshes */
+  const [folds, setFolds] = useState<Map<string, boolean>>(new Map());
+  /** whether files start open: decided by each load until one is folded or unfolded by hand */
+  const [openFirst, setOpenFirst] = useState<boolean>();
   const [trayOpen, setTrayOpen] = useState(false);
   const linkOpen = useStore((s) => s.link === "open");
   const root = useRef<HTMLElement>(null);
@@ -92,6 +82,7 @@ export function ChangesPane({
   const touch = useMemo(touchScreen, []);
   const key = reviewKey(runnerId, sessionId);
   const comments = useComments(key);
+  const unsaved = useUnsaved(key);
 
   // The Turn scope: the session's checkpoints and the one picked (the newest unless you pick another).
   const [cps, setCps] = useState<CheckpointList>();
@@ -132,22 +123,39 @@ export function ChangesPane({
     },
     [runnerId, sessionId],
   );
+  // Comments said to be in the message box that it doesn't hold (a reload emptied it) are back in the tray.
+  useEffect(() => updateComments(key, (l) => unhandMissing(l, draftOf(viewKey(runnerId, sessionId)))), [key]);
+  /** a reload waiting for the comment being written (a turn ended, the link came back) */
+  const [owed, setOwed] = useState(false);
+  const writing = useRef(false);
+  writing.current = !!sel;
+  const loaded = useRef<DiffScope>(undefined);
   useEffect(() => {
-    if (linkOpen) void load(scope);
+    if (!linkOpen) return;
+    if (writing.current && loaded.current === scope) return setOwed(true);
+    loaded.current = scope;
+    void load(scope);
   }, [load, scope, linkOpen]);
-  // A turn ended: what it changed shows. In the Turn scope a new turn shows as it starts.
+  // A turn ended: what it changed shows; in the Turn scope a new turn shows as it starts. While a
+  // comment is being written that waits for it.
   const busy = status !== "idle";
   const wasBusy = useRef(busy);
   useEffect(() => {
-    if ((wasBusy.current && !busy) || (!wasBusy.current && busy && scope === "turn")) void load(scope);
+    if ((wasBusy.current && !busy) || (!wasBusy.current && busy && scope === "turn")) setOwed(true);
     wasBusy.current = busy;
   }, [busy]);
+  useEffect(() => {
+    if (!owed || sel) return;
+    setOwed(false);
+    void load(scope);
+  }, [owed, sel]);
 
   const pickTurn = (id: string) => {
     picked.current = { id, newest: id === cps?.checkpoints[0]?.id };
     setCp(id);
     setSel(null);
-    setFlipped(new Set());
+    setFolds(new Map());
+    setOpenFirst(undefined);
     void load("turn");
   };
   const restore = async (id: string) => {
@@ -169,8 +177,10 @@ export function ChangesPane({
     if (s === scope) return;
     setScope(s);
     setDiff(undefined);
+    setError(undefined);
     setSel(null);
-    setFlipped(new Set());
+    setFolds(new Map());
+    setOpenFirst(undefined);
     try {
       localStorage.setItem(SCOPE_KEY, s);
     } catch {}
@@ -178,35 +188,56 @@ export function ChangesPane({
 
   const shown = diff?.scope === scope && (scope !== "turn" || !diff.checkpoint || diff.checkpoint === cp) ? diff : undefined;
   const files = shown?.files ?? [];
-  const lineCount = useMemo(() => files.reduce((n, f) => n + (f.hunks?.reduce((m, h) => m + h.lines.length, 0) ?? 0), 0), [files]);
-  const openByDefault = lineCount <= OPEN_LINES_MAX;
-  const isOpen = (path: string) => openByDefault !== flipped.has(path);
-  const toggle = (path: string) =>
-    setFlipped((f) => {
-      const n = new Set(f);
-      if (!n.delete(path)) n.add(path);
-      return n;
-    });
-  const inDiff = useMemo(() => new Set(files.map((f) => f.path)), [files]);
+  useEffect(() => {
+    if (!shown || folds.size) return;
+    const lines = shown.files.reduce((n, f) => n + (f.hunks?.reduce((m, h) => m + h.lines.length, 0) ?? 0), 0);
+    setOpenFirst(lines <= OPEN_LINES_MAX);
+  }, [shown]);
+  // A reload (Refresh) moved or removed the picked lines: the pick follows them, or goes.
+  useEffect(() => {
+    if (!sel || !shown) return;
+    const f = shown.files.find((x) => fileKey(x) === sel.file && x.hunks);
+    if (!f || !findLines(f.hunks!.map(numberLines), sel.ka, sel.kb)) setSel(null);
+  }, [shown]);
 
-  const add = (s: Sel, lines: NumberedLine[], text: string) => {
-    const at = selectionOf(lines, s.a, s.b);
-    if (!at) return;
-    setComments(key, [...comments, { id: crypto.randomUUID(), path: s.path, ...at, text, scope }]);
-    setSel(null);
-  };
-  const edit = (id: string, text: string) => setComments(key, comments.map((c) => (c.id === id ? { ...c, text } : c)));
-  const remove = (id: string) => setComments(key, comments.filter((c) => c.id !== id));
+  const isOpen = (k: string) => folds.get(k) ?? openFirst ?? true;
+  const toggle = useCallback((k: string) => setFolds((f) => new Map(f).set(k, !(f.get(k) ?? openFirst ?? true))), [openFirst]);
+  const inDiff = useMemo(() => new Set(files.map((f) => f.path)), [files]);
+  /** this scope's comments, by file (a stable empty list for the rest, so their files don't redraw) */
+  const byFile = useMemo(() => {
+    const m = new Map<string, LineComment[]>();
+    for (const c of comments) if (c.scope === scope) m.set(c.path, [...(m.get(c.path) ?? []), c]);
+    return m;
+  }, [comments, scope]);
+
+  const now = useRef({ scope, base: shown?.base });
+  now.current = { scope, base: shown?.base };
+  const add = useCallback(
+    (path: string, at: Pick<LineComment, "side" | "start" | "end" | "lines">, text: string) => {
+      const { scope, base } = now.current;
+      updateComments(key, (l) => [...l, { id: crypto.randomUUID(), path, ...at, text, scope, ...(base ? { base } : {}) }]);
+      setSel(null);
+    },
+    [key],
+  );
+  // An edit made after Send to agent isn't in the message box: the comment is back in the tray.
+  const edit = useCallback((id: string, text: string) => updateComments(key, (l) => l.map((c) => (c.id === id ? { ...unhand(c), text } : c))), [key]);
+  const remove = useCallback((id: string) => updateComments(key, (l) => l.filter((c) => c.id !== id)), [key]);
+  const pending = comments.filter((c) => !c.handed);
+  const handed = comments.length - pending.length;
   const send = () => {
-    const msg = reviewMessage(comments);
+    const msg = reviewMessage(pending);
     if (!msg) return;
     putDraft(viewKey(runnerId, sessionId), msg);
-    setComments(key, []);
+    // Kept, marked, until a message carrying them is sent (reviewSent).
+    updateComments(key, (l) => l.map((c) => (c.handed ? c : { ...c, handed: true })));
     setTrayOpen(false);
     onSent();
   };
+  const takeBack = () => updateComments(key, (l) => l.map(unhand));
   const show = (c: LineComment) => {
-    if (!isOpen(c.path)) toggle(c.path);
+    const f = files.find((x) => x.path === c.path && x.hunks) ?? files.find((x) => x.path === c.path);
+    if (f && !isOpen(fileKey(f))) toggle(fileKey(f));
     requestAnimationFrame(() => document.getElementById(`t-rc-${c.id}`)?.scrollIntoView({ block: "center", behavior: "smooth" }));
   };
 
@@ -221,7 +252,9 @@ export function ChangesPane({
   ) : shown.state === "notRepo" ? (
     <div className="t-changes-note">This folder isn't in a git repository.</div>
   ) : shown.state === "noBase" ? (
-    <div className="t-changes-note">{scope === "turn" ? "No turns checkpointed yet. Every turn from now on is, before and after." : "No main or master branch to compare with."}</div>
+    <div className="t-changes-note">
+      {scope === "turn" ? "No turns checkpointed yet. Every turn from now on is, before and after." : shown.base ? `This branch has no history in common with ${shown.base}.` : "No main or master branch to compare with."}
+    </div>
   ) : !files.length ? (
     <div className="t-changes-note">{EMPTY[scope]}</div>
   ) : null;
@@ -238,7 +271,7 @@ export function ChangesPane({
           ))}
         </div>
         <div className="t-changes-actions">
-          {loading && shown ? <Spinner size="sm" label="Refreshing" /> : <IconButton label="Refresh" tooltip="Refresh" size="sm" variant="ghost" icon={<Icon icon={ArrowPathIcon} />} onClick={() => void load(scope)} />}
+          {loading && shown ? <Spinner size="sm" label="Refreshing" /> : <IconButton label="Refresh" tooltip="Refresh" size="sm" variant="ghost" icon={<Icon icon={ArrowPathIcon} />} onClick={() => (setOwed(false), void load(scope))} />}
           <IconButton label="Close changes" tooltip="Close" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={onClose} />
         </div>
       </div>
@@ -256,19 +289,34 @@ export function ChangesPane({
           </span>
         </div>
       )}
+      {owed && (
+        <div className="t-changes-note t-changes-owed">
+          New changes.
+          <Button
+            label="Show them"
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              setOwed(false);
+              void load(scope);
+            }}
+          />
+        </div>
+      )}
+      {shown?.timedOut && <div className="t-changes-note">git took too long: some files show their counts only.</div>}
       {error && shown && <div className="t-changes-note error">{error}</div>}
       <div className="t-changes-body">
         {note}
         {files.map((f) => (
           <DiffFileView
-            key={f.path}
+            key={fileKey(f)}
             file={f}
-            open={isOpen(f.path)}
-            onToggle={() => toggle(f.path)}
-            sel={sel?.path === f.path ? sel : undefined}
+            open={isOpen(fileKey(f))}
+            onToggle={toggle}
+            sel={sel?.file === fileKey(f) ? sel : undefined}
             onSelect={setSel}
             touch={touch}
-            comments={comments.filter((c) => c.path === f.path)}
+            comments={byFile.get(f.path) ?? NONE}
             onComment={add}
             onEdit={edit}
             onRemove={remove}
@@ -277,18 +325,22 @@ export function ChangesPane({
       </div>
       {comments.length > 0 && (
         <div className={`t-review-tray${cover ? " cover" : ""}`}>
+          {unsaved && <div className="t-changes-note error">Couldn't keep the comments in this browser: they're lost if the page reloads.</div>}
           {trayOpen && (
             <div className="t-review-list">
               {comments.map((c) => (
-                <CommentCard key={c.id} c={c} showPlace onPlace={inDiff.has(c.path) ? () => show(c) : undefined} onEdit={(t) => edit(c.id, t)} onRemove={() => remove(c.id)} />
+                <CommentCard key={c.id} c={c} showPlace onPlace={c.scope === scope && inDiff.has(c.path) ? () => show(c) : undefined} onEdit={(t) => edit(c.id, t)} onRemove={() => remove(c.id)} />
               ))}
             </div>
           )}
           <div className="t-review-bar">
             <button type="button" className="t-review-count" aria-expanded={trayOpen} onClick={() => setTrayOpen((o) => !o)}>
-              {comments.length} comment{comments.length === 1 ? "" : "s"}
+              {pending.length ? `${pending.length} comment${pending.length === 1 ? "" : "s"}` : ""}
+              {pending.length > 0 && handed > 0 ? " · " : ""}
+              {handed ? `${handed} in the message box` : ""}
             </button>
-            <Button label="Send to agent" size="sm" variant="primary" onClick={send} />
+            {handed > 0 && <Button label="Take back" size="sm" variant="ghost" onClick={takeBack} />}
+            {pending.length > 0 && <Button label="Send to agent" size="sm" variant="primary" onClick={send} />}
           </div>
         </div>
       )}

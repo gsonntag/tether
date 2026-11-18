@@ -117,6 +117,19 @@ describe("pendingSender", () => {
     expect(t.list()).toEqual([]);
   });
 
+  test("`sent` is called once the runner took the message, never on a failure", async () => {
+    const t = setup();
+    let sent = 0;
+    t.send("r", "s", "one", [], { sent: () => sent++ });
+    t.send("r", "s", "two", [], { sent: () => sent++ });
+    t.calls[0]!.fail(new Error("no"));
+    await Bun.sleep(0);
+    expect(sent).toBe(0);
+    t.calls[1]!.ok(null);
+    await Bun.sleep(0);
+    expect(sent).toBe(1);
+  });
+
   test("a failure after its message came says so in the chat instead", async () => {
     const t = setup();
     const id = t.send("r", "s", "hello");

@@ -75,6 +75,8 @@ export interface RunnerInfo {
   connectedAt?: number;
   /** the Home agent's folder: its chats show on Home, never in the lists. Absent: no Home agent */
   homeFolder?: string;
+  /** it has the git module (gitDiff, the Changes pane). Absent: an older runner */
+  git?: boolean;
 }
 
 /** Runner-wide settings (the Settings page), kept in runner.json. */

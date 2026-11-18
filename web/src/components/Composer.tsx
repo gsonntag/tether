@@ -51,6 +51,8 @@ export function putDraft(key: string, text: string) {
   drafts.set(key, next);
   draftListeners.forEach((f) => f(key, next));
 }
+/** What's in a session's message box now (this page). */
+export const draftOf = (key: string) => drafts.get(key) ?? "";
 const draftFiles = new Map<string, Pending[]>();
 
 export type SendKind = "send" | "steer" | "queue" | "stopSend" | "shell";

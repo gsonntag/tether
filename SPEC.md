@@ -861,8 +861,8 @@ event (with the message's text) and the queued message's id from `SessionActions
   draws from, and on a plan its 5-hour window when known, "ChatGPT plan · 5h 10%"; its weekly window,
   "Claude plan · Week 63%", when there's no 5-hour figure or the week is at 100% or reported exhausted
   (a Claude `rate_limit_event` rejected on `seven_day`); tooltip the windows and
-  their resets) and the **Terminal** button. Those two
-  chips come last in the row, so on a phone they are what scrolls out of view. Always follow the bottom unless you scroll up.
+  their resets) and, pinned at the right outside the chips, the **Changes** and **Terminal** buttons.
+  The context and usage chips come last in the row, so on a phone they are what scrolls out of view. Always follow the bottom unless you scroll up.
 - **Terminal panel:** full screen on phones, beside or instead of the transcript on desktop.
 - **Changes pane:** the session folder's git diff, in the terminal panel's place (Changes below).
 - **Home** (P5): one ranked inbox: requests, then finished-unread, then working. An archived session
@@ -1103,25 +1103,41 @@ source change switches in place, so there is nothing to wait for.
 ### Changes
 
 **Changes** in the session header opens the folder's git diff where the terminal panel goes (one or
-the other): beside the transcript, a full-screen sheet on a phone. Scopes: **Uncommitted** (working
-tree and index against `HEAD`, untracked files included), **Branch** (since the merge base with
-`origin/HEAD`, else `main` or `master`, committed or not) and **Turn** (Checkpoints below). The `git` module's `gitDiff { sessionId,
-scope }` answers with files (path, old path, status, added and removed lines, hunks), the branch and
-the base. It reads only: git as an argv in the session's folder, a timeout, optional locks off, no
-external diff or textconv; untracked files from `ls-files --others --exclude-standard`, each diffed
-against `/dev/null` with `--no-index`. A file over 3,000 changed lines or 512 KB of hunks shows its
-counts only, as do files past 1.5 MB of hunks in all, and past 1,000 files the rest are a count.
-Binary files say so, and so does a folder outside a repo or a branch with nothing to compare with.
-The pane loads on opening, on a scope change, when a turn ends, and on Refresh. Read access is
-enough: it changes nothing.
+the other): beside the transcript, a full-screen sheet on a phone. Only runners whose hello says
+`git: true` get the button. Scopes: **Uncommitted** (working tree and index against `HEAD`,
+untracked files included), **Branch** (since the merge base with `origin/HEAD`, else `main` or
+`master`, committed or not) and **Turn** (Checkpoints below). The `git` module's `gitDiff { sessionId, scope }` answers with files
+(path, old path, status, added and removed lines, hunks), the branch and the base. It never writes:
+git as an argv in the session's folder, a timeout, optional locks off, no lazy fetch, no external
+diff or textconv, no inherited `GIT_DIR`-style or config variables; untracked files from `ls-files
+--others --exclude-standard`, each diffed as `./path` against `/dev/null` with `--no-index`.
+Patches come 40 files per git call; a call cut at its cap asks again file by file, so a file too big
+on its own (a minified bundle) shows its counts only and nothing else is lost. Sizes are JSON bytes
+(UTF-8, as frames are measured): a file over 3,000 changed lines or 512 KB of hunks shows its counts
+only, files fill 3 MB of hunks in path order and the rest show counts, past 1,000 files the rest are
+a count, and after 30 s the files not reached show counts (`timedOut`). Binary files say so, as do
+names that aren't UTF-8, an untracked symlink (where it points), a folder outside a repo, a missing default branch and a branch with no
+history in common with it. It reads the folder itself, untracked files included, so it needs drive
+access: it is never a view-only op (`VIEW_OPS`), nor are `checkpoints` and `restoreCheckpoint`.
 
-**Line comments.** Click or tap a line for a comment; Shift-click or drag the numbers (a second tap
-on touch, while the comment is empty) for a range within a hunk. Comments show under their lines
-and collect in a tray; they're drafts in this browser per session (`localStorage`) until **Send to
-agent** puts them in the composer as one message, each as `` `path:line` `` (or `path:a-b`, with
-"(removed)" for old-file lines) over its lines in a diff block. The message can be edited before it's
-sent; on a phone the sheet closes to show it. Later git views join this pane: git actions in its
-header, a Files tab.
+The pane loads on opening, on a scope change, on Refresh, and when a turn ends or the link comes
+back; while a comment is being written those two wait until it's saved or cancelled, and "New
+changes" offers them. Files start folded when a load shows over 2,000 lines, until one is folded or
+unfolded by hand. A pick of lines is kept by their
+numbers and text, so a reload either finds the same lines or drops the pick: a comment never lands
+on other lines.
+
+**Line comments.** Click or tap a line (or focus it and press Enter) for a comment; Shift-click or
+drag the numbers (a second tap on touch, while the comment is empty) for a range within a hunk.
+Comments show under their lines in the scope they were made in and collect in a tray; they're
+drafts in this browser per session (`localStorage`; a write it refuses is said inline). **Send to
+agent** puts them in the composer as one message, each as `` `path:line` `` (or `path:a-b`; removed
+lines say "removed; lines in HEAD" or the branch's base) over its lines in a diff block. The message
+can be edited before it's sent; on a phone the sheet closes to show it. The comments stay, marked
+as in the message box, until a message quoting their place is sent (the runner took it). **Take
+back**, editing a comment, or a box that no longer quotes it (a reload empties the box) puts it back
+in the tray. Later git views join this
+pane: git actions in its header, a Files tab.
 
 ### Checkpoints
 
@@ -1131,16 +1147,16 @@ At each turn's start and end the git module's checkpoints snapshot the session's
 changes: a temporary `GIT_INDEX_FILE` seeded with a copy of the real index, its mtime kept (its stat
 cache keeps it quick and racy entries stay racy; sparse entries stay), `add -A`, `write-tree`,
 `commit-tree` with a fixed identity and date, `update-ref`. Untracked files over 32 MB or unreadable
-are left out, and the checkpoint keeps the first 200 of them and their count; past 16 MB of untracked
-names (or 2,000 left out) the snapshot takes tracked files only and says so. No hooks or fsmonitor; clean filters the person's git
-config defines run as `git add` would run them (git-lfs keeps pointers), bounded by a time limit.
-Outside a repo nothing is taken. A turn resumed after an answer is the same turn, and so is a
-rate-limit retry (a different message sent instead starts a new one); a turn cut off by a restart is
-closed by the next start. A session whose folder is now in another repo starts a new list, and its
-refs in the old repo are deleted.
+are left out, and the checkpoint keeps the first 200 of them and their count; past 16 MB of
+untracked names (or 2,000 left out) the snapshot takes tracked files only and says so. No hooks or
+fsmonitor; clean filters the person's git config defines run as `git add` would run them (git-lfs
+keeps pointers), bounded by a time limit. Outside a repo nothing is taken. A turn resumed after an
+answer is the same turn, and so is a rate-limit retry (a different message sent instead starts a new
+one); a turn cut off by a restart is closed by the next start. A session whose folder is now in
+another repo starts a new list, and its refs in the old repo are deleted.
 
-**The refs are ordinary refs.** `git log --all`, `gitk --all` and `git for-each-ref` show them; `git push
---mirror` (or a push of `refs/*`) sends them, and with them every snapshot's content, untracked
+**The refs are ordinary refs.** `git log --all`, `gitk --all` and `git for-each-ref` show them; `git
+push --mirror` (or a push of `refs/*`) sends them, and with them every snapshot's content, untracked
 unignored files included (a `.env` that isn't in `.gitignore`, say). A plain `git push`, `fetch` or
 clone never does. `git gc` keeps what they point at until they're pruned.
 
@@ -1152,28 +1168,30 @@ snapshot finished over 2 s after the turn started is marked **late** in the list
 snapshots run in order; snapshots in one repo run side by side, never during a restore there. Looking
 at a running turn snapshots outside that order, so it never delays a turn's start.
 
-**The Turn scope** lists the session's checkpoints, newest first, by time and the start of the prompt
-(`checkpoints { sessionId }`), and diffs the one picked: before → after, or before → the working tree
-while it runs (`gitDiff { scope: "turn", checkpoint }`). **Restore files to before this turn**
-(`restoreCheckpoint { sessionId, checkpointId }`) has the repo to itself and holds the session and every
-other live session in the repo (`hold`: what's sent meanwhile waits in its queue and goes on release; a
-rate-limit retry due meanwhile waits too; `!` commands and opening the terminal refuse, "Restoring
-files…"). Each git step of it has a 60 s limit. It first takes the undo: a snapshot of the files as
-they are, into which every path the restore will write or remove is forced exactly as it is on disk,
-as raw bytes (no filters, no line-ending conversion), whatever its size, ignore rules or index bits
-(assume-unchanged, skip-worktree), or its absence. That is saved as a restore checkpoint, listed like
-a turn, so **Undo restore** (a restore to its own before, writing those paths back as raw bytes) puts
-back byte for byte whatever the restore touched. Then the working tree goes back to the turn's
-before: files it made are removed (empty folders with them), ones it changed or deleted are written
-back. Left alone, and listed under the button: a path that can't be read into the undo, one the
-target snapshot left out (or any untracked path, when it took none or left out more than it lists), files the restored `.gitignore`
-ignores (tracked or not), nested repositories and anything in them, a folder where a file goes, a path
-under a symlink. The real index, `HEAD` and branches aren't touched, so commits and staged changes
-stay. No confirm (§2): the undo is the safety net. Refused while the session runs, waits on you, runs
-a command, subagent or background task, waits on its harness after a restart or on a rate-limit
-retry, is driven from its terminal, or has messages queued, and while any other live session in the
-same repo (folders compared as real paths) is in any of those states but the queue; checked again
-once the undo is saved, right before files change. The text under the button names the other live sessions in the repo.
+**The Turn scope** lists the session's checkpoints, newest first, by time and the start of the
+prompt (`checkpoints { sessionId }`), and diffs the one picked: before → after, or before → the
+working tree while it runs (`gitDiff { scope: "turn", checkpoint }`). **Restore files to before this
+turn** (`restoreCheckpoint { sessionId, checkpointId }`) has the repo to itself and holds the
+session and every other live session in the repo (`hold`: what's sent meanwhile waits in its queue
+and goes on release; a rate-limit retry due meanwhile waits too; `!` commands and opening the
+terminal refuse, "Restoring files…"). Each git step of it has a 60 s limit. It first takes the undo:
+a snapshot of the files as they are, into which every path the restore will write or remove is
+forced exactly as it is on disk, as raw bytes (no filters, no line-ending conversion), whatever its
+size, ignore rules or index bits (assume-unchanged, skip-worktree), or its absence. That is saved as
+a restore checkpoint, listed like a turn, so **Undo restore** (a restore to its own before, writing
+those paths back as raw bytes) puts back byte for byte whatever the restore touched. Then the
+working tree goes back to the turn's before: files it made are removed (empty folders with them),
+ones it changed or deleted are written back. Left alone, and listed under the button: a path that
+can't be read into the undo, one the target snapshot left out (or any untracked path, when it took
+none or left out more than it lists), files the restored `.gitignore` ignores (tracked or not),
+nested repositories and anything in them, a folder where a file goes, a path under a symlink. The
+real index, `HEAD` and branches aren't touched, so commits and staged changes stay. No confirm (§2):
+the undo is the safety net. Refused while the session runs, waits on you, runs a command, subagent
+or background task, waits on its harness after a restart or on a rate-limit retry, is driven from
+its terminal, or has messages queued, and while any other live session in the same repo (folders
+compared as real paths) is in any of those states but the queue; checked again once the undo is
+saved, right before files change. The text under the button names the other live sessions in the
+repo.
 
 Kept 14 days and at most 200 per session (pruned as checkpoints are taken and at start). The list
 (times, prompts, commit ids, what was left out) is a JSON file per session in the module's folder; the

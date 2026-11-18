@@ -115,3 +115,23 @@ test("numbers a hunk's lines on both sides", () => {
   ]);
   expect(numberLines(a!.hunks[1]!).at(-1)).toEqual({ op: "\\", text: "No newline at end of file" });
 });
+
+test("a path with a space: git's tab after ---/+++ isn't part of it", () => {
+  const out = "diff --git a/my file.ts b/my file.ts\nnew file mode 100644\n--- /dev/null\n+++ b/my file.ts\t\n@@ -0,0 +1 @@\n+x\n" + "diff --git a/old one b/new one\nrename from old one\nrename to new one\n--- a/old one\t\n+++ b/new one\t\n@@ -1 +1 @@\n-a\n+b\n";
+  expect(parsePatch(out).map((f) => [f.path, f.oldPath])).toEqual([["my file.ts", undefined], ["new one", "old one"]]);
+});
+
+test("numstat: a path with a tab in it is kept whole", () => {
+  expect([...parseNumstat("1\t2\ta\tb.txt\0").keys()]).toEqual(["a\tb.txt"]);
+});
+
+test("sizes are JSON bytes: CJK text costs three bytes a character", () => {
+  const line = "字".repeat(100);
+  const [f] = parsePatch(`diff --git a/c.txt b/c.txt\n--- a/c.txt\n+++ b/c.txt\n@@ -1 +1 @@\n-x\n+${line}\n`);
+  expect(f!.size).toBeGreaterThan(300);
+});
+
+test("a quoted path with an escaped quote and a space: the whole name", () => {
+  const out = 'diff --git "a/a\\" b" "b/a\\" b"\nnew file mode 100644\nindex 0000000..1111111\nBinary files /dev/null and "b/a\\" b" differ\n';
+  expect(parsePatch(out).map((f) => [f.path, f.binary])).toEqual([['a" b', true]]);
+});

@@ -16,6 +16,24 @@ export interface LineComment {
   lines: string[];
   text: string;
   scope: DiffScope;
+  /** what old-file line numbers count in ("HEAD", "main") */
+  base?: string;
+  /** put in the composer by Send to agent: kept until a message carrying it is sent */
+  handed?: true;
+}
+
+/** A diff line by its numbers and text: the same line after a reload, or none. */
+export const lineKey = (l: NumberedLine) => `${l.op}${l.old ?? ""}:${l.new ?? ""}:${l.text}`;
+
+/** Where two lines (by lineKey) are now: one hunk holding both, or undefined (they're gone). */
+export function findLines(hunks: NumberedLine[][], ka: string, kb: string): { hunk: number; a: number; b: number } | undefined {
+  for (let h = 0; h < hunks.length; h++) {
+    const keys = hunks[h]!.map(lineKey);
+    const a = keys.indexOf(ka);
+    const b = keys.indexOf(kb);
+    if (a >= 0 && b >= 0) return { hunk: h, a, b };
+  }
+  return undefined;
 }
 
 /** What a selection of diff lines points at: undefined when it holds no numbered line. */
@@ -28,10 +46,10 @@ export function selectionOf(lines: NumberedLine[], a: number, b: number): Pick<L
   return { side, start: Math.min(...nums), end: Math.max(...nums), lines: picked.map((l) => `${l.op}${l.text}`) };
 }
 
-/** `path:12`, `path:12-15`; removed lines say so (their numbers are the old file's). */
-export function location(c: Pick<LineComment, "path" | "side" | "start" | "end">): string {
+/** `path:12`, `path:12-15`; removed lines say so, and what their numbers count in. */
+export function location(c: Pick<LineComment, "path" | "side" | "start" | "end" | "base">): string {
   const lines = c.start === c.end ? `${c.start}` : `${c.start}-${c.end}`;
-  return `${c.path}:${lines}${c.side === "old" ? " (removed)" : ""}`;
+  return `${c.path}:${lines}${c.side === "old" ? (c.base ? ` (removed; lines in ${c.base})` : " (removed)") : ""}`;
 }
 
 /** Comments in file order, then by line. */
@@ -62,6 +80,23 @@ export function reviewMessage(list: LineComment[]): string {
   return `${blocks.length === 1 ? "A comment" : "Comments"} on the changes:\n\n${blocks.join("\n\n")}`;
 }
 
+/** Whether a message (sent, or in the box) still quotes a comment's place. */
+export const carries = (text: string, c: LineComment) => text.includes(`\`${location(c)}\``);
+
+/** After a message went out: the comments handed to the composer whose place it quotes are done. */
+export function afterSend(list: LineComment[], text: string): LineComment[] {
+  return list.some((c) => c.handed && carries(text, c)) ? list.filter((c) => !c.handed || !carries(text, c)) : list;
+}
+
+/** Handed comments the message box no longer quotes (a reload emptied it, or it was cleared) go back to the tray. */
+export function unhandMissing(list: LineComment[], box: string): LineComment[] {
+  const gone = (c: LineComment) => !!c.handed && !carries(box, c);
+  return list.some(gone) ? list.map((c) => (gone(c) ? unhand(c) : c)) : list;
+}
+
+/** A comment back in the tray, no longer in the message box. */
+export const unhand = ({ handed: _, ...c }: LineComment): LineComment => c;
+
 // ---------- drafts (this browser) ----------
 
 type Store = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -85,6 +120,8 @@ export function cleanComments(v: unknown): LineComment[] {
       lines: Array.isArray(c.lines) ? c.lines.filter((l: unknown) => typeof l === "string") : [],
       text: c.text,
       scope: c.scope === "branch" ? "branch" : "uncommitted",
+      ...(typeof c.base === "string" && c.base ? { base: c.base } : {}),
+      ...(c.handed === true ? { handed: true as const } : {}),
     }];
   });
 }
@@ -97,10 +134,13 @@ export function readComments(store: Store, key: string): LineComment[] {
   }
 }
 
-/** None left: the key goes. */
-export function writeComments(store: Store, key: string, list: LineComment[]) {
+/** None left: the key goes. False when storage refused (full, or private mode). */
+export function writeComments(store: Store, key: string, list: LineComment[]): boolean {
   try {
     if (list.length) store.setItem(key, JSON.stringify(list));
     else store.removeItem(key);
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
