@@ -7,7 +7,7 @@ import { Cog6ToothIcon, HomeIcon, LinkIcon, PlusIcon, UserCircleIcon } from "@he
 import type { ProjectInfo } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { navigate, useRoute } from "../route";
-import { folderName, isHomeChat, mergeRows, recentSessions, splitPinned, waitingOn, type Row } from "../sessionList";
+import { folderName, groupByProject, isHomeChat, mergeRows, recentSessions, splitPinned, waitingOn, type Row } from "../sessionList";
 import { avatarSrc } from "../avatar";
 import { canPin } from "../runners";
 import { useStore } from "../store";
@@ -123,11 +123,12 @@ export function Sidebar() {
     );
   };
 
-  const sessionRow = (r: Row) => {
+  /** `grouped`: under its project's subheader, so the row leaves the project out. */
+  const sessionRow = (r: Row, grouped = false) => {
     const isExp = !!expanded && r.runnerId === expanded.runnerId && r.id === expanded.sessionId;
     return (
       <Fragment key={`${r.runnerId}:${r.id}`}>
-        <SessionRow row={r} now={now} selected={isExp && !selParent} runnerLabel={many ? runnerName(r.runnerId) : undefined} canPin={canPin(runners, r.runnerId)} />
+        <SessionRow row={r} now={now} selected={isExp && !selParent} runnerLabel={many ? runnerName(r.runnerId) : undefined} canPin={canPin(runners, r.runnerId)} hideProject={grouped} />
         {isExp && childRows()}
       </Fragment>
     );
@@ -190,7 +191,7 @@ export function Sidebar() {
           <div className="t-list-head">
             <span className="t-grow">Pinned</span>
           </div>
-          <div className="t-rows">{pinned.map(sessionRow)}</div>
+          <div className="t-rows">{pinned.map((r) => sessionRow(r))}</div>
         </>
       )}
       <div className="t-list-head">
@@ -209,7 +210,25 @@ export function Sidebar() {
       </div>
       <div className="t-rows">
         {rest.length === 0 && <div className="t-empty-line">{q ? "No sessions match." : !online.length ? "No runner connected." : pinned.length ? "No other recent sessions." : "No sessions yet."}</div>}
-        {rest.slice(0, shown).map(sessionRow)}
+        {q || filter
+          ? rest.slice(0, shown).map((r) => sessionRow(r))
+          : groupByProject(rest.slice(0, shown)).map((g) => (
+              <Fragment key={g.path}>
+                <button
+                  type="button"
+                  className="t-group-head"
+                  title={g.path}
+                  aria-label={`Project ${g.label}: show all its sessions`}
+                  onClick={() => {
+                    useStore.setState({ projectFilter: g.path });
+                    setShown(PAGE);
+                  }}
+                >
+                  {g.label}
+                </button>
+                {g.rows.map((r) => sessionRow(r, true))}
+              </Fragment>
+            ))}
         {rest.length > shown && (
           <button type="button" className="t-more" onClick={() => setShown(shown + PAGE)}>
             Show more

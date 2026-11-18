@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { SessionSummary } from "../../shared/transcript";
-import { childrenOf, folderName, mergeRows, pinMenuLabel, recentSessions, setHomeFolders, splitPinned, waitingOn , inbox } from "./sessionList";
+import { childrenOf, folderName, groupByProject, mergeRows, pinMenuLabel, recentSessions, setHomeFolders, splitPinned, waitingOn , inbox } from "./sessionList";
 
 const s = (id: string, updatedAt: number, extra: Partial<SessionSummary> = {}): SessionSummary => ({ id, harness: "claude", nativeId: id, projectPath: "/p/web", title: `T ${id}`, mode: "stored", status: "idle", updatedAt, ...extra });
 const summaries = {
@@ -76,4 +76,23 @@ test("the session menu's pin item: only for a main, listed session on a runner t
 test("a pinned session its runner can't find never shows on Home", () => {
   const sums = { a: { epoch: "e", seq: 1, sessions: { x: s("x", 1, { pinned: 1, missing: true, unread: "finished" }), y: s("y", 2, { unread: "finished" }) } } };
   expect(inbox(sums).map((r) => r.id)).toEqual(["y"]);
+});
+
+test("Recent by project: groups in order of their newest session, newest first within, one per folder across runners", () => {
+  const r = (id: string, at: number, projectPath: string, runnerId = "a") => ({ ...s(id, at, { projectPath }), runnerId });
+  const list = [r("a1", 9, "/p/web"), r("b1", 8, "/p/api"), r("a2", 7, "/p/web", "b"), r("c1", 5, "/q/docs"), r("b2", 3, "/p/api")];
+  expect(groupByProject(list).map((g) => [g.label, g.rows.map((x) => x.id)])).toEqual([
+    ["web", ["a1", "a2"]],
+    ["api", ["b1", "b2"]],
+    ["docs", ["c1"]],
+  ]);
+  // a page of the list groups the same way
+  expect(groupByProject(list.slice(0, 3)).map((g) => g.path)).toEqual(["/p/web", "/p/api"]);
+  // whatever order it comes in
+  expect(groupByProject([...list].reverse()).map((g) => g.rows[0]!.id)).toEqual(["a1", "b1", "c1"]);
+});
+
+test("Recent by project: folders with the same name are told apart by their parent", () => {
+  const r = (id: string, at: number, projectPath: string) => ({ ...s(id, at, { projectPath }), runnerId: "a" });
+  expect(groupByProject([r("x", 3, "/home/me/a/web/"), r("y", 2, "/home/me/b/web"), r("z", 1, "/srv/api")]).map((g) => g.label)).toEqual(["a/web", "b/web", "api"]);
 });

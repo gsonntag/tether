@@ -851,8 +851,10 @@ event (with the message's text) and the queued message's id from `SessionActions
 
 ## 10. UI
 
-- **Sidebar:** a flat list of recent sessions across projects (title, harness glyph, project, how long
-  ago, status dot), with projects below; pinned sessions above it. Search. New session (pick a project,
+- **Sidebar:** recent sessions grouped by project (title, harness glyph, how long ago, status dot,
+  under the project's folder name; groups ordered by their newest session, which opens that project's
+  list; same-named folders show their parent too; paging counts sessions), with projects below; pinned
+  sessions flat above it. Search results and a project's list stay flat. New session (pick a project,
   harness, model). Archive and pin (Archiving, Pinning below).
 - **Session view:** the transcript (markdown, thinking folded, tool cards rendered by `kind` with
   diffs and shell output), the requests dock, the queue, the composer, and a header with model, effort,

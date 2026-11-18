@@ -46,6 +46,35 @@ export function splitPinned(list: Row[]): { pinned: Row[]; rest: Row[] } {
   return { pinned, rest: list.filter((r) => !isPinned(r)) };
 }
 
+export interface ProjectGroup {
+  /** the folder (one group per path, across runners) */
+  path: string;
+  /** its short name: the folder's, with its parent's when another group's folder has the same name */
+  label: string;
+  rows: Row[];
+}
+
+/**
+ * Recent, by project: one group per folder, in the order of each group's newest session (`list`
+ * comes newest first, so a page of it groups the same way), sessions newest first within.
+ */
+export function groupByProject(list: Row[]): ProjectGroup[] {
+  const by = new Map<string, Row[]>();
+  for (const r of [...list].sort(newestFirst)) {
+    const g = by.get(r.projectPath);
+    if (g) g.push(r);
+    else by.set(r.projectPath, [r]);
+  }
+  const groups = [...by].map(([path, rows]) => ({ path, label: folderName(path), rows }));
+  const count = new Map<string, number>();
+  for (const g of groups) count.set(g.label, (count.get(g.label) ?? 0) + 1);
+  for (const g of groups) if (count.get(g.label)! > 1) g.label = path2(g.path);
+  return groups;
+}
+
+/** The last two parts of a path: "/home/me/a/web" -> "a/web". */
+const path2 = (path: string) => path.replace(/\/+$/, "").split("/").filter(Boolean).slice(-2).join("/") || path;
+
 /**
  * The session menu's pin item: "Pin" or "Unpin", or none where pinning isn't offered (a runner from
  * before pinSession, an archived session, a subagent, a Home agent chat).
