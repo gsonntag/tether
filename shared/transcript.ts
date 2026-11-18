@@ -2,6 +2,7 @@
 // translate their harness's own store and stream into these shapes; the UI renders only these.
 
 import type { Attachment } from "./attachments";
+import type { ForkedFrom } from "./fork";
 import type { SessionCost } from "./costs";
 import type { BillingSource, CredentialSource } from "./credentials";
 import type { ShellRun } from "./shellRun";
@@ -72,6 +73,8 @@ export interface HarnessCapabilities {
    * and a summary. Absent: it can't be moved to or from.
    */
   move?: { import: "native" | "context" };
+  /** A session can be forked: a new one with its conversation, or up to one of its messages (SPEC §16, Adapter.fork). */
+  fork?: boolean;
 }
 
 // ---------- transcript ----------
@@ -424,6 +427,8 @@ export interface SessionSummary {
   parentToolId?: string;
   /** a subagent: its kind, as the harness names it (e.g. "general-purpose") */
   agentType?: string;
+  /** a fork (SPEC §16): the session it was made from, and the message it ends at */
+  forkedFrom?: ForkedFrom;
 }
 
 /** A folder sessions run in, as discovered from the harness stores (SPEC §4). */

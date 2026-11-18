@@ -19,6 +19,7 @@ import type { Adapter, StartOpts } from "./adapter";
 import type { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
 import type { Prefs } from "./prefs";
+import type { SessionPrefs } from "../config";
 import { NoticeStore, pruneOverlay, settleStopped, withOverlay } from "./notices";
 import { MessageQueue } from "./queue";
 import { Session } from "./session";
@@ -93,6 +94,9 @@ export function hidePattern(globs = ""): RegExp | undefined {
   return new RegExp(`^(?:${source.join("|")})$`, "s");
 }
 
+/** A fork's link to where it was made from (SPEC §16), kept with its settings. */
+const forked = (p: SessionPrefs) => (p.forkedFrom ? { forkedFrom: p.forkedFrom } : {});
+
 const emptyState = (mode: LiveState["mode"] = "stored"): LiveState => ({ mode, status: "idle", requests: [], queue: [] });
 
 export class SessionCore {
@@ -163,11 +167,11 @@ export class SessionCore {
           const s = this.sessions.get(f.id);
           if (s && !s.live && !s.childRunning) {
             const prefs = this.o.prefs.get(f.id);
-            s.summary = { ...f, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
+            s.summary = { ...f, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...forked(prefs), ...(s.state.billing ? { billing: s.state.billing } : {}), mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
           }
         }
         this.book.refresh(
-          found.filter((f) => this.shown(f)).map((f) => ({ ...f, ...(this.o.prefs.get(f.id).archived ? { archived: true } : {}) })),
+          found.filter((f) => this.shown(f)).map((f) => ({ ...f, ...(this.o.prefs.get(f.id).archived ? { archived: true } : {}), ...forked(this.o.prefs.get(f.id)) })),
           (id) => this.owned(id),
           (id) => this.watched.has(id),
         );
@@ -215,7 +219,7 @@ export class SessionCore {
     return list.map((s) => {
       const row = this.owned(s.id) ? this.sessions.get(s.id)!.summary : s;
       const prefs = this.o.prefs.get(row.id);
-      return { ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : { archived: undefined }) };
+      return { ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : { archived: undefined }), ...forked(prefs) };
     });
   }
 
@@ -270,7 +274,7 @@ export class SessionCore {
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;
-    const s = this.add(new Session({ ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
+    const s = this.add(new Session({ ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...forked(prefs), mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
     if (blank) {
       // Back as new: the first message starts it (live.ts current). No row until something happens.
       s.transcript = new Transcript(withOverlay([], s.overlay));

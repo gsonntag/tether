@@ -187,6 +187,25 @@ export interface AdapterMove {
   busy?(nativeId: string): Promise<boolean>;
 }
 
+/** One fork (SPEC §16): `upTo` is a transcript message id, a fork point (shared/fork.ts); absent, all of it. */
+export interface ForkRequest {
+  nativeId: string;
+  projectPath: string;
+  upTo?: string;
+  title: string;
+}
+
+/** Forking sessions (SPEC §16); with `capabilities.fork`. */
+export interface AdapterFork {
+  /**
+   * A new session in the harness's store with this one's conversation, the original untouched.
+   * Starts no turn and bills nothing. Throws, leaving nothing, when it can't. Returns its native id.
+   */
+  fork(r: ForkRequest): Promise<string>;
+  /** The harness can't fork this one itself (Codex: a thread on a key's private app-server): its history is copied (§15's import) instead. */
+  copyInstead?(nativeId: string): boolean;
+}
+
 /** The billing sources a harness can run on (SPEC "Credentials and billing safety"). */
 export interface AdapterBilling {
   /** the keys it can use */
@@ -330,6 +349,8 @@ export interface Adapter {
   prepareTerminal?(nativeId: string, projectPath: string, opts: TerminalOpts): Promise<Billing>;
   /** moving sessions to and from this harness (SPEC §15); with `capabilities.move` */
   move?: AdapterMove;
+  /** forking sessions (SPEC §16); with `capabilities.fork` */
+  fork?: AdapterFork;
 }
 
 export interface TerminalOpts extends StartOpts {
