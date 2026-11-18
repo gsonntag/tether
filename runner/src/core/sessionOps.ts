@@ -35,7 +35,7 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
   });
   ops.register("listProjects", async () => ({ projects: await core.listProjects() }));
   ops.register("listSessions", (a) =>
-    core.listSessions({ projectPath: optStr(a.projectPath), parentSessionId: optStr(a.parentSessionId), query: optStr(a.query), limit: optNum(a.limit) }),
+    core.listSessions({ projectPath: optStr(a.projectPath), parentSessionId: optStr(a.parentSessionId), sideOf: optStr(a.sideOf), query: optStr(a.query), limit: optNum(a.limit) }),
   );
   ops.register("subscribe", (a) => core.subscribe(str(a.sessionId, "sessionId"), optNum(a.limit)));
   ops.register("history", async (a) => core.history(await core.open(str(a.sessionId, "sessionId")), str(a.before, "before"), optNum(a.limit)));

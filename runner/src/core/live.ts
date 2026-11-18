@@ -15,6 +15,7 @@ import type { CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
 import { FROM_TETHER } from "../../../shared/fromTether";
+import { SIDE_STAYS } from "../../../shared/sideChat";
 import { modelIdProblem, reportedAt } from "../../../shared/labels";
 import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
 import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
@@ -745,6 +746,11 @@ export class LiveControl {
   }
 
   async setPermissionMode(id: string, mode: string) {
+    // A side chat (SPEC §16a) stays in its harness's read-only mode.
+    if (this.core.o.prefs.get(id).sideOf) {
+      const s = await this.core.open(id);
+      if (mode !== s.capabilities.readOnlyMode) throw new Error(SIDE_STAYS);
+    }
     await this.setting(id, { permissionMode: mode }, (d) => d.setPermissionMode(mode));
   }
 

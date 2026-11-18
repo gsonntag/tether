@@ -53,7 +53,7 @@ const fullHistory = async (nativeId: string, projectPath: string): Promise<Msg[]
 export const codexAdapter: Adapter = {
   id: "codex",
   agentSetup: setCodexSetup,
-  capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "via-parent" }, persistent: true, settingsApply: "nextTurn", sourceSwitch: true, sourceCarry: true, commands: true, move: { import: "native" }, fork: true },
+  capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "via-parent" }, persistent: true, settingsApply: "nextTurn", sourceSwitch: true, sourceCarry: true, commands: true, move: { import: "native" }, fork: true, readOnlyMode: "never+read-only" },
   move: codexMove,
   fork: codexFork,
   toolServer: (server) => codexTools.set(server),

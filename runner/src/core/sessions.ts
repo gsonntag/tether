@@ -94,8 +94,8 @@ export function hidePattern(globs = ""): RegExp | undefined {
   return new RegExp(`^(?:${source.join("|")})$`, "s");
 }
 
-/** A fork's link to where it was made from (SPEC §16), kept with its settings. */
-const forked = (p: SessionPrefs) => (p.forkedFrom ? { forkedFrom: p.forkedFrom } : {});
+/** A fork's link to where it was made from (SPEC §16) and a side chat's to its session (§16a), kept with its settings. */
+const forked = (p: SessionPrefs) => ({ ...(p.forkedFrom ? { forkedFrom: p.forkedFrom } : {}), ...(p.sideOf ? { sideOf: p.sideOf } : {}) });
 
 const emptyState = (mode: LiveState["mode"] = "stored"): LiveState => ({ mode, status: "idle", requests: [], queue: [] });
 
@@ -224,8 +224,16 @@ export class SessionCore {
   }
 
   /** `archived`: only the archived ones (the Home agent finds a finished session to revive). */
-  async listSessions(args: { projectPath?: string; parentSessionId?: string; query?: string; limit?: number; archived?: boolean }): Promise<{ sessions: SessionSummary[]; epoch?: string; seq?: number }> {
+  async listSessions(args: { projectPath?: string; parentSessionId?: string; sideOf?: string; query?: string; limit?: number; archived?: boolean }): Promise<{ sessions: SessionSummary[]; epoch?: string; seq?: number }> {
     const limit = Math.max(1, Math.min(args.limit ?? 500, 2000));
+    if (args.sideOf) {
+      // A session's side chats (SPEC §16a), archived ones too: they're in its folder.
+      const parent = await this.open(args.sideOf);
+      const stored = await this.adapter(parent.summary.harness).listSessions({ projectPath: parent.summary.projectPath }).catch(() => [] as SessionSummary[]);
+      const byId = new Map(this.overlay(stored).map((s) => [s.id, s]));
+      for (const s of this.sessions.values()) if (s.summary.sideOf === parent.id) byId.set(s.id, { ...s.summary, ...(this.o.prefs.get(s.id).archived ? { archived: true } : { archived: undefined }) });
+      return { sessions: [...byId.values()].filter((s) => s.sideOf === parent.id).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit) };
+    }
     if (args.parentSessionId) {
       const parent = await this.open(args.parentSessionId);
       const stored = await this.adapter(parent.summary.harness).listSubagents(parent.summary.nativeId, parent.summary.projectPath).catch(() => []);
@@ -240,7 +248,8 @@ export class SessionCore {
     for (const s of this.sessions.values())
       if (s.live && !s.summary.parentSessionId && (!args.projectPath || s.summary.projectPath === expandPath(args.projectPath))) byId.set(s.id, s.summary);
     const q = args.query?.trim().toLowerCase();
-    const rows = [...byId.values()].filter((s) => this.shown(s) && (args.archived ? !!s.archived && !s.parentSessionId : !s.archived || !!q) && (!q || s.title.toLowerCase().includes(q)));
+    // Side chats (SPEC §16a) are listed under their session only.
+    const rows = [...byId.values()].filter((s) => this.shown(s) && !s.sideOf && (args.archived ? !!s.archived && !s.parentSessionId : !s.archived || !!q) && (!q || s.title.toLowerCase().includes(q)));
     return { sessions: rows.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, q ? Math.min(limit, 100) : limit) };
   }
 

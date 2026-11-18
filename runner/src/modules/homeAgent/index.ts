@@ -636,7 +636,7 @@ export class HomeAgent implements HomeEnd {
     if (c && !c.released) return false;
     const look = this.ctx.session(id);
     if (!look) return false;
-    return !look.summary.archived && !look.summary.parentSessionId && resolve(look.summary.projectPath) !== resolve(this.folder);
+    return !look.summary.archived && !look.summary.parentSessionId && !look.summary.sideOf && resolve(look.summary.projectPath) !== resolve(this.folder);
   }
 
   /** Puts a session's news in the next watch report: the newest per session, sent once things go quiet. */

@@ -75,6 +75,11 @@ export interface HarnessCapabilities {
   move?: { import: "native" | "context" };
   /** A session can be forked: a new one with its conversation, or up to one of its messages (SPEC §16, Adapter.fork). */
   fork?: boolean;
+  /**
+   * The permission mode that changes nothing, enforced by the harness itself with no approval that
+   * loosens it (Claude Code `plan`, Codex `never+read-only`). Side chats run in it (SPEC §16a).
+   */
+  readOnlyMode?: string;
 }
 
 // ---------- transcript ----------
@@ -429,6 +434,8 @@ export interface SessionSummary {
   agentType?: string;
   /** a fork (SPEC §16): the session it was made from, and the message it ends at */
   forkedFrom?: ForkedFrom;
+  /** a side chat (SPEC §16a): the session it's beside. Left out of the lists; shown under that session */
+  sideOf?: string;
 }
 
 /** A folder sessions run in, as discovered from the harness stores (SPEC §4). */

@@ -169,8 +169,10 @@ export function createRunner(o: RunnerOptions) {
       : undefined;
   registerTerminalOps(ops, terminal);
 
+  /** how to fork (modules/index.ts ForkOptions) */
+  type ForkOptions = { messageId?: string; permissionMode?: string; title?: string; sideOf?: string };
   /** the fork module's (SPEC §16): the core only passes calls on */
-  let forker: ((id: string, o: { messageId?: string }) => Promise<string>) | undefined;
+  let forker: ((id: string, o: ForkOptions) => Promise<string>) | undefined;
 
   const lookAt = (s: Session) => ({
     summary: s.summary,
@@ -212,10 +214,10 @@ export function createRunner(o: RunnerOptions) {
       sessions: {
         adapters: () => o.adapters ?? [],
         open: async (id: string) => lookAt(await core.open(id)),
-        adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string, extra: { stored?: boolean; forkedFrom?: ForkedFrom } = {}) => {
+        adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string, extra: { stored?: boolean; forkedFrom?: ForkedFrom; sideOf?: string } = {}) => {
           const id = sessionId(harness, nativeId);
           opts = live.forSource(source, opts);
-          core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts), source, ...(source === "azure" && opts.model ? { deployment: opts.model } : {}), ...(from ? { carrying: true } : {}), ...(extra.forkedFrom ? { forkedFrom: extra.forkedFrom } : {}) });
+          core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts), source, ...(source === "azure" && opts.model ? { deployment: opts.model } : {}), ...(from ? { carrying: true } : {}), ...(extra.forkedFrom ? { forkedFrom: extra.forkedFrom } : {}), ...(extra.sideOf ? { sideOf: extra.sideOf } : {}) });
           for (const n of from ? core.notices.get(from) : []) core.notices.add(id, n);
           // A new session on a key (a Move, or a source change's new thread), metered from its first
           // request: what it brought across was spent elsewhere, and a carry adds that (live.ts
@@ -252,10 +254,11 @@ export function createRunner(o: RunnerOptions) {
         answer: (id: string, requestId: string, a: RequestAnswer) =>
           live.answerRequest(id, requestId, a.allow ? { ...a, ...(a.notes ? { notes: defang(a.notes) } : {}) } : { allow: false, ...(a.reason ? { reason: defang(a.reason) } : {}) }),
         carrier: (f: (id: string, source: BillingSource) => Promise<string>) => { live.carrier = f; },
-        fork: (id: string, f: { messageId?: string } = {}) => (forker ? forker(id, f) : Promise.reject(new Error("This runner can't fork sessions."))),
-        forker: (f: (id: string, o: { messageId?: string }) => Promise<string>) => { forker = f; },
+        fork: (id: string, f: ForkOptions = {}) => (forker ? forker(id, f) : Promise.reject(new Error("This runner can't fork sessions."))),
+        forker: (f: (id: string, o: ForkOptions) => Promise<string>) => { forker = f; },
         projects: () => core.listProjects(),
-        list: () => core.book.list(),
+        // Side chats (SPEC §16a) aren't in the lists: they show under their session.
+        list: () => core.book.list().filter((r) => !r.sideOf),
         archived: async () => (await core.listSessions({ archived: true, limit: 2000 })).sessions,
         folder: (path: string) => core.folder(path),
         queue: (id: string, text: string, attachments: Attachment[] = []) => (live.attachments.markUsed(attachments), live.queue.add(id, text, attachments)),

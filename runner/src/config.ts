@@ -46,6 +46,8 @@ export interface SessionPrefs {
   blank?: boolean;
   /** a fork (SPEC §16): where it was made from */
   forkedFrom?: ForkedFrom;
+  /** a side chat (SPEC §16a): the session it's beside. It stays in its read-only mode */
+  sideOf?: string;
   /** a blank session that went on under another id (Adapter.renew) */
   movedTo?: string;
   model?: string;

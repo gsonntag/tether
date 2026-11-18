@@ -187,10 +187,11 @@ export interface Ops {
    * Sessions. Without filters: the runner's summary list (the sidebar's recent sessions, plus every
    * live one), with the `epoch` and `seq` it is current to (protocol.ts SummaryUpdate). With
    * `projectPath`: every session in that folder. With `parentSessionId`: that session's subagents.
+   * With `sideOf`: that session's side chats (SPEC §16a), archived ones too; no other listing has them.
    * With `query`: sessions whose title contains it. Newest first.
    */
   listSessions: {
-    args: { projectPath?: string; parentSessionId?: string; query?: string; limit?: number };
+    args: { projectPath?: string; parentSessionId?: string; sideOf?: string; query?: string; limit?: number };
     result: { sessions: SessionSummary[]; epoch?: string; seq?: number };
   };
   /** the models, effort levels and permission modes a harness offers (for a session: as it runs now) */
@@ -203,6 +204,13 @@ export interface Ops {
   moveSession: { args: { sessionId: string; harness: string; model?: string; effort?: string; source?: BillingSource }; result: { sessionId: string } };
   /** SPEC §16: a fork, stored; `messageId` a reply that ends a turn (shared/fork.ts), absent: all of it */
   forkSession: { args: { sessionId: string; messageId?: string }; result: { sessionId: string } };
+  /**
+   * SPEC §16a: a side chat beside a session: a fork through its last finished turn, stored, in the
+   * harness's read-only mode (capabilities.readOnlyMode), asked `question` when there is one. Its id
+   */
+  openSideChat: { args: { sessionId: string; question?: string }; result: { sessionId: string } };
+  /** SPEC §16a: the side chat `sessionId` writes a short summary (a turn of its own); the text to put in its session's box */
+  bringBack: { args: { sessionId: string }; result: { text: string } };
 
   // ---------- driving ----------
 
