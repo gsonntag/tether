@@ -29,3 +29,11 @@ test("no pin button on a runner from before pinSession, an archived row or a sub
   expect(render(row({ archived: true }))).not.toContain("t-row-pin");
   expect(renderToStaticMarkup(<SessionRow row={row({ parentSessionId: "claude:b" })} now={2} selected={false} child canPin />)).not.toContain("t-row-pin");
 });
+
+test("a pinned session its runner can't find: dimmed, marked, no archive, still unpinnable", () => {
+  const html = render(row({ pinned: 5, missing: true }));
+  expect(html).toContain("t-missing");
+  expect(html).toContain("Not found on this computer");
+  expect(html).not.toContain("Archive session");
+  expect(html).toContain('aria-pressed="true"');
+});

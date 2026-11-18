@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { SessionSummary } from "../../shared/transcript";
-import { childrenOf, folderName, mergeRows, recentSessions, splitPinned, waitingOn , inbox } from "./sessionList";
+import { childrenOf, folderName, mergeRows, pinMenuLabel, recentSessions, setHomeFolders, splitPinned, waitingOn , inbox } from "./sessionList";
 
 const s = (id: string, updatedAt: number, extra: Partial<SessionSummary> = {}): SessionSummary => ({ id, harness: "claude", nativeId: id, projectPath: "/p/web", title: `T ${id}`, mode: "stored", status: "idle", updatedAt, ...extra });
 const summaries = {
@@ -60,4 +60,15 @@ test("pinned sessions: their own group in pin order across runners, out of the r
   expect(rest.map((r) => r.id)).toEqual(["v", "y"]);
   // searching shows the archived one, still not as pinned
   expect(splitPinned(recentSessions(sums, "T w")).rest.map((r) => r.id)).toEqual(["w"]);
+});
+
+test("the session menu's pin item: only for a main, listed session on a runner that pins", () => {
+  setHomeFolders([{ id: "a", homeFolder: "/home/agent" }]);
+  expect(pinMenuLabel("a", s("x", 1), true)).toBe("Pin");
+  expect(pinMenuLabel("a", s("x", 1, { pinned: 3 }), true)).toBe("Unpin");
+  expect(pinMenuLabel("a", s("x", 1), false)).toBeUndefined();
+  expect(pinMenuLabel("a", s("x", 1, { archived: true }), true)).toBeUndefined();
+  expect(pinMenuLabel("a", s("x", 1, { parentSessionId: "y" }), true)).toBeUndefined();
+  expect(pinMenuLabel("a", s("x", 1, { projectPath: "/home/agent" }), true)).toBeUndefined();
+  setHomeFolders([]);
 });

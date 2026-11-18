@@ -24,7 +24,7 @@ afterEach(() => {
 
 const DAY = 24 * 60 * 60 * 1000;
 
-function setup() {
+function setup(o: { hideProjects?: string } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "tether-pin-")), file = join(dir, "runner.json");
   saveConfig({ runnerId: "pin-test" }, file);
   const adapter = new FakeAdapter();
@@ -35,7 +35,7 @@ function setup() {
   // A long delay: only an explicit flush writes the file.
   const prefs = new Prefs(file, 60_000);
   let clock = Date.now();
-  const core = new SessionCore({ adapters: [adapter], bus: new EventBus<CoreEvents>(), send: () => true, prefs, epoch: "pin", log: () => {}, now: () => ++clock });
+  const core = new SessionCore({ adapters: [adapter], bus: new EventBus<CoreEvents>(), send: () => true, prefs, epoch: "pin", log: () => {}, now: () => ++clock, hideProjects: o.hideProjects });
   new ReadState(core);
   const live = new LiveControl(core, new RequestBroker(), { idleMs: 60_000 });
   const ops = new OpRegistry();
@@ -162,9 +162,10 @@ describe("pinned rows past discovery's window", () => {
     expect(core.book.get("claude:old")?.pinned).toBeGreaterThan(0);
   });
 
-  test("a failed lookup keeps the row; a session twice not found is unpinned and leaves the list", async () => {
+  test("a failed lookup keeps the row; a session not found (a Claude read error looks the same) stays pinned, listed from its snapshot", async () => {
     const { ops, core, adapter, prefs, advance } = setup();
     await pin(ops, "claude:old", true);
+    expect(prefs.get("claude:old").pinnedRow).toMatchObject({ title: "Session old", projectPath: "/p" });
     const info = adapter.sessionInfo.bind(adapter);
     let calls = 0;
     let answer: "throw" | "gone" | "real" = "real";
@@ -182,16 +183,31 @@ describe("pinned rows past discovery's window", () => {
     advance(PIN_REREAD_MS);
     await core.discover();
     expect(calls).toBe(2);
-    expect(core.book.get("claude:old")).toBeDefined();
+    expect(core.book.get("claude:old")?.missing).toBeUndefined();
     answer = "gone";
-    advance(PIN_REREAD_MS);
-    await core.discover();
-    expect(core.book.get("claude:old")).toBeDefined();
+    for (let i = 0; i < 4; i++) {
+      advance(PIN_REREAD_MS);
+      await core.discover();
+    }
+    // only the person unpins
     expect(prefs.get("claude:old").pinned).toBeGreaterThan(0);
-    advance(PIN_REREAD_MS);
-    await core.discover();
+    expect(core.book.get("claude:old")).toMatchObject({ title: "Session old", projectPath: "/p", missing: true, pinned: prefs.get("claude:old").pinned });
+    // not something modules see, nor a session to open
+    expect(core.listed().map((r) => r.id)).not.toContain("claude:old");
+    core.sessions.delete("claude:old");
+    await expect(core.open("claude:old")).rejects.toThrow();
+    // and it can be unpinned
+    expect(await pin(ops, "claude:old", false)).toMatchObject({ ok: true });
     expect(prefs.get("claude:old").pinned).toBeUndefined();
     expect(core.book.get("claude:old")).toBeUndefined();
+  });
+
+  test("the snapshot follows the row as discovery sees it", async () => {
+    const { ops, core, adapter, prefs } = setup();
+    await pin(ops, "claude:old", true);
+    adapter.stored.get("old")!.summary.title = "Renamed elsewhere";
+    await core.discover();
+    expect(prefs.get("claude:old").pinnedRow?.title).toBe("Renamed elsewhere");
   });
 
   test("a pinned session gone from its harness can still be unpinned", async () => {
@@ -206,18 +222,29 @@ describe("pinned rows past discovery's window", () => {
     expect(core.book.get("claude:old")).toBeUndefined();
   });
 
-  test("lookups run side by side, and a slow one gives up without holding the rest", async () => {
+  test("lookups run side by side; a slow first one gives the snapshot and is tried again next pass", async () => {
     const adapter = new FakeAdapter();
     adapter.addStored("a", [], { updatedAt: 1 });
     adapter.addStored("b", [], { updatedAt: 1 });
     const info = adapter.sessionInfo.bind(adapter);
-    adapter.sessionInfo = async (n) => (n === "a" ? new Promise(() => {}) : info(n));
-    const rows = new PinnedRows([adapter], () => "/p", () => 0, 50);
+    let hang = true, asked = 0;
+    adapter.sessionInfo = async (n) => (n === "a" && (asked++, hang) ? new Promise(() => {}) : info(n));
+    const snap = (id: string): SessionSummary => ({ id, harness: "claude", nativeId: id, projectPath: "/p", title: "saved", mode: "stored", status: "idle", updatedAt: 0 });
+    const rows = new PinnedRows([adapter], () => "/p", snap, () => 0, 50);
     const at = Date.now();
     const out = await rows.rows(["claude:a", "claude:b", "codex:elsewhere"]);
     expect(Date.now() - at).toBeLessThan(PIN_LOOKUP_MS);
-    expect(out.rows.map((r) => r.id)).toEqual(["claude:b"]);
-    expect(out.gone).toEqual([]);
+    expect(out.map((r) => [r.id, r.title, r.missing])).toEqual([["claude:a", "saved", undefined], ["claude:b", "Session b", undefined], ["codex:elsewhere", "saved", undefined]]);
+    hang = false;
+    expect((await rows.rows(["claude:a"]))[0]?.title).toBe("Session a");
+    expect(asked).toBe(2);
+  });
+
+  test("Home agent chats and hidden folders can't be pinned", async () => {
+    const { ops, core, adapter } = setup({ hideProjects: "/home-agent" });
+    adapter.addStored("chat", [], { projectPath: "/home-agent" });
+    await core.discover();
+    expect(await pin(ops, "claude:chat", true)).toMatchObject({ ok: false, error: expect.stringContaining("can't be pinned") });
   });
 
   test("the modules' list leaves out old sessions listed only because they're pinned", async () => {
@@ -237,12 +264,12 @@ test("Prefs.pinned leaves out a session that went on under another id", () => {
   expect(new Prefs(file).pinned()).toEqual(["claude:e"]);
 });
 
-test("Prefs.flush: the entry cap cuts pinned and archived entries last", () => {
+test("Prefs.flush: the entry cap cuts pinned entries last, and archived ones never crowd out new entries", () => {
   const file = join(mkdtempSync(join(tmpdir(), "tether-pin-cap-")), "runner.json");
   cleanups.push(() => rmSync(join(file, ".."), { recursive: true, force: true }));
   const now = Date.now(), old = now - DAY;
-  const sessions: Record<string, object> = { "claude:pinned": { at: old, pinned: old }, "claude:archived": { at: old, archived: true } };
-  for (let i = 0; i < 2000; i++) sessions[`claude:s${i}`] = { at: now - i, title: "x" };
+  const sessions: Record<string, object> = { "claude:pinned": { at: old - 1000, pinned: old } };
+  for (let i = 0; i < 2000; i++) sessions[`claude:a${i}`] = { at: old - i, archived: true };
   saveConfig({ runnerId: "box", sessions }, file);
   const p = new Prefs(file, 60_000);
   p.set("claude:new", { title: "New" });
@@ -250,5 +277,7 @@ test("Prefs.flush: the entry cap cuts pinned and archived entries last", () => {
   const kept = JSON.parse(readFileSync(file, "utf8")).sessions;
   expect(Object.keys(kept)).toHaveLength(2000);
   expect(kept["claude:pinned"]).toBeDefined();
-  expect(kept["claude:archived"]).toBeDefined();
+  expect(kept["claude:new"]).toMatchObject({ title: "New" });
+  // the oldest archived ones go
+  expect(kept["claude:a1999"]).toBeUndefined();
 });

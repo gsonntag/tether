@@ -42,6 +42,8 @@ export interface SessionPrefs {
   archived?: boolean;
   /** When it was pinned (ms): the Sidebar's Pinned group, oldest pin first. Archiving unpins. */
   pinned?: number;
+  /** A pinned session's row as last seen (from its pin on): listed from this when its harness can't find it. */
+  pinnedRow?: { title: string; projectPath: string; updatedAt: number };
   projectPath?: string;
   /** a new session that hasn't had a message: opening its id brings it back as new (sessions.ts make) */
   blank?: boolean;

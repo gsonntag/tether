@@ -9,6 +9,7 @@ import { CLAUDE_UNSET, type HarnessCapabilities, type HarnessId, type LiveState,
 import { rpc } from "../connection";
 import { openSession } from "../route";
 import { canPin } from "../runners";
+import { pinMenuLabel } from "../sessionList";
 import { failedSend, loadModels, modelListKey, setArchived, setPinned, useStore } from "../store";
 import { focusComposerOf } from "./SessionView";
 import { azureDeployments, DeploymentPicker, SourcePicker } from "./SourcePicker";
@@ -18,7 +19,7 @@ export function SessionMenu({ runnerId, session, state, canMove }: { runnerId: s
   const [open, setOpen] = useState(false);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [pinBusy, setPinBusy] = useState(false);
-  const pinnable = useStore((s) => canPin(s.runners, runnerId)) && !session.archived;
+  const pinLabel = pinMenuLabel(runnerId, session, useStore((s) => canPin(s.runners, runnerId)));
   const pin = async () => {
     if (pinBusy) return;
     setPinBusy(true);
@@ -52,7 +53,7 @@ export function SessionMenu({ runnerId, session, state, canMove }: { runnerId: s
         )}
       >
         {canMove && <DropdownMenuItem label="Change session harness" onClick={() => setOpen(true)} />}
-        {pinnable && <DropdownMenuItem label={session.pinned ? "Unpin" : "Pin"} isDisabled={pinBusy} onClick={() => void pin()} />}
+        {pinLabel && <DropdownMenuItem label={pinLabel} isDisabled={pinBusy} onClick={() => void pin()} />}
         <DropdownMenuItem label={session.archived ? "Unarchive" : "Archive"} isDisabled={archiveBusy} onClick={() => void archive()} />
       </DropdownMenu>
       {open && <MoveDialog runnerId={runnerId} session={session} state={state} onClose={() => setOpen(false)} />}

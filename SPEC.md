@@ -1122,10 +1122,13 @@ device; a search or a folder lists them as usual. The runner keeps when it was p
 (`pinSession`, carried on the row as `pinned`), past the 90-day pruning, and says so in its hello
 (`RunnerInfo.pinning`: no pin buttons for a runner from before it). A pinned session is listed however
 old: discovery looks up the old ones in parallel with a short timeout and keeps them (read again when
-the store changes or after a minute); a failed lookup keeps the row, a session twice not found is
-unpinned. The pin follows a conversation to its new thread (a source change, a renewed id). Modules
-see the lists without old sessions listed only because they're pinned. Archiving unpins; an archived
-session or a subagent can't be pinned. No reordering.
+the store changes or after a minute); a failed lookup keeps the row. The pin keeps the row as last
+seen (`pinnedRow`): a session the harness can't find is listed from it, dimmed, "Not found on this
+computer" (`missing`), and stays pinned until the person unpins it. The pin follows a conversation to
+its new thread (a source change, a renewed id). Modules see the lists without old sessions listed only
+because they're pinned, or missing ones; a recent pinned session is still asked at a check-in and may
+be archived (which unpins it). Archiving unpins; an archived session, a subagent, a Home agent chat or
+a session in a hidden folder can't be pinned. No reordering.
 
 ### The Home agent's model and source
 

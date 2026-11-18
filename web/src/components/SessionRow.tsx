@@ -129,7 +129,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin }: {
 
   return (
     <div
-      className={`t-row${child ? " t-child" : ""}${row.unread ? " unread" : ""}${selected ? " selected" : ""}${pinnable ? " t-pinnable" : ""}${pinnable && pinned ? " t-pinned" : ""}`}
+      className={`t-row${child ? " t-child" : ""}${row.unread ? " unread" : ""}${selected ? " selected" : ""}${pinnable ? " t-pinnable" : ""}${pinnable && pinned ? " t-pinned" : ""}${row.missing ? " t-missing" : ""}`}
       onDoubleClick={(e) => {
         if ((e.target as HTMLElement).closest("input, .t-row-archive, .t-row-pin")) return;
         beginRename();
@@ -181,6 +181,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin }: {
           {runnerLabel && <span className="t-proj">· {runnerLabel}</span>}
           <span>· {shortAgo(row.updatedAt, now)}</span>
           {archived && <span className="t-archived">· Archived</span>}
+          {row.missing && <span className="t-archived">· Not found on this computer</span>}
           {(!!row.requests || row.status === "waiting") && <span className="t-needs">· Needs you</span>}
           {row.unread && !row.requests && row.status !== "waiting" && !(row.unread === "finished" && row.backgroundSubagents) && <span className={`t-unread ${row.unread}`}>· {row.unread === "failed" ? "Failed" : "Finished"}</span>}
           <StatusDot status={row.status} requests={row.requests} />
@@ -201,7 +202,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin }: {
             <PinIcon filled={pinned} />
           </button>
         )}
-        {!child && (
+        {!child && !row.missing && (
           <button
             type="button"
             className="t-row-archive"

@@ -25,7 +25,8 @@ const MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const MAX_ENTRIES = 2000;
 /** Entries kept whatever their age: a replaced thread (the only thing that says so), a pin, an archive. */
 const keep = (p: SessionPrefs) => !!(p.carried || p.pinned || p.archived);
-const rank = (p: SessionPrefs) => (p.carried ? 3 : p.pinned ? 2 : p.archived ? 1 : 0);
+/** Carried and pinned entries first, so the cap cuts them last. Archived ones sort by age with the rest: they never expire, so ranking them up too would crowd out every new entry. */
+const rank = (p: SessionPrefs) => (p.carried ? 2 : p.pinned ? 1 : 0);
 
 export class Prefs {
   private map: Record<string, SessionPrefs>;
@@ -144,7 +145,6 @@ export class Prefs {
     const kept = Object.entries(this.map)
       // A replaced thread stays out of the lists for good: this is the only thing that says so.
       .filter(([, p]) => keep(p) || (p.at ?? 0) >= cutoff)
-      // Kept for good first, so the cap cuts them last: carried, then pinned, then archived entries.
       .sort((a, b) => rank(b[1]) - rank(a[1]) || (b[1].at ?? 0) - (a[1].at ?? 0))
       .slice(0, MAX_ENTRIES);
     this.map = Object.fromEntries(kept);

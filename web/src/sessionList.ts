@@ -46,6 +46,15 @@ export function splitPinned(list: Row[]): { pinned: Row[]; rest: Row[] } {
   return { pinned, rest: list.filter((r) => !isPinned(r)) };
 }
 
+/**
+ * The session menu's pin item: "Pin" or "Unpin", or none where pinning isn't offered (a runner from
+ * before pinSession, an archived session, a subagent, a Home agent chat).
+ */
+export function pinMenuLabel(runnerId: string, s: SessionSummary, canPin: boolean): "Pin" | "Unpin" | undefined {
+  if (!canPin || s.archived || s.parentSessionId || isHomeChat(runnerId, s.projectPath)) return undefined;
+  return s.pinned ? "Unpin" : "Pin";
+}
+
 /** A session's subagents that the summaries know (live ones, mostly), newest first. */
 export function childrenOf(summaries: Record<string, SummaryState>, runnerId: string, sessionId: string): Row[] {
   return rows(summaries)
