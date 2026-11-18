@@ -300,7 +300,7 @@ export function ChangesPane({
         {filesTab ? (
           <div className="t-changes-tabs" role="tablist" aria-label="View">
             {(["changes", "files"] as const).map((t) => (
-              <button key={t} type="button" role="tab" className="t-changes-tab" aria-selected={t === tab} onClick={() => pickTab(t)}>
+              <button key={t} type="button" role="tab" id={`t-changes-tab-${t}`} aria-controls={`t-changes-panel-${t}`} className="t-changes-tab" aria-selected={t === tab} onClick={() => pickTab(t)}>
                 {t === "changes" ? "Changes" : "Files"}
               </button>
             ))}
@@ -334,12 +334,12 @@ export function ChangesPane({
       </div>
       {git && <GitBar runnerId={runnerId} sessionId={sessionId} status={status} tick={tick} pr={git.pr} onPr={git.update} onChanged={() => (setOwed(false), void load(scope))} />}
       {filesTab && filesSeen && (
-        <div className="t-files-slot" hidden={tab !== "files"}>
-          <FilesView runnerId={runnerId} sessionId={sessionId} status={status} cover={cover} reload={filesReload} onLoading={setFilesLoading} />
+        <div className="t-files-slot" role="tabpanel" id="t-changes-panel-files" aria-labelledby="t-changes-tab-files" hidden={tab !== "files"}>
+          <FilesView runnerId={runnerId} sessionId={sessionId} status={status} cover={cover} shown={tab === "files"} reload={filesReload} onLoading={setFilesLoading} />
         </div>
       )}
       {tab === "changes" && (
-        <>
+        <div className="t-changes-panel" role="tabpanel" id="t-changes-panel-changes" {...(filesTab ? { "aria-labelledby": "t-changes-tab-changes" } : { "aria-label": "Changes" })}>
           {scope === "turn" && cps && <TurnBar list={cps} picked={cps.checkpoints.find((c) => c.id === cp)} onPick={pickTurn} onRestore={(id) => void restore(id)} restoring={restoring} />}
           {shown?.state === "ok" && (
             <div className="t-changes-sub">
@@ -409,7 +409,7 @@ export function ChangesPane({
               </div>
             </div>
           )}
-        </>
+        </div>
       )}
     </aside>
   );

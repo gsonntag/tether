@@ -78,6 +78,10 @@
   display: flex;
   flex-direction: column;
 }
+/* The Changes tab's own parts lay out as the pane's. */
+.t-changes-panel {
+  display: contents;
+}
 .t-files-slot[hidden] {
   display: none;
 }

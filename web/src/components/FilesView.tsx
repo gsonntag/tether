@@ -1,22 +1,24 @@
-// The Files tab of the Changes pane (SPEC §10 Files): the session's folder as a tree, loaded a folder
-// at a time from the runner's files module, a name filter, and a viewer (text with line numbers,
-// Markdown preview or raw, images, "binary", "too big"). Hidden files (dot files and what git
-// ignores) show with the eye toggle, kept per device. Mention puts `@path` in the message box.
-// Opened folders and the open file load again on Refresh and when a turn ends.
+// The Files tab of the Changes pane (SPEC §10 Files): the session's folder as a tree (FileTree.tsx),
+// loaded a folder at a time from the runner's files module, a name filter, and a viewer (text with
+// line numbers, Markdown preview or raw, images, "binary", "too big"). Hidden files (dot files and
+// what git ignores) show with the eye toggle, kept per device. Mention puts `@path` in the message
+// box. Opened folders and the open file load again on Refresh and when a turn ends (while the tab
+// is hidden, when it's shown again). The tree stays mounted under the viewer, so Back keeps its place.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Spinner } from "@astryxdesign/core/Spinner";
-import { ArrowLeftIcon, AtSymbolIcon, ChevronDownIcon, ChevronRightIcon, EyeIcon, EyeSlashIcon } from "@heroicons/react/24/outline";
-import { DocumentIcon, FolderIcon, LinkIcon, PhotoIcon } from "@heroicons/react/24/solid";
-import { FILE_VIEW_MAX, imageType, mentionOf, sizeLabel, type FileEntry, type FileRead, type FindResult } from "../../../shared/files";
+import { ArrowLeftIcon, AtSymbolIcon, EyeIcon, EyeSlashIcon } from "@heroicons/react/24/outline";
+import { DocumentIcon, PhotoIcon } from "@heroicons/react/24/solid";
+import { FILE_VIEW_MAX, imageType, mentionOf, sizeLabel, type FileRead, type FindResult } from "../../../shared/files";
 import type { RunStatus } from "../../../shared/transcript";
 import { rpc } from "../connection";
-import { canOpen, isFolder, lineNumbers, loadedOpen, nameOf, parentOf, pruneOpen, treeRows, viewOf, type DirState } from "../files";
+import { lineNumbers, linkTarget, loadedOpen, mapLimit, nameOf, oddChars, parentOf, pruneOpen, treeRows, viewOf, type DirState } from "../files";
 import { viewKey } from "../store";
 import { putMention } from "./Composer";
+import { FileTree } from "./FileTree";
 import { Markdown } from "./Markdown";
 import "./FilesView.css";
 
@@ -28,26 +30,17 @@ const storedHidden = () => {
     return false;
   }
 };
+/** Folders asked for at once on a reload. */
+const LOADS_AT_ONCE = 4;
 
-function EntryIcon({ e, path }: { e: FileEntry; path: string }) {
-  if (e.kind === "link") return <Icon icon={LinkIcon} size="sm" />;
-  if (e.kind === "dir") return <Icon icon={FolderIcon} size="sm" />;
-  return <Icon icon={imageType(path) ? PhotoIcon : DocumentIcon} size="sm" />;
-}
-
-const linkNote: Record<NonNullable<FileEntry["to"]>, string> = {
-  file: "",
-  dir: "",
-  outside: "points outside the folder",
-  broken: "broken link",
-};
-
-export function FilesView({ runnerId, sessionId, status, cover, reload, onLoading }: {
+export function FilesView({ runnerId, sessionId, status, cover, shown, reload, onLoading }: {
   runnerId: string;
   sessionId: string;
   status: RunStatus;
   /** over the chat (a phone): Mention leaves the box unfocused, so no keyboard comes up */
   cover: boolean;
+  /** the tab is showing: a turn that ended while it wasn't loads when it is */
+  shown: boolean;
   /** Refresh in the pane's header: a new number loads again */
   reload: number;
   onLoading: (loading: boolean) => void;
@@ -67,6 +60,7 @@ export function FilesView({ runnerId, sessionId, status, cover, reload, onLoadin
   const gen = useRef(0);
   const openRef = useRef(open);
   openRef.current = open;
+  const treeBox = useRef<HTMLDivElement>(null);
 
   const loadDir = useCallback(
     async (path: string, g = gen.current): Promise<DirState> => {
@@ -82,12 +76,12 @@ export function FilesView({ runnerId, sessionId, status, cover, reload, onLoadin
     },
     [runnerId, sessionId, hidden],
   );
-  /** the top and every open folder, again; folders gone are closed */
+  /** the top and every open folder, again, a few at a time; folders gone are closed */
   const loadAll = useCallback(async () => {
     const g = ++gen.current;
     onLoading(true);
     const paths = loadedOpen(openRef.current);
-    const got = await Promise.all(paths.map((p) => loadDir(p, g)));
+    const got = await mapLimit(paths, LOADS_AT_ONCE, (p) => (g === gen.current ? loadDir(p, g) : Promise.resolve({})));
     if (g !== gen.current) return;
     onLoading(false);
     const now = Object.fromEntries(paths.map((p, i) => [p, got[i]!]));
@@ -112,30 +106,45 @@ export function FilesView({ runnerId, sessionId, status, cover, reload, onLoadin
     },
     [runnerId, sessionId],
   );
+  const now = useRef({ file, read });
+  now.current = { file, read };
+  const again = useCallback(() => {
+    void loadAll();
+    const { file, read } = now.current;
+    if (file) void readIt(file, read?.kind === "text" && !!read.cut);
+  }, [loadAll, readIt]);
 
-  // First load, the hidden toggle, Refresh.
-  useEffect(() => void loadAll(), [loadAll, reload]);
+  // First load, the hidden toggle.
+  useEffect(() => void loadAll(), [loadAll]);
+  // Refresh.
   useEffect(() => {
-    if (file && reload) void readIt(file, read?.kind === "text" && !!read.cut);
+    if (reload) again();
   }, [reload]);
-  // A turn ended: what it changed shows.
+  // A turn ended: what it changed shows, now or when the tab is shown.
   const busy = status !== "idle";
   const wasBusy = useRef(busy);
+  const [stale, setStale] = useState(false);
   useEffect(() => {
-    if (wasBusy.current && !busy) {
-      void loadAll();
-      if (file) void readIt(file, read?.kind === "text" && !!read.cut);
-    }
+    if (wasBusy.current && !busy) setStale(true);
     wasBusy.current = busy;
   }, [busy]);
+  useEffect(() => {
+    if (!stale || !shown) return;
+    setStale(false);
+    again();
+  }, [stale, shown]);
 
-  // The filter: asked a moment after typing stops.
+  // The filter: asked a moment after typing stops; after Refresh the folder's list is made again.
+  const askedReload = useRef(reload);
   useEffect(() => {
     const q = query.trim();
+    setFindError(undefined);
     if (!q) return setFound(undefined);
+    const fresh = askedReload.current !== reload;
     const t = setTimeout(async () => {
+      askedReload.current = reload;
       try {
-        const r = await rpc(runnerId, "findFiles", { sessionId, query: q, hidden });
+        const r = await rpc(runnerId, "findFiles", { sessionId, query: q, hidden, ...(fresh ? { fresh } : {}) });
         setFound({ ...r, query: q });
         setFindError(undefined);
       } catch (e) {
@@ -168,6 +177,11 @@ export function FilesView({ runnerId, sessionId, status, cover, reload, onLoadin
     setRaw(false);
     void readIt(path);
   };
+  const back = () => {
+    setFile(undefined);
+    // Back where you were: the tree's tab stop (the entry opened), else the filter.
+    requestAnimationFrame(() => (treeBox.current?.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]') ?? treeBox.current?.querySelector<HTMLElement>("input"))?.focus());
+  };
   const mention = (path: string, folder: boolean) => {
     putMention(viewKey(runnerId, sessionId), mentionOf(folder ? `${path}/` : path), !cover);
     setMentioned(path);
@@ -177,175 +191,133 @@ export function FilesView({ runnerId, sessionId, status, cover, reload, onLoadin
     const t = setTimeout(() => setMentioned(undefined), 2000);
     return () => clearTimeout(t);
   }, [mentioned]);
+  /** a link in a Markdown preview: a file in the folder opens here; nothing else in the folder navigates the app */
+  const onLink = (href: string, ev: React.MouseEvent<HTMLAnchorElement>) => {
+    if (!file) return;
+    const to = linkTarget(file, href);
+    if (to.t === "away") return;
+    ev.preventDefault();
+    if (to.t === "file") openFile(to.path);
+    else if (to.t === "anchor") document.getElementById(to.id)?.scrollIntoView({ block: "start" });
+    else setReadError("That link points outside the session's folder.");
+    return false;
+  };
 
   const rows = useMemo(() => treeRows(dirs, open), [dirs, open]);
   const repo = dirs[""]?.list?.repo;
-
-  if (file) {
-    const v = read && read.path === file ? viewOf(read) : undefined;
-    return (
-      <div className="t-filesview">
-        <div className="t-files-viewbar">
-          <IconButton label="Back to files" tooltip="Back" size="sm" variant="ghost" icon={<Icon icon={ArrowLeftIcon} />} onClick={() => setFile(undefined)} />
-          <span className="t-files-path" title={file}>
-            {parentOf(file) && <span className="t-dpath-dir">{parentOf(file)}/</span>}
-            <span className="t-dpath-name">{nameOf(file)}</span>
-          </span>
-          {read && read.path === file && <span className="t-files-size">{sizeLabel(read.size)}</span>}
-          {reading && read && <Spinner size="sm" label="Loading" />}
-          {v?.t === "markdown" && (
-            <div className="t-changes-scopes" role="tablist" aria-label="Show">
-              <button type="button" role="tab" className="t-changes-scope" aria-selected={!raw} onClick={() => setRaw(false)}>
-                Preview
-              </button>
-              <button type="button" role="tab" className="t-changes-scope" aria-selected={raw} onClick={() => setRaw(true)}>
-                Raw
-              </button>
-            </div>
-          )}
-          <Button label={mentioned === file ? "In the message box" : "Mention"} size="sm" variant="secondary" icon={<Icon icon={AtSymbolIcon} />} onClick={() => mention(file, false)} />
-        </div>
-        <div className="t-files-body">
-          {readError ? (
-            <div className="t-changes-note error">{readError}</div>
-          ) : !v ? (
-            <div className="t-changes-note">
-              <Spinner size="sm" /> Loading…
-            </div>
-          ) : v.t === "image" ? (
-            <div className="t-files-image">
-              <img src={v.src} alt={nameOf(file)} />
-            </div>
-          ) : v.t === "binary" ? (
-            <div className="t-changes-note">Binary, {sizeLabel(v.size)}.</div>
-          ) : v.t === "tooBig" ? (
-            <div className="t-changes-note t-files-big">
-              {sizeLabel(v.size)}: too big to show here.
-              {!imageType(file) && <Button label={`Show the first ${sizeLabel(FILE_VIEW_MAX)}`} size="sm" variant="secondary" onClick={() => void readIt(file, true)} />}
-            </div>
-          ) : (
-            <>
-              {v.cut && read && <div className="t-changes-note">The first {sizeLabel(FILE_VIEW_MAX)} of {sizeLabel(read.size)}.</div>}
-              {v.t === "markdown" && !raw ? (
-                <div className="t-files-md">
-                  <Markdown contentWidth="100%">{v.text}</Markdown>
-                </div>
-              ) : (
-                <div className="t-files-code">
-                  <pre className="t-files-gutter" aria-hidden="true">
-                    {lineNumbers(v.text)}
-                  </pre>
-                  <pre className="t-files-text">{v.text}</pre>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    );
-  }
+  const v = file && read && read.path === file ? viewOf(read) : undefined;
+  const odd = v && (v.t === "text" || v.t === "markdown") ? oddChars(v.text) : [];
 
   return (
-    <div className="t-filesview">
-      <div className="t-files-bar">
-        <input className="t-search t-files-filter" type="search" placeholder="Filter by name" aria-label="Filter by name" value={query} autoCapitalize="off" autoCorrect="off" spellCheck={false} onChange={(e) => setQuery(e.target.value)} />
-        <IconButton
-          label={hidden ? "Hide hidden files" : "Show hidden files"}
-          tooltip={hidden ? `Hide dot files${repo ? " and ignored files" : ""}` : `Show dot files${repo ? " and ignored files" : ""}`}
-          size="sm"
-          variant={hidden ? "secondary" : "ghost"}
-          aria-pressed={hidden}
-          icon={<Icon icon={hidden ? EyeIcon : EyeSlashIcon} />}
-          onClick={toggleHidden}
-        />
-      </div>
-      <div className="t-files-body">
-        {query.trim() ? (
-          findError ? (
-            <div className="t-changes-note error">{findError}</div>
-          ) : !found || found.query !== query.trim() ? (
-            <div className="t-changes-note">
-              <Spinner size="sm" /> Looking…
-            </div>
-          ) : !found.paths.length ? (
-            <div className="t-changes-note">No files match.</div>
-          ) : (
-            <ul className="t-files-tree" aria-label="Matching files">
-              {found.paths.map((p) => (
-                <li key={p} className="t-files-row">
-                  <button type="button" className="t-files-item" onClick={() => openFile(p)}>
-                    <Icon icon={imageType(p) ? PhotoIcon : DocumentIcon} size="sm" />
-                    <span className="t-files-name">
-                      {parentOf(p) && <span className="t-dpath-dir">{parentOf(p)}/</span>}
-                      {nameOf(p)}
-                    </span>
-                  </button>
-                </li>
-              ))}
-              {(found.more || found.partial) && (
-                <li className="t-changes-note">{found.more ? "More files match: type more of the name." : "Only part of the folder was looked through."}</li>
-              )}
-            </ul>
-          )
-        ) : (
-          <ul className="t-files-tree" role="tree" aria-label="Files">
-            {rows.map((r) => {
-              const pad = { paddingLeft: 8 + r.depth * 16 };
-              if (r.t === "loading")
-                return (
-                  <li key={`l:${r.path}`} className="t-files-note" style={pad}>
-                    <Spinner size="sm" /> Loading…
-                  </li>
-                );
-              if (r.t === "empty")
-                return (
-                  <li key={`e:${r.path}`} className="t-files-note" style={pad}>
-                    {r.path || hidden ? "Empty." : "Empty, or only hidden files."}
-                  </li>
-                );
-              if (r.t === "error")
-                return (
-                  <li key={`x:${r.path}`} className="t-files-note error" style={pad}>
-                    {r.error}
-                  </li>
-                );
-              if (r.t === "more")
-                return (
-                  <li key={`m:${r.path}`} className="t-files-note" style={pad}>
-                    and {r.more} more not listed
-                  </li>
-                );
-              const e = r.entry;
-              const folder = isFolder(e);
-              const openable = canOpen(e);
-              const note = e.badName ? "name isn't UTF-8" : e.to ? linkNote[e.to] : "";
-              return (
-                <li key={`p:${r.path}`} className={`t-files-row${e.ignored || e.name.startsWith(".") ? " dim" : ""}`} role="treeitem" aria-expanded={folder ? r.open : undefined}>
-                  <button
-                    type="button"
-                    className="t-files-item"
-                    style={pad}
-                    disabled={!folder && !openable}
-                    title={note || undefined}
-                    onClick={() => (folder ? toggle(r.path) : openFile(r.path))}
-                  >
-                    <span className="t-files-chev">{folder && <Icon icon={r.open ? ChevronDownIcon : ChevronRightIcon} size="sm" />}</span>
-                    <EntryIcon e={e} path={r.path} />
-                    <span className="t-files-name">{e.name}</span>
-                    {note && <span className="t-files-note-inline">{note}</span>}
-                    {e.size !== undefined && <span className="t-files-size">{sizeLabel(e.size)}</span>}
-                  </button>
-                  {(folder || openable) && (
-                    <button type="button" className="t-files-at" aria-label={`Mention ${r.path}`} title={mentioned === r.path ? "In the message box" : `Mention ${r.path}`} onClick={() => mention(r.path, folder)}>
-                      {mentioned === r.path ? "✓" : "@"}
+    <>
+      {file && (
+        <div className="t-filesview">
+          <div className="t-files-viewbar">
+            <IconButton label="Back to files" tooltip="Back" size="sm" variant="ghost" icon={<Icon icon={ArrowLeftIcon} />} onClick={back} />
+            <span className="t-files-path" title={file}>
+              {parentOf(file) && <span className="t-dpath-dir">{parentOf(file)}/</span>}
+              <span className="t-dpath-name">{nameOf(file)}</span>
+            </span>
+            {read && read.path === file && <span className="t-files-size">{sizeLabel(read.size)}</span>}
+            {reading && read && <Spinner size="sm" label="Loading" />}
+            {v?.t === "markdown" && (
+              <div className="t-changes-scopes" role="group" aria-label="Show">
+                <button type="button" className="t-changes-scope" aria-pressed={!raw} onClick={() => setRaw(false)}>
+                  Preview
+                </button>
+                <button type="button" className="t-changes-scope" aria-pressed={raw} onClick={() => setRaw(true)}>
+                  Raw
+                </button>
+              </div>
+            )}
+            <Button label={mentioned === file ? "In the message box" : "Mention"} size="sm" variant="secondary" icon={<Icon icon={AtSymbolIcon} />} onClick={() => mention(file, false)} />
+          </div>
+          <div className="t-files-body">
+            {readError ? (
+              <div className="t-changes-note error">{readError}</div>
+            ) : !v ? (
+              <div className="t-changes-note">
+                <Spinner size="sm" /> Loading…
+              </div>
+            ) : v.t === "image" ? (
+              <div className="t-files-image">
+                <img src={v.src} alt={nameOf(file)} />
+              </div>
+            ) : v.t === "binary" ? (
+              <div className="t-changes-note">Binary, {sizeLabel(v.size)}.</div>
+            ) : v.t === "tooBig" ? (
+              <div className="t-changes-note t-files-big">
+                {sizeLabel(v.size)}: too big to show here.
+                {!imageType(file) && <Button label={`Show the first ${sizeLabel(FILE_VIEW_MAX)}`} size="sm" variant="secondary" onClick={() => void readIt(file, true)} />}
+              </div>
+            ) : (
+              <>
+                {v.cut && read && <div className="t-changes-note">The first {v.lossy ? "part" : sizeLabel(FILE_VIEW_MAX)} of {sizeLabel(read.size)}.</div>}
+                {v.lossy && <div className="t-changes-note">Not all UTF-8 text: shown as well as it decodes (� where it doesn't).</div>}
+                {odd.length > 0 && <div className="t-changes-note t-files-odd">This file has {odd.join(" and ")}.</div>}
+                {v.t === "markdown" && !raw ? (
+                  <div className="t-files-md">
+                    <Markdown contentWidth="100%" onLinkClick={onLink}>
+                      {v.text}
+                    </Markdown>
+                  </div>
+                ) : (
+                  <div className="t-files-code">
+                    <pre className="t-files-gutter" aria-hidden="true">
+                      {lineNumbers(v.text)}
+                    </pre>
+                    <pre className="t-files-text">{v.text}</pre>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      <div className="t-filesview" hidden={!!file} ref={treeBox}>
+        <div className="t-files-bar">
+          <input className="t-search t-files-filter" type="search" placeholder="Filter by name" aria-label="Filter by name" value={query} autoCapitalize="off" autoCorrect="off" spellCheck={false} onChange={(e) => setQuery(e.target.value)} />
+          <IconButton
+            label={hidden ? "Hide hidden files" : "Show hidden files"}
+            tooltip={hidden ? `Hide dot files${repo ? " and ignored files" : ""}` : `Show dot files${repo ? " and ignored files" : ""}`}
+            size="sm"
+            variant={hidden ? "secondary" : "ghost"}
+            aria-pressed={hidden}
+            icon={<Icon icon={hidden ? EyeIcon : EyeSlashIcon} />}
+            onClick={toggleHidden}
+          />
+        </div>
+        <div className="t-files-body">
+          {query.trim() ? (
+            findError ? (
+              <div className="t-changes-note error">{findError}</div>
+            ) : !found || found.query !== query.trim() ? (
+              <div className="t-changes-note">
+                <Spinner size="sm" /> Looking…
+              </div>
+            ) : !found.paths.length ? (
+              <div className="t-changes-note">No files match.</div>
+            ) : (
+              <ul className="t-files-tree" aria-label="Matching files">
+                {found.paths.map((p) => (
+                  <li key={p} className="t-files-row">
+                    <button type="button" className="t-files-item" onClick={() => openFile(p)}>
+                      <Icon icon={imageType(p) ? PhotoIcon : DocumentIcon} size="sm" />
+                      <span className="t-files-name">
+                        {parentOf(p) && <span className="t-dpath-dir">{parentOf(p)}/</span>}
+                        {nameOf(p)}
+                      </span>
                     </button>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
+                  </li>
+                ))}
+                {(found.more || found.partial) && <li className="t-changes-note">{found.more ? "More files match: type more of the name." : "Only part of the folder was looked through."}</li>}
+              </ul>
+            )
+          ) : (
+            <FileTree rows={rows} hidden={hidden} mentioned={mentioned} onToggle={toggle} onOpen={openFile} onMention={mention} />
+          )}
+        </div>
       </div>
-    </div>
+    </>
   );
 }

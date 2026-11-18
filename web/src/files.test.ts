@@ -51,8 +51,8 @@ test("pruneOpen: folders that failed or left their parent close", () => {
 });
 
 test("viewOf: markdown, text, images as data URLs (SVG too), binary, too big", () => {
-  expect(viewOf({ path: "a/README.md", size: 3, kind: "text", text: "# x" })).toEqual({ t: "markdown", text: "# x", cut: false });
-  expect(viewOf({ path: "a.ts", size: 3, kind: "text", text: "x", cut: true })).toEqual({ t: "text", text: "x", cut: true });
+  expect(viewOf({ path: "a/README.md", size: 3, kind: "text", text: "# x" })).toEqual({ t: "markdown", text: "# x", cut: false, lossy: false });
+  expect(viewOf({ path: "a.ts", size: 3, kind: "text", text: "x", cut: true, lossy: true })).toEqual({ t: "text", text: "x", cut: true, lossy: true });
   expect(viewOf({ path: "p.svg", size: 3, kind: "image", mime: "image/svg+xml", data: "PHN2Zz4=" })).toEqual({ t: "image", src: "data:image/svg+xml;base64,PHN2Zz4=" });
   expect(viewOf({ path: "b", size: 9, kind: "binary" })).toEqual({ t: "binary", size: 9 });
   expect(viewOf({ path: "c", size: 9e6, kind: "tooBig" })).toEqual({ t: "tooBig", size: 9e6 });
@@ -77,4 +77,58 @@ test("the viewer never puts a file's markup in the page (SVG shows only as an <i
   const src = await Bun.file(new URL("./components/FilesView.tsx", import.meta.url)).text();
   for (const bad of ["dangerouslySetInnerHTML", "<iframe", "<object", "<embed", "innerHTML"]) expect(src).not.toContain(bad);
   expect(src).toContain("<img src={v.src}");
+  // One focusable control per treeitem: the Mention button isn't a tab stop.
+  const tree = await Bun.file(new URL("./components/FileTree.tsx", import.meta.url)).text();
+  expect(tree).toContain('role="treeitem"');
+  expect(tree.match(/<button/g)?.length).toBe(1);
+  expect(tree).toContain("tabIndex={-1}");
+});
+
+test("treeKey: arrows move and open and close, Enter opens files and toggles folders", async () => {
+  const { treeKey } = await import("./files");
+  const dirs = { "": list("", [dir("src"), file("README.md"), { name: "out", kind: "link", to: "outside" }]), src: list("src", [file("a.ts")]) };
+  const closed = treeRows(dirs, new Set());
+  const open = treeRows(dirs, new Set(["src"]));
+  expect(treeKey(closed, 0, "ArrowRight")).toEqual({ t: "toggle", path: "src" });
+  expect(treeKey(open, 0, "ArrowRight")).toEqual({ t: "focus", index: 1 });
+  expect(treeKey(open, 1, "ArrowLeft")).toEqual({ t: "focus", index: 0 });
+  expect(treeKey(open, 0, "ArrowLeft")).toEqual({ t: "toggle", path: "src" });
+  expect(treeKey(open, 0, "ArrowDown")).toEqual({ t: "focus", index: 1 });
+  expect(treeKey(open, 3, "ArrowDown")).toBeUndefined();
+  expect(treeKey(open, 2, "ArrowUp")).toEqual({ t: "focus", index: 1 });
+  expect(treeKey(open, 2, "Home")).toEqual({ t: "focus", index: 0 });
+  expect(treeKey(open, 0, "End")).toEqual({ t: "focus", index: 3 });
+  expect(treeKey(open, 2, "Enter")).toEqual({ t: "open", path: "README.md" });
+  expect(treeKey(open, 0, " ")).toEqual({ t: "toggle", path: "src" });
+  expect(treeKey(open, 3, "Enter")).toBeUndefined();
+});
+
+test("linkTarget: relative links open files in the folder, never outside it", async () => {
+  const { linkTarget } = await import("./files");
+  expect(linkTarget("docs/README.md", "guide.md")).toEqual({ t: "file", path: "docs/guide.md" });
+  expect(linkTarget("docs/README.md", "./img/a%20b.png?raw=1#top")).toEqual({ t: "file", path: "docs/img/a b.png" });
+  expect(linkTarget("docs/README.md", "../src/app.ts")).toEqual({ t: "file", path: "src/app.ts" });
+  expect(linkTarget("docs/README.md", "/LICENSE")).toEqual({ t: "file", path: "LICENSE" });
+  expect(linkTarget("README.md", "../../etc/passwd")).toEqual({ t: "outside" });
+  expect(linkTarget("README.md", "#install")).toEqual({ t: "anchor", id: "install" });
+  expect(linkTarget("README.md", "https://example.com/x.md")).toEqual({ t: "away" });
+  expect(linkTarget("README.md", "mailto:a@b.c")).toEqual({ t: "away" });
+  expect(linkTarget("README.md", "//cdn.example.com/x")).toEqual({ t: "away" });
+});
+
+test("oddChars and mapLimit", async () => {
+  const { oddChars, mapLimit } = await import("./files");
+  expect(oddChars("plain\ttext\r\n")).toEqual([]);
+  expect(oddChars("if (a ‮) {}")).toHaveLength(1);
+  expect(oddChars("bell\u0007")).toEqual(["control characters"]);
+  let running = 0;
+  let most = 0;
+  const r = await mapLimit([1, 2, 3, 4, 5, 6, 7], 3, async (x) => {
+    most = Math.max(most, ++running);
+    await Bun.sleep(5);
+    running--;
+    return x * 2;
+  });
+  expect(r).toEqual([2, 4, 6, 8, 10, 12, 14]);
+  expect(most).toBe(3);
 });

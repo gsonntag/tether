@@ -56,7 +56,8 @@ function makeRepo() {
   const d = join(base, "proj");
   mkdirSync(join(d, "src"), { recursive: true });
   writeFileSync(join(base, "outside-secret.txt"), "never shown\n");
-  writeFileSync(join(d, "README.md"), "# Files demo\n\nA **bold** claim and a list:\n\n- one\n- two\n\n```ts\nconst x = 1;\n```\n");
+  writeFileSync(join(d, "README.md"), "# Files demo\n\nA **bold** claim and a list:\n\n- one\n- two\n\n```ts\nconst x = 1;\n```\n\nSee [the app](src/app.ts) and [escape](../outside-secret.txt).\n");
+  writeFileSync(join(d, "src/trojan.ts"), 'const ok = "user\u202e \u2066// admin\u2069 \u2066";\n');
   writeFileSync(join(d, "src/app.ts"), Array.from({ length: 60 }, (_, i) => `export const line${i + 1} = ${i + 1}; // a fairly long line so that it scrolls sideways on a phone screen`).join("\n") + "\n");
   writeFileSync(join(d, "logo.png"), png());
   writeFileSync(join(d, "pic.svg"), '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><script>alert("svg ran")</script><circle cx="40" cy="40" r="30" fill="tomato"/></svg>');
@@ -121,7 +122,23 @@ await pane(p).getByRole("tab", { name: "Files" }).click();
 await row(p, "README.md").waitFor({ timeout: 20_000 });
 let names = await treeNames(p);
 if (names.join() !== "src,big.txt,blob.bin,logo.png,out-link,pic.svg,README.md") fail(`tree: ${names}`);
-if (!(await row(p, "out-link").locator("button.t-files-item").isDisabled())) fail("a link out should not open");
+// One tab stop; arrows move; Right opens a folder, Left closes it.
+if ((await pane(p).locator('[role="treeitem"][tabindex="0"]').count()) !== 1) fail("one tab stop");
+await pane(p).locator('[role="treeitem"][tabindex="0"]').focus();
+await p.keyboard.press("ArrowDown");
+if ((await p.evaluate(() => document.activeElement?.textContent)).indexOf("big.txt") < 0) fail("ArrowDown");
+await p.keyboard.press("Home");
+await p.keyboard.press("ArrowRight");
+await row(p, "app.ts").waitFor();
+await p.keyboard.press("ArrowLeft");
+await row(p, "app.ts").waitFor({ state: "detached" });
+await p.keyboard.press("End");
+await p.keyboard.press("Enter");
+await pane(p).locator(".t-files-path", { hasText: "README.md" }).waitFor();
+await pane(p).getByRole("button", { name: "Back to files" }).click();
+if (!(await p.evaluate(() => document.activeElement?.getAttribute("role") === "treeitem" && document.activeElement.textContent.includes("README.md")))) fail("Back should return focus to the row");
+ok("desktop: tree keyboard: one tab stop, arrows, Right/Left, End, Enter opens; Back returns focus");
+if ((await row(p, "out-link").getAttribute("aria-disabled")) !== "true") fail("a link out should not open");
 if (!(await row(p, "out-link").innerText()).includes("points outside the folder")) fail("link out not said");
 await shot(p, "desktop-tree");
 ok(`desktop: tree ${names.join(", ")}; .env and ignored/ hidden; out-link listed, can't open`);
@@ -133,7 +150,7 @@ await row(p, "ignored").waitFor();
 if (!(await row(p, "ignored").getAttribute("class")).includes("dim")) fail("ignored not dimmed");
 names = await treeNames(p);
 if (names.includes(".git")) fail(".git listed");
-await row(p, "ignored").locator("button.t-files-item").click();
+await row(p, "ignored").locator(".t-files-item").click();
 await row(p, "cache.txt").waitFor();
 await shot(p, "desktop-hidden");
 ok(`desktop: hidden toggle shows ${names.filter((n) => n.startsWith(".") || n === "ignored").join(", ")} (dimmed), never .git`);
@@ -141,22 +158,39 @@ await pane(p).getByRole("button", { name: "Hide hidden files" }).click();
 await p.waitForFunction(() => ![...document.querySelectorAll('[role="tree"] .t-files-name')].some((e) => e.textContent === ".env"));
 
 // Text with line numbers.
-await row(p, "src").locator("button.t-files-item").click();
-await row(p, "app.ts").locator("button.t-files-item").click();
+await row(p, "src").locator(".t-files-item").click();
+await row(p, "app.ts").locator(".t-files-item").click();
 await pane(p).locator(".t-files-text").waitFor();
 const gutter = await pane(p).locator(".t-files-gutter").innerText();
 if (!gutter.startsWith("1\n2\n3") || !gutter.trim().endsWith("60")) fail(`gutter: ${gutter.slice(0, 20)}…${gutter.slice(-10)}`);
 await shot(p, "desktop-text");
 ok("desktop: src/app.ts with line numbers 1–60");
 await pane(p).getByRole("button", { name: "Back to files" }).click();
+await row(p, "trojan.ts").locator(".t-files-item").click();
+await pane(p).locator(".t-files-odd", { hasText: "bidirectional controls" }).waitFor();
+ok("desktop: a file with bidi controls says so");
+await pane(p).getByRole("button", { name: "Back to files" }).click();
 
 // Markdown: preview, raw.
-await row(p, "README.md").locator("button.t-files-item").click();
+await row(p, "README.md").locator(".t-files-item").click();
 await pane(p).locator(".t-files-md h1", { hasText: "Files demo" }).waitFor();
 await shot(p, "desktop-md-preview");
-await pane(p).getByRole("tab", { name: "Raw" }).click();
+await pane(p).getByRole("button", { name: "Raw" }).click();
 if (!(await pane(p).locator(".t-files-text").innerText()).startsWith("# Files demo")) fail("raw markdown");
-ok("desktop: README.md preview (h1), raw");
+const hashBefore = await p.evaluate(() => location.hash);
+await pane(p).getByRole("button", { name: "Preview" }).click();
+await pane(p).locator(".t-files-md a", { hasText: "the app" }).click();
+await pane(p).locator(".t-files-path", { hasText: "app.ts" }).waitFor();
+if ((await p.evaluate(() => location.hash)) !== hashBefore) fail("a relative link navigated the app");
+await pane(p).getByRole("button", { name: "Back to files" }).click();
+await row(p, "README.md").locator(".t-files-item").click();
+await pane(p).locator(".t-files-md a", { hasText: "escape" }).click();
+await pane(p).locator(".t-changes-note.error", { hasText: "outside the session's folder" }).waitFor();
+if ((await p.evaluate(() => location.hash)) !== hashBefore) fail("an escaping link navigated the app");
+await pane(p).getByRole("button", { name: "Back to files" }).click();
+await row(p, "README.md").locator(".t-files-item").click();
+await pane(p).getByRole("button", { name: "Raw" }).click();
+ok("desktop: README.md preview (h1), raw; a relative link opens src/app.ts here, one out of the folder is refused");
 
 // Mention.
 await pane(p).getByRole("button", { name: "Mention" }).click();
@@ -168,7 +202,7 @@ await pane(p).getByRole("button", { name: "Back to files" }).click();
 
 // Images: PNG, and SVG as an <img> (its script never runs).
 for (const name of ["logo.png", "pic.svg"]) {
-  await row(p, name).locator("button.t-files-item").click();
+  await row(p, name).locator(".t-files-item").click();
   const img = pane(p).locator(".t-files-image img");
   await img.waitFor();
   await p.waitForFunction(() => document.querySelector(".t-files-image img")?.naturalWidth > 0);
@@ -181,10 +215,10 @@ if (await p.locator(".t-filesview circle").count()) fail("svg inlined");
 ok("desktop: logo.png and pic.svg as <img> from data URLs");
 
 // Binary, too big (then its first 1 MB).
-await row(p, "blob.bin").locator("button.t-files-item").click();
+await row(p, "blob.bin").locator(".t-files-item").click();
 await pane(p).locator(".t-changes-note", { hasText: "Binary, 8 bytes." }).waitFor();
 await pane(p).getByRole("button", { name: "Back to files" }).click();
-await row(p, "big.txt").locator("button.t-files-item").click();
+await row(p, "big.txt").locator(".t-files-item").click();
 await pane(p).locator(".t-changes-note", { hasText: "too big to show here" }).waitFor();
 await shot(p, "desktop-big");
 await pane(p).getByRole("button", { name: "Show the first 1.0 MB" }).click();
@@ -231,18 +265,18 @@ await shot(q, "phone-tree");
 // Mention from a row: @ is always there on a touch screen; the pane stays.
 await row(q, "logo.png").locator(".t-files-at").tap();
 await row(q, "logo.png").locator(".t-files-at", { hasText: "✓" }).waitFor();
-await row(q, "src").locator("button.t-files-item").tap();
-await row(q, "app.ts").locator("button.t-files-item").tap();
+await row(q, "src").locator(".t-files-item").tap();
+await row(q, "app.ts").locator(".t-files-item").tap();
 await pane(q).locator(".t-files-text").waitFor();
 await shot(q, "phone-text");
-const scroll = await pane(q).locator(".t-files-body").evaluate((e) => {
+const scroll = await pane(q).locator(".t-files-body").first().evaluate((e) => {
   const out = [e.scrollWidth, e.clientWidth];
   for (let x = e; x && x.tagName !== "BODY"; x = x.parentElement) out.push(`${x.className.split(" ")[0]}:${x.clientWidth}`);
   return out;
 });
 if (!(scroll[0] > scroll[1])) fail(`long lines should scroll sideways: ${scroll}`);
 await pane(q).getByRole("button", { name: "Back to files" }).tap();
-await row(q, "README.md").locator("button.t-files-item").tap();
+await row(q, "README.md").locator(".t-files-item").tap();
 await pane(q).locator(".t-files-md h1").waitFor();
 await shot(q, "phone-md");
 await pane(q).getByRole("button", { name: "Close changes" }).tap();
