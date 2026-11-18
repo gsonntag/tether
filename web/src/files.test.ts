@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { DirList, FileEntry } from "../../shared/files";
-import { canOpen, isFolder, lineNumbers, loadedOpen, pruneOpen, treeRows, viewOf, withMention, type DirState } from "./files";
+import { canOpen, changedList, changeMarks, isFolder, lineNumbers, loadedOpen, markText, pruneOpen, treeRows, viewOf, withMention, type DirState } from "./files";
 
 const list = (path: string, entries: FileEntry[], more?: number): DirState => ({ list: { path, entries, repo: true, ...(more ? { more } : {}) } satisfies DirList });
 const dir = (name: string): FileEntry => ({ name, kind: "dir" });
@@ -131,4 +131,36 @@ test("oddChars and mapLimit", async () => {
   });
   expect(r).toEqual([2, 4, 6, 8, 10, 12, 14]);
   expect(most).toBe(3);
+});
+
+test("change marks: files keep their own, folders count what's under them, hidden paths only with the eye", () => {
+  const c = {
+    repo: true,
+    files: { "src/a.ts": "modified", "src/deep/b.ts": "untracked", "top.md": "added", "src/old.ts": "deleted", ".github/ci.yml": "modified", "lib/.env": "untracked", nested: "untracked" },
+  } as const;
+  const m = changeMarks(c, false);
+  expect(m.files.get("src/a.ts")).toBe("modified");
+  expect(m.files.get("top.md")).toBe("added");
+  expect([...m.dirs].sort()).toEqual([
+    ["src", 3],
+    ["src/deep", 1],
+  ]);
+  expect([...changeMarks(c, true).dirs].sort()).toEqual([
+    [".github", 1],
+    ["lib", 1],
+    ["src", 3],
+    ["src/deep", 1],
+  ]);
+  // words, not colour alone
+  expect(markText(m, "src/a.ts", false)).toBe("modified");
+  expect(markText(m, "src", true)).toBe("3 changed files inside");
+  expect(markText(m, "src/deep", true)).toBe("1 changed file inside");
+  expect(markText(m, "nested", true)).toBe("untracked");
+  expect(markText(m, "lib", true)).toBe("");
+  expect(markText(m, "README.md", false)).toBe("");
+  // outside a repo, or not known: none
+  expect(changeMarks({ repo: false, files: {} }, true).files.size).toBe(0);
+  expect(changeMarks(undefined, true).dirs.size).toBe(0);
+  expect(changedList(c, false).map((x) => `${x.mark[0]} ${x.path}`)).toEqual(["u nested", "m src/a.ts", "u src/deep/b.ts", "d src/old.ts", "a top.md"]);
+  expect(changedList(c, true)).toHaveLength(7);
 });

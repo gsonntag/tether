@@ -1,7 +1,7 @@
 // The Files tab's state, apart from React (SPEC §10 Files): folders loaded so far and which are
 // open, the rows the tree shows, what the viewer shows for a file, and what Mention puts in the box.
 
-import { isMarkdown, type DirList, type FileEntry, type FileRead } from "../../shared/files";
+import { isHidden, isMarkdown, type ChangeMark, type DirList, type FileChanges, type FileEntry, type FileRead } from "../../shared/files";
 
 export interface DirState {
   list?: DirList;
@@ -42,6 +42,55 @@ export function treeRows(dirs: Readonly<Record<string, DirState>>, open: Readonl
   }
   if (d.list.more) out.push({ t: "more", path: dir, depth, more: d.list.more });
   return out;
+}
+
+/** A change mark's badge letter (as editors show them) and the words said for it. */
+export const MARKS: Readonly<Record<ChangeMark, { letter: string; label: string }>> = {
+  modified: { letter: "M", label: "modified" },
+  added: { letter: "A", label: "added" },
+  untracked: { letter: "U", label: "untracked" },
+  renamed: { letter: "R", label: "renamed" },
+  deleted: { letter: "D", label: "deleted" },
+};
+
+export interface Marks {
+  /** a path's own mark (a file; a nested repo or untracked folder git names whole) */
+  files: ReadonlyMap<string, ChangeMark>;
+  /** folders with changed paths under them, and how many */
+  dirs: ReadonlyMap<string, number>;
+}
+
+/**
+ * The tree's marks from fileChanges' answer. Without `hidden`, paths the tree hides (a dot-named
+ * part) count for no folder, so a folder's mark never points at nothing to see.
+ */
+export function changeMarks(c: FileChanges | undefined, hidden: boolean): Marks {
+  const files = new Map<string, ChangeMark>();
+  const dirs = new Map<string, number>();
+  if (!c?.repo) return { files, dirs };
+  for (const [path, m] of Object.entries(c.files)) {
+    files.set(path, m);
+    if (!hidden && path.split("/").some(isHidden)) continue;
+    for (let up = parentOf(path); up; up = parentOf(up)) dirs.set(up, (dirs.get(up) ?? 0) + 1);
+  }
+  return { files, dirs };
+}
+
+/** The changed paths as a list (the Changed view), by path; dot-named ones only with `hidden`. */
+export function changedList(c: FileChanges | undefined, hidden: boolean): { path: string; mark: ChangeMark }[] {
+  if (!c?.repo) return [];
+  return Object.entries(c.files)
+    .filter(([p]) => hidden || !p.split("/").some(isHidden))
+    .map(([path, mark]) => ({ path, mark }))
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
+
+/** What a row says of its changes: a mark's word, or a folder's count; "" when none. */
+export function markText(marks: Marks, path: string, folder: boolean): string {
+  const own = marks.files.get(path);
+  if (own) return MARKS[own].label;
+  const n = folder ? (marks.dirs.get(path) ?? 0) : 0;
+  return n ? `${n} changed ${n === 1 ? "file" : "files"} inside` : "";
 }
 
 /** The folders to load again on Refresh or a hidden toggle: the top and every open one whose parents are open. */

@@ -53,6 +53,21 @@ export interface FindResult {
   partial?: boolean;
 }
 
+/** How a file differs from HEAD, as the tree marks it (git status). Deleted ones aren't on disk: no row. */
+export type ChangeMark = "modified" | "added" | "untracked" | "renamed" | "deleted";
+
+export interface FileChanges {
+  /** the folder is in a git repo; outside one there are no marks */
+  repo: boolean;
+  /** each changed path (relative to the session's folder) and how; a nested repo or untracked folder git won't list into is its folder's path */
+  files: Record<string, ChangeMark>;
+  /** git said more than CHANGES_MAX paths (or too many bytes): only the first are here */
+  cut?: boolean;
+}
+
+/** Changed paths fileChanges answers with at most. */
+export const CHANGES_MAX = 5000;
+
 /** Files bigger than this aren't loaded (a text file's first this-many bytes can be, by asking). */
 export const FILE_VIEW_MAX = 1024 * 1024;
 /** Entries one folder lists. */

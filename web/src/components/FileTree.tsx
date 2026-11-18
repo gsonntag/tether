@@ -1,6 +1,8 @@
 // The Files tab's tree (SPEC §10 Files): a WAI-ARIA tree. Each entry is one focusable treeitem
 // (roving tabindex): arrows move, Right and Left open and close folders, Enter or Space opens; `@`
-// mentions it. The `@` button on a row is for the mouse and touch (not a tab stop).
+// mentions it. The `@` button on a row is for the mouse and touch (not a tab stop). A file that
+// differs from HEAD has its name coloured and a letter (M, A, U, R); a folder with changes under it
+// a dot. Both are said in words too (the row's label and title), never by colour alone.
 
 import { useRef, useState, type KeyboardEvent } from "react";
 import { Icon } from "@astryxdesign/core/Icon";
@@ -8,7 +10,7 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { ChevronDownIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
 import { DocumentIcon, FolderIcon, LinkIcon, PhotoIcon } from "@heroicons/react/24/solid";
 import { imageType, sizeLabel, type FileEntry } from "../../../shared/files";
-import { canOpen, isFolder, treeKey, type Row } from "../files";
+import { canOpen, isFolder, markText, MARKS, treeKey, type Marks, type Row } from "../files";
 
 function EntryIcon({ e, path }: { e: FileEntry; path: string }) {
   if (e.kind === "link") return <Icon icon={LinkIcon} size="sm" />;
@@ -18,9 +20,20 @@ function EntryIcon({ e, path }: { e: FileEntry; path: string }) {
 
 const LINK_NOTE: Record<NonNullable<FileEntry["to"]>, string> = { file: "", dir: "", outside: "points outside the folder", broken: "broken link" };
 
-export function FileTree({ rows, hidden, mentioned, onToggle, onOpen, onMention }: {
+/** A file's change mark: the letter, in its colour (the words are on the row). */
+export function MarkBadge({ mark }: { mark: keyof typeof MARKS }) {
+  return (
+    <span className={`t-dstatus ${mark}`} aria-hidden="true">
+      {MARKS[mark].letter}
+    </span>
+  );
+}
+
+export function FileTree({ rows, hidden, marks, mentioned, onToggle, onOpen, onMention }: {
   rows: Row[];
   hidden: boolean;
+  /** what differs from HEAD (changeMarks) */
+  marks: Marks;
   /** the path just mentioned (its button says so for a moment) */
   mentioned?: string;
   onToggle: (path: string) => void;
@@ -80,6 +93,9 @@ export function FileTree({ rows, hidden, mentioned, onToggle, onOpen, onMention 
         const folder = isFolder(e);
         const openable = canOpen(e);
         const note = e.badName ? "name isn't UTF-8" : e.to ? LINK_NOTE[e.to] : "";
+        const mark = marks.files.get(r.path);
+        const changed = markText(marks, r.path, folder);
+        const said = [note, changed].filter(Boolean).join(", ");
         const act = () => (folder ? onToggle(r.path) : openable ? onOpen(r.path) : undefined);
         return (
           <li
@@ -91,9 +107,9 @@ export function FileTree({ rows, hidden, mentioned, onToggle, onOpen, onMention 
             aria-level={r.depth + 1}
             aria-expanded={folder ? r.open : undefined}
             aria-disabled={!folder && !openable ? true : undefined}
-            aria-label={note ? `${e.name}, ${note}` : undefined}
-            className={`t-files-row${e.ignored || e.name.startsWith(".") ? " dim" : ""}${!folder && !openable ? " off" : ""}`}
-            title={note || undefined}
+            aria-label={said ? `${e.name}, ${said}` : undefined}
+            className={`t-files-row${e.ignored || e.name.startsWith(".") ? " dim" : ""}${!folder && !openable ? " off" : ""}${mark ? ` changed ${mark}` : ""}`}
+            title={said || undefined}
             onFocus={() => setActive(r.path)}
             onKeyDown={(ev) => onKey(ev, i)}
             onClick={act}
@@ -104,6 +120,7 @@ export function FileTree({ rows, hidden, mentioned, onToggle, onOpen, onMention 
               <span className="t-files-name">{e.name}</span>
               {note && <span className="t-files-note-inline">{note}</span>}
               {e.size !== undefined && <span className="t-files-size">{sizeLabel(e.size)}</span>}
+              {mark ? <MarkBadge mark={mark} /> : changed && <span className="t-files-dot" aria-hidden="true" />}
             </span>
             {(folder || openable) && (
               <button
