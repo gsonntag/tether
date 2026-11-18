@@ -1402,7 +1402,8 @@ export class HomeAgent implements HomeEnd {
       const others = this.ctx.sessions.list().filter((r) => r.id !== id && !r.archived).map((r) => r.projectPath);
       const gone = await removeOwnWorktree(own, others, this.git).catch((err) => ({ removed: false, why: (err as Error).message, branchKept: undefined }));
       if (!gone.removed && !/^another session/.test(gone.why ?? "")) return Object.assign(e, { outcome: "kept", reason: `done and merged, but ${gone.why}` });
-      reason += gone.removed ? `; removed its worktree${gone.branchKept ? ` (its branch stays: ${gone.branchKept})` : ` and branch ${own.branch}`}` : `; its worktree stays: ${gone.why}`;
+      const what = "gone" in gone && gone.gone ? `its worktree folder ${own.path} was already gone (moved or deleted); git's record of it is pruned` : "removed its worktree";
+      reason += gone.removed ? `; ${what}${gone.branchKept ? ` (its branch stays: ${gone.branchKept})` : ` and branch ${own.branch}`}` : `; its worktree stays: ${gone.why}`;
     }
     try {
       await this.ctx.sessions.setArchived(id, true);

@@ -226,12 +226,15 @@ export interface Ops {
    * newSession in a new worktree of the folder's repo (SPEC §4): `git worktree add` beside the repo
    * on a new branch (`branch`, else tether/<a slug of `name`, or a random one>) from the default
    * branch; the session runs there, and the repo's setup runs first. Refused outside git, or when
-   * the branch or the folder is taken.
+   * the branch or the folder is taken, or with `terminal` when the repo has a setup (nothing would
+   * wait for it).
    */
   newWorktreeSession: {
     args: { harness: HarnessId; projectPath: string; model?: string; effort?: string; permissionMode?: string; terminal?: boolean; source?: BillingSource; branch?: string; name?: string };
     result: WorktreeMade;
   };
+  /** Runs a worktree session's setup again, after it failed or a restart cut it off (SPEC §4). */
+  rerunSetup: { args: { sessionId: string }; result: null };
   /** The folders inside a folder on the runner (Add project's folder browser). Read-only. */
   listFolders: { args: { path: string }; result: FolderList };
   /**

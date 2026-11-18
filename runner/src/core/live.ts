@@ -227,26 +227,6 @@ export class LiveControl {
     }
   }
 
-  /** A new worktree's setup started (SPEC §4): sends queue, held ("setup"), until it ends. */
-  setupStarted(s: Session) {
-    s.setState({ setup: "running" });
-    this.core.touch(s);
-  }
-
-  /**
-   * The setup ended. Done: what waited goes now. Failed: what waits, and what you send next, stays
-   * held until Resume (Send anyway), and Home shows the session failed.
-   */
-  setupEnded(s: Session, ok: boolean, why = "The worktree's setup failed.") {
-    if (s.state.setup !== "running") return;
-    s.setState({ setup: ok ? undefined : "failed" });
-    if (ok) {
-      if (s.state.queueHeldBy === "setup") this.queue.release(s);
-      this.queue.later(s.id);
-    } else this.read.set(s.id, { failure: `${why} Your messages wait: fix it, or send them anyway.` });
-    this.core.touch(s);
-  }
-
   async newSession(args: { harness: HarnessId; projectPath: string; terminal?: boolean; createFolder?: boolean; source?: BillingSource } & StartOpts, background = false): Promise<{ sessionId: string }> {
     this.core.adapter(args.harness); // throws for a harness this runner can't drive, before anything is made
     if (args.terminal && !this.terminal) throw new Error("This runner has no terminal support (is tmux installed?).");

@@ -148,9 +148,43 @@ export class MessageQueue {
     if (s.retry) throw new Error("A rate limit retry is waiting. Cancel it or wait for it to finish.");
     if (this.host.settingUp?.(s.id)) throw new Error("The worktree's setup is still running. What waits goes once it's done.");
     // After a failed setup this is Send anyway: from now on sends go as usual.
-    if (s.state.setup === "failed") s.setState({ setup: undefined });
+    if (s.state.setup === "failed") {
+      s.setState({ setup: undefined });
+      this.core.o.prefs.set(s.id, { setup: undefined });
+    }
     this.release(s);
     this.later(s.id);
+  }
+
+  // ---------------- a new worktree's setup (SPEC §4) ----------------
+
+  /** Its setup started: sends queue held ("setup") until it ends. Saved, so a restart knows it was cut off. */
+  setupStarted(s: Session) {
+    s.setState({ setup: "running" });
+    this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, setup: "running" });
+    this.core.o.prefs.flush();
+    this.core.touch(s);
+  }
+
+  /** It ended. Done: what waited goes now. Failed: what waits, and what's sent next, stays held until Resume (Send anyway). */
+  setupEnded(s: Session, ok: boolean) {
+    if (s.state.setup !== "running") return;
+    s.setState({ setup: ok ? undefined : "failed" });
+    this.core.o.prefs.set(s.id, { setup: ok ? undefined : "failed" });
+    this.core.o.prefs.flush();
+    if (ok) {
+      if (s.state.queueHeldBy === "setup") this.release(s);
+      this.later(s.id);
+    }
+    this.core.touch(s);
+  }
+
+  /** Sessions whose setup a restart cut off (still "running" at start): failed now. */
+  setupsCutOff(): string[] {
+    const ids = this.core.o.prefs.ids((p) => p.setup === "running");
+    for (const id of ids) this.core.o.prefs.set(id, { setup: "failed" });
+    if (ids.length) this.core.o.prefs.flush();
+    return ids;
   }
 
   // ---------------- holding ----------------

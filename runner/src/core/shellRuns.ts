@@ -88,6 +88,8 @@ interface Run {
   paused?: ReturnType<typeof setTimeout>;
   /** a new worktree's setup (SPEC §4): its output stays on the card, and this hears how it ended */
   setup?: SetupRun;
+  /** a setup stopped at its time limit */
+  timedOut?: boolean;
 }
 
 /** A new worktree's setup, run as a card (SPEC §4): never sent to the agent. */
@@ -98,6 +100,8 @@ export interface SetupRun {
   env?: Record<string, string>;
   /** how it ended: ok is exit code 0; why says otherwise */
   done?: (ok: boolean, why: string) => void;
+  /** it's stopped (as by Stop) after this long, and fails */
+  maxMs?: number;
 }
 
 export const STOPPED_WHY = "The runner stopped while it ran, so it was ended and nothing was sent.";
@@ -226,6 +230,15 @@ export class ShellRuns {
       return { id };
     }
     run.proc = proc;
+    if (setup?.maxMs) {
+      const limit = setTimeout(() => {
+        if (run.done) return;
+        run.timedOut = true;
+        this.stop(sessionId, id);
+      }, setup.maxMs);
+      limit.unref?.();
+      proc.on("close", () => clearTimeout(limit));
+    }
     proc.stdout!.on("data", (b: Buffer) => this.data(run, b, false));
     proc.stderr!.on("data", (b: Buffer) => this.data(run, b, true));
     proc.on("error", (e: any) => this.failed(run, e?.code === "ENOENT" ? `there's no ${setup?.argv ? file : "shell at " + shell}` : e.message));
@@ -423,7 +436,8 @@ export class ShellRuns {
     if (r.setup) {
       if (!this.end(r, how, { state: "done" })) return;
       const ok = !r.stopped && !signal && (code ?? 0) === 0;
-      return r.setup.done?.(ok, ok ? "" : `The worktree's setup ${r.stopped ? "was stopped" : `failed (${endedHow(how)})`}.`);
+      const limit = `${Math.round((r.setup.maxMs ?? 0) / 60_000) || "its"} min`;
+      return r.setup.done?.(ok, ok ? "" : `The worktree's setup ${r.timedOut ? `took longer than ${limit} and was stopped` : r.stopped ? "was stopped" : `failed (${endedHow(how)})`}.`);
     }
     // Waiting in the queue from now: the queue's own send (50 ms on) finds the card already there.
     const card = this.end(r, how, { state: "queued" });

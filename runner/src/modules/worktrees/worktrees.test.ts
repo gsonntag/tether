@@ -6,12 +6,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { folderForBranch, randomSlug, slugOf } from "../../../../shared/worktree";
+import { folderForBranch, hashSlug, randomSlug, slugOf } from "../../../../shared/worktree";
 import { saveConfig } from "../../config";
 import { FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
 import { Worktrees } from ".";
-import { addWorktree, defaultBase, findSetup, freeBranch, removeWorktree, repoOf, runGit } from "./git";
+import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredIn, precious, removeWorktree, repoOf, runGit, setupAt, taken, undoAdd, worktreesDir, type Git } from "./git";
+import { removeOwnWorktree } from "../homeAgent/checkIn";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((f) => f()));
@@ -142,14 +143,19 @@ describe("git", () => {
     sh(path, "commit", "-qm", "ignore");
     mkdirSync(join(path, "node_modules"));
     writeFileSync(join(path, "node_modules", "x.js"), "");
-    // Its commit isn't in main: the worktree goes, the branch stays (-d refuses).
+    // No commit checked: the worktree goes, the branch stays.
+    const tip = sh(r.dir, "rev-parse", "tether/a");
     const kept = await removeWorktree(r.dir, path, "tether/a");
     expect(kept.ok).toBe(true);
-    expect(kept.branchKept).toContain("not fully merged");
+    expect(kept.branchKept).toContain("aren't all in main");
     expect(existsSync(path)).toBe(false);
     expect(sh(r.dir, "branch", "--list", "tether/a")).toContain("tether/a");
-    // Known merged (squashed, say): -D.
-    expect(await removeWorktree(r.dir, path, "tether/a", { merged: true })).toEqual({ ok: true });
+    // The branch moved since it was checked: kept.
+    sh(r.dir, "branch", "-f", "tether/a", "main");
+    expect((await removeWorktree(r.dir, path, "tether/a", { branchAt: tip })).branchKept).toContain("moved");
+    expect(sh(r.dir, "branch", "--list", "tether/a")).toContain("tether/a");
+    // At the commit checked: deleted. (The folder already gone: said so.)
+    expect(await removeWorktree(r.dir, path, "tether/a", { branchAt: sh(r.dir, "rev-parse", "tether/a") })).toEqual({ ok: true, gone: true });
     expect(sh(r.dir, "branch", "--list", "tether/a")).toBe("");
   });
 
@@ -177,25 +183,25 @@ describe("git", () => {
     // Not executable: not a setup.
     expect(findSetup(a, b)).toEqual({ label: "npm ci", command: "npm ci" });
     chmodSync(join(a, ".tether", "setup"), 0o755);
-    expect(findSetup(a, b)).toEqual({ label: ".tether/setup", argv: [join(a, ".tether", "setup")] });
+    expect(findSetup(a, b)).toEqual({ label: ".tether/setup", argv: [join(a, ".tether", "setup")], text: "#!/bin/sh\necho hi\n" });
     writeFileSync(join(b, ".tether", "config.json"), "{ not json");
     expect(findSetup(b)).toBeUndefined();
   });
 });
 
-function runnerFor() {
-  const dir = scratch();
+function runnerFor(o: { dir?: string; setupMs?: number } = {}) {
+  const dir = o.dir ?? scratch();
   const prefsFile = join(dir, "runner.json");
-  saveConfig({ runnerId: "t" }, prefsFile);
+  if (!existsSync(prefsFile)) saveConfig({ runnerId: "t" }, prefsFile);
   const adapter = new FakeAdapter();
   adapter.script = (text) => [say(`a-${text.slice(0, 10)}`, "ok"), idle];
   const runner = createRunner({ url: "http://x", token: "t", runnerId: "t", name: "t", version: "0", detectHarnesses: async () => [], adapters: [adapter], prefsFile, noticesFile: join(dir, "notices.json"), core: { evictMs: 60_000 } });
   cleanups.push(() => (void runner.shellRuns.stopAll(0), runner.core.stop()));
   const logs: string[] = [];
-  const w = new Worktrees({ sessions: runner.look.sessions, newSession: (a) => runner.ops.call("newSession", a), log: (l) => logs.push(l) });
+  const w = new Worktrees({ sessions: runner.look.sessions, newSession: (a) => runner.ops.call("newSession", a), log: (l) => logs.push(l), ...(o.setupMs ? { setupMs: o.setupMs } : {}) });
   const state = (id: string) => runner.core.sessions.get(id)!.state;
   const cards = (id: string) => (runner.core.sessions.get(id)!.transcript?.messages ?? []).filter((m) => m.shell);
-  return { runner, adapter, w, prefsFile, logs, state, cards };
+  return { runner, adapter, w, prefsFile, logs, state, cards, dir };
 }
 
 function withSetup(script: string) {
@@ -240,7 +246,7 @@ describe("New worktree", () => {
     expect(s.summary.worktreeOf).toBe(r.dir);
     // The record, in runner.json at once.
     const saved = JSON.parse(readFileSync(t.prefsFile, "utf8")).sessions[made.sessionId];
-    expect(saved.worktree).toEqual({ path: made.path, branch: "tether/fix-login-bug", repo: r.dir });
+    expect(saved.worktree).toMatchObject({ path: made.path, branch: "tether/fix-login-bug", repo: r.dir });
     expect(t.runner.look.sessions.worktree!(made.sessionId)).toEqual(saved.worktree);
     await t.runner.live.send(made.sessionId, "hello");
     await until(() => t.adapter.drivers.at(-1)?.sent.includes("hello") ?? false);
@@ -357,5 +363,210 @@ describe("New worktree", () => {
     expect(await t.runner.ops.handle("workspaceInfo", { projectPath: scratch() })).toEqual({ ok: true, data: { git: false } });
     const made = await t.runner.ops.handle("newWorktreeSession", { harness: "claude", projectPath: r.dir, name: "ops path" });
     expect(made).toMatchObject({ ok: true, data: { branch: "tether/ops-path" } });
+  });
+
+  test("racing creates in one repo: one at a time, and a loser never touches the winner's worktree", async () => {
+    const t = runnerFor();
+    const r = repo();
+    const both = await Promise.allSettled([t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/same" }), t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/same" })]);
+    expect(both.map((x) => x.status).sort()).toEqual(["fulfilled", "rejected"]);
+    const won = (both.find((x) => x.status === "fulfilled") as PromiseFulfilledResult<{ path: string }>).value;
+    expect(sh(won.path, "rev-parse", "--abbrev-ref", "HEAD")).toBe("tether/same");
+    expect(String((both.find((x) => x.status === "rejected") as PromiseRejectedResult).reason)).toContain("already exists");
+    // Default names at the same moment: different branches.
+    const two = await Promise.all([t.w.create({ harness: "claude", projectPath: r.dir, name: "same thing" }), t.w.create({ harness: "claude", projectPath: r.dir, name: "same thing" })]);
+    expect(two.map((m) => m.branch).sort()).toEqual(["tether/same-thing", "tether/same-thing-2"]);
+  });
+
+  test("a failed add cleans up only what it made: never a folder that was there, nor a branch that moved", async () => {
+    const r = repo();
+    const sha = sh(r.dir, "rev-parse", "main");
+    // Something appears at the path between the check and the add (another process): git refuses, it stays.
+    const intruding: Git = async (cwd, args, ms) => {
+      if (args[0] === "worktree" && args[1] === "add") {
+        mkdirSync(args[5]!, { recursive: true });
+        writeFileSync(join(args[5]!, "theirs.txt"), "keep me");
+      }
+      return runGit(cwd, args, ms);
+    };
+    await expect(addWorktree(r.dir, "tether/x", "main", intruding)).rejects.toThrow("git worktree add failed");
+    expect(readFileSync(join(r.root, "app-worktrees", "x", "theirs.txt"), "utf8")).toBe("keep me");
+    // The branch made meanwhile by someone else: git refuses, and their branch stays where it is.
+    const other = sh(r.dir, "commit-tree", "-m", "theirs", `${sha}^{tree}`, "-p", sha);
+    const racing: Git = async (cwd, args, ms) => {
+      if (args[0] === "worktree" && args[1] === "add") sh(r.dir, "branch", "tether/w", other);
+      return runGit(cwd, args, ms);
+    };
+    await expect(addWorktree(r.dir, "tether/w", "main", racing)).rejects.toThrow("already exists");
+    expect(sh(r.dir, "rev-parse", "tether/w")).toBe(other);
+    // Undo leaves another branch's worktree at that path, and a branch no longer at our commit.
+    const theirs = await addWorktree(r.dir, "tether/y", "main");
+    writeFileSync(join(theirs, "f"), "x");
+    sh(theirs, "add", ".");
+    sh(theirs, "commit", "-qm", "theirs");
+    await undoAdd(r.dir, theirs, "tether/z", sha);
+    expect(existsSync(join(theirs, "f"))).toBe(true);
+    await undoAdd(r.dir, theirs, "tether/y", sha);
+    expect(sh(r.dir, "branch", "--list", "tether/y")).toContain("tether/y");
+    // A failed add in a repo with no worktrees folder yet leaves none behind.
+    const q = repo();
+    await expect(addWorktree(q.dir, "tether/q", "nope")).rejects.toThrow();
+    const failing: Git = async (cwd, args, ms) => (args[1] === "add" ? { ok: false, out: "", err: "fatal: boom" } : runGit(cwd, args, ms));
+    await expect(addWorktree(q.dir, "tether/q", "main", failing)).rejects.toThrow("boom");
+    expect(existsSync(worktreesDir(q.dir))).toBe(false);
+  });
+
+  test("names: @ and @{…} are refused, git's form must be the typed one; a remote's branch is taken", async () => {
+    const c = cloned();
+    for (const bad of ["@", "a@{1}", "@{-1}", "x..y", "-x", "a b"]) expect(await branchNameOk(c.dir, bad)).toBe(false);
+    expect(await branchNameOk(c.dir, "gavin/ok-1")).toBe(true);
+    sh(c.dir, "update-ref", "refs/remotes/origin/feature/x", "HEAD");
+    expect(await taken(c.dir, "feature/x")).toContain("already exists on origin");
+    expect(await taken(c.dir, "x")).toBeUndefined();
+    // Text with no usable words: the same slug each time.
+    expect(hashSlug("???")).toBe(hashSlug("???"));
+    expect(await freeBranch(c.dir, "!!!")).toBe(`tether/${hashSlug("!!!")}`);
+  });
+
+  test("an unborn repo isn't offered New worktree, and creating there is refused", async () => {
+    const t = runnerFor();
+    const d = join(scratch(), "empty");
+    mkdirSync(d);
+    sh(d, "init", "-q", "-b", "main");
+    expect(await t.w.info(d)).toEqual({ git: false });
+    await expect(t.w.create({ harness: "claude", projectPath: d })).rejects.toThrow("no commits yet");
+  });
+
+  test("the base is fetched first (best effort), and info says when origin was last fetched", async () => {
+    const t = runnerFor();
+    const c = cloned();
+    // origin moves on after the clone's last fetch.
+    const up = join(c.root, "app");
+    writeFileSync(join(up, "third.txt"), "x");
+    sh(up, "add", ".");
+    sh(up, "commit", "-qm", "third");
+    const info = await t.w.info(c.dir);
+    expect(info).toMatchObject({ git: true, base: "origin/main", remote: true });
+    expect(info.git && info.fetchedAt).toBeGreaterThan(0);
+    const made = await t.w.create({ harness: "claude", projectPath: c.dir, branch: "tether/fresh" });
+    expect(made.fetched).toBe(true);
+    expect(sh(made.path, "rev-parse", "HEAD")).toBe(sh(up, "rev-parse", "HEAD"));
+    // No way to reach origin: it goes on from what was last fetched.
+    sh(c.dir, "remote", "set-url", "origin", join(c.root, "gone"));
+    expect(await fetchBase(c.dir, "origin/main")).toBe(false);
+    expect((await t.w.create({ harness: "claude", projectPath: c.dir, branch: "tether/stale" })).fetched).toBe(false);
+  });
+
+  test("info shows the setup the base has, not the main checkout's uncommitted one", async () => {
+    const t = runnerFor();
+    const r = withSetup("#!/bin/sh\necho committed\n");
+    writeFileSync(join(r.dir, ".tether", "setup"), "#!/bin/sh\necho edited\n");
+    const info = await t.w.info(r.dir);
+    expect(info).toMatchObject({ setup: ".tether/setup", setupText: "#!/bin/sh\necho committed" });
+    expect((await setupAt(r.dir, "main"))?.text).toContain("committed");
+    // Only in the main checkout (kept out of git): that's what a new worktree runs too.
+    const q = repo();
+    mkdirSync(join(q.dir, ".tether"));
+    writeFileSync(join(q.dir, ".tether", "config.json"), JSON.stringify({ setup: "make dev" }));
+    expect(await t.w.info(q.dir)).toMatchObject({ setup: "make dev" });
+  });
+
+  test("a terminal start in a repo with a setup is refused before anything is made", async () => {
+    const t = runnerFor();
+    const r = withSetup("#!/bin/sh\ntrue\n");
+    await expect(t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/tui", terminal: true })).rejects.toThrow("terminal start can't wait");
+    expect(existsSync(join(r.root, "app-worktrees", "tui"))).toBe(false);
+  });
+
+  test("a setup past its time limit is stopped, as failed", async () => {
+    const t = runnerFor({ setupMs: 300 });
+    const r = withSetup("#!/bin/sh\nsleep 30\n");
+    const made = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/slow-setup" });
+    await until(() => t.state(made.sessionId).setup === "failed", 8000);
+    expect(t.runner.core.o.prefs.get(made.sessionId).failure).toContain("took longer than");
+    // Send anyway with nothing queued: the gate ends, and a send goes at once.
+    await t.runner.live.queue.resume(made.sessionId);
+    expect(t.state(made.sessionId).setup).toBeUndefined();
+    expect(t.runner.core.o.prefs.get(made.sessionId).setup).toBeUndefined();
+    await t.runner.live.send(made.sessionId, "go");
+    await until(() => t.adapter.drivers.at(-1)?.sent.includes("go") ?? false);
+  });
+
+  test("a restart mid-setup: failed (cut off), sends held even with nothing queued; Re-run setup runs it again", async () => {
+    const first = runnerFor();
+    const r = withSetup("#!/bin/sh\nif [ -e .ran ]; then echo second; exit 0; fi\ntouch .ran\nsleep 30\n");
+    const made = await first.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/cut" });
+    expect(first.runner.core.o.prefs.get(made.sessionId).setup).toBe("running");
+    // The runner "crashes": a new one on the same runner.json.
+    first.runner.core.o.prefs.flush();
+    const t = runnerFor({ dir: first.dir });
+    expect(t.runner.live.queue.setupsCutOff()).toEqual([made.sessionId]);
+    const look = await t.runner.look.sessions.open(made.sessionId);
+    expect(look.state.setup).toBe("failed");
+    await t.runner.live.send(made.sessionId, "hi");
+    expect(t.state(made.sessionId).queueHeldBy).toBe("setup");
+    await t.w.rerun(made.sessionId);
+    await until(() => t.state(made.sessionId).setup === undefined, 8000);
+    await until(() => t.adapter.drivers.at(-1)?.sent.includes("hi") ?? false);
+    await expect(t.w.rerun(made.sessionId)).rejects.toThrow("isn't waiting");
+  });
+
+  test("ignored files: regenerable folders and what setup left may go; others (a .env) keep the worktree", async () => {
+    const r = repo();
+    writeFileSync(join(r.dir, ".gitignore"), "node_modules\n.env\ndata.db\nbuild\n");
+    sh(r.dir, "add", ".");
+    sh(r.dir, "commit", "-qm", "ignore");
+    const path = await addWorktree(r.dir, "tether/ig", "main");
+    mkdirSync(join(path, "node_modules"));
+    writeFileSync(join(path, "node_modules", "x"), "");
+    mkdirSync(join(path, "pkg", "build"), { recursive: true });
+    writeFileSync(join(path, "pkg", "build", "out"), "");
+    writeFileSync(join(path, "data.db"), "");
+    const ignored = (await ignoredIn(path))!;
+    expect(ignored.sort()).toEqual(["data.db", "node_modules/", "pkg/build/"]);
+    expect(precious(ignored)).toEqual(["data.db"]);
+    // data.db was there right after setup: it may go.
+    expect(precious(ignored, ["data.db"])).toEqual([]);
+    writeFileSync(join(path, ".env"), "SECRET=1");
+    const own = { path, branch: "tether/ig", repo: r.dir, known: ["data.db"] };
+    const kept = await removeOwnWorktree(own, []);
+    expect(kept).toMatchObject({ removed: false });
+    expect(kept.why).toContain("would delete ignored files: .env");
+    expect(existsSync(join(path, ".env"))).toBe(true);
+    rmSync(join(path, ".env"));
+    expect(await removeOwnWorktree(own, [])).toEqual({ removed: true });
+    expect(existsSync(path)).toBe(false);
+    expect(sh(r.dir, "branch", "--list", "tether/ig")).toBe("");
+  });
+
+  test("Archive done: a branch with work not in main is never deleted, even when HEAD moved to merged work", async () => {
+    const r = repo();
+    const path = await addWorktree(r.dir, "tether/wip", "main");
+    writeFileSync(join(path, "wip.txt"), "unmerged work");
+    sh(path, "add", ".");
+    sh(path, "commit", "-qm", "wip");
+    const wip = sh(path, "rev-parse", "HEAD");
+    // The agent switched its worktree to another branch, one that is merged.
+    sh(path, "checkout", "-qb", "other", "main");
+    const own = { path, branch: "tether/wip", repo: r.dir };
+    const gone = await removeOwnWorktree(own, []);
+    expect(gone).toMatchObject({ removed: true });
+    expect(gone.branchKept).toContain("tether/wip");
+    expect(sh(r.dir, "rev-parse", "tether/wip")).toBe(wip);
+    // HEAD itself unmerged (detached on the WIP): nothing is removed.
+    const p2 = await addWorktree(r.dir, "tether/wip2", "main");
+    writeFileSync(join(p2, "w.txt"), "x");
+    sh(p2, "add", ".");
+    sh(p2, "commit", "-qm", "w");
+    sh(p2, "checkout", "-q", "--detach");
+    const kept = await removeOwnWorktree({ path: p2, branch: "tether/wip2", repo: r.dir }, []);
+    expect(kept.removed).toBe(false);
+    expect(kept.why).toContain("aren't in main");
+    expect(existsSync(p2)).toBe(true);
+    // Its folder moved away by hand: said so, git's record pruned, a merged branch goes.
+    const p3 = await addWorktree(r.dir, "tether/moved", "main");
+    rmSync(p3, { recursive: true, force: true });
+    expect(await removeOwnWorktree({ path: p3, branch: "tether/moved", repo: r.dir }, [])).toEqual({ removed: true, gone: true });
+    expect(sh(r.dir, "branch", "--list", "tether/moved")).toBe("");
   });
 });

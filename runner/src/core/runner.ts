@@ -267,11 +267,13 @@ export function createRunner(o: RunnerOptions) {
         worktree: (id: string) => prefs.get(id).worktree,
         setup: async (id: string, command: string, run: Omit<SetupRun, "done"> = {}) => {
           const s = await core.open(id);
-          live.setupStarted(s);
+          live.queue.setupStarted(s);
           let settle!: (v: { ok: boolean; why: string }) => void;
           const done = new Promise<{ ok: boolean; why: string }>((r) => (settle = r));
           const end = (ok: boolean, why: string) => {
-            live.setupEnded(s, ok, why);
+            live.queue.setupEnded(s, ok);
+            // Home shows it as needing you, whether or not anything waits.
+            if (!ok) live.read.set(s.id, { failure: `${why} What you send waits: re-run the setup, or send anyway.` });
             settle({ ok, why });
           };
           await shellRuns.run(id, command, { ...run, done: end }).catch((e) => end(false, `The worktree's setup couldn't start: ${(e as Error).message}`));
@@ -304,6 +306,8 @@ export function createRunner(o: RunnerOptions) {
       await terminal?.start();
       // Queues come back after the sessions that kept running are joined again and the TUIs are
       // readopted (a queue held for a terminal that is gone must not wait for it).
+      // A worktree setup a restart cut off: failed, so what's sent waits for Re-run setup or Send anyway.
+      for (const id of live.queue.setupsCutOff()) live.read.set(id, { failure: "The worktree's setup was cut off by a runner restart. What you send waits: re-run the setup, or send anyway." });
       void rejoined.finally(async () => { await live.restoreRetries(); await live.queue.restore(); });
       conn.start();
     },
