@@ -15,7 +15,7 @@ import type { CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
 import { FROM_TETHER } from "../../../shared/fromTether";
-import { SIDE_STAYS } from "../../../shared/sideChat";
+import { SIDE_KEEPS, SIDE_STAYS } from "../../../shared/sideChat";
 import { modelIdProblem, reportedAt } from "../../../shared/labels";
 import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
 import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
@@ -486,6 +486,7 @@ export class LiveControl {
     const { forkedFrom, ...state } = kept;
     n.setState(state);
     prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
+    this.core.moveSides(s.id, n.id);
     prefs.flush();
     s.movedTo = n.id;
     this.core.book.remove([s.id]);
@@ -540,6 +541,7 @@ export class LiveControl {
       }
       s.movedTo = n.id;
       this.core.o.prefs.set(s.id, { blank: undefined, movedTo: n.id });
+      this.core.moveSides(s.id, n.id);
       return n;
     } finally {
       this.core.unpin(s);
@@ -1374,6 +1376,7 @@ export class LiveControl {
     if (s.retry) this.cancelRetrySession(s);
     const harness = s.summary.harness;
     if (s.summary.parentSessionId) throw new Error("A subagent uses its main session's source.");
+    if (s.summary.sideOf) throw new Error(SIDE_KEEPS.source);
     if (!s.capabilities.sourceSwitch) throw new Error("Use Move to change this session's source.");
     if (!isBillingSource(asked)) throw new Error("That isn't a source.");
     if (s.state.mode === "terminal" || s.state.terminal || this.terminal?.blocked(s)) throw new Error(sourceSwitchBlockMessage("terminal"));
@@ -1457,6 +1460,7 @@ export class LiveControl {
   async setAutoKey(id: string, on: boolean | undefined, fallbackKeys?: CredentialSource[]) {
     const s = await this.core.open(id);
     if (s.summary.parentSessionId) throw new Error("A subagent uses its main session's source.");
+    if (s.summary.sideOf) throw new Error(SIDE_KEEPS.source);
     if (!s.capabilities.sourceSwitch) throw new Error("This session can't switch sources.");
     if (on === undefined && fallbackKeys === undefined) throw new Error("Nothing to change.");
     const supported = this.core.adapter(s.summary.harness).billing?.keys ?? [];
@@ -1470,8 +1474,9 @@ export class LiveControl {
 
   /** What a session's successor on another id keeps (a fork's link back too, SPEC §16). */
   keptPrefs(s: Session) {
-    const { autoKey, lastKey, fallbackKeys, forkedFrom } = this.core.o.prefs.get(s.id);
-    return { ...(autoKey ? { autoKey } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}) };
+    const { autoKey, lastKey, fallbackKeys, forkedFrom, sideOf } = this.core.o.prefs.get(s.id);
+    // A side chat's successor is one too, read-only (SPEC §16a): failing closed.
+    return { ...(autoKey ? { autoKey } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}) };
   }
 
   /**
@@ -1483,7 +1488,7 @@ export class LiveControl {
   private async planOut(s: Session, hit: { resetsAt?: number }, sent: Session["lastSend"], acted: boolean) {
     const prefs = this.core.o.prefs.get(s.id);
     const harness = s.summary.harness;
-    if (!prefs.autoKey || prefs.nextSource || s.summary.parentSessionId || s.state.billing?.kind !== "plan" || this.sourceOf(s) !== "subscription") return;
+    if (!prefs.autoKey || prefs.nextSource || s.summary.parentSessionId || prefs.sideOf || s.state.billing?.kind !== "plan" || this.sourceOf(s) !== "subscription") return;
     this.core.pin(s);
     try {
       // A turn can end before its send has returned.

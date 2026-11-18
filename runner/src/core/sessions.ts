@@ -227,12 +227,20 @@ export class SessionCore {
   async listSessions(args: { projectPath?: string; parentSessionId?: string; sideOf?: string; query?: string; limit?: number; archived?: boolean }): Promise<{ sessions: SessionSummary[]; epoch?: string; seq?: number }> {
     const limit = Math.max(1, Math.min(args.limit ?? 500, 2000));
     if (args.sideOf) {
-      // A session's side chats (SPEC §16a), archived ones too: they're in its folder.
-      const parent = await this.open(args.sideOf);
-      const stored = await this.adapter(parent.summary.harness).listSessions({ projectPath: parent.summary.projectPath }).catch(() => [] as SessionSummary[]);
-      const byId = new Map(this.overlay(stored).map((s) => [s.id, s]));
-      for (const s of this.sessions.values()) if (s.summary.sideOf === parent.id) byId.set(s.id, { ...s.summary, ...(this.o.prefs.get(s.id).archived ? { archived: true } : { archived: undefined }) });
-      return { sessions: [...byId.values()].filter((s) => s.sideOf === parent.id).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit) };
+      // A session's side chats (SPEC §16a), closed ones too: by the prefs' index, never a folder scan.
+      const rows: SessionSummary[] = [];
+      for (const id of this.o.prefs.sideChatsOf(args.sideOf)) {
+        const archived = this.o.prefs.get(id).archived ? { archived: true } : { archived: undefined };
+        const s = this.sessions.get(id);
+        if (s) {
+          rows.push({ ...s.summary, ...archived });
+          continue;
+        }
+        const parsed = parseSessionId(id);
+        const known = this.book.get(id) ?? (parsed ? await this.adapter(parsed.harness).sessionInfo(parsed.nativeId).catch(() => undefined) : undefined);
+        if (known) rows.push({ ...this.overlay([known])[0]!, ...archived });
+      }
+      return { sessions: rows.filter((r) => r.sideOf === args.sideOf).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit) };
     }
     if (args.parentSessionId) {
       const parent = await this.open(args.parentSessionId);
@@ -558,6 +566,17 @@ export class SessionCore {
    * The session's row changed (status, mode, title, activity): the sidebar hears. `queuePaused` is
    * a queue waiting for you, so neither one the terminal holds nor one the restart wait holds.
    */
+  /** A session went on under a new id (a source change's new thread, a renewed id): its side chats follow (SPEC §16a). */
+  moveSides(from: string, to: string) {
+    const ids = this.o.prefs.sideChatsOf(from);
+    this.o.prefs.moveSides(from, to);
+    for (const id of ids) {
+      const s = this.sessions.get(id);
+      if (s) this.touch(s, { sideOf: to });
+      else if (this.book.get(id)) this.book.upsert([{ ...this.book.get(id)!, sideOf: to }]);
+    }
+  }
+
   touch(s: Session, patch: Partial<SessionSummary> = {}) {
     const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, archived: _archived, retry: _retry, ...rest } = { ...s.summary, ...patch };
     const beside = s.state.backgroundSubagents;

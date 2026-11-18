@@ -68,6 +68,14 @@ describe("forking a Codex thread", () => {
     expect(d.threads.get(ORIG)).toBe(TURNS);
   });
 
+  test("a side chat's fork is loaded read-only: its MCP servers off", async () => {
+    rememberIn(undefined);
+    const d = daemon();
+    await codexFork.fork({ nativeId: ORIG, projectPath: "/p", title: "Side chat: x", readOnly: true });
+    expect(d.calls("config/read")).toEqual([{ cwd: "/p" }]);
+    expect(d.calls("thread/fork")[0]).toMatchObject({ threadId: ORIG, sandbox: "read-only", approvalPolicy: "never", config: { "features.apps": false } });
+  });
+
   test("from a reply: the turns after its turn are never copied", async () => {
     rememberIn(undefined);
     const d = daemon();

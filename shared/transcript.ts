@@ -76,8 +76,10 @@ export interface HarnessCapabilities {
   /** A session can be forked: a new one with its conversation, or up to one of its messages (SPEC §16, Adapter.fork). */
   fork?: boolean;
   /**
-   * The permission mode that changes nothing, enforced by the harness itself with no approval that
-   * loosens it (Claude Code `plan`, Codex `never+read-only`). Side chats run in it (SPEC §16a).
+   * The permission mode a read-only session (a side chat, SPEC §16a) runs in. Its harness keeps it
+   * read-only when started with StartOpts.readOnly: Claude Code `default` under a hook that denies
+   * every tool but reading ones (plan mode alone lets a writing shell command through); Codex
+   * `never+read-only`, its own sandbox, loaded with MCP servers and apps off.
    */
   readOnlyMode?: string;
 }

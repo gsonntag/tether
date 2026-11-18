@@ -31,5 +31,13 @@ export const bringBackDraft = (summary: string) => `From a side chat:\n\n${summa
 /** Why a side chat's request to do something was refused: what its agent reads. */
 export const SIDE_READ_ONLY = "This is a read-only side chat: it can't change files, run anything that changes them, or leave its mode. Answer from what you can read.";
 
+/** What a side chat can't do: it keeps its session's source and harness, and stays one conversation. */
+export const SIDE_KEEPS = {
+  source: "A side chat keeps its session's source.",
+  move: "A side chat can't move. Bring it back to its session instead.",
+  fork: "A side chat can't be forked.",
+  shell: "A side chat is read-only: run commands in its session.",
+} as const;
+
 /** Why a side chat's mode can't change. */
 export const SIDE_STAYS = "A side chat stays read-only.";

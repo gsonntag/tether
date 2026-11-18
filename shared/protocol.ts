@@ -211,6 +211,8 @@ export interface Ops {
   openSideChat: { args: { sessionId: string; question?: string }; result: { sessionId: string } };
   /** SPEC §16a: the side chat `sessionId` writes a short summary (a turn of its own); the text to put in its session's box */
   bringBack: { args: { sessionId: string }; result: { text: string } };
+  /** SPEC §16a: closes a side chat: a turn it runs stops, then it's archived */
+  closeSideChat: { args: { sessionId: string }; result: null };
 
   // ---------- driving ----------
 

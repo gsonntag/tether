@@ -8,6 +8,7 @@ import { parseSessionId } from "../../../../shared/ids";
 import { archiveMarkdown, budgetFor, contextNote, contextOpening, imageName, mapMode, movedFrom, movedTo, PORTABLE_VERSION, planImport, type MoveOptions, type MoveTarget, type PortableSession, type PortableSubagent } from "../../../../shared/move";
 import type { BillingSource } from "../../../../shared/credentials";
 import { HARNESS_LABELS, type HarnessId, type Msg } from "../../../../shared/transcript";
+import { SIDE_KEEPS } from "../../../../shared/sideChat";
 import type { Adapter, StartOpts } from "../../core/adapter";
 import { movedDir } from "../../core/moved";
 import { levelOf } from "../../core/permissionLevel";
@@ -21,6 +22,7 @@ const STORE_QUIET_MS = 3_000;
 /** Why a session can't move now. */
 export function refusal(s: SessionLook): string | undefined {
   if (s.summary.parentSessionId) return "A subagent moves with its main session.";
+  if (s.summary.sideOf) return SIDE_KEEPS.move;
   if (s.state.mode === "terminal" || s.state.terminal) return "Close the terminal first.";
   if (s.state.requests.length || s.requests.length) return "Answer the open request first.";
   if (s.status !== "idle") return "Wait for the turn to end, or stop it.";

@@ -7,6 +7,7 @@
 import { parseSessionId } from "../../../../shared/ids";
 import { forkedNotice, forkPoints, forkTitle, leftOutNote, wholeForkPoint, type ForkedFrom } from "../../../../shared/fork";
 import { HARNESS_LABELS, type Msg } from "../../../../shared/transcript";
+import { SIDE_KEEPS } from "../../../../shared/sideChat";
 import type { Adapter, StartOpts } from "../../core/adapter";
 import { Mover } from "../move";
 import { movedBase } from "../../core/moved";
@@ -15,6 +16,7 @@ import type { AdoptExtra, ForkOptions, Module, ModuleContext, SessionLook } from
 /** Why a session can't be forked at all (a running turn isn't a reason: its finished part is forked). */
 export function forkRefusal(s: SessionLook, a: Adapter | undefined): string | undefined {
   if (s.summary.parentSessionId) return "A subagent can't be forked. Fork its main session.";
+  if (s.summary.sideOf) return SIDE_KEEPS.fork;
   if (!a?.capabilities.fork || !a.fork) return `${HARNESS_LABELS[s.summary.harness] ?? s.summary.harness} sessions can't be forked yet.`;
   // The fork takes the session's source: one that isn't confirmed yet can't be shown on it.
   if (s.state.nextBilling) return "Its new source isn't confirmed yet. Send it a message first.";
@@ -79,7 +81,7 @@ export class Forker {
       const { model, effort } = look.state;
       const permissionMode = o.permissionMode ?? look.state.permissionMode;
       const opts: StartOpts = { ...(model && model !== "default" ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) };
-      const made = await a!.fork!.fork({ nativeId, projectPath, ...(upTo ? { upTo } : {}), title: name });
+      const made = await a!.fork!.fork({ nativeId, projectPath, ...(upTo ? { upTo } : {}), title: name, ...(o.sideOf ? { readOnly: true } : {}) });
       try {
         forked = await this.ctx.sessions.adopt(harness, made, projectPath, opts, await this.ctx.sessions.sourceOf(id), undefined, extra);
         await mark(forked);

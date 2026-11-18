@@ -6,12 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Adapter, ForkRequest } from "../../core/adapter";
 import type { Msg } from "../../../../shared/transcript";
-import { BRING_BACK_PROMPT, SIDE_READ_ONLY, SIDE_STAYS } from "../../../../shared/sideChat";
+import { BRING_BACK_PROMPT, SIDE_KEEPS, SIDE_READ_ONLY, SIDE_STAYS } from "../../../../shared/sideChat";
+import { FROM_TETHER } from "../../../../shared/fromTether";
+import { refusal as moveRefusal } from "../move";
 import { saveConfig } from "../../config";
 import { ask, askQuestion, FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
 import { forkModule } from "../fork";
-import { lastReply, sideChatsModule } from ".";
+import { isBringBack, lastReply, sideChatsModule } from ".";
 
 class Forking extends FakeAdapter {
   forks: ForkRequest[] = [];
@@ -38,14 +40,14 @@ const convo = [user("u1", "remember 7"), reply("a1", "ok"), user("u2", "and 9"),
 const stops: (() => void)[] = [];
 afterEach(() => stops.splice(0).forEach((f) => f()));
 
-async function setup() {
+async function setup(o: { homeFolder?: string } = {}) {
   const a = new Forking();
   const dir = mkdtempSync(join(tmpdir(), "tether-side-"));
   const prefsFile = join(dir, "runner.json");
   saveConfig({ runnerId: "t" }, prefsFile);
   const runner = createRunner({ url: "http://x", token: "t", runnerId: "t", name: "t", version: "0", detectHarnesses: async () => [], adapters: [a], prefsFile, core: { evictMs: 60_000 } });
   stops.push(() => runner.core.stop());
-  const ctx = { ...runner.look, bus: runner.bus, ops: runner.ops, dataDir: join(dir, "mod"), log: () => {}, runnerId: "t", appUrl: "x" } as any;
+  const ctx = { ...runner.look, bus: runner.bus, ops: runner.ops, dataDir: join(dir, "mod"), log: () => {}, runnerId: "t", appUrl: "x", ...o } as any;
   await forkModule.start(ctx);
   await sideChatsModule.start(ctx);
   a.addStored("s1", convo, { title: "Numbers", projectPath: "/p" });
@@ -54,7 +56,7 @@ async function setup() {
     if (!r.ok) throw new Error(r.error);
     return r.data as any;
   };
-  return { a, runner, call };
+  return { a, runner, call, prefsFile };
 }
 
 describe("side chats", () => {
@@ -133,6 +135,57 @@ describe("side chats", () => {
     await expect(call("bringBack", { sessionId })).rejects.toThrow("couldn't write a summary");
   });
 
+  test("it keeps its session's source, harness and conversation: no source change, key switch, move, fork or shell", async () => {
+    const { runner, call } = await setup();
+    const { sessionId } = await call("openSideChat", { sessionId: "claude:s1" });
+    await expect(runner.live.setSource(sessionId, "anthropic")).rejects.toThrow(SIDE_KEEPS.source);
+    await expect(runner.live.setAutoKey(sessionId, true)).rejects.toThrow(SIDE_KEEPS.source);
+    await expect(call("runShell", { sessionId, command: "touch x" })).rejects.toThrow(SIDE_KEEPS.shell);
+    await expect(runner.look.sessions.fork(sessionId)).rejects.toThrow(SIDE_KEEPS.fork);
+    expect(moveRefusal(await runner.look.sessions.open(sessionId))).toBe(SIDE_KEEPS.move);
+  });
+
+  test("read-only reaches the harness again after a restart", async () => {
+    const { a, runner, call, prefsFile } = await setup();
+    const { sessionId } = await call("openSideChat", { sessionId: "claude:s1" });
+    runner.core.o.prefs.flush();
+    runner.core.stop();
+    const again = createRunner({ url: "http://x", token: "t", runnerId: "t", name: "t", version: "0", detectHarnesses: async () => [], adapters: [a], prefsFile, core: { evictMs: 60_000 } });
+    stops.push(() => again.core.stop());
+    a.drivers = [];
+    await again.live.send(sessionId, "again");
+    expect(a.drivers.find((d) => d.nativeId === "f1")?.opts).toMatchObject({ readOnly: true, permissionMode: "plan" });
+    // And it's still listed under its session, from the index.
+    expect((await again.core.listSessions({ sideOf: "claude:s1" })).sessions.map((r) => r.id)).toEqual([sessionId]);
+  });
+
+  test("its session going on under a new id takes its side chats along", async () => {
+    const { runner, call } = await setup();
+    const { sessionId } = await call("openSideChat", { sessionId: "claude:s1" });
+    runner.core.moveSides("claude:s1", "claude:s2");
+    expect(runner.core.o.prefs.get(sessionId).sideOf).toBe("claude:s2");
+    expect((await runner.core.open(sessionId)).summary.sideOf).toBe("claude:s2");
+    expect((await runner.core.listSessions({ sideOf: "claude:s2" })).sessions.map((r) => r.id)).toEqual([sessionId]);
+    expect((await runner.core.listSessions({ sideOf: "claude:s1" })).sessions).toEqual([]);
+  });
+
+  test("closing stops a running turn, then archives", async () => {
+    const { a, runner, call } = await setup();
+    const { sessionId } = await call("openSideChat", { sessionId: "claude:s1", question: "q" });
+    const d = a.drivers.find((x) => x.nativeId === "f1")!;
+    (await runner.core.open(sessionId)).setState({ status: "running" });
+    await call("closeSideChat", { sessionId });
+    expect(d.interrupted).toBe(1);
+    expect(runner.core.o.prefs.get(sessionId).archived).toBe(true);
+    await expect(call("closeSideChat", { sessionId: "claude:s1" })).rejects.toThrow("isn't a side chat");
+  });
+
+  test("not in the Home agent's folder", async () => {
+    const { a, call } = await setup({ homeFolder: "/home-agent" });
+    a.addStored("h1", convo, { projectPath: "/home-agent" });
+    await expect(call("openSideChat", { sessionId: "claude:h1" })).rejects.toThrow("Home agent");
+  });
+
   test("refused: a side chat of a side chat, a subagent, a harness without a read-only mode", async () => {
     const { a, call } = await setup();
     const { sessionId } = await call("openSideChat", { sessionId: "claude:s1" });
@@ -145,6 +198,13 @@ describe("side chats", () => {
 });
 
 describe("lastReply", () => {
+  test("Bring back's reply: after its own message, whatever came later from elsewhere", () => {
+    const bb = user("b", BRING_BACK_PROMPT.slice(FROM_TETHER.length));
+    expect(isBringBack(bb)).toBe(true);
+    expect(lastReply([user("u1"), reply("a1", "old"), bb, reply("s", "summary")], isBringBack)).toBe("summary");
+    expect(lastReply([user("u1"), reply("a1", "old")], isBringBack)).toBeUndefined();
+  });
+
   test("the last reply's text after the last message sent", () => {
     expect(lastReply([user("u1"), reply("a1", "old"), user("u2"), reply("a2", "first"), { ...reply("a3", "second"), parts: [{ type: "text", text: "second" }, { type: "text", text: "more" }] }])).toBe("second\n\nmore");
     expect(lastReply([user("u1"), reply("a1", "old"), user("u2")])).toBeUndefined();

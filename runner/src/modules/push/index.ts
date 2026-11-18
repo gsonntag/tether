@@ -106,6 +106,8 @@ export class Notifier {
   /** Sends to every device but those looking at the session (or at `also`). */
   async notify(p: Omit<PushPayload, "runnerId" | "ts">, also: string[] = []) {
     if (!this.sender.ready()) return;
+    // A side chat (SPEC §16a) is seen in its session's panel: nothing of it is pushed.
+    if (p.sessionId && this.ctx.session(p.sessionId)?.summary.sideOf) return;
     const skip = new Set(p.sessionId ? [p.sessionId, ...also].flatMap((id) => this.ctx.viewersOf(id)) : []);
     const payload: PushPayload = { ...p, runnerId: this.ctx.runnerId, ts: Date.now() };
     await Promise.all(

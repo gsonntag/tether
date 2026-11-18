@@ -30,6 +30,7 @@ import type { CodexRpc } from "./rpc";
 import { CodexStream } from "./stream";
 import { confirmSubscriptionProvider } from "./billing";
 import { codexResumeExtras, codexStartExtras, codexToolCall } from "./setup";
+import { readOnlyLoad } from "./readOnly";
 import { ToolServerSlot } from "../toolServer";
 import { rateLimitHit } from "../../rateLimit";
 
@@ -173,6 +174,8 @@ export class CodexDriver implements Driver {
   /** A new thread (made by createThread) or an existing one, joined. */
   static async open(nativeId: string, projectPath: string, opts: StartOpts, sink: Sink, resume: boolean): Promise<CodexDriver> {
     if (!existsSync(projectPath)) throw new Error(`The session's folder ${projectPath} doesn't exist any more.`);
+    // A read-only thread is always joined with its own load (readOnly.ts), never one made otherwise.
+    if (opts.readOnly) dropPending(nativeId);
     const p = pending.get(nativeId);
     if (p) {
       pending.delete(nativeId);
@@ -195,7 +198,8 @@ export class CodexDriver implements Driver {
     try {
       // Joined as it is: the daemon ignores settings passed here when another client has the thread
       // loaded (Codex's TUI), so changes are applied after, and checked (started).
-      const r = await rpc.call("thread/resume", { threadId: nativeId, excludeTurns: true, ...withTools(codexResumeExtras(projectPath), projectPath) }).catch((e: any) => {
+      const load = opts.readOnly ? await readOnlyLoad((m, x) => rpc.call(m, x), projectPath) : withTools(codexResumeExtras(projectPath), projectPath);
+      const r = await rpc.call("thread/resume", { threadId: nativeId, excludeTurns: true, ...load }).catch((e: any) => {
         if (NO_ROLLOUT.test(String(e?.message))) throw new Error("This Codex session never got a message, so there's nothing to reopen. Start a new one.");
         throw forkError(e);
       });
