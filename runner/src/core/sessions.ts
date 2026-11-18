@@ -159,15 +159,27 @@ export class SessionCore {
       try {
         const since = this.now() - 3 * 24 * 60 * 60 * 1000;
         const found = (await Promise.all(this.o.adapters.map((a) => a.listSessions({ since }).catch(() => [] as SessionSummary[])))).flat();
+        // Pinned sessions are listed however old: the ones too old for that pass, one by one.
+        const seen = new Set(found.map((f) => f.id));
+        for (const id of this.o.prefs.pinned()) {
+          if (seen.has(id)) continue;
+          const parsed = parseSessionId(id);
+          const a = parsed && this.o.adapters.find((x) => x.id === parsed.harness);
+          const row = a && (await a.sessionInfo(parsed.nativeId, this.o.prefs.get(id).projectPath).catch(() => undefined));
+          if (row) found.push(row);
+        }
         for (const f of found) {
           const s = this.sessions.get(f.id);
           if (s && !s.live && !s.childRunning) {
             const prefs = this.o.prefs.get(f.id);
-            s.summary = { ...f, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
+            s.summary = { ...f, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(prefs.pinned ? { pinned: prefs.pinned } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
           }
         }
         this.book.refresh(
-          found.filter((f) => this.shown(f)).map((f) => ({ ...f, ...(this.o.prefs.get(f.id).archived ? { archived: true } : {}) })),
+          found.filter((f) => this.shown(f)).map((f) => {
+            const p = this.o.prefs.get(f.id);
+            return { ...f, ...(p.archived ? { archived: true } : {}), ...(p.pinned ? { pinned: p.pinned } : {}) };
+          }),
           (id) => this.owned(id),
           (id) => this.watched.has(id),
         );
@@ -215,7 +227,7 @@ export class SessionCore {
     return list.map((s) => {
       const row = this.owned(s.id) ? this.sessions.get(s.id)!.summary : s;
       const prefs = this.o.prefs.get(row.id);
-      return { ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : { archived: undefined }) };
+      return { ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : { archived: undefined }), pinned: prefs.pinned || undefined };
     });
   }
 
@@ -270,7 +282,7 @@ export class SessionCore {
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;
-    const s = this.add(new Session({ ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
+    const s = this.add(new Session({ ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(prefs.pinned ? { pinned: prefs.pinned } : {}), mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
     if (blank) {
       // Back as new: the first message starts it (live.ts current). No row until something happens.
       s.transcript = new Transcript(withOverlay([], s.overlay));
@@ -535,7 +547,19 @@ export class SessionCore {
   /** Keeps a session out of Recent (or back in); archived sessions stay searchable. */
   async setArchived(s: Session, archived: boolean) {
     if ((this.o.prefs.get(s.id).archived === true) === archived) return;
-    this.o.prefs.set(s.id, { projectPath: s.summary.projectPath, archived: archived || undefined });
+    // Archiving unpins: an archived session is out of every list.
+    this.o.prefs.set(s.id, { projectPath: s.summary.projectPath, archived: archived || undefined, ...(archived ? { pinned: undefined } : {}) });
+    this.o.prefs.flush();
+    this.touch(s);
+    await this.discover();
+  }
+
+  /** Puts a main session in the Sidebar's Pinned group, last (or takes it out); it is listed however old. */
+  async setPinned(s: Session, pinned: boolean) {
+    if (!!this.o.prefs.get(s.id).pinned === pinned) return;
+    if (pinned && s.summary.parentSessionId) throw new Error("Only a main session can be pinned.");
+    if (pinned && this.o.prefs.get(s.id).archived) throw new Error("Unarchive the session to pin it.");
+    this.o.prefs.set(s.id, { projectPath: s.summary.projectPath, pinned: pinned ? this.now() : undefined });
     this.o.prefs.flush();
     this.touch(s);
     await this.discover();
@@ -546,12 +570,12 @@ export class SessionCore {
    * a queue waiting for you, so neither one the terminal holds nor one the restart wait holds.
    */
   touch(s: Session, patch: Partial<SessionSummary> = {}) {
-    const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, archived: _archived, retry: _retry, ...rest } = { ...s.summary, ...patch };
+    const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, archived: _archived, pinned: _pinned, retry: _retry, ...rest } = { ...s.summary, ...patch };
     const beside = s.state.backgroundSubagents;
     const n = s.state.requests.length;
     const q = s.state.queue.length;
     const title = this.o.prefs.get(s.id).title;
-    s.summary = { ...rest, ...(s.state.retry ? { retry: s.state.retry } : {}), ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait && !s.retry ? { queuePaused: true } : {}) };
+    s.summary = { ...rest, ...(s.state.retry ? { retry: s.state.retry } : {}), ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...(this.o.prefs.get(s.id).pinned ? { pinned: this.o.prefs.get(s.id).pinned } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait && !s.retry ? { queuePaused: true } : {}) };
     if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
   }
 }

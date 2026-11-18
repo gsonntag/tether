@@ -40,6 +40,8 @@ export interface SessionPrefs {
   title?: string;
   /** Kept out of Recent while remaining available through explicit search. */
   archived?: boolean;
+  /** When it was pinned (ms): the Sidebar's Pinned group, oldest pin first. Archiving unpins. */
+  pinned?: number;
   projectPath?: string;
   /** a new session that hasn't had a message: opening its id brings it back as new (sessions.ts make) */
   blank?: boolean;

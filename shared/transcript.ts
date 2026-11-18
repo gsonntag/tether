@@ -395,6 +395,8 @@ export interface SessionSummary {
   billing?: Billing;
   /** Kept out of Recent; still available from session search. */
   archived?: boolean;
+  /** When it was pinned (ms): the Sidebar's Pinned group, in this order, listed however old. */
+  pinned?: number;
   /** `${harness}:${nativeId}` */
   id: string;
   harness: HarnessId;

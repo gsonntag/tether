@@ -65,16 +65,18 @@ export class SummaryBook {
   /**
    * Folds in a fresh discovery of stored sessions. `owned` rows are kept as they are whatever
    * discovery says (live sessions and running subagents: the core keeps them current itself);
-   * `pinned` rows (sessions someone has open) stay listed even when they are no longer recent.
+   * `pinned` rows (sessions someone has open) stay listed even when they are no longer recent, as
+   * do sessions pinned to the Sidebar (`SessionSummary.pinned`), outside the RECENT_MAX count.
    */
   refresh(discovered: SessionSummary[], owned: (id: string) => boolean, pinned: (id: string) => boolean = () => false) {
     const cutoff = this.now() - RECENT_MS;
     const byId = new Map(discovered.map((s) => [s.id, s]));
-    const recent = discovered
-      .filter((s) => s.updatedAt >= cutoff && !s.parentSessionId && !s.archived)
+    const main = discovered.filter((s) => !s.parentSessionId && !s.archived);
+    const recent = main
+      .filter((s) => s.updatedAt >= cutoff && !s.pinned)
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, RECENT_MAX);
-    const want = new Map(recent.map((s) => [s.id, s]));
+    const want = new Map([...recent, ...main.filter((s) => s.pinned)].map((s) => [s.id, s]));
     for (const id of this.rows.keys()) if (pinned(id) && !want.has(id) && byId.has(id)) want.set(id, byId.get(id)!);
     this.remove([...this.rows.keys()].filter((id) => !want.has(id) && !owned(id) && !pinned(id)));
     this.upsert([...want.values()].filter((s) => !owned(s.id)));
