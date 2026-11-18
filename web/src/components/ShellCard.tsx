@@ -11,6 +11,7 @@ import { StopIcon } from "@heroicons/react/24/outline";
 import { formatSize } from "../../../shared/attachments";
 import { endedHow } from "../../../shared/shellRun";
 import { agentOf, type LiveState, type Msg, type ToolPart } from "../../../shared/transcript";
+import { SETUP_MAX_MS } from "../../../shared/worktree";
 import { rpc } from "../connection";
 import { useStore, viewKey } from "../store";
 import { useSessionCtx } from "./sessionContext";
@@ -38,6 +39,14 @@ export function ShellCard({ msg }: { msg: Msg }) {
     return st.queueHeldBy ? HELD[st.queueHeldBy] : "paused";
   });
   const busy = useStore((s) => run.state === "queued" && (s.views[viewKey(runnerId, sessionId)]?.state?.status ?? "idle") !== "idle");
+  // The newest setup card of a session whose setup failed (or a restart cut off) offers the ways on.
+  const setupFailed = useStore((s) => {
+    if (!run.setup) return false;
+    const v = s.views[viewKey(runnerId, sessionId)];
+    if (v?.state?.setup !== "failed") return false;
+    const last = [...(v.window?.messages ?? [])].reverse().find((m) => m.shell?.setup);
+    return last?.id === msg.id;
+  });
   const out = useRef<HTMLPreElement>(null);
   const follow = useRef(true);
   const output = tool?.output ?? "";
@@ -46,6 +55,15 @@ export function ShellCard({ msg }: { msg: Msg }) {
     const el = out.current;
     if (el && follow.current) el.scrollTop = el.scrollHeight;
   }, [output]);
+
+  const act = async (f: () => Promise<unknown>) => {
+    setError(undefined);
+    try {
+      await f();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
 
   const stop = async () => {
     setError(undefined);
@@ -63,7 +81,7 @@ export function ShellCard({ msg }: { msg: Msg }) {
   const failed = !running && (run.stopped || run.cutOff || !!run.signal || (run.exitCode ?? 0) !== 0);
   const where = run.setup
     ? running
-      ? "Setting up the new worktree · your first message waits for it"
+      ? `Setting up the new worktree (at most ${SETUP_MAX_MS / 60_000} min) · your first message waits for it`
       : failed
         ? "Setup failed · what you send waits until you choose Send anyway"
         : "Setup done"
@@ -119,6 +137,12 @@ export function ShellCard({ msg }: { msg: Msg }) {
           {run.state === "queued" && <Spinner size="sm" />}
           {where}
         </div>
+        {setupFailed && (
+          <div className="t-shellcard-actions">
+            <Button label="Re-run setup" size="sm" variant="secondary" onClick={() => void act(() => rpc(runnerId, "rerunSetup", { sessionId }))} />
+            <Button label="Send anyway" size="sm" variant="secondary" onClick={() => void act(() => rpc(runnerId, "resumeQueue", { sessionId }))} />
+          </div>
+        )}
       </div>
     </div>
   );

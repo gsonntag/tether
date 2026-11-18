@@ -42,7 +42,7 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
   it (`<repo>-worktrees/<slug>`, on a new branch `tether/<slug>` from the default branch) and run
   the session there. The repo's `.tether/setup` (an executable) or `.tether/config.json`
   `"setup"` command runs in it first, as a card in the session; your first message waits until it
-  succeeds, and if it fails you can send anyway. Archive done removes the worktree and its branch once
+  succeeds, and if it fails you can re-run it or send anyway. Archive done removes the worktree and its branch once
   the work is merged. The Home agent can start sessions in a worktree too.
 - **Change session harness** (SPEC §15): continues a session on the other harness, or on the same
   harness with another billing source. The old session stays as it was.
