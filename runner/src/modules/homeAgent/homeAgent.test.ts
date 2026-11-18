@@ -71,7 +71,7 @@ test("the chat is current, and only its folder gets the tools", async () => {
   expect((await op("homeAgent")).sessionId).toBe(chat);
   expect([...setups.keys()]).toEqual([homeFolder]);
   const s = setups.get(homeFolder)!("x");
-  expect(s.tools.map((t) => t.name)).toEqual(["list_projects", "project_overview", "start_session", "list_sessions", "session_status", "check_in_sessions", "archive_session", "send_to_session", "text_person", "check_harness_updates"]);
+  expect(s.tools.map((t) => t.name)).toEqual(["list_projects", "project_overview", "start_session", "list_sessions", "session_status", "live_state", "check_in_sessions", "archive_session", "send_to_session", "text_person", "check_harness_updates"]);
   expect(s.deny).toContain("Bash");
   expect(s.deny).toContain("Edit");
   // Brief replies, always (a relayed report was "a big wall of text").
@@ -109,7 +109,7 @@ test("start_session starts a session in auto mode, and its finished turn is repo
   await until(() => driverOf(chat)!.sent.length === 3);
   expect(driverOf(chat)!.sent[2]).toContain("Report 2 of");
   // session_status reads it.
-  expect(await tools(chat).session_status!({ session_id: child })).toContain("Latest reply:");
+  expect(await tools(chat).session_status!({ session_id: child })).toContain("Latest reply (written");
 });
 
 test("another chat that messages it follows it from then on, and the agent's own folder isn't a project", async () => {
@@ -391,7 +391,15 @@ test("session_status reads any session, and send_to_session messages one the age
   expect(st).toContain("State: finished");
   expect(st).toContain("You didn't start it. You can message it");
   expect(st).toContain("Latest prompt:\nFix the login bug");
-  expect(st).toContain("Latest reply:\necho Fix the login bug");
+  expect(st).toMatch(/Latest reply \(written [^;]+; .*check with live_state\):\necho Fix the login bug/);
+  // live_state checks the session's folder now (here not a git repo), beside its last message's time.
+  const live: string = await tools(chat).live_state!({ session_id: done });
+  expect(live).toStartWith("LIVE, checked just now");
+  expect(live).toContain("The session's last message was at");
+  expect(live).toContain("Not a git repository.");
+  await expect(tools(chat).live_state!({})).rejects.toThrow("Pass session_id, project_path or pr.");
+  await expect(tools(chat).live_state!({ session_id: chat })).rejects.toThrow("own chats");
+  await expect(tools(chat).live_state!({ session_id: "claude:nope" })).rejects.toThrow("no session");
   const w: string = await tools(chat).session_status!({ session_id: waiting });
   expect(w).toContain("State: waiting on you");
   expect(w).toContain("Waiting for the person: Which color?");
@@ -737,7 +745,7 @@ test("check_in_sessions asks idle sessions, archives the finished ones, skips bu
   expect(driverOf(finished)!.sent[1]!.startsWith(FROM_TETHER_CHECKIN)).toBe(true);
   // The answer line is Tether's: previews show its status, never the line.
   const status = await tools(chat).session_status!({ session_id: halfway });
-  expect(status).toContain("Latest reply:\nCheck-in: not done: tests still failing");
+  expect(status).toContain("check with live_state):\nCheck-in: not done: tests still failing");
   expect(status).not.toContain(ANSWER_TAG);
   expect(status).toContain("Latest prompt:\n(the Home agent's check-in: is the task done and merged?)");
   expect(status).not.toContain("Don't start or continue any task work");

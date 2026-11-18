@@ -56,6 +56,7 @@ import { failureKind } from "../push";
 import { levelOf } from "../move";
 import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, removeOwnWorktree, repoOf, runGit, skipReason, stillRunning, systemProbe, verify, type Git, type Probe } from "./checkIn";
 import type { CheckInRow, CheckInStatus } from "../../../../shared/protocol";
+import { liveDeps, liveState, type LiveDeps } from "./liveState";
 
 /** Text going inside a <<< >>> fence, unable to close or open one: any run of 3+ "<" or ">" becomes 2 (can't rebuild a run). */
 export function unfence(s: string): string {
@@ -227,6 +228,7 @@ How to work:
 - When the person picks adversarial review, the brief must spell out the workflow, in these words (with the chosen delivery filled in): "${ADVERSARIAL_BRIEF}"
 - Use Claude Code unless the person asks for Codex. Leave the model at its default unless they name one.
 - For questions about what's going on ("what's running?", "what's finished?", "is anything working on X?", "how is the session on Y doing?"), use list_sessions: it sees every session on this machine, whoever started it, with its state and what it's on. Filter by state or project rather than listing everything. Read one more closely with session_status.
+- Verify before you answer. A session's messages are claims as of when it wrote them, and things change after: a PR gets merged or closed, a branch is pushed or deleted, commits land on main, a worktree is removed, CI finishes, a deploy or restart happens. So whenever the person asks about state like that ("is PR 95 merged?", "did it push?", "is it on main?", "is the worktree gone?", "is CI green?"), check it live first with live_state (pass the session_id, project_path and/or pr), and answer from what it returns, not from a session's last message. Never present a session's old claim as current fact. For something live_state can't see (a deploy, a running service, a restart), ask the session to check now with send_to_session and answer once it reports. If you can't verify, say so and give the answer as of the session's last message and when that was ("as of its last message 30m ago, it was waiting on you to merge").
 - You can message any of those sessions with send_to_session, including ones you didn't start. Message a session you didn't start (or one the person has taken over) only when the person asks you to or it's part of the task they gave you, and say who it's from and what you need in the message. It goes now if the session is idle, else after its current turn; sessions that are waiting for the person or open in a terminal can't be messaged. Once you message one, you follow it like a session you started.
 - Follow-ups on finished work ("tweak the site again", "one more fix on that PR"): revive the session that did it rather than starting a new one, since it has the context. Find it with list_sessions (archived: true finds archived ones; query searches titles and projects), then send_to_session: messaging an archived session unarchives it and sends. Start a new session only when no earlier one fits.
 - After starting a session, tell the person in one casual sentence what you started and where. Don't poll: Tether sends you a report (a message starting with "[From Tether]") each time a session you started or messaged finishes a turn or needs the person.
@@ -365,6 +367,8 @@ async function overview(folder: string): Promise<string> {
 
 export class HomeAgent implements HomeEnd {
   state: State = { rev: 0, tabs: [], children: {} };
+  /** live_state's git and gh (tests replace them) */
+  liveDeps?: LiveDeps;
   /** each texting chat's turn now (homes: the Texts tab and the tabs the person texted) */
   private textTurns = new Map<string, TextTurn>();
   /** the Texts tab being made (two texts at once make one) */
@@ -1052,7 +1056,7 @@ export class HomeAgent implements HomeEnd {
       {
         name: "session_status",
         description:
-          "A closer look at any session (an id from list_sessions or start_session): its state, its latest prompt and reply, and what it waits on.",
+          "A closer look at any session (an id from list_sessions or start_session): its state, its latest prompt and reply (as of when it was written: check facts in it with live_state), and what it waits on.",
         input: { session_id: z.string() },
         run: async (a: { session_id: string }) => {
           if (typeof a.session_id !== "string" || !a.session_id.trim()) throw new Error("session_id is required.");
@@ -1061,6 +1065,7 @@ export class HomeAgent implements HomeEnd {
           const look = await s.open(id);
           const msgs = await s.recent(id, 40).catch(() => [] as Msg[]);
           const reply = lastReply(msgs);
+          const replyAt = msgs.findLast((m) => m.role === "assistant" && !!text(m))?.ts;
           const prompt = lastPrompt(msgs);
           const st = stateOf({ ...look.summary, status: look.status, requests: look.requests.length }, look.state.error);
           const error = look.state.error ?? look.summary.failure;
@@ -1084,11 +1089,22 @@ export class HomeAgent implements HomeEnd {
                     ? "Your chat was closed; you've stopped following it."
                     : `${whose}. Reports so far: ${c.reports} of ${MAX_REPORTS}.`,
             prompt ? `Latest prompt:\n${cut(prompt, STATUS_MAX)}` : "",
-            reply ? `Latest reply:\n${cut(reply, STATUS_MAX)}` : "No reply yet.",
+            reply ? `Latest reply (written ${replyAt ? ago(replyAt) : "at an unknown time"}; its claims about PRs, branches, merges or deploys may be out of date: check with live_state):\n${cut(reply, STATUS_MAX)}` : "No reply yet.",
           ]
             .filter(Boolean)
             .join("\n");
         },
+      },
+      {
+        name: "live_state",
+        description:
+          "Checks what's true right now, read-only, instead of trusting a session's last message: a GitHub PR's state (open, merged or closed, when, merge commit, checks), and a session's or project's git state (whether its folder or worktree still exists, branch, uncommitted changes, pushed or not, merged into the default branch or not, the latest commits on the default branch, and the branch's PRs). It fetches from origin first so remote facts are current. Use it before answering any question about state that may have changed since a session last wrote.",
+        input: {
+          session_id: z.string().optional().describe("A session (from list_sessions): its folder is checked, and its last message's time is given for comparison."),
+          project_path: z.string().optional().describe("A project folder (from list_projects), when there's no session."),
+          pr: z.string().optional().describe("A PR: 95, #95, owner/repo#95, or its GitHub URL. A bare number is looked up in the session's or project's repo."),
+        },
+        run: async (a: { session_id?: string; project_path?: string; pr?: string }) => this.live(a),
       },
       {
         name: "check_in_sessions",
@@ -1155,6 +1171,27 @@ export class HomeAgent implements HomeEnd {
         run: async (a: { refresh?: boolean }) => harnessUpdateLines(await this.ctx.ops.call("harnessVersions", { refresh: a.refresh === true })),
       },
     ];
+  }
+
+  /** live_state: the session's (or project's) folder and the PR, checked now. */
+  async live(a: { session_id?: string; project_path?: string; pr?: string }, deps: LiveDeps = this.liveDeps ?? liveDeps()): Promise<string> {
+    const s = this.ctx.sessions;
+    const id = typeof a.session_id === "string" ? a.session_id.trim() : "";
+    const pr = typeof a.pr === "string" && a.pr.trim() ? a.pr.trim() : undefined;
+    let folder = typeof a.project_path === "string" && a.project_path.trim() ? s.folder(a.project_path.trim()) : undefined;
+    let repoHint: string | undefined;
+    let last: number | undefined;
+    if (id) {
+      if (this.isChat(id)) throw new Error("That's one of your own chats.");
+      const look = await s.open(id).catch(() => undefined);
+      if (!look) throw new Error(`There's no session ${id.slice(0, 200)}.`);
+      folder ??= look.summary.projectPath;
+      repoHint = look.summary.worktreeOf;
+      const msgs = await s.recent(id, 40).catch(() => [] as Msg[]);
+      last = msgs.findLast((m) => m.role === "assistant" && !!text(m))?.ts;
+    }
+    if (!folder && !pr) throw new Error("Pass session_id, project_path or pr.");
+    return liveState({ ...(folder ? { folder } : {}), ...(repoHint ? { repoHint } : {}), ...(pr ? { pr } : {}), ...(last !== undefined ? { last } : {}) }, deps);
   }
 
   /** list_sessions: every listed session but the Home agent's own chats and subagents, filtered. */
