@@ -25,6 +25,8 @@ export interface GitOpts {
   env?: Record<string, string>;
   /** written to git's stdin */
   input?: string;
+  /** stdout goes here as it comes (a big blob), not into `out`; no maxBytes */
+  sink?: (chunk: Uint8Array) => Promise<unknown>;
 }
 
 export const GIT_TIMEOUT_MS = 15_000;
@@ -93,6 +95,10 @@ export async function git(cwd: string, args: string[], opts: GitOpts = {}): Prom
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (opts.sink) {
+        await opts.sink(value);
+        continue;
+      }
       if (size + value.length > maxBytes) {
         chunks.push(value.subarray(0, maxBytes - size));
         size = maxBytes;

@@ -24,7 +24,7 @@
 // smudge ones, exactly as `git add` and `git checkout` would. The commands come from config, never
 // from the repo's files; the time limit bounds them. Hooks and fsmonitor never run (run.ts).
 
-import { access, constants, copyFile, lstat, mkdir, readdir, readlink, rm, rmdir, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
+import { access, chmod, constants, copyFile, lstat, mkdir, open, readlink, rename, rm, rmdir, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { dirname, join, sep } from "node:path";
 import { CHECKPOINT_FILE_BYTES_MAX, type Skipped } from "../../../../shared/checkpoints";
@@ -211,29 +211,29 @@ async function whyNot(root: string, p: string): Promise<Skipped["why"] | undefin
   return undefined;
 }
 
-/** Removes `root/p` when it's a file or a symlink, then the folders it leaves empty. */
-async function removeFile(root: string, p: string): Promise<boolean> {
+/** Removes `root/p` when it's a file or a symlink (never a folder). */
+async function unlinkFile(root: string, p: string): Promise<boolean> {
   const abs = join(root, p);
   try {
-    const st = await lstat(abs);
-    if (st.isDirectory()) return false;
+    if ((await lstat(abs)).isDirectory()) return false;
     await unlink(abs);
+    return true;
   } catch {
     return false;
   }
-  for (let d = dirname(abs); d.startsWith(root + sep); d = dirname(d)) {
-    try {
-      if ((await readdir(d)).length) break;
-      await rmdir(d);
-    } catch {
-      break;
-    }
-  }
-  return true;
 }
 
-/** Blobs read per `cat-file --batch` call, at most (bytes; one bigger blob goes alone). */
+/** The folders of removed files that are empty now, deepest first, up to (not) `root`: one rmdir each. */
+async function pruneDirs(root: string, removed: string[]) {
+  const dirs = new Set<string>();
+  for (const p of removed) for (let d = dirname(join(root, p)); d.startsWith(root + sep) && !dirs.has(d); d = dirname(d)) dirs.add(d);
+  for (const d of [...dirs].sort((a, b) => b.length - a.length)) await rmdir(d).catch(() => {}); // ENOTEMPTY: kept
+}
+
+/** Blobs read per `cat-file --batch` call, at most (bytes). */
 const BATCH_BYTES = 64 * 1024 * 1024;
+/** A blob bigger than this is never held in memory: `cat-file blob` streams it to its file. */
+export const STREAM_BYTES = 16 * 1024 * 1024;
 
 /** Blobs' bytes, by id: one `cat-file --batch` per BATCH_BYTES. */
 async function readBlobs(root: string, blobs: { sha: string; size: number }[], each: (sha: string, bytes: Buffer) => Promise<void>) {
@@ -267,8 +267,28 @@ async function writeRaw(root: string, tree: string, paths: string[]) {
     const [mode, type, sha, size] = l.slice(0, tab).split(/ +/);
     if (type === "blob") entries.push({ path: l.slice(tab + 1), mode: mode!, sha: sha!, size: Number(size) || 0 });
   }
+  // Big files: streamed into a temporary file beside the path, then renamed over it (never through
+  // a symlink that's there), with the mode git would give it.
+  const fileMode = (m: string) => (m === "100755" ? 0o777 : 0o666) & ~process.umask();
+  for (const e of entries.filter((e) => e.size > STREAM_BYTES && e.mode !== "120000")) {
+    const abs = join(root, e.path);
+    await mkdir(dirname(abs), { recursive: true });
+    const tmp = join(dirname(abs), `.tether-restore-${randomBytes(6).toString("hex")}`);
+    const fh = await open(tmp, "wx", fileMode(e.mode));
+    try {
+      await git(root, ["cat-file", "blob", e.sha], { timeoutMs: FORCE_TIMEOUT_MS, sink: (c) => fh.write(c) });
+      await fh.close();
+      await chmod(tmp, fileMode(e.mode));
+      await rename(tmp, abs);
+    } catch (err) {
+      await fh.close().catch(() => {});
+      await rm(tmp, { force: true });
+      throw err;
+    }
+  }
+  const small = entries.filter((e) => e.size <= STREAM_BYTES || e.mode === "120000");
   const bySha = new Map<string, typeof entries>();
-  for (const e of entries) bySha.set(e.sha, [...(bySha.get(e.sha) ?? []), e]);
+  for (const e of small) bySha.set(e.sha, [...(bySha.get(e.sha) ?? []), e]);
   const blobs = [...bySha.values()].map((l) => ({ sha: l[0]!.sha, size: l[0]!.size }));
   await readBlobs(root, blobs, async (sha, blob) => {
     for (const e of bySha.get(sha) ?? []) {
@@ -403,14 +423,16 @@ export async function restoreTo(root: string, target: Snap, tmpDir: string, undo
       const ignored = new Set(ign.out.split("\0").filter(Boolean));
       gone = gone.filter((p) => (ignored.has(p) ? void skip(p, "ignored") : true));
     }
-    let removed = 0;
+    const removedPaths: string[] = [];
     for (const p of gone) {
       const why = await whyNot(root, p);
       if (why === "symlink" || why === "blocked") continue; // not there as a path
       if (why) skip(p, why);
-      else if (await removeFile(root, p)) removed++;
+      else if (await unlinkFile(root, p)) removedPaths.push(p);
       else if (await lstat(join(root, p)).then((st) => st.isDirectory(), () => false)) skip(p, "folder");
     }
+    const removed = removedPaths.length;
+    await pruneDirs(root, removedPaths);
     written += await checkout(writes.filter((p) => !isIgnoreFile(p)));
     return { undo: u, written, removed, skipped: [...skipped].map(([path, why]) => ({ path, why })) };
   });

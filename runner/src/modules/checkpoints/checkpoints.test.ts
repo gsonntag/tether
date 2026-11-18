@@ -641,3 +641,52 @@ test("thousands of long paths: no path goes on git's command line, and the undo 
   expect(between[path(2345)]!.split(":")[1]).toBe(Buffer.from("before 2345\n").toString("base64"));
   expect(read(d, path(2345))).toBe("after 2345\r\n");
 }, 120_000);
+
+test("removing thousands of files from one folder is quick, and the emptied folders go", async () => {
+  const d = repo();
+  const { c, turn } = setup(d);
+  // All in one folder: listing it after each removal (as before) took minutes for tens of thousands.
+  const n = Number(process.env.NREM ?? 8000);
+  await turn(() => {
+    mkdirSync(join(d, "gen", "deep"), { recursive: true });
+    for (let i = 0; i < n; i++) writeFileSync(join(d, "gen", "deep", `f${i}.txt`), `${i}\n`);
+  });
+  const t0 = performance.now();
+  const r = await c.restore("claude:s1", "1");
+  const ms = performance.now() - t0;
+  expect(r.removed).toBe(n);
+  expect(existsSync(join(d, "gen"))).toBe(false);
+  if (process.env.NREM) console.log(`removed ${n} in ${Math.round(ms)} ms`);
+  expect(ms).toBeLessThan(10_000); // about 4 s; 16 s when each removal listed the folder
+}, 60_000);
+
+test("a big file (streamed, never held in memory) comes back by undo with its bytes and mode", async () => {
+  const d = repo();
+  const { c, turn } = setup(d);
+  const big = Buffer.alloc(20 * 1024 * 1024);
+  for (let i = 0; i < big.length; i += 4096) big[i] = i % 251;
+  await turn(() => {
+    writeFileSync(join(d, "tool.bin"), big);
+    // Executable as git makes one (it keeps the x bit only): 777 less the umask.
+    chmodSync(join(d, "tool.bin"), 0o777 & ~process.umask());
+  });
+  await roundTrip(d, c, "1");
+  expect(readFileSync(join(d, "tool.bin")).equals(big)).toBe(true);
+  expect(statSync(join(d, "tool.bin")).mode & 0o100).toBe(0o100);
+  expect(readdirSync(d).filter((f) => f.startsWith(".tether-restore-"))).toEqual([]);
+}, 30_000);
+
+test("a live session whose folder holds the repo counts as in it", async () => {
+  const parent = temp();
+  const d = join(parent, "repo");
+  mkdirSync(d);
+  sh(d, "init", "-q", "-b", "main");
+  writeFileSync(join(d, "a.txt"), "a\n");
+  sh(d, "add", ".");
+  sh(d, "commit", "-qm", "a");
+  const { c, others } = setup(d);
+  others.push({ id: "codex:up", projectPath: parent, title: "Above", mode: "live", status: "running" } as never);
+  const l = await c.list("claude:s1");
+  expect(l.others.map((o) => o.id)).toEqual(["codex:up"]);
+  expect(l.blocked).toMatch(/“Above”/);
+});

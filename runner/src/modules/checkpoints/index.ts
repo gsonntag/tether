@@ -301,12 +301,12 @@ export class Checkpoints {
     return { state: "ok", root, checkpoints: items.map(info).reverse(), others, ...(blocked ? { blocked } : {}) };
   }
 
-  /** Live sessions in the repo besides this one (paths compared as real paths). */
+  /** Live sessions besides this one whose folder is in the repo or holds it (their agents can edit it; real paths). */
   private others(sessionId: string, root: string): OtherSession[] {
     const r = real(root);
     return this.o
       .list()
-      .filter((s) => s.id !== sessionId && !s.parentSessionId && (s.mode !== "stored" || s.status !== "idle") && inside(r, real(s.projectPath)))
+      .filter((s) => s.id !== sessionId && !s.parentSessionId && (s.mode !== "stored" || s.status !== "idle") && (inside(r, real(s.projectPath)) || inside(real(s.projectPath), r)))
       .map((s) => ({ id: s.id, title: s.title, status: s.status }));
   }
 

@@ -1172,11 +1172,13 @@ at a running turn snapshots outside that order, so it never delays a turn's star
 prompt (`checkpoints { sessionId }`), and diffs the one picked: before → after, or before → the
 working tree while it runs (`gitDiff { scope: "turn", checkpoint }`). **Restore files to before this
 turn** (`restoreCheckpoint { sessionId, checkpointId }`) has the repo to itself and holds its
-folder (`holdFolder`): every main session whose folder is in the repo, stored ones and any made
+folder (`holdFolder`): every main session whose folder is in the repo or holds it, stored ones and any made
 there meanwhile included. What's sent to one meanwhile waits in its queue and goes on release; a
 rate-limit retry due meanwhile waits too; `!` commands and opening the terminal refuse ("Restoring
 files…"). Each git step of it has a 60 s limit, and paths reach git on stdin only, never as arguments
-(thousands of them would pass the argv limit). It first takes the undo:
+(thousands of them would pass the argv limit); files over 16 MB are streamed from git into a
+temporary file beside their path and renamed over it, never held in memory; folders emptied by
+removals go afterwards, deepest first. It first takes the undo:
 a snapshot of the files as they are, into which every path the restore will write or remove is
 forced exactly as it is on disk, as raw bytes (no filters, no line-ending conversion), whatever its
 size, ignore rules or index bits (assume-unchanged, skip-worktree), or its absence. That is saved as
@@ -1190,8 +1192,8 @@ nested repositories and anything in them, a folder where a file goes, a path und
 real index, `HEAD` and branches aren't touched, so commits and staged changes stay. No confirm (§2):
 the undo is the safety net. Refused while the session runs, waits on you, runs a command, subagent
 or background task, waits on its harness after a restart or on a rate-limit retry, is driven from
-its terminal, or has messages queued, and while any other live session in the same repo (folders
-compared as real paths) is in any of those states but the queue; checked again once the undo is
+its terminal, or has messages queued, and while any other live session in the same repo or in a folder
+holding it (folders compared as real paths) is in any of those states but the queue; checked again once the undo is
 saved, right before files change. The text under the button names the other live sessions in the
 repo.
 
