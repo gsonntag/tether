@@ -12,6 +12,14 @@ interface Saved { version: 1; sessions: Record<string, Entry> }
 const unknown = (...reasons: string[]): SessionCost => ({ estimated: true, complete: false, ...(reasons.length ? { reasons } : {}) });
 const validUsd = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
 
+/** Side queries' running report (Adapter.ask on a key): `spent` added to what it had. A spend that isn't known leaves it partial for good. */
+export function addSideCost(had: SessionCost | undefined, spent: SessionCost): SessionCost {
+  const usd = (had?.usd ?? 0) + (spent.usd ?? 0);
+  const complete = (had?.complete ?? true) && spent.complete && spent.usd !== undefined;
+  const reasons = costReasons([...(had?.reasons ?? []), ...(spent.reasons ?? []), ...(complete ? [] : ["no-usage"])]);
+  return { usd, estimated: true, complete, ...(reasons.length ? { reasons } : {}) };
+}
+
 export class CostLedger {
   private data: Saved = { version: 1, sessions: Object.create(null) };
   private unreadable = false;
@@ -33,6 +41,11 @@ export class CostLedger {
     } catch (e: any) { if (e?.code !== "ENOENT") this.unreadable = true; }
   }
   has(sessionId: string): boolean { return Object.hasOwn(this.data.sessions, sessionId); }
+  /** One report as saved (a side query's running total, to add to). */
+  reportOf(sessionId: string, reportId: string): SessionCost | undefined {
+    const entry = Object.hasOwn(this.data.sessions, sessionId) ? this.data.sessions[sessionId]! : undefined;
+    return entry && Object.hasOwn(entry.reports, reportId) ? { ...entry.reports[reportId]! } : undefined;
+  }
   /**
    * `complete` is true only when all API usage is tracked from this session's first API turn: Tether
    * knows what it spent on an API before (nothing, or what this ledger holds). Otherwise `reason` says why.

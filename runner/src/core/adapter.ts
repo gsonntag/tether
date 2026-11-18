@@ -300,8 +300,9 @@ export interface Adapter {
    * A one-shot side query (a commit message, a PR's text): `prompt` to a small model on the session's
    * own source (`credential`), confirmed before it goes out, with no tools, nothing saved and no turn
    * in any transcript. Rejects when it can't (a source it doesn't do this on, no answer in time).
+   * `onCost`: what it cost on a key, for the session's API ledger.
    */
-  ask?(projectPath: string, prompt: string, opts: { credential?: CredentialSnapshot; system: string; timeoutMs: number }): Promise<string>;
+  ask?(projectPath: string, prompt: string, opts: { credential?: CredentialSnapshot; system: string; timeoutMs: number; onCost?: (c: SessionCost) => void }): Promise<string>;
   // live driving
   start(projectPath: string, nativeId: string, opts: StartOpts, sink: Sink): Promise<Driver>;
   resume(nativeId: string, projectPath: string, opts: StartOpts, sink: Sink): Promise<Driver>;

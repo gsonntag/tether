@@ -1,53 +1,83 @@
 // A one-shot side query (Adapter.ask): a commit message or a PR's title and body, asked of Codex. Only
 // on the ChatGPT plan, through the shared daemon: an ephemeral thread (no rollout, never listed),
-// read-only, never asking, on the account's smallest model, with Codex's shell, patch, web, apps and subagent tools off, low effort,
-// and the subscription's authentication path confirmed as a session's start confirms it before the
-// prompt goes out. A key session gets no generated text: a side query there would need a private
-// app-server of its own started and confirmed for one answer.
+// read-only, never asking, on the account's smallest model at low effort, with Codex's shell, patch,
+// web, apps and subagent tools off, every MCP server off and no AGENTS.md read (project_doc_max_bytes
+// 0), and the subscription's authentication path confirmed as a session's start confirms it before
+// the prompt goes out. One deadline covers it all; past it the turn is interrupted. A key session
+// gets no generated text: a side query there would need a private app-server of its own started and
+// confirmed for one answer.
 
 import type { CredentialSnapshot } from "../../credentials";
 import { confirmSubscriptionProvider } from "./billing";
 import { connect } from "./daemon";
+import type { CodexRpc } from "./rpc";
 import { AGENT_CONFIG } from "./setup";
 
-export async function codexAsk(projectPath: string, prompt: string, opts: { credential?: CredentialSnapshot; system: string; timeoutMs: number }): Promise<string> {
+export async function codexAsk(projectPath: string, prompt: string, opts: { credential?: CredentialSnapshot; system: string; timeoutMs: number }, conn: () => Promise<CodexRpc> = () => connect("tether-ask")): Promise<string> {
   if (opts.credential && opts.credential.source !== "subscription") throw new Error("Generating text isn't available for Codex sessions on an API key.");
-  const rpc = await connect("tether-ask");
   const deadline = Date.now() + opts.timeoutMs;
-  const left = () => Math.max(1000, deadline - Date.now());
-  try {
+  const left = () => Math.max(1, deadline - Date.now());
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let turn: { threadId: string; turnId?: string } | undefined;
+  let rpc: CodexRpc | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Codex didn't answer in time.")), opts.timeoutMs);
+  });
+  void late.catch(() => {});
+  const run = async (): Promise<string> => {
+    rpc = await conn();
+    const r = rpc;
     // The smallest model the account offers (a mini), else its default: the config's own may be one the plan refuses.
-    const models: any[] = (await rpc.call<any>("model/list", {}, left()).catch(() => undefined))?.data ?? [];
+    const models: any[] = (await r.call<any>("model/list", {}, left()).catch(() => undefined))?.data ?? [];
     const pick = models.find((m) => !m.hidden && /mini|nano/i.test(String(m.id))) ?? models.find((m) => m.isDefault) ?? models[0];
-    const started: any = await rpc.call(
+    const cfg: any = await r.call("config/read", { cwd: projectPath }, left());
+    const mcpOff = Object.fromEntries(Object.keys(cfg?.config?.mcp_servers ?? {}).map((name) => [`mcp_servers.${name}.enabled`, false]));
+    const started: any = await r.call(
       "thread/start",
-      { cwd: projectPath, ephemeral: true, ...(pick?.id ? { model: String(pick.id) } : {}), sandbox: "read-only", approvalPolicy: "never", developerInstructions: opts.system, config: AGENT_CONFIG },
+      {
+        cwd: projectPath,
+        ephemeral: true,
+        ...(pick?.id ? { model: String(pick.id) } : {}),
+        sandbox: "read-only",
+        approvalPolicy: "never",
+        developerInstructions: opts.system,
+        config: { ...AGENT_CONFIG, ...mcpOff, project_doc_max_bytes: 0 },
+      },
       left(),
     );
     const threadId: string = started.thread.id;
-    const account = await rpc.call("account/read", { refreshToken: false }, Math.min(10_000, left())).then((a: any) => a?.account, () => undefined);
-    const cfg: any = await rpc.call("config/read", { cwd: projectPath }, left());
+    const account = await r.call("account/read", { refreshToken: false }, Math.min(10_000, left())).then((a: any) => a?.account, () => undefined);
     confirmSubscriptionProvider(started.modelProvider ?? started.thread?.modelProvider, account, cfg?.config);
     let text = "";
     const done = new Promise<string>((resolve, reject) => {
-      const off = rpc.onNotify((method, p) => {
+      const off = r.onNotify((method, p) => {
         if (p?.threadId !== threadId) return;
         if (method === "item/completed" && p.item?.type === "agentMessage" && typeof p.item.text === "string") text = p.item.text;
         if (method === "turn/completed") {
           off();
+          turn = undefined;
           if (p.turn?.status === "failed") reject(new Error(String(p.turn?.error?.message ?? "Codex didn't answer.")));
           else resolve(text);
         }
       });
-      rpc.onClose(() => reject(new Error("Codex closed the connection.")));
-      setTimeout(() => reject(new Error("Codex didn't answer in time.")), left());
+      r.onClose(() => reject(new Error("Codex closed the connection.")));
     });
     void done.catch(() => {});
-    await rpc.call("turn/start", { threadId, input: [{ type: "text", text: prompt, text_elements: [] }], effort: "low" }, left());
+    turn = { threadId };
+    const t: any = await r.call("turn/start", { threadId, input: [{ type: "text", text: prompt, text_elements: [] }], effort: "low" }, left());
+    if (turn) turn.turnId = t?.turn?.id;
     const out = await done;
     if (!out.trim()) throw new Error("Codex didn't answer.");
     return out;
+  };
+  const running = run();
+  void running.catch(() => {});
+  try {
+    return await Promise.race([running, late]);
   } finally {
-    rpc.close();
+    clearTimeout(timer);
+    // Cut short (a timeout, an error): the turn stops rather than running on unseen.
+    if (turn?.turnId && rpc && !rpc.closed) await rpc.call("turn/interrupt", { threadId: turn.threadId, turnId: turn.turnId }, 5_000).catch(() => {});
+    rpc?.close();
   }
 }
