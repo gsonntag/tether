@@ -230,3 +230,41 @@
   color: var(--color-text-yellow, var(--color-warning));
   padding: 8px 12px;
 }
+
+/* ---------- change marks (what differs from HEAD) ---------- */
+
+.t-files-row.changed .t-files-name {
+  color: var(--color-text-yellow, var(--color-warning));
+}
+.t-files-row.changed.added .t-files-name,
+.t-files-row.changed.untracked .t-files-name {
+  color: var(--color-text-green, var(--color-success));
+}
+.t-files-row.changed.renamed .t-files-name {
+  color: var(--color-text-blue, var(--color-accent));
+}
+.t-files-row.changed.deleted .t-files-name {
+  color: var(--color-text-red, var(--color-error));
+  text-decoration: line-through;
+}
+.t-files-row.changed .t-dpath-dir {
+  color: var(--t-muted);
+}
+/* A folder with changes under it: a small dot, findable while it's closed. */
+.t-files-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin: 0 6px;
+  border-radius: 50%;
+  background: var(--color-text-yellow, var(--color-warning));
+}
+.t-files-row.changed.conflict .t-files-name,
+.t-dstatus.conflict {
+  color: var(--color-text-red, var(--color-error));
+}
+.t-changes-note.t-files-changes-error {
+  flex: none;
+  padding: 4px 12px;
+  font-size: 12px;
+}

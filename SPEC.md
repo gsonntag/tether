@@ -1375,7 +1375,21 @@ listed. `findFiles { sessionId, query, hidden?, fresh? }` ranks paths by name (e
 substring, then the path, words, letters in order), 200 best: in a repo from `ls-files --cached
 --others --exclude-standard` (ignored files never match; nested repos and gitlinks aren't files),
 outside one a walk that follows no links and skips heavy folders (50,000 files or 3 s, then
-`partial`); a folder's list is kept 5 s, and Refresh asks `fresh`. `readFile { sessionId, path,
+`partial`); a folder's list is kept 5 s, and Refresh asks `fresh`. **Changes against HEAD** are marked: `fileChanges
+{ sessionId }` runs `git status --porcelain=v2 -z --untracked-files=normal --find-renames -- .` in
+the folder (`no` when the repo sets `status.showUntrackedFiles=no`; through its handle, run.ts's
+hardening; 5,000 paths or 8 MB, then `cut`) and answers each path relative to the folder (anything
+git names outside it is dropped; outside a repo `repo: false`, no marks) as modified, added (intent
+to add too), untracked, renamed (its old path deleted), deleted (both-deleted conflicts too) or
+conflict; a deleted path that's there untracked is untracked. An untracked folder is one path
+(`folders` says which are folders: those, nested repos, submodules), and everything under it shows
+untracked (but what git ignores). Like git status, it may run the repo's configured clean filters. Asked on opening the tab,
+Refresh and a turn's end (the eye only filters what's there), joined against the rows: a file's name
+is coloured and gets a letter (M, A, U, R, C; deleted files have no row), a folder with changes under
+it a dot (dot-named paths count only with the eye), each said in words in the row's label and title,
+not by colour alone; filter matches carry the same letters. A toggle in the bar (only in a repo)
+lists just the changed paths: folders open in the tree, deleted ones are struck through and don't
+open. A failure is said under the bar; a runner without the op shows no marks. `readFile { sessionId, path,
 maxBytes?, head? }` answers text (UTF-8, no NUL in the first 8 KB, under 3 MB of JSON), an image
 (png, jpg, gif, webp, svg, avif, bmp, ico, checked by its bytes; base64) or "binary"; only as many
 bytes as the file says it has are read. Over 1 MB it's the size only; a text file's first 1 MB on
@@ -1411,10 +1425,10 @@ inside by its text (missing, a loop). Names that aren't UTF-8 are listed, marked
 opened. Hard links aren't links: a hard link inside to a file outside reads as inside. Each open,
 stat, realpath and readlink is waited on 5 s at most (the call itself may go on; a handle that opens
 after that is closed); reading an open file and git's own limits (run.ts) aren't part of that. Nothing is written or run but `git rev-parse`,
-`check-ignore` and `ls-files` (run.ts's hardening). A `.env` and the like aren't blocked or hidden
+`check-ignore`, `ls-files` and `status` (run.ts's hardening). A `.env` and the like aren't blocked or hidden
 from a reader: it's the person's machine, behind the eye toggle. (Op answers pass the runner's
 redaction of its own secrets, its token and stored keys, which keeps those from leaving through a
-view of `/proc/self/environ` or a file holding one; it protects nothing else in a file.) All three
+view of `/proc/self/environ` or a file holding one; it protects nothing else in a file.) All four
 ops read the folder, secrets included, so they need drive access and are never view-only
 (`VIEW_OPS`).
 

@@ -53,6 +53,29 @@ export interface FindResult {
   partial?: boolean;
 }
 
+/**
+ * How a path differs from HEAD, as the tree marks it (git status). Deleted ones aren't on disk: no
+ * row. `conflict`: unmerged (but both deleted, which is `deleted`).
+ */
+export type ChangeMark = "modified" | "added" | "untracked" | "renamed" | "deleted" | "conflict";
+
+export interface FileChanges {
+  /** the folder is in a git repo; outside one there are no marks */
+  repo: boolean;
+  /**
+   * each changed path (relative to the session's folder) and how. An untracked folder is one path
+   * (git's `normal` listing): everything under it is untracked too
+   */
+  files: Record<string, ChangeMark>;
+  /** the paths in `files` that are folders: untracked ones, nested repos, submodules */
+  folders?: string[];
+  /** git said more than CHANGES_MAX paths (or too many bytes): only the first are here */
+  cut?: boolean;
+}
+
+/** Changed paths fileChanges answers with at most. */
+export const CHANGES_MAX = 5000;
+
 /** Files bigger than this aren't loaded (a text file's first this-many bytes can be, by asking). */
 export const FILE_VIEW_MAX = 1024 * 1024;
 /** Entries one folder lists. */

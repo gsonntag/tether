@@ -4,21 +4,24 @@
 // what git ignores) show with the eye toggle, kept per device. Mention puts `@path` in the message
 // box. Opened folders and the open file load again on Refresh and when a turn ends (while the tab
 // is hidden, when it's shown again). The tree stays mounted under the viewer, so Back keeps its place.
+// Files that differ from HEAD are marked (one fileChanges call on opening, Refresh and a turn's
+// end, joined against the rows; the eye only filters what's there), and Changed lists just them.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import { Spinner } from "@astryxdesign/core/Spinner";
-import { ArrowLeftIcon, AtSymbolIcon, EyeIcon, EyeSlashIcon } from "@heroicons/react/24/outline";
+import { ArrowLeftIcon, AtSymbolIcon, EyeIcon, EyeSlashIcon, PencilSquareIcon } from "@heroicons/react/24/outline";
 import { DocumentIcon, PhotoIcon } from "@heroicons/react/24/solid";
-import { FILE_VIEW_MAX, imageType, mentionOf, sizeLabel, type DirList, type FileRead, type FindResult } from "../../../shared/files";
+import { FILE_VIEW_MAX, imageType, mentionOf, sizeLabel, type DirList, type FileChanges, type FileRead, type FindResult } from "../../../shared/files";
 import type { RunStatus } from "../../../shared/transcript";
 import { rpc } from "../connection";
-import { lineNumbers, linkTarget, loadedOpen, mapLimit, nameOf, oddChars, parentOf, pruneOpen, treeRows, viewOf, type DirState } from "../files";
+import { changedList, changeMarks, changesResult, lineNumbers, linkTarget, loadedOpen, markAt, mapLimit, nameOf, oddChars, parentOf, pruneOpen, treeRows, viewOf, type DirState } from "../files";
 import { viewKey } from "../store";
 import { putMention } from "./Composer";
 import { FileTree } from "./FileTree";
+import { PathRow } from "./PathRow";
 import { Markdown } from "./Markdown";
 import "./FilesView.css";
 
@@ -48,6 +51,12 @@ export function FilesView({ runnerId, sessionId, status, cover, shown, reload, o
   const [hidden, setHidden] = useState(storedHidden);
   const [dirs, setDirs] = useState<Record<string, DirState>>({});
   const [open, setOpen] = useState<Set<string>>(new Set());
+  /** what differs from HEAD; undefined until known, or when the runner can't say (an older one) */
+  const [changes, setChanges] = useState<FileChanges>();
+  /** the Changed view: only the changed files, as a list */
+  const [changedOnly, setChangedOnly] = useState(false);
+  /** fileChanges failed: said under the bar, not hidden as "no changes" */
+  const [changesError, setChangesError] = useState<string>();
   const [query, setQuery] = useState("");
   const [found, setFound] = useState<FindResult & { query: string }>();
   const [findError, setFindError] = useState<string>();
@@ -90,6 +99,19 @@ export function FilesView({ runnerId, sessionId, status, cover, shown, reload, o
     const now = Object.fromEntries(paths.map((p, i) => [p, got[i]!]));
     setOpen((o) => pruneOpen(o, now));
   }, [loadDir]);
+  const changesSeq = useRef(0);
+  const loadChanges = useCallback(async () => {
+    const n = ++changesSeq.current;
+    const r = changesResult(
+      await rpc(runnerId, "fileChanges", { sessionId }).then(
+        (data) => ({ ok: true as const, data }),
+        (e) => ({ ok: false as const, error: (e as Error).message }),
+      ),
+    );
+    if (n !== changesSeq.current) return;
+    setChanges(r.changes);
+    setChangesError(r.error);
+  }, [runnerId, sessionId]);
 
   const readSeq = useRef(0);
   const readIt = useCallback(
@@ -113,12 +135,15 @@ export function FilesView({ runnerId, sessionId, status, cover, shown, reload, o
   now.current = { file, read };
   const again = useCallback(() => {
     void loadAll();
+    void loadChanges();
     const { file, read } = now.current;
     if (file) void readIt(file, read?.kind === "text" && !!read.cut);
-  }, [loadAll, readIt]);
+  }, [loadAll, loadChanges, readIt]);
 
   // First load, the hidden toggle.
   useEffect(() => void loadAll(), [loadAll]);
+  // The marks: on opening (the eye only filters them).
+  useEffect(() => void loadChanges(), [loadChanges]);
   // Refresh.
   useEffect(() => {
     if (reload) again();
@@ -240,6 +265,9 @@ export function FilesView({ runnerId, sessionId, status, cover, shown, reload, o
 
   const rows = useMemo(() => treeRows(dirs, open), [dirs, open]);
   const repo = dirs[""]?.list?.repo;
+  const marks = useMemo(() => changeMarks(changes, hidden), [changes, hidden]);
+  const changed = useMemo(() => changedList(changes, hidden), [changes, hidden]);
+  const showChanged = changedOnly && !!changes?.repo;
   const v = file && read && read.path === file ? viewOf(read) : undefined;
   const odd = v && (v.t === "text" || v.t === "markdown") ? oddChars(v.text) : [];
 
@@ -322,7 +350,23 @@ export function FilesView({ runnerId, sessionId, status, cover, shown, reload, o
             icon={<Icon icon={hidden ? EyeIcon : EyeSlashIcon} />}
             onClick={toggleHidden}
           />
+          {changes?.repo && (
+            <IconButton
+              label="Changed files only"
+              tooltip={`Changed files only (${changed.length})`}
+              size="sm"
+              variant={changedOnly ? "secondary" : "ghost"}
+              aria-pressed={changedOnly}
+              icon={<Icon icon={PencilSquareIcon} />}
+              onClick={() => setChangedOnly((v) => !v)}
+            />
+          )}
         </div>
+        {changesError && (
+          <div className="t-changes-note error t-files-changes-error" role="status">
+            Changes couldn't be read: {changesError}
+          </div>
+        )}
         <div className="t-files-body">
           {query.trim() ? (
             findError ? (
@@ -336,21 +380,24 @@ export function FilesView({ runnerId, sessionId, status, cover, shown, reload, o
             ) : (
               <ul className="t-files-tree" aria-label="Matching files">
                 {found.paths.map((p) => (
-                  <li key={p} className="t-files-row">
-                    <button type="button" className="t-files-item" onClick={() => openFile(p)}>
-                      <Icon icon={imageType(p) ? PhotoIcon : DocumentIcon} size="sm" />
-                      <span className="t-files-name">
-                        {parentOf(p) && <span className="t-dpath-dir">{parentOf(p)}/</span>}
-                        {nameOf(p)}
-                      </span>
-                    </button>
-                  </li>
+                  <PathRow key={p} path={p} mark={markAt(marks, p)} onOpen={openFile} />
                 ))}
                 {(found.more || found.partial) && <li className="t-changes-note">{found.more ? "More files match: type more of the name." : "Only part of the folder was looked through."}</li>}
               </ul>
             )
+          ) : showChanged ? (
+            !changed.length ? (
+              <div className="t-changes-note">{Object.keys(changes?.files ?? {}).length ? "Only hidden files changed: the eye shows them." : "No changes against HEAD."}</div>
+            ) : (
+              <ul className="t-files-tree" aria-label="Changed files">
+                {changed.map(({ path, mark, folder }) => (
+                  <PathRow key={path} path={path} mark={mark} folder={folder} onOpen={mark === "deleted" ? undefined : folder ? (p) => (setChangedOnly(false), revealFolder(p), void loadDir(p)) : openFile} />
+                ))}
+                {changes?.cut && <li className="t-changes-note">More files changed than are listed.</li>}
+              </ul>
+            )
           ) : (
-            <FileTree rows={rows} hidden={hidden} mentioned={mentioned} onToggle={toggle} onOpen={openFile} onMention={mention} />
+            <FileTree rows={rows} marks={marks} hidden={hidden} mentioned={mentioned} onToggle={toggle} onOpen={openFile} onMention={mention} />
           )}
         </div>
       </div>

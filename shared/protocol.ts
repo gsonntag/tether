@@ -24,7 +24,7 @@
 // subscribe again for a fresh snapshot.
 
 import type { HarnessCommand } from "./commands";
-import type { DirList, FileRead, FindResult } from "./files";
+import type { DirList, FileChanges, FileRead, FindResult } from "./files";
 import type { DiffScope, GitDiff } from "./gitDiff";
 import type { CheckpointList, RestoreResult } from "./checkpoints";
 import type { GitActionResult, GitDraft, GitStatus, PrLookup } from "./gitActions";
@@ -83,7 +83,7 @@ export interface RunnerInfo {
   git?: boolean;
   /** it has git actions (gitStatus, Commit, Push, Open PR, the PR chip). Absent: an older runner */
   gitActions?: boolean;
-  /** it has the files module (listDir, readFile, findFiles: the Changes pane's Files tab). Absent: an older runner */
+  /** it has the files module (listDir, readFile, findFiles, fileChanges: the Changes pane's Files tab). Absent: an older runner */
   files?: boolean;
   /** it takes `pinSession` (SPEC §10 Pinning). Absent: a runner from before it, and no pin buttons */
   pinning?: boolean;
@@ -247,6 +247,8 @@ export interface Ops {
   readFile: { args: { sessionId: string; path: string; maxBytes?: number; head?: boolean }; result: FileRead };
   /** files in the session's folder whose path matches `query` (the Files tab's filter), best first. gitignored ones never. The folder's list is kept 5 s; `fresh` lists it again */
   findFiles: { args: { sessionId: string; query: string; hidden?: boolean; fresh?: boolean }; result: FindResult };
+  /** the session folder's files that differ from HEAD (git status: modified, added, untracked, renamed, deleted), for the Files tab's marks. Read-only, only inside; outside a repo `repo: false` and none */
+  fileChanges: { args: { sessionId: string }; result: FileChanges };
   /** moves a session to another harness: a new session there; the old one stays as it is */
   moveSession: { args: { sessionId: string; harness: string; model?: string; effort?: string; source?: BillingSource }; result: { sessionId: string } };
   /** SPEC §16: a fork, stored; `messageId` a reply that ends a turn (shared/fork.ts), absent: all of it */

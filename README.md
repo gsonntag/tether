@@ -46,7 +46,8 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
   message.
 - **Files** (SPEC §10): a tab beside Changes with the session folder as a tree (respecting
   `.gitignore`, hidden files behind a toggle), a filter by name, and a viewer for text, Markdown
-  and images. **Mention** puts `@path` in the composer. It reads only inside the session's folder.
+  and images. Files that differ from HEAD are marked (M, A, U, R, C, coloured), folders holding them
+  get a dot, and a toggle lists only the changed files. **Mention** puts `@path` in the composer. It reads only inside the session's folder.
 - **Turn checkpoints** (SPEC §10): each turn's files are snapshotted under hidden git refs, so the
   Changes pane's **Turn** scope shows what a turn changed, and **Restore files to before this turn**
   puts them back (undoable). Your index, `HEAD` and stash are never touched.
