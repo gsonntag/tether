@@ -178,7 +178,8 @@ export class Peers {
 
   /** Whether a message can reach `s`: listed, not archived, not a subagent, not the Home agent's chat. */
   private reaches(s: SessionSummary) {
-    return reachable(s) && !(this.ctx.homeFolder && s.projectPath === this.ctx.homeFolder);
+    // A side chat (SPEC §16a) is reached through its session's panel only.
+    return reachable(s) && !s.sideOf && !(this.ctx.homeFolder && s.projectPath === this.ctx.homeFolder);
   }
 
   /** The sessions the lists show (recent ones and every live one) that `from` can message. */

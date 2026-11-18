@@ -51,6 +51,7 @@ export class Prefs {
     this.closed = Array.isArray(cfg.closedRequests) ? cfg.closedRequests : [];
     this.runnerSettings = cfg.settings && typeof cfg.settings === "object" ? { ...cfg.settings } : {};
     this.alive = typeof cfg.aliveAt === "number" && Number.isFinite(cfg.aliveAt) ? cfg.aliveAt : undefined;
+    for (const [id, p] of Object.entries(this.map)) this.index(id, undefined, p.sideOf);
   }
 
   /** When the runner was last seen running (as saved: from before this start, until set). */
@@ -64,6 +65,29 @@ export class Prefs {
     this.dirty = true;
     clearTimeout(this.timer);
     this.timer = setTimeout(() => this.flush(), this.delayMs);
+  }
+
+  /** Side chats by the session they're beside (SPEC §16a), kept as prefs change. */
+  private sides = new Map<string, Set<string>>();
+  private index(id: string, was: string | undefined, now: string | undefined) {
+    if (was === now) return;
+    if (was) this.sides.get(was)?.delete(id);
+    if (now) {
+      let set = this.sides.get(now);
+      if (!set) this.sides.set(now, (set = new Set()));
+      set.add(id);
+    }
+  }
+
+  /** The side chats beside a session. */
+  sideChatsOf(parentId: string): string[] {
+    return [...(this.sides.get(parentId) ?? [])];
+  }
+
+  /** A session went on under a new id: its side chats are beside that one now. */
+  moveSides(from: string, to: string) {
+    if (from === to) return;
+    for (const id of this.sideChatsOf(from)) this.set(id, { sideOf: to });
   }
 
   /** The runner-wide settings. */
@@ -152,8 +176,10 @@ export class Prefs {
 
   set(id: string, patch: SessionPrefs) {
     patch = redactValue(patch);
+    const was = this.map[id]?.sideOf;
     this.map[id] = { ...this.map[id], ...patch, at: Date.now() };
     for (const k of Object.keys(this.map[id]!) as (keyof SessionPrefs)[]) if (this.map[id]![k] === undefined) delete this.map[id]![k];
+    this.index(id, was, this.map[id]!.sideOf);
     this.dirty = true;
     clearTimeout(this.timer);
     this.timer = setTimeout(() => this.flush(), this.delayMs);

@@ -16,6 +16,7 @@ import { ClaudeDriver } from "./driver";
 import { CLAUDE_UNSET } from "../../../../shared/transcript";
 import { readHistory, storedSettings } from "./history";
 import { claudeMove, movedReadRule } from "./move";
+import { claudeFork } from "./fork";
 import { pinStore, readStore } from "./jsonl";
 import { claudeModels } from "./models";
 import { claudeCommandRoute, claudeCommands } from "./commands";
@@ -151,8 +152,9 @@ function watchFile(path: () => string | undefined, onChange: () => void): () => 
 
 export const claudeAdapter: Adapter = {
   id: "claude",
-  capabilities: { canSteer: true, terminal: "handoff", subagents: { view: true, stop: true, steer: "via-parent", background: true }, sourceSwitch: true, commands: true, move: { import: "native" } },
+  capabilities: { canSteer: true, terminal: "handoff", subagents: { view: true, stop: true, steer: "via-parent", background: true }, sourceSwitch: true, commands: true, move: { import: "native" }, fork: true, readOnlyMode: "default" },
   move: claudeMove,
+  fork: claudeFork,
   billing: {
     keys: HARNESS_KEYS.claude,
     label: (source) => (source === "anthropic" ? { kind: "apiKey", label: "Anthropic API key" } : { kind: "plan", label: "Claude plan" }),

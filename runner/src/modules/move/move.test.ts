@@ -152,6 +152,17 @@ describe("N-way: three harnesses, every direction, one code path", () => {
     });
   }
 
+  test("its side chats go under the session it went on in", async () => {
+    const pi = a();
+    const omp = b();
+    const { mover, runner } = setup([pi, omp]);
+    pi.stored_("s1", convo);
+    runner.core.o.prefs.set("pi:side", { sideOf: "pi:s1" });
+    const r = await mover.move("pi:s1", "omp", {});
+    expect(runner.core.o.prefs.get("pi:side").sideOf).toBe(r.sessionId);
+    expect(runner.core.o.prefs.sideChatsOf("pi:s1")).toEqual([]);
+  });
+
   test("it is linked both ways, and neither session loses its transcript", async () => {
     const pi = a();
     const omp = b();
@@ -532,5 +543,36 @@ describe("real stores", () => {
   });
   test("Codex: big imports go in batches, in order", () => {
     expect(batches([3, 3, 3, 1], (n) => n, 6)).toEqual([[3, 3], [3, 1]]);
+  });
+});
+
+describe("a fork's copy (Mover.copy)", () => {
+  test("a side chat's copy: its thread is made read-only, in the side chat's mode, and stays a side chat", async () => {
+    const pi = new Neutral("pi", true);
+    const seen: any[] = [];
+    const newId = pi.newId.bind(pi);
+    pi.newId = ((_p: string, o: any) => (seen.push(o), newId())) as any;
+    const { mover, runner } = setup([pi]);
+    pi.stored_("s1", convo);
+    (await runner.core.open("pi:s1")).setState({ permissionMode: "rw" });
+    const id = await mover.copy("pi:s1", undefined, "Side chat: q", { forkedFrom: { sessionId: "pi:s1" }, sideOf: "pi:s1" }, "ro");
+    expect(seen[0]).toMatchObject({ readOnly: true, permissionMode: "ro" });
+    expect(runner.core.o.prefs.get(id)).toMatchObject({ sideOf: "pi:s1", permissionMode: "ro" });
+  });
+
+  test("the history through a message, on the same harness and source, stored and marked as a fork", async () => {
+    const pi = new Neutral("pi", true);
+    const { mover, runner } = setup([pi]);
+    pi.stored_("s1", [...convo, { id: "u2", role: "user", ts: 12, parts: [{ type: "text", text: "later words" }] }, { id: "a2", role: "assistant", ts: 13, parts: [{ type: "text", text: "later reply" }] }]);
+    const s = await runner.core.open("pi:s1");
+    s.setState({ model: "m1", permissionMode: "ro" });
+    const id = await mover.copy("pi:s1", "a1", "T (fork)", { forkedFrom: { sessionId: "pi:s1", messageId: "a1" }, keys: { fallbackKeys: ["anthropic"] } });
+    const text = pi.imports[0]!.items.map((i) => i.text).join("\n");
+    expect(text).toContain("vault-4417.txt");
+    expect(text).not.toContain("later words");
+    expect(pi.imports[0]!.title).toBe("T (fork)");
+    // Stored: nothing started it.
+    expect(pi.drivers).toHaveLength(0);
+    expect(runner.core.o.prefs.get(id)).toMatchObject({ model: "m1", permissionMode: "ro", source: "subscription", forkedFrom: { sessionId: "pi:s1", messageId: "a1" }, fallbackKeys: ["anthropic"] });
   });
 });

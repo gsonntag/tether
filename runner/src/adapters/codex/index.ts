@@ -15,6 +15,7 @@ import { codexCommandRoute, commandList, enabledSkills } from "./commands";
 import { CodexDriver, codexTools, createThread } from "./driver";
 import { setCodexSetup } from "./setup";
 import { codexMove, importedMsgs } from "./move";
+import { codexFork } from "./fork";
 import { knownMode, modeOf, modelList, UNKNOWN_MODE, type CodexModel } from "./modes";
 import { remembered } from "./remember";
 import { assertThreadSource, privateBearerFile, sourceBilling, sourceHome, sourceProvider, sourceSocket } from "./sources";
@@ -48,14 +49,17 @@ const toml = (v: string) => JSON.stringify(v);
 const fullHistory = async (nativeId: string, projectPath: string): Promise<Msg[]> => {
   // A thread that took a session's place shows that session's own transcript, not its import.
   const before = remembered(nativeId)?.carriedFrom;
-  return [...(before ? await fullHistory(before, projectPath) : await importedMsgs(nativeId)), ...(await codexHistory(nativeId, projectPath))];
+  // Neither is in this thread's own turns: thread/fork can't end at one (SPEC §16).
+  const brought = (before ? await fullHistory(before, projectPath) : await importedMsgs(nativeId)).map((m): Msg => ({ ...m, noFork: true }));
+  return [...brought, ...(await codexHistory(nativeId, projectPath))];
 };
 
 export const codexAdapter: Adapter = {
   id: "codex",
   agentSetup: setCodexSetup,
-  capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "via-parent" }, persistent: true, settingsApply: "nextTurn", sourceSwitch: true, sourceCarry: true, commands: true, move: { import: "native" } },
+  capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "via-parent" }, persistent: true, settingsApply: "nextTurn", sourceSwitch: true, sourceCarry: true, commands: true, move: { import: "native" }, fork: true, readOnlyMode: "never+read-only" },
   move: codexMove,
+  fork: codexFork,
   toolServer: (server) => codexTools.set(server),
   billing: {
     keys: HARNESS_KEYS.codex,

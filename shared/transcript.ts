@@ -2,6 +2,7 @@
 // translate their harness's own store and stream into these shapes; the UI renders only these.
 
 import type { Attachment } from "./attachments";
+import type { ForkedFrom } from "./fork";
 import type { SessionCost } from "./costs";
 import type { BillingSource, CredentialSource } from "./credentials";
 import type { ShellRun } from "./shellRun";
@@ -72,6 +73,15 @@ export interface HarnessCapabilities {
    * and a summary. Absent: it can't be moved to or from.
    */
   move?: { import: "native" | "context" };
+  /** A session can be forked: a new one with its conversation, or up to one of its messages (SPEC §16, Adapter.fork). */
+  fork?: boolean;
+  /**
+   * The permission mode a read-only session (a side chat, SPEC §16a) runs in. Its harness keeps it
+   * read-only when started with StartOpts.readOnly: Claude Code `default` under a hook that denies
+   * every tool but reading ones (plan mode alone lets a writing shell command through); Codex
+   * `never+read-only`, its own sandbox, loaded with MCP servers and apps off.
+   */
+  readOnlyMode?: string;
 }
 
 // ---------- transcript ----------
@@ -164,6 +174,11 @@ export interface Msg {
   partsOmitted?: number;
   /** notice, on a session being exported (shared/move.ts): the summary a compaction left */
   compactSummary?: string;
+  /**
+   * The harness can't fork at this message (SPEC §16): history brought into the session from
+   * elsewhere that isn't in its own store's turns (Codex: a move's import, a source change's earlier thread).
+   */
+  noFork?: true;
 }
 
 // ---------- live state ----------
@@ -459,6 +474,10 @@ export interface SessionSummary {
   parentToolId?: string;
   /** a subagent: its kind, as the harness names it (e.g. "general-purpose") */
   agentType?: string;
+  /** a fork (SPEC §16): the session it was made from, and the message it ends at */
+  forkedFrom?: ForkedFrom;
+  /** a side chat (SPEC §16a): the session it's beside. Left out of the lists; shown under that session */
+  sideOf?: string;
 }
 
 /** A folder sessions run in, as discovered from the harness stores (SPEC §4). */

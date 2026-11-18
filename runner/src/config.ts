@@ -7,6 +7,7 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "n
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import type { BillingSource, CredentialSource } from "../../shared/credentials";
+import type { ForkedFrom } from "../../shared/fork";
 import type { RunnerSettings } from "../../shared/protocol";
 import type { Billing, HarnessId, QueuedMessage } from "../../shared/transcript";
 import type { ClosedRequest, SavedRequest } from "./core/broker";
@@ -61,6 +62,10 @@ export interface SessionPrefs {
   projectPath?: string;
   /** a new session that hasn't had a message: opening its id brings it back as new (sessions.ts make) */
   blank?: boolean;
+  /** a fork (SPEC §16): where it was made from */
+  forkedFrom?: ForkedFrom;
+  /** a side chat (SPEC §16a): the session it's beside. It stays in its read-only mode */
+  sideOf?: string;
   /** a blank session that went on under another id (Adapter.renew) */
   movedTo?: string;
   model?: string;

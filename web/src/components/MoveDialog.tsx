@@ -7,6 +7,7 @@ import type { BillingSource } from "../../../shared/credentials";
 import type { MoveOptions } from "../../../shared/move";
 import { CLAUDE_UNSET, type HarnessCapabilities, type HarnessId, type LiveState, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
+import { forkSession, useForking } from "../fork";
 import { openSession } from "../route";
 import { canPin } from "../runners";
 import { pinMenuLabel } from "../sessionList";
@@ -14,10 +15,11 @@ import { failedSend, loadModels, modelListKey, setArchived, setPinned, useStore 
 import { focusComposerOf } from "./SessionView";
 import { azureDeployments, DeploymentPicker, SourcePicker } from "./SourcePicker";
 
-/** The session's menu, in the header: Change session harness and its dialog (SPEC §15), Pin, Archive. */
-export function SessionMenu({ runnerId, session, state, canMove }: { runnerId: string; session: SessionSummary; state: LiveState; canMove: boolean }) {
+/** The session's menu, in the header: Side chat, Fork (SPEC §16), Change session harness and its dialog (SPEC §15), Pin, Archive. */
+export function SessionMenu({ runnerId, session, state, canMove, canFork, onSideChat }: { runnerId: string; session: SessionSummary; state: LiveState; canMove: boolean; canFork?: boolean; onSideChat?: () => void }) {
   const [open, setOpen] = useState(false);
   const [archiveBusy, setArchiveBusy] = useState(false);
+  const forking = useForking(session.id);
   const [pinBusy, setPinBusy] = useState(false);
   const pinLabel = pinMenuLabel(runnerId, session, useStore((s) => canPin(s.runners, runnerId)));
   const pin = async () => {
@@ -52,6 +54,8 @@ export function SessionMenu({ runnerId, session, state, canMove }: { runnerId: s
           </button>
         )}
       >
+        {onSideChat && <DropdownMenuItem label="Side chat" onClick={onSideChat} />}
+        {canFork && <DropdownMenuItem label={forking ? "Forking…" : "Fork"} isDisabled={forking} onClick={() => void forkSession(runnerId, session.id)} />}
         {canMove && <DropdownMenuItem label="Change session harness" onClick={() => setOpen(true)} />}
         {pinLabel && <DropdownMenuItem label={pinLabel} isDisabled={pinBusy} onClick={() => void pin()} />}
         <DropdownMenuItem label={session.archived ? "Unarchive" : "Archive"} isDisabled={archiveBusy} onClick={() => void archive()} />

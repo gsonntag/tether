@@ -75,6 +75,7 @@ test("the session menu's pin item: only for a main, listed session on a runner t
   expect(pinMenuLabel("a", s("x", 1), false)).toBeUndefined();
   expect(pinMenuLabel("a", s("x", 1, { archived: true }), true)).toBeUndefined();
   expect(pinMenuLabel("a", s("x", 1, { parentSessionId: "y" }), true)).toBeUndefined();
+  expect(pinMenuLabel("a", s("x", 1, { sideOf: "y" }), true)).toBeUndefined();
   expect(pinMenuLabel("a", s("x", 1, { projectPath: "/home/agent" }), true)).toBeUndefined();
   setHomeFolders([]);
 });

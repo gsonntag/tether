@@ -18,6 +18,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { SIDE_KEEPS } from "../../../shared/sideChat";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { jsonBytes, stripControls } from "../../../shared/limits";
 import {
@@ -161,6 +162,7 @@ export class ShellRuns {
    */
   async run(sessionId: string, command: string, setup?: SetupRun): Promise<{ id: string }> {
     // Control characters (but tab and newlines) never run or wait: each would take 6 bytes in a frame.
+    if (this.core.o.prefs.get(sessionId).sideOf) throw new Error(SIDE_KEEPS.shell);
     command = stripControls(command).trim();
     if (!command) throw new Error("Type a command after the !.");
     if (jsonBytes(command) > SHELL_COMMAND_MAX) throw new Error("That command is too long.");
