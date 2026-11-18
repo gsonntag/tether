@@ -37,14 +37,16 @@ export function usePr(runnerId: string, sessionId: string, o: { enabled: boolean
     },
     [refresh],
   );
+  const busy = o.status !== "idle";
+  const wasBusy = useRef(busy);
   useEffect(() => {
     setPr(undefined);
+    // another session: its own turn ends, not the last one's
+    wasBusy.current = busy;
   }, [runnerId, sessionId]);
   useEffect(() => {
     if (o.enabled && linkOpen) void refresh(false);
   }, [o.enabled, linkOpen, refresh]);
-  const busy = o.status !== "idle";
-  const wasBusy = useRef(busy);
   useEffect(() => {
     if (wasBusy.current && !busy && o.enabled) void refresh(true);
     wasBusy.current = busy;
@@ -62,7 +64,7 @@ export function PrChip({ lookup }: { lookup?: PrLookup }) {
   if (!pr) return null;
   const c = prChip(pr);
   return (
-    <a className={`t-chip t-chip-pr ${c.tone}`} href={pr.url} target="_blank" rel="noopener noreferrer" title={c.title} aria-label={`Pull request ${c.text}`}>
+    <a className={`t-chip t-chip-pr ${c.tone}`} href={pr.url} target="_blank" rel="noopener noreferrer" title={c.title} aria-label={c.label}>
       {c.text}
     </a>
   );

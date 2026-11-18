@@ -5,14 +5,16 @@ import { actionsFor, branchLine, ghNote, prChip } from "./gitActions";
 const pr = (p: Partial<PrInfo>): PrInfo => ({ number: 42, url: "https://github.com/o/r/pull/42", title: "Add git actions", state: "open", checks: "none", branch: "feature", ...p });
 
 test("PR chip: number and state; checks while open, as a mark and a tone", () => {
-  expect(prChip(pr({ checks: "passing" }))).toEqual({ text: "#42 · Open · ✓", tone: "ok", title: "Add git actions: open, checks passing. Opens on GitHub." });
+  expect(prChip(pr({ checks: "passing" }))).toEqual({ text: "#42 · Open · ✓", tone: "ok", title: "Add git actions: open, checks passing. Opens on GitHub.", label: "Pull request 42, open, checks passing" });
+  expect(prChip(pr({ checks: "failing" })).label).toBe("Pull request 42, open, checks failing");
+  expect(prChip(pr({ checks: "pending" })).label).toBe("Pull request 42, open, checks running");
   expect(prChip(pr({ checks: "failing" }))).toMatchObject({ text: "#42 · Open · ✗", tone: "bad" });
   expect(prChip(pr({ checks: "pending" }))).toMatchObject({ text: "#42 · Open · ●", tone: "pending" });
   expect(prChip(pr({ checks: "none" }))).toMatchObject({ text: "#42 · Open", tone: "muted" });
   expect(prChip(pr({ state: "draft", checks: "pending" }))).toMatchObject({ text: "#42 · Draft · ●", tone: "pending" });
   // done: checks no longer matter
-  expect(prChip(pr({ state: "merged", checks: "failing" }))).toEqual({ text: "#42 · Merged", tone: "ok", title: "Add git actions: merged. Opens on GitHub." });
-  expect(prChip(pr({ state: "closed", title: "" }))).toEqual({ text: "#42 · Closed", tone: "muted", title: "closed. Opens on GitHub." });
+  expect(prChip(pr({ state: "merged", checks: "failing" }))).toEqual({ text: "#42 · Merged", tone: "ok", title: "Add git actions: merged. Opens on GitHub.", label: "Pull request 42, merged" });
+  expect(prChip(pr({ state: "closed", title: "" }))).toMatchObject({ text: "#42 · Closed", tone: "muted", title: "closed. Opens on GitHub." });
 });
 
 const st = (s: Partial<GitStatus>): GitStatus => ({ state: "ok", branch: "feature", head: "abc1234", ahead: 0, behind: 0, defaultBranch: "main", origin: true, changed: 0, ...s });

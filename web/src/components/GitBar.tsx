@@ -8,13 +8,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Spinner } from "@astryxdesign/core/Spinner";
-import type { GitActionResult, GitStatus, PrLookup } from "../../../shared/gitActions";
+import { GIT_ACTION_RPC_MS, type GitActionResult, type GitStatus, type PrLookup } from "../../../shared/gitActions";
 import type { RunStatus } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { actionsFor, branchLine, ghNote } from "../gitActions";
 import "./GitBar.css";
 
 type Box = "commit" | "pr";
+/** a git action's wait: the relay's for it, and a little more */
+const ACTION_MS = GIT_ACTION_RPC_MS + 10_000;
 type Busy = "commit" | "push" | "pr";
 
 export function GitBar({
@@ -46,6 +48,7 @@ export function GitBar({
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [onDefault, setOnDefault] = useState(false);
+  const [pushDefault, setPushDefault] = useState(false);
   const [drafting, setDrafting] = useState<Box>();
   const [draftNote, setDraftNote] = useState<{ box: Box; note: string }>();
   const typed = useRef({ commit: false, pr: false });
@@ -109,7 +112,7 @@ export function GitBar({
   };
   const commit = () =>
     act("commit", async () => {
-      const r = await rpc(runnerId, "gitCommit", { sessionId, message, ...(onDefault ? { onDefault: true } : {}) }, 125_000);
+      const r = await rpc(runnerId, "gitCommit", { sessionId, message, ...(onDefault ? { onDefault: true } : {}) }, ACTION_MS);
       after(r, `Committed ${r.commit ?? ""} on ${r.status.branch ?? "HEAD"}.`);
       if (r.ok) {
         setMessage("");
@@ -121,13 +124,16 @@ export function GitBar({
     });
   const push = () =>
     act("push", async () => {
-      const r = await rpc(runnerId, "gitPush", { sessionId }, 125_000);
+      const r = await rpc(runnerId, "gitPush", { sessionId, ...(pushDefault ? { onDefault: true } : {}) }, ACTION_MS);
       after(r, `Pushed to ${r.status.upstream ?? "origin"}.`);
-      if (r.ok) onPr(true);
+      if (r.ok) {
+        setPushDefault(false);
+        onPr(true);
+      }
     });
   const openPr = () =>
     act("pr", async () => {
-      const r = await rpc(runnerId, "gitOpenPr", { sessionId, title, body }, 125_000);
+      const r = await rpc(runnerId, "gitOpenPr", { sessionId, title, body }, ACTION_MS);
       after(r, r.pr ? `Opened #${r.pr.number}.` : "Opened the PR.");
       if (r.ok) {
         setTitle("");
@@ -140,7 +146,8 @@ export function GitBar({
   if (!st || st.state !== "ok") return null;
   const why = actionsFor(st, pr);
   const isDefault = !!st.branch && st.branch === st.defaultBranch;
-  const working = status === "running";
+  // working, or waiting on the person: files may be half-written (the runner refuses too)
+  const working = status !== "idle";
   const note = ghNote(pr);
   const needsPush = !st.upstream || st.ahead > 0;
 
@@ -152,10 +159,22 @@ export function GitBar({
         </span>
         <div className="t-gitbar-buttons">
           <Button label="Commit" size="sm" variant={box === "commit" ? "primary" : "secondary"} isDisabled={!!why.commit || !!busy} tooltip={why.commit} onClick={() => openBox("commit")} />
-          <Button label={busy === "push" ? "Pushing…" : "Push"} size="sm" variant="secondary" isDisabled={!!why.push || !!busy} tooltip={why.push} onClick={() => void push()} />
+          <Button
+            label={busy === "push" ? "Pushing…" : "Push"}
+            size="sm"
+            variant="secondary"
+            isDisabled={!!why.push || !!busy || (isDefault && !pushDefault)}
+            tooltip={why.push ?? (isDefault && !pushDefault ? `Tick “Push to ${st.branch} anyway” first.` : undefined)}
+            onClick={() => void push()}
+          />
           <Button label="Open PR" size="sm" variant={box === "pr" ? "primary" : "secondary"} isDisabled={!!why.pr || !!busy} tooltip={why.pr} onClick={() => openBox("pr")} />
         </div>
       </div>
+      {isDefault && !why.push && (
+        <label className="t-gitbar-check t-gitbar-pushdefault">
+          <input type="checkbox" checked={pushDefault} onChange={(e) => setPushDefault(e.target.checked)} /> Push to {st.branch} anyway
+        </label>
+      )}
       {note && <div className="t-gitbar-note">{note}</div>}
       {box === "commit" && (
         <div className="t-rform t-gitbar-box">
@@ -166,7 +185,8 @@ export function GitBar({
             rows={4}
             value={message}
             onChange={(e) => {
-              typed.current.commit = true;
+              // emptied: a draft that arrives fills it again
+              typed.current.commit = !!e.target.value.trim();
               setMessage(e.target.value);
             }}
             onKeyDown={(e) => {
@@ -191,7 +211,7 @@ export function GitBar({
               size="sm"
               variant="primary"
               isDisabled={!message.trim() || !!busy || (isDefault && !onDefault) || !st.identity || working}
-              tooltip={working ? "The session is working. Commit when its turn ends." : undefined}
+              tooltip={working ? (status === "waiting" ? "The session is waiting on you. Answer it first." : "The session is working. Commit when its turn ends.") : undefined}
               onClick={() => void commit()}
             />
           </div>
@@ -205,7 +225,7 @@ export function GitBar({
             placeholder={drafting === "pr" ? "Writing a title…" : "Title"}
             value={title}
             onChange={(e) => {
-              typed.current.pr = true;
+              typed.current.pr = !!(e.target.value.trim() || body.trim());
               setTitle(e.target.value);
             }}
           />
@@ -216,7 +236,7 @@ export function GitBar({
             rows={6}
             value={body}
             onChange={(e) => {
-              typed.current.pr = true;
+              typed.current.pr = !!(e.target.value.trim() || title.trim());
               setBody(e.target.value);
             }}
           />

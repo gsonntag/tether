@@ -35,6 +35,9 @@ git(REPO, "commit", "-qm", "Add greet");
 git(REPO, "remote", "add", "origin", ORIGIN);
 git(REPO, "push", "-q", "-u", "origin", "main");
 git(REPO, "remote", "set-head", "origin", "main");
+// origin reads as a GitHub repo (gh is named it with --repo); pushes go to the bare one
+git(REPO, "remote", "set-url", "origin", "git@github.com:example/demo.git");
+git(REPO, "config", "remote.origin.pushurl", ORIGIN);
 
 const browser = await chromium.launch();
 const errors = [];
@@ -114,6 +117,7 @@ try {
   if (refused.ok?.ok !== false || !/anyway/.test(refused.ok.error)) fail(`runner didn't refuse main: ${JSON.stringify(refused)}`);
   ok(`runner refuses too: ${refused.ok.error}`);
   await bar(p).getByRole("button", { name: "Cancel" }).click();
+  if (await bar(p).getByLabel("Push to main anyway").count()) fail("push tick shows with nothing to push");
 
   // ---- a branch: commit with the generated message ----
   git(REPO, "checkout", "-qb", "feature");
@@ -177,7 +181,8 @@ try {
   await until(async () => (await bar(p).locator(".t-gitbar-done").textContent())?.includes("Opened #42"), "Opened #42");
   if (git(ORIGIN, "rev-parse", "feature") !== git(REPO, "rev-parse", "HEAD")) fail("Open PR didn't push first");
   const create = ghCalls().find((c) => c.startsWith("pr create"));
-  if (!create?.startsWith("pr create --base main --head feature --title ") || !create.includes("(edited)")) fail(`gh pr create args: ${create}`);
+  if (!create?.startsWith("pr create --repo example/demo --base main --head feature --title ") || !create.includes("(edited)")) fail(`gh pr create args: ${create}`);
+  if (!ghCalls().includes("auth status --hostname github.com")) fail("gh auth status wasn't asked of origin's host");
   ok(`fake gh: ${create.slice(0, 90)}…`);
   const chip = p.locator("a.t-chip-pr");
   await until(async () => (await chip.textContent()) === "#42 · Open · ●", "the PR chip, checks running");

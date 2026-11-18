@@ -65,6 +65,10 @@
   font-size: 13px;
   cursor: pointer;
 }
+.t-gitbar-pushdefault {
+  margin: 0 12px 6px;
+  justify-content: flex-end;
+}
 .t-gitbar-failed {
   padding: 4px 12px 8px;
   color: var(--color-text-red, var(--color-error));
