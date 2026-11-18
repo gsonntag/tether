@@ -1,0 +1,109 @@
+/* Git actions (GitBar.tsx) under the Changes pane's header, and the session's PR chip (PrChip.tsx). */
+
+.t-gitbar {
+  flex: none;
+  border-bottom: 1px solid var(--t-border);
+  background: var(--t-card);
+  font-size: 13px;
+}
+.t-gitbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 6px 8px 6px 12px;
+}
+.t-gitbar-branch {
+  flex: 1 1 160px;
+  min-width: 0;
+  font-family: var(--t-mono);
+  font-size: 12px;
+  color: var(--t-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.t-gitbar-buttons {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.t-gitbar-box {
+  margin: 0 10px 8px;
+}
+.t-gitbar-box .t-rform-box + .t-rform-box {
+  margin-top: 6px;
+}
+.t-gitbar-title {
+  min-height: 0;
+  resize: none;
+}
+.t-gitbar-note {
+  padding: 4px 12px 6px;
+  color: var(--t-muted);
+  font-size: 12px;
+}
+.t-gitbar-box .t-gitbar-note {
+  padding: 6px 0 0;
+}
+.t-gitbar-done {
+  color: var(--color-text-green, var(--color-success));
+}
+.t-gitbar-writing {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--t-muted);
+  font-size: 12px;
+}
+.t-gitbar-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.t-gitbar-pushdefault {
+  margin: 0 12px 6px;
+  justify-content: flex-end;
+}
+.t-gitbar-failed {
+  padding: 4px 12px 8px;
+  color: var(--color-text-red, var(--color-error));
+}
+.t-gitbar-output {
+  margin: 6px 0 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--t-soft);
+  color: var(--color-text-primary);
+  font-family: var(--t-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---------- the PR chip ---------- */
+
+a.t-chip-pr {
+  margin-right: 6px;
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+a.t-chip-pr.ok {
+  color: var(--color-text-green, var(--color-success));
+}
+a.t-chip-pr.bad {
+  color: var(--color-text-red, var(--color-error));
+}
+a.t-chip-pr.pending {
+  color: var(--color-text-yellow, var(--color-warning, var(--t-muted)));
+}
+a.t-chip-pr.muted {
+  color: var(--t-muted);
+}

@@ -23,6 +23,7 @@ import { useFitViewport } from "./useFitViewport";
 import { useTermCover } from "./useTermCover";
 import { PanelHandle } from "./WidthHandle";
 import { ChangesPane } from "./ChangesPane";
+import { PrChip, usePr } from "./PrChip";
 import { reviewSent } from "../reviewStore";
 import { billingForDisplay } from "../sourceMenu";
 import { RateLimitRetry } from "./RateLimitRetry";
@@ -47,6 +48,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   const runnerOnline = useStore((s) => s.runners.find((r) => r.id === runnerId)?.online);
   /** the runner has the git module (an older one doesn't: no Changes button) */
   const runnerGit = useStore((s) => !!s.runners.find((r) => r.id === runnerId)?.git);
+  /** and its git actions (Commit, Push, Open PR, the PR chip) */
+  const runnerGitActions = useStore((s) => !!s.runners.find((r) => r.id === runnerId)?.gitActions);
   const children = useChildren(runnerId, sessionId);
   const pending = usePending(runnerId, sessionId);
   const composer = useRef<ComposerHandle>(null);
@@ -136,6 +139,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   }, [ready, k]);
 
   const ctx = useMemo(() => ({ runnerId, sessionId, projectPath: summary?.projectPath }), [runnerId, sessionId, summary?.projectPath]);
+  // The session's PR (SPEC §10 Git actions): its chip in the header, and the pane's Open PR.
+  const prs = usePr(runnerId, sessionId, { enabled: runnerGitActions && !!summary && !summary.parentSessionId, paneOpen: changes, status: view?.state?.status ?? "idle" });
 
   if (!view?.window || !view.state || !summary) {
     if (view?.error)
@@ -283,7 +288,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     <SessionCtx.Provider value={ctx}>
       <div className={`t-session-split${panel || changes ? " with-terminal" : ""}${cover ? " t-term-cover" : ""}`} ref={rootRef}>
       <div className="t-session">
-        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move} />}{changesChip}{terminalChip}</>} capabilities={view.capabilities} />
+        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move} />}<PrChip lookup={prs.pr} />{changesChip}{terminalChip}</>} capabilities={view.capabilities} />
         {ask && !panelShown && (
           <div className="t-term-ask" role="group" aria-label="Open the terminal">
             <span>{ask.text}</span>
@@ -392,6 +397,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           sessionId={sessionId}
           status={state.status}
           cover={cover}
+          git={runnerGitActions ? prs : undefined}
           onClose={() => setChanges(false)}
           onSent={() => {
             // On a phone the composer is under the pane: back to the chat with the message in the box.

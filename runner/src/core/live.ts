@@ -12,7 +12,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { CredentialStore, redact, redactValue, type CredentialSnapshot } from "../credentials";
 import { isBillingSource, keyTarget, type BillingSource, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
-import type { CostLedger } from "../costs";
+import { addSideCost, type CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
 import { FROM_TETHER } from "../../../shared/fromTether";
@@ -1491,6 +1491,33 @@ export class LiveControl {
     if (!costs || s.summary.parentSessionId) return undefined;
     if (costs.has(s.id)) return costs.get(s.id);
     return this.beginCost(s.id, s.fresh || this.spendKnown(s, before));
+  }
+
+  /**
+   * What a side query spent on the session's key (git actions' generated text, Adapter.ask): added to
+   * one running report of its own in the session's API ledger (SPEC "API session dollars"). A query
+   * whose spend wasn't reported leaves that report, and so the total, partial.
+   */
+  async sideCost(id: string, spent: SessionCost) {
+    const costs = this.opts.costs;
+    if (!costs) return;
+    // Looked up now, not when the query started: the session may have been unloaded or reloaded since.
+    const s = this.core.sessions.get(id) ?? (await this.core.open(id).catch(() => undefined));
+    if (!s) {
+      try {
+        costs.report(id, "side-queries", addSideCost(costs.reportOf(id, "side-queries"), spent));
+      } catch {}
+      return;
+    }
+    if (s.summary.parentSessionId) return;
+    try {
+      this.startCost(s);
+      const cost = costs.report(s.id, "side-queries", addSideCost(costs.reportOf(s.id, "side-queries"), spent));
+      s.setState({ cost });
+    } catch {
+      this.core.log("Couldn't persist a side query's API cost. The session's total is unknown.");
+    }
+    this.core.touch(s);
   }
 
   /** A new entry, and a note in the session's prefs that it had one. */

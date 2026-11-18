@@ -5,6 +5,7 @@ import { defang } from "../../../shared/fromTether";
 import { hostname } from "node:os";
 import { CredentialStore, redact } from "../credentials";
 import { CostLedger } from "../costs";
+import type { SessionCost } from "../../../shared/costs";
 import { testAzure } from "../adapters/codex/upstream";
 import { PROTOCOL_VERSION, type HarnessInfo, type HomeChatUpdate, type RunnerInfo } from "../../../shared/protocol";
 import { sessionId } from "../../../shared/ids";
@@ -89,6 +90,7 @@ export function createRunner(o: RunnerOptions) {
     harnesses: await harnesses,
     ...(o.homeFolder ? { homeFolder: o.homeFolder } : {}),
     git: true,
+    gitActions: true,
   });
 
   const conn = new Connection({
@@ -251,7 +253,18 @@ export function createRunner(o: RunnerOptions) {
         list: () => core.book.list(),
         archived: async () => (await core.listSessions({ archived: true, limit: 2000 })).sessions,
         folder: (path: string) => core.folder(path),
+        ask: async (id: string, prompt: string, opts: { system: string; timeoutMs: number }) => {
+          const s = await core.open(id);
+          const adapter = core.adapter(s.summary.harness);
+          if (!adapter.ask) throw new Error("This session's harness can't generate text.");
+          // The session's own source, as its next start would use it: a missing key stops here.
+          const credential = live.credentialFor(s.summary.harness, live.sourceOf(s), live.deploymentOf(s));
+          // On a key, what it cost goes in the session's API ledger with its turns'.
+          const onCost = credential && credential.source !== "subscription" ? (c: SessionCost) => void live.sideCost(s.id, c) : undefined;
+          return adapter.ask(s.summary.projectPath, prompt, { ...opts, ...(credential ? { credential } : {}), ...(onCost ? { onCost } : {}) });
+        },
         holdFolder: (folder: string, why: string) => live.holdFolder(folder, why),
+        heldWhy: (id: string) => live.heldWhy(id),
         queue: (id: string, text: string, attachments: Attachment[] = []) => (live.attachments.markUsed(attachments), live.queue.add(id, text, attachments)),
         recent: async (id: string, limit: number) => {
           const s = await core.open(id);
