@@ -76,7 +76,17 @@ tether/
   web/        React UI
 ```
 
-**Who may connect.** A browser must be an app owner when it opens its socket, and keeps proving
+**Sharing runners.** The app's owners see and manage every runner. Anyone else the app is shared
+with on Foliation (editor or viewer) may sign in but sees only the runners an owner shared with
+them in Settings → Runners, each "Can drive" or "Can view" (read sessions only); a Foliation viewer
+share only ever views. The list lives on the runner (runner.json `sharedWith`, op
+`setRunnerAccess`) and the relay enforces it on every frame (shared/access.ts: `VIEW_OPS`, and
+`MANAGE_OPS` that stay the owner's: sharing, name, keys, texting, updates, runner settings). A
+change applies at once; a Foliation role change at the next renew ticket, which carries the role.
+Public-link visitors and app calls never get in. With TETHER_RUNNER_OWNERS, a runner's listed
+people are its owners.
+
+**Who may connect.** A browser must be an app owner or shared person when it opens its socket, and keeps proving
 it: the page fetches a short-lived ticket from `GET /api/ws-ticket` (an ordinary request the edge
 signs afresh) every 2 minutes and sends it as `renew`. A socket without a valid ticket for 5
 minutes is closed (`CLOSE_REAUTH`), so a revoked share loses access within minutes. A runner's

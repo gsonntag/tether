@@ -3224,6 +3224,7 @@
 .t-updates-warning { color: var(--color-text-yellow, var(--color-warning)); font-weight: 600; }
 /* The computer's name on Home: tap to rename; keeps the list's own type size */
 .t-title-button.t-runner-name { font-size: inherit; font-weight: inherit; max-width: 100%; }
+<<<<<<< HEAD
 
 /* Fork (SPEC §16): a fork's link back, and Fork from here under a reply that ends a turn. Quiet:
    shown on hover where there is one, always on touch. */
@@ -3370,3 +3371,11 @@
 .t-usage-table th[scope="row"], .t-usage-table thead th:first-child { position: sticky; left: 0; z-index: 1; background: var(--color-background-surface); }
 .t-usage-unpriced { color: var(--t-muted); }
 .t-usage-note { margin: 0; font-size: 12px; color: var(--t-muted); }
+=======
+/* Settings → Runners: a runner's name and who it's shared with */
+.t-settings-note { margin: 0 0 12px; color: var(--color-text-secondary); }
+.t-runner-card { display: flex; flex-direction: column; gap: 10px; }
+.t-share-list { display: flex; flex-direction: column; gap: 6px; }
+.t-share-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.t-share-email { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+>>>>>>> 2bb715c (Share runners with people the app is shared with)

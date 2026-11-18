@@ -23,6 +23,7 @@
 // the browser keeps those with seq > snapshot.seq (shared/sync.ts). Any gap or reconnect means
 // subscribe again for a fresh snapshot.
 
+import type { RunnerGrant } from "./access";
 import type { HarnessCommand } from "./commands";
 import type { DirList, FileChanges, FileRead, FindResult } from "./files";
 import type { DiffScope, GitDiff } from "./gitDiff";
@@ -87,6 +88,10 @@ export interface RunnerInfo {
   files?: boolean;
   /** it takes `pinSession` (SPEC §10 Pinning). Absent: a runner from before it, and no pin buttons */
   pinning?: boolean;
+  /** the people its owner shared it with (shared/access.ts); only sent to its owners */
+  shared?: RunnerGrant[];
+  /** set by the server for each browser: what you may do on it. Absent: you own it (shared/access.ts) */
+  access?: "drive" | "view";
 }
 
 /** Runner-wide settings (the Settings page), kept in runner.json. */
@@ -115,6 +120,8 @@ export interface User {
   email: string;
   /** Their Foliation profile picture (the identity token's `picture` claim), absent when they have none. */
   picture?: string;
+  /** Their Foliation role on the app (owner, editor, viewer): non-owners see only runners shared with them */
+  role?: string;
 }
 
 // ---------- ops (browser -> runner, answered with a result) ----------
@@ -173,6 +180,8 @@ export interface Ops {
   setRunnerSettings: { args: RunnerSettings; result: RunnerSettings };
   /** renames the runner (kept in runner.json; browsers see it at once). Blank: back to the default name */
   setRunnerName: { args: { name: string }; result: { name: string } };
+  /** who else may use the runner and how, replacing the list (kept in runner.json; owners only, shared/access.ts) */
+  setRunnerAccess: { args: { people: RunnerGrant[] }; result: { people: RunnerGrant[] } };
   /** Each harness's installed and newest version and how it was installed (cached a few minutes; `refresh` looks again). Updates in progress show on their rows */
   harnessVersions: { args: { refresh?: boolean }; result: HarnessReport };
   /** "Update all harnesses when all agents idle": `on` turns it on or off (kept on the runner, default off); none just answers */

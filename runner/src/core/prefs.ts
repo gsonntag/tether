@@ -6,6 +6,7 @@
 import { readFileSync } from "node:fs";
 import { CONFIG_FILE, saveConfig, type RunnerConfig, type SessionPrefs } from "../config";
 import { redactValue } from "../credentials";
+import { cleanGrants, type RunnerGrant } from "../../../shared/access";
 import type { BillingSource } from "../../../shared/credentials";
 import type { RunnerSettings } from "../../../shared/protocol";
 import type { HarnessId } from "../../../shared/transcript";
@@ -40,6 +41,7 @@ export class Prefs {
   private closed: ClosedRequest[];
   private runnerSettings: RunnerSettings;
   private alive?: number;
+  private sharedWith: RunnerGrant[];
 
   constructor(
     private file = CONFIG_FILE,
@@ -52,6 +54,7 @@ export class Prefs {
     this.runnerSettings = cfg.settings && typeof cfg.settings === "object" ? { ...cfg.settings } : {};
     this.alive = typeof cfg.aliveAt === "number" && Number.isFinite(cfg.aliveAt) ? cfg.aliveAt : undefined;
     for (const [id, p] of Object.entries(this.map)) this.index(id, undefined, p.sideOf);
+    this.sharedWith = cleanGrants(cfg.sharedWith);
   }
 
   /** When the runner was last seen running (as saved: from before this start, until set). */
@@ -88,6 +91,23 @@ export class Prefs {
   moveSides(from: string, to: string) {
     if (from === to) return;
     for (const id of this.sideChatsOf(from)) this.set(id, { sideOf: to });
+  }
+
+  /** Who else may use this runner (runner.json `sharedWith`). */
+  shared(): RunnerGrant[] {
+    return this.sharedWith.map((g) => ({ ...g }));
+  }
+
+  /** Replaces who else may use this runner (cleaned; empty removes it): written at once. */
+  setShared(people: unknown): RunnerGrant[] {
+    this.sharedWith = cleanGrants(people);
+    this.flush();
+    const cfg = read(this.file);
+    if (cfg.runnerId) {
+      const { sharedWith: _, ...rest } = cfg;
+      saveConfig({ ...rest, runnerId: cfg.runnerId, ...(this.sharedWith.length ? { sharedWith: this.sharedWith } : {}) }, this.file);
+    }
+    return this.shared();
   }
 
   /** The runner-wide settings. */

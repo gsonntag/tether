@@ -1,6 +1,7 @@
 // Parsing what comes off a socket. Browsers and runners are authenticated, but a malformed
 // frame must still never throw inside the relay or reach a handler half-formed.
 
+import { cleanGrants } from "./access";
 import type { BrowserToServer, HarnessInfo, OpName, RunnerInfo, RunnerToServer, SummaryUpdate } from "./protocol";
 import { HARNESS_LABELS, type HarnessId, type SessionEvent } from "./transcript";
 
@@ -53,7 +54,8 @@ function parseRunnerInfo(v: unknown): Omit<RunnerInfo, "connectedAt"> | null {
   const harnesses = v.harnesses.map(parseHarness).filter((h): h is HarnessInfo => !!h);
   const name = typeof v.name === "string" && v.name.trim() ? v.name : v.hostname || v.id;
   const homeFolder = typeof v.homeFolder === "string" && v.homeFolder.startsWith("/") && v.homeFolder.length <= 4096 ? v.homeFolder : undefined;
-  return { id: v.id, name, hostname: v.hostname, version: v.version, protocol: v.protocol, harnesses, ...(homeFolder ? { homeFolder } : {}), ...(v.git === true ? { git: true } : {}), ...(v.gitActions === true ? { gitActions: true } : {}), ...(v.files === true ? { files: true } : {}), ...(v.pinning === true ? { pinning: true } : {}) };
+  const shared = cleanGrants(v.shared);
+  return { id: v.id, name, hostname: v.hostname, version: v.version, protocol: v.protocol, harnesses, ...(homeFolder ? { homeFolder } : {}), ...(v.git === true ? { git: true } : {}), ...(v.gitActions === true ? { gitActions: true } : {}), ...(v.files === true ? { files: true } : {}), ...(v.pinning === true ? { pinning: true } : {}), ...(shared.length ? { shared } : {}) };
 }
 
 /** A runner frame, or null when it isn't one the server understands. Rebuilt like browser frames. */

@@ -2,15 +2,17 @@
 //   #/                                 Home (runners)
 //   #/l/<code>                          a session, by its short link (runner modules/links): what the bar shows
 //   #/s/<runnerId>/<sessionId>          a session (both URI-encoded): old links, and until the session's code is known; then replaced by its #/l/…
+//   #/settings/runners (owners: rename and share runners),
 //   #/settings/credentials, #/settings/azure, #/settings/texting, #/settings/notifications, #/settings/agents, #/settings/updates, #/settings/usage   Settings' subpages
 
 import { useSyncExternalStore } from "react";
 import { linkCache, type LinkCache } from "./linkCache";
 
-export type Route = { page: "home" } | { page: "credentials" } | { page: "azure" } | { page: "texting" } | { page: "notifications" } | { page: "agents" } | { page: "updates" } | { page: "usage" } | { page: "session"; runnerId: string; sessionId: string; code?: string } | { page: "link"; code: string };
+export type Route = { page: "home" } | { page: "runners" } | { page: "credentials" } | { page: "azure" } | { page: "texting" } | { page: "notifications" } | { page: "agents" } | { page: "updates" } | { page: "usage" } | { page: "session"; runnerId: string; sessionId: string; code?: string } | { page: "link"; code: string };
 
 export function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/");
+  if (parts[0] === "settings" && parts[1] === "runners") return { page: "runners" };
   if (parts[0] === "settings" && parts[1] === "azure") return { page: "azure" };
   if (parts[0] === "settings" && parts[1] === "texting") return { page: "texting" };
   if (parts[0] === "settings" && parts[1] === "notifications") return { page: "notifications" };
@@ -45,7 +47,7 @@ export function presenceFor(hash: string, visible: boolean, cache: Pick<LinkCach
 
 export function formatRoute(r: Route): string {
   if (r.page === "link" || (r.page === "session" && r.code)) return `#/l/${r.code}`;
-  return r.page === "session" ? `#/s/${encodeURIComponent(r.runnerId)}/${encodeURIComponent(r.sessionId)}` : r.page === "credentials" ? "#/settings/credentials" : r.page === "azure" ? "#/settings/azure" : r.page === "texting" ? "#/settings/texting" : r.page === "notifications" ? "#/settings/notifications" : r.page === "agents" ? "#/settings/agents" : r.page === "updates" ? "#/settings/updates" : r.page === "usage" ? "#/settings/usage" : "#/";
+  return r.page === "session" ? `#/s/${encodeURIComponent(r.runnerId)}/${encodeURIComponent(r.sessionId)}` : r.page === "runners" ? "#/settings/runners" : r.page === "credentials" ? "#/settings/credentials" : r.page === "azure" ? "#/settings/azure" : r.page === "texting" ? "#/settings/texting" : r.page === "notifications" ? "#/settings/notifications" : r.page === "agents" ? "#/settings/agents" : r.page === "updates" ? "#/settings/updates" : r.page === "usage" ? "#/settings/usage" : "#/";
 }
 
 export function navigate(r: Route) {

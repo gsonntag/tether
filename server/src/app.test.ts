@@ -157,7 +157,8 @@ test("loopback host names", () => {
 const people: Record<string, Viewer> = {
   owner: { id: "u-owner", email: "o@x", name: "Owner", role: "owner", service: false, picture: "" },
   owner2: { id: "u-owner2", email: "p@x", name: "Other owner", role: "owner", service: false, picture: "" },
-  guest: { id: "u-guest", email: "g@x", name: "Guest", role: "editor", service: false, picture: "" },
+  guest: { id: "u-guest", email: "g@x", name: "Guest", role: "editor", service: false, picture: "", guest: true },
+  editor: { id: "u-ed", email: "ed@x", name: "Ed", role: "editor", service: false, picture: "" },
   runner: { id: "svc:1", email: "", name: "runner", role: "editor", service: true, picture: "" },
   alice: { id: "svc:2", email: "", name: "runner-alice", role: "editor", service: true, picture: "" },
 };
@@ -191,7 +192,7 @@ describe("runner ids through the front door", () => {
 });
 
 describe("/api/ws-ticket", () => {
-  test("owners get a fresh, uncached ticket; nobody else does", async () => {
+  test("owners and shared people get a fresh, uncached ticket; nobody else does", async () => {
     const { base } = app(undefined, { dev: false, identify });
     const url = `http://${base}/api/ws-ticket`;
     const ok = await fetch(url, as("owner"));
@@ -199,6 +200,7 @@ describe("/api/ws-ticket", () => {
     expect(ok.headers.get("cache-control")).toBe("no-store");
     expect((await ok.json()).ticket).toMatch(/^[\w-]+\.[\w-]+$/);
     expect((await fetch(url)).status).toBe(401);
+    expect((await fetch(url, as("editor"))).status).toBe(200);
     for (const who of ["guest", "runner", "alice"]) expect((await fetch(url, as(who))).status).toBe(403);
     expect((await fetch(url, as("owner", { Origin: "https://evil.example" }))).status).toBe(403);
     expect((await fetch(url, as("owner", { Origin: `http://${base}` }))).status).toBe(200);

@@ -4,6 +4,7 @@ import { Heading } from "@astryxdesign/core/Heading";
 import { statusLabel, type AutoUpdateStatus, type HarnessReport, type HarnessVersion } from "../../../shared/harnessUpdates";
 import { rpc } from "../connection";
 import { autoLines, canUpdate, checkedAgo, METHOD_LABELS, runLine, updateAllTargets, updating } from "../harnessUpdates";
+import { accessOf } from "../runners";
 import { useStore } from "../store";
 import { useNow } from "./useNow";
 
@@ -17,7 +18,8 @@ const POLL_MS = 1500;
 
 /** Settings → Updates: every runner's harnesses, their versions, and updating them. */
 export function HarnessUpdates() {
-  const runners = useStore((s) => s.runners);
+  // Updating a runner's harnesses is its owner's (shared/access.ts).
+  const runners = useStore((s) => s.runners).filter((r) => accessOf(r) === "manage");
   const link = useStore((s) => s.link);
   const now = useNow();
   const [state, setState] = useState<Record<string, RunnerState>>({});

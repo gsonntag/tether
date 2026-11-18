@@ -5,7 +5,7 @@
 // the owner check moments ago. A revoked share or a demoted owner gets no more tickets, and the
 // socket is closed when its last one runs out (relay.ts).
 //
-// ticket = base64url(JSON {sub, exp}) "." base64url(HMAC-SHA256(secret, that payload part)). The
+// ticket = base64url(JSON {sub, exp, role?}) "." base64url(HMAC-SHA256(secret, that payload part)). The
 // secret is random per server process: a restart drops every socket anyway.
 
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -35,13 +35,14 @@ export class Tickets {
     this.now = opts.now ?? Date.now;
   }
 
-  issue(sub: string): string {
-    const payload = b64url(JSON.stringify({ sub, exp: this.now() + this.ttlMs }));
+  /** `role`: the person's Foliation role on the app as of now, which the socket takes on at renew. */
+  issue(sub: string, role?: string): string {
+    const payload = b64url(JSON.stringify({ sub, exp: this.now() + this.ttlMs, ...(role !== undefined ? { role } : {}) }));
     return `${payload}.${this.mac(payload).toString("base64url")}`;
   }
 
   /** The ticket's subject and expiry when it is genuine and unexpired, else null. */
-  verify(ticket: string): { sub: string; exp: number } | null {
+  verify(ticket: string): { sub: string; exp: number; role?: string } | null {
     const [payload, sig, extra] = ticket.split(".");
     if (!payload || !sig || extra !== undefined || !canonical(payload) || !canonical(sig)) return null;
     const given = Buffer.from(sig, "base64url");
@@ -53,9 +54,9 @@ export class Tickets {
     } catch {
       return null;
     }
-    const { sub, exp } = (claims ?? {}) as { sub?: unknown; exp?: unknown };
+    const { sub, exp, role } = (claims ?? {}) as { sub?: unknown; exp?: unknown; role?: unknown };
     if (typeof sub !== "string" || !sub || typeof exp !== "number" || !(exp > this.now())) return null;
-    return { sub, exp };
+    return { sub, exp, ...(typeof role === "string" ? { role } : {}) };
   }
 
   private mac(payload: string): Buffer {

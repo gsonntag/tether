@@ -6,6 +6,7 @@
 // device's (homeTabs.ts).
 // Expand puts it over the whole window (Escape or Collapse brings it back), remembered per device.
 
+import { accessOf } from "../runners";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { HOME_COMMANDS, isHomeReset } from "../../../shared/commands";
 import { Button } from "@astryxdesign/core/Button";
@@ -48,7 +49,9 @@ function openLayer(): boolean {
 export function HomeChat() {
   const runners = useStore((s) => s.runners);
   const linkOpen = useStore((s) => s.link === "open");
-  const runner = runners.find((r) => r.online && r.homeFolder);
+  // Your own runner's Home agent, else one shared with you to drive; never one you may only view.
+  const homes = runners.filter((r) => r.online && r.homeFolder);
+  const runner = homes.find((r) => accessOf(r) === "manage") ?? homes.find((r) => accessOf(r) === "drive");
   const rid = runner?.id;
   const conn = `${rid}:${runner?.connectedAt}:${linkOpen}`;
   /** the tabs and current chat (kept in sync across devices by the runner's homeChat broadcasts): undefined while asking */

@@ -31,6 +31,9 @@ export function reconnected(before: KnownRunner[], after: KnownRunner[]): string
   return after.filter((r) => r.online && (!prev.get(r.id)?.online || prev.get(r.id)?.connectedAt !== r.connectedAt)).map((r) => r.id);
 }
 
+/** What you may do on a runner (shared/access.ts): absent from the server means you own it. */
+export const accessOf = (r: Pick<RunnerInfo, "access"> | undefined): "manage" | "drive" | "view" => r?.access ?? "manage";
+
 const STORE_KEY = "tether.runners";
 
 export function loadKnown(): KnownRunner[] {

@@ -2,6 +2,7 @@
 // id, per-session prefs, queued messages, pending retry payloads, read state and open requests.
 // Complete transcripts stay in the harness's own store.
 
+import type { RunnerGrant } from "../../shared/access";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
@@ -26,6 +27,8 @@ export interface RunnerConfig {
   name?: string;
   /** runner-wide settings (the Settings page) */
   settings?: RunnerSettings;
+  /** who else may use this runner and how (shared/access.ts); the relay enforces it */
+  sharedWith?: RunnerGrant[];
   /** per-session settings Tether chose (SPEC §4), by session id */
   sessions?: Record<string, SessionPrefs>;
   /** approvals and questions still waiting for a person (SPEC §7): they survive a restart */

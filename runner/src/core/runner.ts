@@ -95,6 +95,8 @@ export function createRunner(o: RunnerOptions) {
     gitActions: true,
     files: true,
     pinning: true,
+    // The relay shows the runner to these people (shared/access.ts) and only its owners see the list.
+    ...(prefs.shared().length ? { shared: prefs.shared() } : {}),
   });
 
   const conn = new Connection({
@@ -152,6 +154,12 @@ export function createRunner(o: RunnerOptions) {
     // A repeated hello on the same connection just updates what the browsers see.
     conn.send({ t: "hello", runner: await helloInfo() });
     return { name };
+  });
+  // Owners only: the relay refuses it from anyone else (shared/access.ts MANAGE_OPS).
+  ops.register("setRunnerAccess", async (a) => {
+    const people = prefs.setShared(a?.people);
+    conn.send({ t: "hello", runner: await helloInfo() });
+    return { people };
   });
   registerSessionOps(ops, core, live);
   const shellRuns = new ShellRuns(core, live, { shell: (o.terminal || undefined)?.shell });

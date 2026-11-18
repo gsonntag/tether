@@ -11,12 +11,20 @@ import { HarnessUpdates } from "./HarnessUpdates";
 import { TextingSettings } from "./TextingSettings";
 import { UsageSettings } from "./UsageSettings";
 
-type Page = "credentials" | "azure" | "texting" | "notifications" | "agents" | "updates" | "usage";
+import { RunnersSettings } from "./RunnersSettings";
+import { accessOf } from "../runners";
+
+type Page = "runners" | "credentials" | "azure" | "texting" | "notifications" | "agents" | "updates" | "usage";
 const labels: Record<CredentialSource, string> = { anthropic: "Anthropic API key", openai: "OpenAI API key", azure: "API key" };
 
-/** Settings, per runner: Credentials (Anthropic and OpenAI keys), Azure (its key, resource and deployments) Messaging (iMessage, Discord) and this device's Notifications. */
-export function Settings({ page }: { page: Page }) {
-  const runners = useStore((s) => s.runners);
+/** Settings, per runner: Runners (names and sharing), Credentials (Anthropic and OpenAI keys), Azure (its key, resource and deployments) Messaging (iMessage, Discord) and this device's Notifications. */
+export function Settings({ page: asked }: { page: Page }) {
+  // Everything but Notifications is the owner's: only runners you own, and none for someone a
+  // runner is merely shared with (shared/access.ts).
+  const runners = useStore((s) => s.runners).filter((r) => accessOf(r) === "manage");
+  const role = useStore((s) => s.user?.role);
+  const owner = !role || role === "owner" || runners.length > 0;
+  const page: Page = owner ? asked : "notifications";
   const [chosen, setChosen] = useState("");
   const runner = runners.find((r) => r.id === chosen) ?? runners.find((r) => r.online) ?? runners[0];
   return (
@@ -24,6 +32,8 @@ export function Settings({ page }: { page: Page }) {
       <Heading level={1}>Settings</Heading>
       <div className="t-settings-body">
       <nav className="t-settings-nav" aria-label="Settings">
+        {owner && <>
+        <a href="#/settings/runners" aria-current={page === "runners" ? "page" : undefined}>Runners</a>
         <a href="#/settings/credentials" aria-current={page === "credentials" ? "page" : undefined}>Credentials</a>
         <a href="#/settings/azure" aria-current={page === "azure" ? "page" : undefined}>Azure</a>
         <a href="#/settings/texting" aria-current={page === "texting" ? "page" : undefined}>Messaging</a>
@@ -31,11 +41,16 @@ export function Settings({ page }: { page: Page }) {
         <a href="#/settings/agents" aria-current={page === "agents" ? "page" : undefined}>Agents</a>
         <a href="#/settings/updates" aria-current={page === "updates" ? "page" : undefined}>Updates</a>
         <a href="#/settings/usage" aria-current={page === "usage" ? "page" : undefined}>Usage</a>
+        </>}
+        {!owner && <a href="#/settings/notifications" aria-current="page">Notifications</a>}
       </nav>
       <div className={page === "usage" ? "t-credentials t-credentials-wide" : "t-credentials"}>
       {page === "notifications" ? <>
       <Heading level={2}>Notifications</Heading>
       <DeviceNotifications />
+      </> : page === "runners" ? <>
+      <Heading level={2}>Runners</Heading>
+      <RunnersSettings />
       </> : page === "updates" ? <HarnessUpdates /> : <>
       <Heading level={2}>{page === "azure" ? "Azure" : page === "texting" ? "Messaging" : page === "agents" ? "Agents" : page === "usage" ? "Usage" : "Credentials"}</Heading>
       {runners.length > 1 && <label className="t-field">Runner<select className="t-select" value={runner?.id ?? ""} onChange={(e) => setChosen(e.target.value)}>{runners.map((r) => <option key={r.id} value={r.id}>{r.name || r.id}</option>)}</select></label>}

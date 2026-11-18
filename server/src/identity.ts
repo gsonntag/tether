@@ -18,6 +18,11 @@ export interface Viewer {
    * "Profile pictures"). A new picture gets a new URL, so the next token carries the change.
    */
   picture: string;
+  /**
+   * Not a person with a share on the app: a public-link visitor (`pub`, even one who shared their
+   * identity) or another app calling (`caller`). Such a visitor never uses a runner.
+   */
+  guest?: boolean;
 }
 
 const env = process.env;
@@ -67,6 +72,7 @@ export async function viewerFrom(req: Request): Promise<Viewer | null> {
       role: String(payload.role ?? ""),
       service: payload.svc === true,
       picture: typeof payload.picture === "string" ? payload.picture : "",
+      guest: payload.pub === true || payload.anon === true || payload.caller !== undefined,
     };
   } catch {
     return null;
@@ -74,10 +80,16 @@ export async function viewerFrom(req: Request): Promise<Viewer | null> {
 }
 
 /** What a browser is told about who it is signed in as (no picture key when there is none). */
-export const browserUser = (v: Viewer): User => ({ name: v.name, email: v.email, ...(v.picture ? { picture: v.picture } : {}) });
+export const browserUser = (v: Viewer): User => ({ name: v.name, email: v.email, ...(v.picture ? { picture: v.picture } : {}), ...(v.role ? { role: v.role } : {}) });
 
-/** Browsers: only the app's owners (it runs shell commands on your machines). */
-export const isOwner = (v: Viewer | null) => !!v && !v.service && v.role === "owner";
+/** Browsers: the app's owners (it runs shell commands on your machines). */
+export const isOwner = (v: Viewer | null) => !!v && !v.service && !v.guest && v.role === "owner";
+
+/**
+ * Someone the app is shared with (editor or viewer): they may sign in, and see only the runners an
+ * owner shared with them (shared/access.ts). Never a service token, app call or public-link visitor.
+ */
+export const isSharedPerson = (v: Viewer | null) => !!v && !v.service && !v.guest && !v.id.startsWith("anon:") && !!v.email && (v.role === "editor" || v.role === "viewer");
 
 /** Runners: a service token named runner or runner-* with the editor role. */
 export const isRunner = (v: Viewer | null) => !!v && v.service && v.role === "editor" && /^runner(-|$)/.test(v.name);

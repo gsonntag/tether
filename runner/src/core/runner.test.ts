@@ -47,6 +47,42 @@ test("the core hears about connects and disconnects on its bus", async () => {
   expect(r.epoch).toMatch(/^[0-9a-f-]{36}$/);
 }, 15_000);
 
+test("setRunnerAccess keeps the share list in runner.json and says hello with it", async () => {
+  const { mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const file = join(mkdtempSync(join(tmpdir(), "tether-share-")), "runner.json");
+  writeFileSync(file, JSON.stringify({ runnerId: "u3", name: "Box", sessions: {} }));
+  const hellos: unknown[] = [];
+  const s = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: (req, srv) => (srv.upgrade(req, { data: undefined }) ? undefined : new Response("no", { status: 400 })),
+    websocket: {
+      message(ws, raw) {
+        const m = JSON.parse(String(raw));
+        if (m.t === "hello") (hellos.push(m.runner.shared), ws.send(JSON.stringify({ t: "welcome" })));
+      },
+    },
+  });
+  stops.push(() => s.stop(true));
+  const r = createRunner({ url: `http://127.0.0.1:${s.port}`, token: "t", runnerId: "u3", name: "Box", version: "0", detectHarnesses: async () => [], log: () => {}, prefsFile: file });
+  stops.push(() => r.stop());
+  r.start();
+  await until(() => hellos.length === 1);
+  expect(hellos[0]).toBeUndefined();
+  const people = [{ email: " Ed@X.com ", access: "drive" }, { email: "ed@x.com", access: "view" }, { email: "nope" }, { email: "v@x.com", access: "admin" }];
+  const want = [{ email: "ed@x.com", access: "drive" }, { email: "v@x.com", access: "view" }];
+  expect(await r.ops.handle("setRunnerAccess", { people })).toEqual({ ok: true, data: { people: want } });
+  await until(() => hellos.length === 2);
+  expect(hellos[1]).toEqual(want);
+  const saved = JSON.parse(readFileSync(file, "utf8"));
+  expect(saved.sharedWith).toEqual(want);
+  expect(saved.name).toBe("Box");
+  expect(await r.ops.handle("setRunnerAccess", { people: [] })).toEqual({ ok: true, data: { people: [] } });
+  expect(JSON.parse(readFileSync(file, "utf8")).sharedWith).toBeUndefined();
+}, 15_000);
+
 test("setRunnerName renames in runner.json and says hello again; blank goes back to the default", async () => {
   const { mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");
