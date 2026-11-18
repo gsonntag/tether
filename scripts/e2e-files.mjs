@@ -56,7 +56,7 @@ function makeRepo() {
   const d = join(base, "proj");
   mkdirSync(join(d, "src"), { recursive: true });
   writeFileSync(join(base, "outside-secret.txt"), "never shown\n");
-  writeFileSync(join(d, "README.md"), "# Files demo\n\nA **bold** claim and a list:\n\n- one\n- two\n\n```ts\nconst x = 1;\n```\n\nSee [the app](src/app.ts) and [escape](../outside-secret.txt).\n");
+  writeFileSync(join(d, "README.md"), "# Files demo\n\nA **bold** claim and a list:\n\n- one\n- two\n\n```ts\nconst x = 1;\n```\n\nSee [the app](src/app.ts), [the sources](src) and [escape](../outside-secret.txt). Jump to [the end](#the-end).\n\n" + "filler\n\n".repeat(80) + "## The end\n\nDone.\n");
   writeFileSync(join(d, "src/trojan.ts"), 'const ok = "user\u202e \u2066// admin\u2069 \u2066";\n');
   writeFileSync(join(d, "src/app.ts"), Array.from({ length: 60 }, (_, i) => `export const line${i + 1} = ${i + 1}; // a fairly long line so that it scrolls sideways on a phone screen`).join("\n") + "\n");
   writeFileSync(join(d, "logo.png"), png());
@@ -186,11 +186,21 @@ await pane(p).getByRole("button", { name: "Back to files" }).click();
 await row(p, "README.md").locator(".t-files-item").click();
 await pane(p).locator(".t-files-md a", { hasText: "escape" }).click();
 await pane(p).locator(".t-changes-note.error", { hasText: "outside the session's folder" }).waitFor();
+if (!(await pane(p).locator(".t-files-md h1").isVisible())) fail("the out-of-folder note replaced the preview");
 if ((await p.evaluate(() => location.hash)) !== hashBefore) fail("an escaping link navigated the app");
-await pane(p).getByRole("button", { name: "Back to files" }).click();
+// #anchor scrolls the preview only.
+const pageScroll = await p.evaluate(() => document.scrollingElement.scrollTop);
+await pane(p).locator(".t-files-md a", { hasText: "the end" }).click();
+await p.waitForFunction(() => document.querySelectorAll(".t-files-body")[0].scrollTop > 100);
+if ((await p.evaluate(() => document.scrollingElement.scrollTop)) !== pageScroll) fail("the anchor scrolled the page");
+if ((await p.evaluate(() => location.hash)) !== hashBefore) fail("an anchor navigated the app");
+// A folder link opens the folder in the tree.
+await pane(p).locator(".t-files-md a", { hasText: "the sources" }).click();
+await p.waitForFunction(() => document.activeElement?.getAttribute("data-path") === "src");
+if ((await row(p, "src").getAttribute("aria-expanded")) !== "true") fail("the folder link should open src");
 await row(p, "README.md").locator(".t-files-item").click();
 await pane(p).getByRole("button", { name: "Raw" }).click();
-ok("desktop: README.md preview (h1), raw; a relative link opens src/app.ts here, one out of the folder is refused");
+ok("desktop: README.md preview (h1), raw; a relative link opens src/app.ts here, a folder link opens src in the tree, #the-end scrolls the preview only, a link out of the folder is said inline");
 
 // Mention.
 await pane(p).getByRole("button", { name: "Mention" }).click();

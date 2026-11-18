@@ -85,6 +85,7 @@ export function FileTree({ rows, hidden, mentioned, onToggle, onOpen, onMention 
           <li
             key={`p:${r.path}`}
             data-row={i}
+            data-path={r.path}
             role="treeitem"
             tabIndex={r.path === stop ? 0 : -1}
             aria-level={r.depth + 1}

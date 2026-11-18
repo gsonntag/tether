@@ -12,7 +12,7 @@ import { IconButton } from "@astryxdesign/core/IconButton";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { ArrowLeftIcon, AtSymbolIcon, EyeIcon, EyeSlashIcon } from "@heroicons/react/24/outline";
 import { DocumentIcon, PhotoIcon } from "@heroicons/react/24/solid";
-import { FILE_VIEW_MAX, imageType, mentionOf, sizeLabel, type FileRead, type FindResult } from "../../../shared/files";
+import { FILE_VIEW_MAX, imageType, mentionOf, sizeLabel, type DirList, type FileRead, type FindResult } from "../../../shared/files";
 import type { RunStatus } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { lineNumbers, linkTarget, loadedOpen, mapLimit, nameOf, oddChars, parentOf, pruneOpen, treeRows, viewOf, type DirState } from "../files";
@@ -57,6 +57,9 @@ export function FilesView({ runnerId, sessionId, status, cover, shown, reload, o
   const [reading, setReading] = useState(false);
   const [raw, setRaw] = useState(false);
   const [mentioned, setMentioned] = useState<string>();
+  /** a Markdown link that can't be followed, said above the preview */
+  const [linkNote, setLinkNote] = useState<string>();
+  const viewBody = useRef<HTMLDivElement>(null);
   const gen = useRef(0);
   const openRef = useRef(open);
   openRef.current = open;
@@ -174,8 +177,26 @@ export function FilesView({ runnerId, sessionId, status, cover, shown, reload, o
     setFile(path);
     setRead(undefined);
     setReadError(undefined);
+    setLinkNote(undefined);
     setRaw(false);
     void readIt(path);
+  };
+  /** back to the tree with `path` (a folder) and its parents open, its row focused */
+  const revealFolder = (path: string, list?: DirList) => {
+    const up = path.split("/").map((_, i, a) => a.slice(0, i + 1).join("/"));
+    const next = new Set(open);
+    for (const p of up) next.add(p);
+    setOpen(next);
+    if (list) setDirs((d) => ({ ...d, [path]: { list } }));
+    for (const p of ["", ...up.slice(0, -1)]) if (!dirs[p]?.list) void loadDir(p);
+    setQuery("");
+    setFile(undefined);
+    setLinkNote(undefined);
+    requestAnimationFrame(() => {
+      const row = [...(treeBox.current?.querySelectorAll<HTMLElement>('[role="treeitem"]') ?? [])].find((e) => e.dataset.path === path);
+      row?.scrollIntoView({ block: "nearest" });
+      row?.focus();
+    });
   };
   const back = () => {
     setFile(undefined);
@@ -191,15 +212,29 @@ export function FilesView({ runnerId, sessionId, status, cover, shown, reload, o
     const t = setTimeout(() => setMentioned(undefined), 2000);
     return () => clearTimeout(t);
   }, [mentioned]);
-  /** a link in a Markdown preview: a file in the folder opens here; nothing else in the folder navigates the app */
+  /**
+   * A link in a Markdown preview: a file in the folder opens here, a folder opens in the tree, a
+   * heading scrolls the preview (only it); one out of the folder is said above it. Only links away
+   * (a scheme) leave; nothing navigates the app.
+   */
   const onLink = (href: string, ev: React.MouseEvent<HTMLAnchorElement>) => {
     if (!file) return;
     const to = linkTarget(file, href);
     if (to.t === "away") return;
     ev.preventDefault();
-    if (to.t === "file") openFile(to.path);
-    else if (to.t === "anchor") document.getElementById(to.id)?.scrollIntoView({ block: "start" });
-    else setReadError("That link points outside the session's folder.");
+    setLinkNote(undefined);
+    if (to.t === "outside") setLinkNote(`“${href}” points outside the session's folder.`);
+    else if (to.t === "anchor") {
+      const box = viewBody.current;
+      const el = box?.querySelector<HTMLElement>(`[id="${CSS.escape(to.id)}"]`);
+      if (!box || !el) setLinkNote(`No heading “${to.id}” here.`);
+      else box.scrollTo({ top: el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop });
+    } else
+      // A folder lists; anything else opens as a file.
+      void rpc(runnerId, "listDir", { sessionId, path: to.path, hidden }).then(
+        (list) => revealFolder(to.path, list),
+        () => openFile(to.path),
+      );
     return false;
   };
 
@@ -232,7 +267,7 @@ export function FilesView({ runnerId, sessionId, status, cover, shown, reload, o
             )}
             <Button label={mentioned === file ? "In the message box" : "Mention"} size="sm" variant="secondary" icon={<Icon icon={AtSymbolIcon} />} onClick={() => mention(file, false)} />
           </div>
-          <div className="t-files-body">
+          <div className="t-files-body" ref={viewBody}>
             {readError ? (
               <div className="t-changes-note error">{readError}</div>
             ) : !v ? (
@@ -255,6 +290,7 @@ export function FilesView({ runnerId, sessionId, status, cover, shown, reload, o
                 {v.cut && read && <div className="t-changes-note">The first {v.lossy ? "part" : sizeLabel(FILE_VIEW_MAX)} of {sizeLabel(read.size)}.</div>}
                 {v.lossy && <div className="t-changes-note">Not all UTF-8 text: shown as well as it decodes (� where it doesn't).</div>}
                 {odd.length > 0 && <div className="t-changes-note t-files-odd">This file has {odd.join(" and ")}.</div>}
+                {linkNote && <div className="t-changes-note error" role="status">{linkNote}</div>}
                 {v.t === "markdown" && !raw ? (
                   <div className="t-files-md">
                     <Markdown contentWidth="100%" onLinkClick={onLink}>
