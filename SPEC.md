@@ -1305,8 +1305,9 @@ bytes as the file says it has are read. Over 1 MB it's the size only; a text fil
 asking (`head`), shown even if it isn't all UTF-8 or is mostly control characters (decoded with
 U+FFFD, cut to fit, `lossy`, said above it). The viewer: text in a `<pre>` with line numbers, a
 note when it holds bidirectional or control characters; Markdown preview (Markdown.tsx, remote
-images not loaded) or Raw, where a relative link opens that file in the viewer, `#heading` scrolls,
-and a link out of the folder is refused (nothing navigates the app); images as an `<img>` from a
+images not loaded) or Raw, where a relative link opens that file in the viewer or that folder in
+the tree, `#heading` scrolls the preview (only it), and a link out of the folder is said above the
+preview, which stays (only links with a scheme leave; nothing navigates the app); images as an `<img>` from a
 `data:` URL (SVG too, so its scripts never run). **Mention** (in the viewer, `@` on a row: on hover,
 always on touch, the `@` key on a focused row) adds `@path` (`@"path"` when it has spaces and no `"`;
 a folder `path/`) to the message box's last line; on a phone the box isn't focused, so no keyboard
@@ -1320,7 +1321,9 @@ real path; that gives the plain refusals. What's guaranteed rests on the open ha
 a file opens `O_NOFOLLOW | O_NONBLOCK` (a FIFO never blocks; it must be a regular file), a folder
 `O_DIRECTORY | O_NOFOLLOW`, and on Linux the kernel's path for the handle (`/proc/self/fd/N`) must
 be inside the folder; a folder is then listed, and its entries' sizes and links looked at, through
-that handle, and the filter's walk opens each folder the same way. So on Linux a link swapped in
+that handle (`git check-ignore` too: it runs in `/proc/<pid>/fd/N`), and the filter's walk opens
+each folder the same way. Linux without `/proc` refuses every read and list rather than reading
+unchecked. So on Linux a link swapped in
 anywhere on the path at any moment yields a refusal, never a byte or a name from outside (a test
 races a swapper against all three ops). Elsewhere (macOS has no `/proc`, and `F_GETPATH` needs a
 variadic `fcntl` bun:ffi can't call) it is best effort: after opening, the path is resolved again
@@ -1328,8 +1331,9 @@ and must be inside and the same file (device and inode), which narrows the windo
 it. Links are listed as links: to a file or folder inside (opened as that), else `outside` (never
 read through or listed into, and whether its target exists isn't said); `broken` only for a target
 inside by its text (missing, a loop). Names that aren't UTF-8 are listed, marked, and can't be
-opened. Hard links aren't links: a hard link inside to a file outside reads as inside. Every stat,
-realpath and readlink waits 5 s at most. Nothing is written or run but `git rev-parse`,
+opened. Hard links aren't links: a hard link inside to a file outside reads as inside. Each open,
+stat, realpath and readlink is waited on 5 s at most (the call itself may go on; a handle that opens
+after that is closed); reading an open file and git's own limits (run.ts) aren't part of that. Nothing is written or run but `git rev-parse`,
 `check-ignore` and `ls-files` (run.ts's hardening). A `.env` and the like aren't blocked or hidden
 from a reader: it's the person's machine, behind the eye toggle. (Op answers pass the runner's
 redaction of its own secrets, its token and stored keys, which keeps those from leaving through a
