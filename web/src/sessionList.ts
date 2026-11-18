@@ -46,6 +46,43 @@ export function splitPinned(list: Row[]): { pinned: Row[]; rest: Row[] } {
   return { pinned, rest: list.filter((r) => !isPinned(r)) };
 }
 
+export interface ProjectGroup {
+  /** the folder (one group per path, across runners) */
+  path: string;
+  /** its short name: the folder's, with as many parent folders as it takes to tell it from the others */
+  label: string;
+  rows: Row[];
+}
+
+/**
+ * Recent, by project: one group per folder, in the order of each group's newest session (`list`
+ * comes newest first, so a page of it groups the same way), sessions newest first within.
+ */
+export function groupByProject(list: Row[]): ProjectGroup[] {
+  const by = new Map<string, Row[]>();
+  for (const r of [...list].sort(newestFirst)) {
+    const key = r.projectPath.replace(/(.)\/+$/, "$1");
+    const g = by.get(key);
+    if (g) g.push(r);
+    else by.set(key, [r]);
+  }
+  const groups = [...by].map(([path, rows]) => ({ path, parts: path.split("/").filter(Boolean), depth: 1, label: "", rows }));
+  const tail = (g: (typeof groups)[number]) => g.parts.slice(-g.depth).join("/") || g.path;
+  // Same-named folders take one more parent each round, until every label differs (or a path runs out).
+  for (;;) {
+    for (const g of groups) g.label = tail(g);
+    const count = new Map<string, number>();
+    for (const g of groups) count.set(g.label, (count.get(g.label) ?? 0) + 1);
+    const clash = groups.filter((g) => count.get(g.label)! > 1 && g.depth < g.parts.length);
+    if (!clash.length) break;
+    for (const g of clash) g.depth++;
+  }
+  return groups.map(({ path, label, rows }) => ({ path, label, rows }));
+}
+
+/** Recent's groups, or none where the list stays flat: search results and a project's list. */
+export const recentGroups = (list: Row[], o: { query?: string; filter?: string }): ProjectGroup[] | undefined => (o.query?.trim() || o.filter ? undefined : groupByProject(list));
+
 /**
  * The session menu's pin item: "Pin" or "Unpin", or none where pinning isn't offered (a runner from
  * before pinSession, an archived session, a subagent, a Home agent chat).

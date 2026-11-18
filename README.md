@@ -21,7 +21,7 @@ browser ──wss──► server (Foliation app: UI + relay) ◄──wss──
 
 **Sessions.** The runner finds your existing Claude Code (`~/.claude/projects`) and Codex sessions
 and shows them all in one transcript format. Nothing starts until you send. The sidebar has Recent
-(the last 3 days plus every live session) and per-project lists, and search finds the rest. You can
+(the last 3 days plus every live session, grouped by project) and per-project lists, and search finds the rest. You can
 rename, pin and archive sessions from the sidebar (or a session's ⋯ menu); pinned ones stay at the top on every device. A session goes live when you send and goes back to
 stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–§6a.
 
