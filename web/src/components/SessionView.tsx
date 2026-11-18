@@ -16,7 +16,7 @@ import { QueueList } from "./QueueList";
 import { backQuestion, SHELL_TAB, TerminalPanel, type PanelState } from "./TerminalPanel";
 import { RequestDock } from "./RequestDock";
 import { dropRows, SessionCtx } from "./sessionContext";
-import { canFork, forkSession } from "../fork";
+import { canFork, forkRunning, forkSession, useForking } from "../fork";
 import { SessionHeader } from "./SessionHeader";
 import { Transcript } from "./Transcript";
 import { useChildren } from "./useChildren";
@@ -132,7 +132,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
 
   // Fork from here on the replies that end a finished turn (SPEC §16): a main session whose harness forks.
   const forks = !!view?.state && !!summary && canFork(summary, view.capabilities, view.state);
-  const forkBusy = view?.state ? view.state.status !== "idle" : false;
+  const forkBusy = view?.state ? forkRunning(view.state, view.capabilities) : false;
+  const forkingHere = useForking(sessionId);
   const ctx = useMemo(
     () => ({ runnerId, sessionId, projectPath: summary?.projectPath, ...(forks ? { fork: { running: forkBusy, from: (messageId: string) => void forkSession(runnerId, sessionId, messageId) } } : {}) }),
     [runnerId, sessionId, summary?.projectPath, forks, forkBusy],
@@ -275,6 +276,11 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
         <Transcript key={k} window={view.window} onOlder={() => loadOlder(runnerId, sessionId)} footer={
             <>
               <PendingSends runnerId={runnerId} sessionId={sessionId} list={pending} />
+              {forkingHere && (
+                <div className="t-inline-status" role="status" style={{ padding: "8px 0" }}>
+                  <Spinner size="sm" /> Forking…
+                </div>
+              )}
               {inTerminal ? empty : starting ? <StartStatus row={starting} /> : working || empty}
             </>
           } />

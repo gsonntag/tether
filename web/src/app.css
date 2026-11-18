@@ -3132,13 +3132,19 @@
   color: var(--t-muted);
 }
 @media (hover: hover) and (pointer: fine) {
+  /* Hidden, it takes no clicks, but stays in the tab order: focused, it shows. */
   .t-fork-here {
     opacity: 0;
+    pointer-events: none;
   }
   .t-msg.assistant:hover .t-fork-here,
   .t-fork-here:focus-visible {
     opacity: 1;
+    pointer-events: auto;
   }
+}
+.t-fork-here:disabled {
+  cursor: default;
 }
 @media (max-width: 767px), (pointer: coarse) {
   /* Under the chips, a line of its own, out of the way of the title. */

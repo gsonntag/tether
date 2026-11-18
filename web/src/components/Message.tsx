@@ -18,6 +18,7 @@ import { useFullParts, useRowState, useSessionCtx } from "./sessionContext";
 import { ShellCard, ShellSent } from "./ShellCard";
 import { ToolCard } from "./ToolCard";
 import { openSession } from "../route";
+import { useForking } from "../fork";
 import { resetTime } from "../../../shared/labels";
 import { localizeUsageLimitRetry } from "../usageLimitTime";
 
@@ -132,6 +133,17 @@ function isCheckIn(msg: Msg) {
   const text = msg.parts.map((p) => (p.type === "text" ? p.text : "")).join("\n");
   // Not parsed: the marker is still there. Parsed (an older runner): the text is without it.
   return tetherPurpose(text) === "checkIn" || (msg.origin?.kind === "tether" && tetherPurpose(FROM_TETHER + text) === "checkIn");
+}
+
+/** Fork from here (SPEC §16), "Forking…" while the session is being forked. */
+function ForkHere({ onFork }: { onFork: () => void }) {
+  const { sessionId } = useSessionCtx();
+  const busy = useForking(sessionId);
+  return (
+    <button type="button" className="t-link t-fork-here" title="A new session with the conversation up to here" disabled={busy} onClick={onFork}>
+      {busy ? "Forking…" : "Fork from here"}
+    </button>
+  );
 }
 
 export const Message = memo(function Message({ msg, failed, forkable }: { msg: Msg; failed?: boolean; forkable?: boolean }) {
@@ -308,9 +320,7 @@ export const Message = memo(function Message({ msg, failed, forkable }: { msg: M
         {msg.error && <div className="t-msg-error">{localizeUsageLimitRetry(msg.error, undefined, msg.ts)}</div>}
         {forkable && fork && (
           // A new session whose conversation ends here (SPEC §16); this one stays as it is.
-          <button type="button" className="t-link t-fork-here" title="A new session with the conversation up to here" onClick={() => fork.from(msg.id)}>
-            Fork from here
-          </button>
+          <ForkHere onFork={() => fork.from(msg.id)} />
         )}
       </div>
     </div>
