@@ -11,6 +11,7 @@ import { IconButton } from "@astryxdesign/core/IconButton";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { XMarkIcon } from "@heroicons/react/24/solid";
 import { AGENT_NAMES } from "../../../shared/transcript";
+import { sideCommandRefusal } from "../../../shared/sideChat";
 import { rpc } from "../connection";
 import { mergeRows, shownStatus, sideChatsOf, type Row } from "../sessionList";
 import { billingForDisplay } from "../sourceMenu";
@@ -232,6 +233,8 @@ function SideChat({ runnerId, sessionId, onBringBack, onClose }: { runnerId: str
             canSteer={!!view.capabilities?.canSteer}
             agent={agent}
             placeholder="Ask on the side (read only)"
+            // Questions only: a / command never goes (the runner refuses it too).
+            refuse={(text) => sideCommandRefusal(text)}
             disabled={!linkOpen ? "Reconnecting…" : bringing ? "Writing a summary…" : undefined}
             uploadTo={{ runnerId, sessionId }}
             onSend={async (kind, text, list) => {

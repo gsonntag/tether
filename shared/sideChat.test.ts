@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { bringBackDraft, BRING_BACK_PROMPT, parseBtw, sideChatTitle } from "./sideChat";
+import { bringBackDraft, BRING_BACK_PROMPT, parseBtw, sideChatTitle, sideCommandRefusal } from "./sideChat";
 import { tetherOrigin } from "./fromTether";
 
 test("/btw and its question", () => {
@@ -19,4 +19,11 @@ test("a side chat's title is its question, short; else its session's", () => {
 test("Bring back's turn is Tether's; its draft says where it's from", () => {
   expect(tetherOrigin(BRING_BACK_PROMPT)?.origin.kind).toBe("tether");
   expect(bringBackDraft("  done.\n")).toBe("From a side chat:\n\ndone.");
+});
+
+test("a side chat takes questions, not / commands (a path is a question)", () => {
+  expect(sideCommandRefusal("/deploy now")).toContain("not / commands");
+  expect(sideCommandRefusal("/btw x")).toContain("not / commands");
+  expect(sideCommandRefusal("/tmp/x is what?")).toBeUndefined();
+  expect(sideCommandRefusal("why /x?")).toBeUndefined();
 });

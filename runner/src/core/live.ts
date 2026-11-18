@@ -15,7 +15,7 @@ import type { CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
 import { FROM_TETHER } from "../../../shared/fromTether";
-import { SIDE_KEEPS, SIDE_STAYS } from "../../../shared/sideChat";
+import { SIDE_KEEPS, SIDE_STAYS, sideCommandRefusal } from "../../../shared/sideChat";
 import { modelIdProblem, reportedAt } from "../../../shared/labels";
 import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
 import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
@@ -260,6 +260,7 @@ export class LiveControl {
   async send(id: string, text: string, attachments: Attachment[] = [], o: { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string; clientId?: string } = {}) {
     if (!text?.trim() && !attachments.length) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
+    this.sideCommand(id, text);
     const s = await this.core.open(id);
     if (o.retryId && (s.retry?.id !== o.retryId || s.retry.phase !== "sending")) throw new SendCancelled();
     if (!o.retryId && (s.retry || this.core.o.prefs.get(id).retry)) {
@@ -558,6 +559,12 @@ export class LiveControl {
     return this.send(id, text, attachments);
   }
 
+  /** A side chat (SPEC §16a) refuses `/` commands, whoever sends them. */
+  sideCommand(id: string, text: string) {
+    const why = this.core.o.prefs.get(id).sideOf ? sideCommandRefusal(text) : undefined;
+    if (why) throw new Error(why);
+  }
+
   /** Going into plan mode: the mode it leaves is kept, so approving a plan goes back to it. */
   private notePlanEntry(s: Session, mode: string | undefined) {
     const was = s.state.permissionMode;
@@ -571,6 +578,7 @@ export class LiveControl {
   async steer(id: string, text: string, attachments: Attachment[] = []) {
     if (!text?.trim() && !attachments.length) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
+    this.sideCommand(id, text);
     const s = await this.core.open(id);
     const parentId = s.summary.parentSessionId;
     if (parentId) {

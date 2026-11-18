@@ -30,7 +30,7 @@ import type { CodexRpc } from "./rpc";
 import { CodexStream } from "./stream";
 import { confirmSubscriptionProvider } from "./billing";
 import { codexResumeExtras, codexStartExtras, codexToolCall } from "./setup";
-import { readOnlyLoad } from "./readOnly";
+import { assertNoMcp, readOnlyLoad } from "./readOnly";
 import { ToolServerSlot } from "../toolServer";
 import { rateLimitHit } from "../../rateLimit";
 
@@ -103,7 +103,9 @@ export async function createThread(projectPath: string, opts: StartOpts): Promis
   assertCredentialCurrent(opts.credential);
   const { rpc, source } = await newConnection(projectPath, opts.credential);
   try {
-    const started = await rpc.call("thread/start", { cwd: projectPath, ...startSettings(opts), ...(source ? { modelProvider: sourceProvider(source.source) } : {}), ...withTools(codexStartExtras(projectPath), projectPath) });
+    // A side chat's thread (a copy, SPEC §16a) is made the way a read-only one is loaded.
+    const load = opts.readOnly ? await readOnlyLoad((m, p) => rpc.call(m, p), projectPath) : withTools(codexStartExtras(projectPath), projectPath);
+    const started = await rpc.call("thread/start", { cwd: projectPath, ...startSettings(opts), ...(source ? { modelProvider: sourceProvider(source.source) } : {}), ...load });
     const id: string = started.thread.id;
     // Until its first turn writes them to its rollout, they can't be read back (discovery.ts).
     if (source) rememberSource(id, source);
@@ -204,6 +206,7 @@ export class CodexDriver implements Driver {
         throw forkError(e);
       });
       d.threadPath = r.thread?.path;
+      if (opts.readOnly) await assertNoMcp((m, x) => rpc.call(m, x), nativeId);
       await d.started(r, opts);
       // Mid-turn (Codex's TUI, or a turn that went on while the runner was away): carry on from it.
       if (r.thread?.status?.type === "active") {

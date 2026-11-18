@@ -18,6 +18,7 @@ import { jsonBytes, MESSAGE_TEXT_MAX, QUEUE_BYTES_MAX, QUEUE_MAX, queuedBytes, s
 export const queueBytes = (q: QueuedMessage[]) => q.reduce((n, m) => n + queuedBytes(m), 0);
 import type { LiveState, QueuedMessage } from "../../../shared/transcript";
 import type { Session } from "./session";
+import { sideCommandRefusal } from "../../../shared/sideChat";
 import type { SessionCore } from "./sessions";
 
 export type HeldBy = NonNullable<LiveState["queueHeldBy"]>;
@@ -90,6 +91,8 @@ export class MessageQueue {
     text = stripControls(text);
     if (!text.trim() && !attachments.length) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
+    const side = this.core.o.prefs.get(s.id).sideOf ? sideCommandRefusal(text) : undefined;
+    if (side) throw new Error(side);
     // The message going out still counts (it comes back if it doesn't get there).
     const all = this.withGoing(s);
     if (all.length >= QUEUE_MAX) throw new Error(`At most ${QUEUE_MAX} messages can wait. Send or cancel some first.`);

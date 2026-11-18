@@ -221,6 +221,8 @@ export class Mover {
       const stayed = background ? " Background work stayed there." : "";
       await this.ctx.sessions.notice(moved.sessionId, notice(`n-moved-from-${id}`, `${movedFrom(name(from, own))}${note ? ` ${note}` : ""}${stayed}`, id), moved.after ? { after: moved.after } : { first: true });
       await this.ctx.sessions.notice(id, notice(`n-moved-to-${moved.sessionId}`, movedTo(name(target, source)), moved.sessionId));
+      // Its side chats (SPEC §16a) go under the session it went on in (on their own harness, as they were).
+      this.ctx.sessions.moveSides?.(id, moved.sessionId);
       this.ctx.log(`moved ${id} to ${moved.sessionId}: ${moved.kept} of ${moved.total} messages in context`);
       return { sessionId: moved.sessionId };
     } finally {
@@ -272,7 +274,8 @@ export class Mover {
     portable.from.title = title;
     const { model, effort } = look.state;
     const permissionMode = mode ?? look.state.permissionMode;
-    const opts: StartOpts = { ...(model && model !== "default" ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) };
+    // A side chat's copy (SPEC §16a) is made read-only from its thread's first load.
+    const opts: StartOpts = { ...(model && model !== "default" ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}), ...(extra.sideOf ? { readOnly: true } : {}) };
     const made = await this.native(adapter, portable, opts, false, await this.ctx.sessions.sourceOf(id), undefined, { ...extra, stored: true });
     this.ctx.log(`copied ${id} to ${made.sessionId} as a fork: ${made.kept} of ${made.total} messages in context`);
     return made.sessionId;

@@ -257,6 +257,7 @@ export function createRunner(o: RunnerOptions) {
         carrier: (f: (id: string, source: BillingSource) => Promise<string>) => { live.carrier = f; },
         fork: (id: string, f: ForkOptions = {}) => (forker ? forker(id, f) : Promise.reject(new Error("This runner can't fork sessions."))),
         forker: (f: (id: string, o: ForkOptions) => Promise<string>) => { forker = f; },
+        moveSides: (from: string, to: string) => core.moveSides(from, to),
         projects: () => core.listProjects(),
         // Side chats (SPEC §16a) aren't in the lists: they show under their session.
         list: () => core.book.list().filter((r) => !r.sideOf),

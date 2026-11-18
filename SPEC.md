@@ -1737,20 +1737,23 @@ undisturbed: a running turn is allowed and never forked. It is a module
   lists, watch, check-in and send). Nothing of it is pushed. The session's header shows **Side chats
   N**, closed ones too (`listSessions { sideOf }`, from the prefs index); picking one opens it in the
   panel (a closed one is unarchived). When the session goes on under a new id (a source change's new
-  thread, a renewed id) its side chats follow (`moveSides`); a side chat's own successor stays one.
+  thread, a renewed id, a Move) its side chats follow (`moveSides`); a side chat's own successor stays one.
   Opened on its own, its header says "Read-only side chat of “<title>”", with a Read only chip for
   the Mode and no Terminal, Change session harness, Fork or source switch.
 - **Read-only, by the harness.** Started with `StartOpts.readOnly`. In the core, both harnesses: its
   mode can't change ("A side chat stays read-only."), its approvals (a plan's included) are refused
   without asking anyone, questions still come to you; it can't change source or the plan-runs-out
-  switch, move, be forked, run `!` commands or open a terminal.
+  switch, move, be forked, run `!` commands or open a terminal, and takes no `/` command (sent,
+  steered or queued: a custom command's text can run shell lines before the model sees it).
 
 | Harness | Mode | Enforced by |
 |---|---|---|
-| Claude Code | `default` (Ask first) | A PreToolUse hook (`adapters/claude/readOnly.ts`) denying every tool but a fixed list that only reads: Read, Grep, Glob, LS, NotebookRead, WebFetch, WebSearch, TodoWrite, ToolSearch, AskUserQuestion. No shell at all (a list of "reading" commands doesn't survive quoting and options), no MCP tool (Tether's included), no subagents. It fails closed: anything it can't read is denied. A hook's deny stands over modes, allow rules and the auto classifier. A read outside the folder asks, and the core refuses it. Plan mode isn't used: on 2.1.327 it let `echo hello > f` run without asking (the person's default being auto), and ran its turns on Sonnet instead of the session's model. The system prompt says it's a read-only side chat |
-| Codex | `never+read-only` | Codex's read-only sandbox, with no approvals to escape it. MCP servers and apps run outside the sandbox, so the thread is forked and resumed (`adapters/codex/readOnly.ts`) with every server in the person's config turned off by name (`config/read`; a config it can't read fails the start), `features.apps` and `features.multi_agent` off, and without Tether's own server |
+| Claude Code | `default` (Ask first) | A PreToolUse hook (`adapters/claude/readOnly.ts`) denying every tool but a fixed list that only reads: Read, Grep, Glob, LS, NotebookRead, WebSearch, TodoWrite, ToolSearch, AskUserQuestion. No WebFetch (it would send what was read anywhere), no shell at all (a list of "reading" commands doesn't survive quoting and options), no MCP tool (Tether's included), no subagents. It fails closed: anything it can't read is denied. A hook's deny stands over modes, allow rules and the auto classifier. The person's own hooks (settings, plugins: a Stop or PostToolUse hook could write) are off (`disableAllHooks`); the SDK's gate still runs (checked on 2.1.327). A read outside the folder asks, and the core refuses it. Plan mode isn't used: on 2.1.327 it let `echo hello > f` run without asking (the person's default being auto), and ran its turns on Sonnet instead of the session's model. The system prompt says it's a read-only side chat |
+| Codex | `never+read-only` | Codex's read-only sandbox, with no approvals to escape it. MCP servers, apps, plugins and hooks run outside the sandbox, so the thread is made (a fork, or a copy's `thread/start`) and resumed (`adapters/codex/readOnly.ts`) with every server in the person's config turned off by name (`config/read`; a config it can't read fails the start), `features.apps`, `plugins`, `multi_agent` and `hooks` off, and without Tether's own server. After each resume the daemon must say no MCP server runs (`mcpServerStatus/list`): a thread another client loaded keeps that client's config, so anything else fails the start |
 
-  WebFetch and WebSearch stay: a side chat can send what it read to a URL. It can't change anything.
+  WebSearch stays (Claude): a query can carry some of what it read. Read-only holds only inside
+  Tether: the side chat's id resumed in the harness's own terminal (`claude --resume`, `codex
+  resume`) runs ungated, in whatever mode that terminal picks.
 - **Bring back** runs a turn in the side chat, Tether's ("[From Tether] Bring back: summarize …
   in at most 5 short lines"), waits for the end of the turn that message started (100 s at most),
   and returns "From a side chat:\n\n<its reply after that message>", which the page puts in the

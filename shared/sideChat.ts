@@ -3,7 +3,7 @@
 // back asks the side chat for a summary and puts it in the session's box. Shared so the page and
 // the runner word it the same.
 
-import type { HarnessCommand } from "./commands";
+import { parseCommand, type HarnessCommand } from "./commands";
 import { FROM_TETHER } from "./fromTether";
 
 /** Tether's own entry in a session's `/` menu: Tether answers it, it never reaches the harness. */
@@ -38,6 +38,9 @@ export const SIDE_KEEPS = {
   fork: "A side chat can't be forked.",
   shell: "A side chat is read-only: run commands in its session.",
 } as const;
+
+/** A side chat takes questions, never a `/` command: a custom command's text can run shell lines before the model sees it. */
+export const sideCommandRefusal = (text: string) => (parseCommand(text) ? "A side chat takes questions, not / commands. Run commands in its session." : undefined);
 
 /** Why a side chat's mode can't change. */
 export const SIDE_STAYS = "A side chat stays read-only.";

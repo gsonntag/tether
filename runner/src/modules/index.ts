@@ -69,6 +69,8 @@ export interface SessionActions {
   carrier(make: (id: string, source: BillingSource) => Promise<string>): void;
   /** a fork of a session (SPEC §16): a new stored session with its conversation, through `messageId` when given. Its id */
   fork(id: string, o?: ForkOptions): Promise<string>;
+  /** a session went on under another id (a Move): its side chats (SPEC §16a) are beside that one now */
+  moveSides?(from: string, to: string): void;
   /** what makes forks (the fork module) */
   forker(make: (id: string, o: ForkOptions) => Promise<string>): void;
   /** a new session; its first send starts it */

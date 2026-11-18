@@ -180,6 +180,15 @@ describe("side chats", () => {
     await expect(call("closeSideChat", { sessionId: "claude:s1" })).rejects.toThrow("isn't a side chat");
   });
 
+  test("a / command never reaches its harness: sent, steered or queued", async () => {
+    const { a, runner, call } = await setup();
+    const { sessionId } = await call("openSideChat", { sessionId: "claude:s1" });
+    for (const op of ["send", "steer", "queue"]) await expect(call(op, { sessionId, text: "/deploy now" })).rejects.toThrow("not / commands");
+    expect(a.drivers.find((d) => d.nativeId === "f1")?.sent ?? []).toEqual([]);
+    // A path isn't a command.
+    await runner.live.send(sessionId, "/tmp/x is what?");
+  });
+
   test("not in the Home agent's folder", async () => {
     const { a, call } = await setup({ homeFolder: "/home-agent" });
     a.addStored("h1", convo, { projectPath: "/home-agent" });
