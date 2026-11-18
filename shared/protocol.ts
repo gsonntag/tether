@@ -73,6 +73,8 @@ export interface RunnerInfo {
   connectedAt?: number;
   /** the Home agent's folder: its chats show on Home, never in the lists. Absent: no Home agent */
   homeFolder?: string;
+  /** it takes `pinSession` (SPEC §10 Pinning). Absent: a runner from before it, and no pin buttons */
+  pinning?: boolean;
 }
 
 /** Runner-wide settings (the Settings page), kept in runner.json. */
@@ -127,6 +129,8 @@ export interface Ops {
   renameSession: { args: { sessionId: string; title: string }; result: null };
   /** Keeps a session out of Recent; archived sessions remain searchable. */
   setSessionArchived: { args: { sessionId: string; archived: boolean }; result: null };
+  /** Puts a main session in the Sidebar's Pinned group (the last of it), or takes it out. Archiving unpins. */
+  pinSession: { args: { sessionId: string; pinned: boolean }; result: null };
   /** the Home agent's chats (Home's tabs, oldest first; absent from a runner from before tabs) and its current one (where watch reports go), the folder its chats run in, and what it runs on. `rev`: as in HomeChatUpdate */
   homeAgent: { args: Record<string, never>; result: { sessionId?: string; chats?: string[]; labels?: Record<string, number>; folder: string; rev: number; settings?: HomeAgentSettings; harnesses?: HarnessId[] } };
   /**

@@ -6,7 +6,7 @@ import { HARNESS_LABELS, type Billing, type HarnessId, type RunStatus } from "..
 import { rpc } from "../connection";
 import { openSession } from "../route";
 import { folderName, type Row } from "../sessionList";
-import { setArchived as saveArchived, useStore } from "../store";
+import { setArchived as saveArchived, setPinned as savePinned, useStore } from "../store";
 
 /** "now", "5m", "3h", "2d", "Oct 3" */
 export function shortAgo(ts: number, now = Date.now()): string {
@@ -42,7 +42,8 @@ export function BillingMarker({ billing }: { billing?: Billing }) {
   return null;
 }
 
-export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Row; now: number; selected: boolean; child?: boolean; runnerLabel?: string }) {
+/** `canPin`: its runner takes pinSession (runners.ts canPin). */
+export function SessionRow({ row, now, selected, child, runnerLabel, canPin }: { row: Row; now: number; selected: boolean; child?: boolean; runnerLabel?: string; canPin?: boolean }) {
   const close = () => useStore.setState({ sidebarOpen: false });
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleBusy, setTitleBusy] = useState(false);
@@ -50,6 +51,9 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
   const [archived, setArchived] = useState(!!row.archived);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [archiveError, setArchiveError] = useState<string>();
+  const [pinned, setPinned] = useState(!!row.pinned);
+  const [pinBusy, setPinBusy] = useState(false);
+  const pinnable = !!canPin && !child && !archived;
   const titleInput = useRef<HTMLInputElement>(null);
   const editing = useRef(false);
 
@@ -60,6 +64,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
     }
   }, [editingTitle]);
   useEffect(() => setArchived(!!row.archived), [row.archived]);
+  useEffect(() => setPinned(!!row.pinned), [row.pinned]);
   // The error is shown once: gone after a few seconds or at the next click or key.
   useEffect(() => {
     if (!archiveError) return;
@@ -88,7 +93,8 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
     }
   };
   const beginRename = () => {
-    if (child || editing.current || titleBusy) return;
+    // A missing row is only what was saved: nothing to rename or open.
+    if (child || row.missing || editing.current || titleBusy) return;
     setRenameError(undefined);
     editing.current = true;
     setEditingTitle(true);
@@ -101,17 +107,32 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
       await saveArchived(row.runnerId, row.id, !archived);
       setArchived(!archived);
     } catch (e) {
-      setArchiveError((e as Error).message);
+      setArchiveError(`Archive failed: ${(e as Error).message}`);
     } finally {
       setArchiveBusy(false);
     }
   };
 
+  // Errors share the archive button's line: one row action at a time.
+  const togglePin = async () => {
+    if (pinBusy) return;
+    setPinBusy(true);
+    setArchiveError(undefined);
+    try {
+      await savePinned(row.runnerId, row.id, !pinned);
+      setPinned(!pinned);
+    } catch (e) {
+      setArchiveError(`${pinned ? "Unpin" : "Pin"} failed: ${(e as Error).message}`);
+    } finally {
+      setPinBusy(false);
+    }
+  };
+
   return (
     <div
-      className={`t-row${child ? " t-child" : ""}${row.unread ? " unread" : ""}${selected ? " selected" : ""}`}
+      className={`t-row${child ? " t-child" : ""}${row.unread ? " unread" : ""}${selected ? " selected" : ""}${pinnable ? " t-pinnable" : ""}${pinnable && pinned ? " t-pinned" : ""}${row.missing ? " t-missing" : ""}`}
       onDoubleClick={(e) => {
-        if ((e.target as HTMLElement).closest("input, .t-row-archive")) return;
+        if ((e.target as HTMLElement).closest("input, .t-row-archive, .t-row-pin")) return;
         beginRename();
       }}
     >
@@ -120,6 +141,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
         className="t-row-open"
         aria-label={`Open session: ${row.title || "Untitled"}`}
         aria-current={selected ? "page" : undefined}
+        disabled={row.missing}
         onKeyDown={(e) => {
           if (e.key === "F2" && !child) {
             e.preventDefault();
@@ -127,6 +149,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
           }
         }}
         onClick={() => {
+          if (row.missing) return;
           openSession(row.runnerId, row.id);
           close();
         }}
@@ -161,11 +184,28 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
           {runnerLabel && <span className="t-proj">· {runnerLabel}</span>}
           <span>· {shortAgo(row.updatedAt, now)}</span>
           {archived && <span className="t-archived">· Archived</span>}
+          {row.missing && <span className="t-archived">· Not found on this computer</span>}
           {(!!row.requests || row.status === "waiting") && <span className="t-needs">· Needs you</span>}
           {row.unread && !row.requests && row.status !== "waiting" && !(row.unread === "finished" && row.backgroundSubagents) && <span className={`t-unread ${row.unread}`}>· {row.unread === "failed" ? "Failed" : "Finished"}</span>}
           <StatusDot status={row.status} requests={row.requests} />
         </span>
-        {!child && (
+        {pinnable && (
+          <button
+            type="button"
+            className={`t-row-archive t-row-pin${pinned ? " on" : ""}`}
+            aria-label={`Pin session: ${row.title || "Untitled"}`}
+            aria-pressed={pinned}
+            title={`${pinned ? "Unpin" : "Pin"} session`}
+            disabled={pinBusy}
+            onClick={(e) => {
+              e.stopPropagation();
+              void togglePin();
+            }}
+          >
+            <PinIcon filled={pinned} />
+          </button>
+        )}
+        {!child && !row.missing && (
           <button
             type="button"
             className="t-row-archive"
@@ -181,8 +221,18 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
           </button>
         )}
         {renameError && <span className="t-row-rename-error" role="status">Rename failed: {renameError}</span>}
-        {archiveError && <span className="t-row-archive-error" role="status">Archive failed: {archiveError}</span>}
+        {archiveError && <span className="t-row-archive-error" role="status">{archiveError}</span>}
       </div>
     </div>
+  );
+}
+
+/** A pushpin in Heroicons' outline style (Heroicons has none); filled when pinned. */
+function PinIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M15 4.5l-4 4-4 1.5-1.5 1.5 7 7 1.5-1.5 1.5-4 4-4z" />
+      <path d="M9 15l-4.5 4.5M14.5 4l5.5 5.5" />
+    </svg>
   );
 }

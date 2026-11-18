@@ -2,7 +2,8 @@
 // (every tool kind, markdown, thinking, notices, a subagent, a 300-message session to page), and a
 // scripted streamed reply to every `send`. Dials a dev server like the real runner does.
 //   TETHER_URL=http://127.0.0.1:8791 bun scripts/fake-runner.ts [runnerId]
-// ASK=1 adds a session that needs you; NO_ARCHIVE=1 answers setSessionArchived as a runner from before it.
+// ASK=1 adds a session that needs you; NO_ARCHIVE=1 answers setSessionArchived as a runner from before it;
+// NO_PIN=1 is a runner from before pinSession (no pin buttons).
 
 import { Connection } from "../runner/src/core/connection";
 import { newestPage, partChunk } from "../shared/limits";
@@ -167,7 +168,7 @@ add({ id: "claude:empty-1", title: "A session with a very long title that must b
 const conn = new Connection({
   url,
   token: "dev",
-  hello: async () => ({ id: runnerId, name: runnerId, hostname: "fakehost", version: "0.0.0", protocol: PROTOCOL_VERSION, harnesses: [{ id: "claude", version: "2.1.312" }] }),
+  hello: async () => ({ id: runnerId, name: runnerId, hostname: "fakehost", version: "0.0.0", protocol: PROTOCOL_VERSION, harnesses: [{ id: "claude", version: "2.1.312" }], ...(process.env.NO_PIN ? {} : { pinning: true }) }),
   onRpc: async (op, args) => {
     try {
       return { ok: true, data: await handle(op, args as any) };
@@ -298,9 +299,18 @@ async function handle(op: string, a: any): Promise<unknown> {
       if (typeof a.archived !== "boolean") throw new Error("archived must be true or false.");
       const s = get(a.sessionId);
       if (!!s.summary.archived === a.archived) return null;
-      s.summary = { ...s.summary, archived: a.archived || undefined };
+      s.summary = { ...s.summary, archived: a.archived || undefined, ...(a.archived ? { pinned: undefined } : {}) };
       if (summaries().includes(s.summary)) summary({ kind: "upsert", epoch, seq: ++summarySeq, sessions: [s.summary] });
       else summary({ kind: "remove", epoch, seq: ++summarySeq, ids: [s.summary.id] });
+      return null;
+    }
+    case "pinSession": {
+      if (typeof a.pinned !== "boolean") throw new Error("pinned must be true or false.");
+      const s = get(a.sessionId);
+      if (!!s.summary.pinned === a.pinned) return null;
+      if (a.pinned && s.summary.archived) throw new Error("Unarchive the session to pin it.");
+      s.summary = { ...s.summary, pinned: a.pinned ? Date.now() : undefined };
+      summary({ kind: "upsert", epoch, seq: ++summarySeq, sessions: [s.summary] });
       return null;
     }
     case "setModel":

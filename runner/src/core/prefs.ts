@@ -23,6 +23,10 @@ function read(file: string): Partial<RunnerConfig> {
 /** Entries untouched this long are dropped on save. */
 const MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const MAX_ENTRIES = 2000;
+/** Entries kept whatever their age: a replaced thread (the only thing that says so), a pin, an archive. */
+const keep = (p: SessionPrefs) => !!(p.carried || p.pinned || p.archived);
+/** Carried and pinned entries first, so the cap cuts them last. Archived ones sort by age with the rest: they never expire, so ranking them up too would crowd out every new entry. */
+const rank = (p: SessionPrefs) => (p.carried ? 2 : p.pinned ? 1 : 0);
 
 export class Prefs {
   private map: Record<string, SessionPrefs>;
@@ -113,6 +117,11 @@ export class Prefs {
       .map(([id]) => id);
   }
 
+  /** Pinned sessions (SessionPrefs.pinned), but one that went on under another id. */
+  pinned(): string[] {
+    return Object.entries(this.map).filter(([, p]) => p.pinned && !p.movedTo && !p.carried && !p.carrying).map(([id]) => id);
+  }
+
   retrying(): string[] {
     return Object.entries(this.map).filter(([, p]) => p.retry !== undefined).map(([id]) => id);
   }
@@ -135,8 +144,8 @@ export class Prefs {
     const cutoff = Date.now() - MAX_AGE_MS;
     const kept = Object.entries(this.map)
       // A replaced thread stays out of the lists for good: this is the only thing that says so.
-      .filter(([, p]) => p.carried || p.archived || (p.at ?? 0) >= cutoff)
-      .sort((a, b) => Number(!!b[1].carried) - Number(!!a[1].carried) || (b[1].at ?? 0) - (a[1].at ?? 0))
+      .filter(([, p]) => keep(p) || (p.at ?? 0) >= cutoff)
+      .sort((a, b) => rank(b[1]) - rank(a[1]) || (b[1].at ?? 0) - (a[1].at ?? 0))
       .slice(0, MAX_ENTRIES);
     this.map = Object.fromEntries(kept);
     // Reread, so a name edited by hand meanwhile isn't overwritten.

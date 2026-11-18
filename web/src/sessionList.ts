@@ -35,6 +35,26 @@ export function recentSessions(summaries: Record<string, SummaryState>, query = 
     .sort(newestFirst);
 }
 
+/**
+ * The Sidebar's Pinned group and the rest (Recent): pinned main sessions in the order they were
+ * pinned, across runners. An archived one is never pinned (archiving unpins).
+ */
+export function splitPinned(list: Row[]): { pinned: Row[]; rest: Row[] } {
+  // Each runner stamps its own pins: across runners the order is as good as their clocks.
+  const isPinned = (r: Row) => !!r.pinned && !r.archived && !r.parentSessionId;
+  const pinned = list.filter(isPinned).sort((a, b) => a.pinned! - b.pinned! || a.runnerId.localeCompare(b.runnerId) || a.id.localeCompare(b.id));
+  return { pinned, rest: list.filter((r) => !isPinned(r)) };
+}
+
+/**
+ * The session menu's pin item: "Pin" or "Unpin", or none where pinning isn't offered (a runner from
+ * before pinSession, an archived session, a subagent, a Home agent chat).
+ */
+export function pinMenuLabel(runnerId: string, s: SessionSummary, canPin: boolean): "Pin" | "Unpin" | undefined {
+  if (!canPin || s.archived || s.parentSessionId || isHomeChat(runnerId, s.projectPath)) return undefined;
+  return s.pinned ? "Unpin" : "Pin";
+}
+
 /** A session's subagents that the summaries know (live ones, mostly), newest first. */
 export function childrenOf(summaries: Record<string, SummaryState>, runnerId: string, sessionId: string): Row[] {
   return rows(summaries)
@@ -105,7 +125,8 @@ export interface InboxRow extends Row {
 export function inbox(summaries: Record<string, SummaryState>): InboxRow[] {
   const out: InboxRow[] = [];
   for (const r of rows(summaries)) {
-    if (r.parentSessionId) continue;
+    // A pinned session its runner can't find is only a saved row: never on Home.
+    if (r.parentSessionId || r.missing) continue;
     const kind: InboxKind | undefined =
       (r.requests ?? 0) > 0 || r.status === "waiting" || (r.queuePaused && r.status === "idle") ? "needs" : r.unread === "failed" ? "failed" : r.unread === "finished" && !r.backgroundSubagents ? "finished" : r.status === "running" ? "working" : undefined;
     if (kind) out.push({ ...r, inbox: kind });

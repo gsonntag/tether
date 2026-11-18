@@ -22,7 +22,8 @@ import type { Prefs } from "./prefs";
 import { NoticeStore, pruneOverlay, settleStopped, withOverlay } from "./notices";
 import { MessageQueue } from "./queue";
 import { Session } from "./session";
-import { SummaryBook } from "./summaries";
+import { PIN_SNAPSHOT_MS, PinnedRows } from "./pinnedRows";
+import { RECENT_MS, SummaryBook } from "./summaries";
 import { diffTranscripts, Transcript } from "./transcript";
 
 export interface CoreOptions {
@@ -102,6 +103,7 @@ export class SessionCore {
   /** sessions at least one browser has subscribed to (since the last connect) */
   readonly watched = new Set<string>();
   readonly book: SummaryBook;
+  private pinnedRows: PinnedRows;
   /** the last seq of sessions no longer in memory: numbering goes on from there */
   private seqs = new Map<string, number>();
   private opening = new Map<string, Promise<Session>>();
@@ -121,6 +123,7 @@ export class SessionCore {
     this.now = o.now ?? Date.now;
     this.hide = hidePattern(o.hideProjects);
     this.book = new SummaryBook(o.epoch, (summary) => void o.send({ t: "summary", summary }), this.now);
+    this.pinnedRows = new PinnedRows(o.adapters, (id) => o.prefs.get(id).projectPath, (id) => this.pinSnapshot(id), this.now);
     o.bus.on("unwatched", ({ sessionIds }) => sessionIds.forEach((id) => this.unwatch(id)));
     o.bus.on("disconnected", () => [...this.watched].forEach((id) => this.unwatch(id)));
     this.book.hidden = (id) => this.replaced(id);
@@ -159,17 +162,33 @@ export class SessionCore {
       try {
         const since = this.now() - 3 * 24 * 60 * 60 * 1000;
         const found = (await Promise.all(this.o.adapters.map((a) => a.listSessions({ since }).catch(() => [] as SessionSummary[])))).flat();
+        // Pinned sessions are listed however old: the ones too old for that pass (pinnedRows.ts).
+        const seen = new Set(found.map((f) => f.id));
+        found.push(...(await this.pinnedRows.rows(this.o.prefs.pinned().filter((id) => !seen.has(id)))));
+        // A pinned session's row as last seen, for when its harness can't find it.
+        for (const f of found) {
+          const p = this.o.prefs.get(f.id);
+          if (!p.pinned || f.missing) continue;
+          // runner.json is written for a new title or folder, but for activity at most hourly.
+          const r = p.pinnedRow;
+          if (!r || r.title !== f.title || r.projectPath !== f.projectPath || Math.abs(f.updatedAt - r.updatedAt) >= PIN_SNAPSHOT_MS)
+            this.o.prefs.set(f.id, { pinnedRow: { title: f.title, projectPath: f.projectPath, updatedAt: f.updatedAt } });
+        }
         for (const f of found) {
           const s = this.sessions.get(f.id);
-          if (s && !s.live && !s.childRunning) {
+          if (s && !s.live && !s.childRunning && !f.missing) {
             const prefs = this.o.prefs.get(f.id);
-            s.summary = { ...f, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
+            s.summary = { ...f, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(prefs.pinned ? { pinned: prefs.pinned } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
           }
         }
         this.book.refresh(
-          found.filter((f) => this.shown(f)).map((f) => ({ ...f, ...(this.o.prefs.get(f.id).archived ? { archived: true } : {}) })),
+          found.filter((f) => this.shown(f)).map((f) => {
+            const p = this.o.prefs.get(f.id);
+            return { ...f, ...(p.archived ? { archived: true } : {}), ...(p.pinned ? { pinned: p.pinned } : {}) };
+          }),
           (id) => this.owned(id),
-          (id) => this.watched.has(id),
+          // Open in a browser, or pinned (a lookup may have failed, pinnedRows.ts): listed still.
+          (id) => this.watched.has(id) || !!this.o.prefs.get(id).pinned,
         );
       } catch (e: any) {
         this.log(`discovery failed: ${e?.message ?? e}`);
@@ -215,7 +234,7 @@ export class SessionCore {
     return list.map((s) => {
       const row = this.owned(s.id) ? this.sessions.get(s.id)!.summary : s;
       const prefs = this.o.prefs.get(row.id);
-      return { ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : { archived: undefined }) };
+      return { ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : { archived: undefined }), pinned: prefs.pinned || undefined };
     });
   }
 
@@ -258,7 +277,9 @@ export class SessionCore {
     const parsed = parseSessionId(id);
     if (!parsed) throw new Error("That isn't a session id.");
     const a = this.adapter(parsed.harness);
-    const known = this.book.get(id) ?? (await a.sessionInfo(parsed.nativeId).catch(() => undefined));
+    // A missing pinned row is only what was saved: not a session to open.
+    const listed = this.book.get(id);
+    const known = (listed && !listed.missing ? listed : undefined) ?? (await a.sessionInfo(parsed.nativeId).catch(() => undefined));
     const prefs = this.o.prefs.get(id);
     // A new session that never got a message: nothing of it is stored (a harness may still know its
     // id). Prefs alone don't say so: a stored session whose store was deleted stays gone.
@@ -270,7 +291,7 @@ export class SessionCore {
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;
-    const s = this.add(new Session({ ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
+    const s = this.add(new Session({ ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(prefs.pinned ? { pinned: prefs.pinned } : {}), mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
     if (blank) {
       // Back as new: the first message starts it (live.ts current). No row until something happens.
       s.transcript = new Transcript(withOverlay([], s.overlay));
@@ -535,10 +556,58 @@ export class SessionCore {
   /** Keeps a session out of Recent (or back in); archived sessions stay searchable. */
   async setArchived(s: Session, archived: boolean) {
     if ((this.o.prefs.get(s.id).archived === true) === archived) return;
-    this.o.prefs.set(s.id, { projectPath: s.summary.projectPath, archived: archived || undefined });
+    // Archiving unpins: an archived session is out of every list.
+    this.o.prefs.set(s.id, { projectPath: s.summary.projectPath, archived: archived || undefined, ...(archived ? { pinned: undefined, pinnedRow: undefined } : {}) });
     this.o.prefs.flush();
     this.touch(s);
     await this.discover();
+  }
+
+  /** Puts a main session in the Sidebar's Pinned group, last (or takes it out); it is listed however old. */
+  setPinned(s: Session, pinned: boolean) {
+    if (!!this.o.prefs.get(s.id).pinned === pinned) return;
+    if (pinned && s.summary.parentSessionId) throw new Error("Only a main session can be pinned.");
+    if (pinned && this.o.prefs.get(s.id).archived) throw new Error("Unarchive the session to pin it.");
+    // The Home agent's chats and TETHER_HIDE_PROJECTS folders are never in the lists.
+    if (pinned && this.hide?.test(s.summary.projectPath)) throw new Error("Sessions in this folder aren't listed, so they can't be pinned.");
+    const { title, projectPath, updatedAt } = s.summary;
+    this.o.prefs.set(s.id, { projectPath, pinned: pinned ? this.now() : undefined, pinnedRow: pinned ? { title, projectPath, updatedAt } : undefined });
+    this.o.prefs.flush();
+    this.touch(s);
+    // At once, not at the next discovery (one may be under way, from before the pin).
+    if (pinned) this.book.upsert([s.summary]);
+    else if (!this.recent(s.summary) && !this.owned(s.id) && !this.watched.has(s.id)) this.book.remove([s.id]);
+  }
+
+  /** Unpins a session that may no longer exist (gone from its harness's store). */
+  dropPin(id: string) {
+    if (!this.o.prefs.get(id).pinned) return;
+    this.o.prefs.set(id, { pinned: undefined, pinnedRow: undefined });
+    this.o.prefs.flush();
+    const s = this.sessions.get(id);
+    if (s) this.touch(s);
+    if (!this.owned(id) && !this.watched.has(id)) this.book.remove([id]);
+  }
+
+  /** Recent enough for Recent on its own (summaries.ts RECENT_MS), pinned or not. */
+  private recent(row: SessionSummary) {
+    return row.updatedAt >= this.now() - RECENT_MS;
+  }
+
+  /**
+   * The rows the lists show, without those listed only because they are pinned: what the modules
+   * see (the Home agent's check-in and its list, tether_sessions), so a pin doesn't widen it.
+   */
+  listed(): SessionSummary[] {
+    return this.book.list().filter((r) => !r.missing && (!r.pinned || this.recent(r) || this.owned(r.id) || this.watched.has(r.id)));
+  }
+
+  /** A pinned session's row from its pin (SessionPrefs.pinnedRow), for when nothing else has one. */
+  private pinSnapshot(id: string): SessionSummary {
+    const p = this.o.prefs.get(id);
+    const parsed = parseSessionId(id) ?? { harness: "claude" as const, nativeId: id };
+    const r = p.pinnedRow;
+    return { id, harness: parsed.harness, nativeId: parsed.nativeId, projectPath: r?.projectPath ?? p.projectPath ?? "", title: r?.title ?? "Pinned session", mode: "stored", status: "idle", updatedAt: r?.updatedAt ?? p.pinned ?? 0 };
   }
 
   /**
@@ -546,12 +615,12 @@ export class SessionCore {
    * a queue waiting for you, so neither one the terminal holds nor one the restart wait holds.
    */
   touch(s: Session, patch: Partial<SessionSummary> = {}) {
-    const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, archived: _archived, retry: _retry, ...rest } = { ...s.summary, ...patch };
+    const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, archived: _archived, pinned: _pinned, retry: _retry, ...rest } = { ...s.summary, ...patch };
     const beside = s.state.backgroundSubagents;
     const n = s.state.requests.length;
     const q = s.state.queue.length;
     const title = this.o.prefs.get(s.id).title;
-    s.summary = { ...rest, ...(s.state.retry ? { retry: s.state.retry } : {}), ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait && !s.retry ? { queuePaused: true } : {}) };
+    s.summary = { ...rest, ...(s.state.retry ? { retry: s.state.retry } : {}), ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...(this.o.prefs.get(s.id).pinned ? { pinned: this.o.prefs.get(s.id).pinned } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait && !s.retry ? { queuePaused: true } : {}) };
     if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
   }
 }

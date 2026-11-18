@@ -63,7 +63,7 @@ export interface SessionActions {
   notice(id: string, msg: Msg, where?: { first?: boolean; after?: string }): Promise<void>;
   /** the folders with sessions (the lists' projects), newest activity first */
   projects(): Promise<ProjectInfo[]>;
-  /** the sessions the lists show (recent ones and every live one, core/summaries.ts), newest activity first */
+  /** the sessions the lists show (recent ones and every live one, core/summaries.ts), newest activity first; not old ones listed only because they're pinned */
   list(): SessionSummary[];
   /** the archived sessions (which the lists leave out), newest activity first */
   archived(): Promise<SessionSummary[]>;

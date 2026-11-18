@@ -7,8 +7,9 @@ import { Cog6ToothIcon, HomeIcon, LinkIcon, PlusIcon, UserCircleIcon } from "@he
 import type { ProjectInfo } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { navigate, useRoute } from "../route";
-import { folderName, isHomeChat, mergeRows, recentSessions, waitingOn, type Row } from "../sessionList";
+import { folderName, isHomeChat, mergeRows, recentSessions, splitPinned, waitingOn, type Row } from "../sessionList";
 import { avatarSrc } from "../avatar";
+import { canPin } from "../runners";
 import { useStore } from "../store";
 import { RunnerDot } from "./RunnerStatus";
 import { SessionRow } from "./SessionRow";
@@ -75,6 +76,8 @@ export function Sidebar() {
     if (extra.for === extraKey) list = mergeRows(extra.rows.filter((r) => !r.parentSessionId && (!r.archived || !!q) && !isHomeChat(r.runnerId, r.projectPath)), list);
     return list;
   }, [summaries, q, filter, extra, extraKey]);
+  // Pinned sessions sit above Recent; a search or a folder lists everything as one list.
+  const { pinned, rest } = useMemo(() => (q || filter ? { pinned: [], rest: rows } : splitPinned(rows)), [rows, q, filter]);
 
   const projects = useMemo(() => {
     const by = new Map<string, ProjectInfo & { runnerIds: string[] }>();
@@ -91,7 +94,7 @@ export function Sidebar() {
   const selParent = useStore((s) => (selected ? (s.summaries[selected.runnerId]?.sessions[selected.sessionId]?.parentSessionId ?? s.views[`${selected.runnerId}\u0000${selected.sessionId}`]?.session?.parentSessionId) : undefined));
   const expanded = selected && { runnerId: selected.runnerId, sessionId: selParent ?? selected.sessionId };
   const children = useChildren(expanded?.runnerId, expanded?.sessionId);
-  const selectedRow = expanded && rows.slice(0, shown).find((r) => r.runnerId === expanded.runnerId && r.id === expanded.sessionId);
+  const selectedRow = expanded && [...pinned, ...rest.slice(0, shown)].find((r) => r.runnerId === expanded.runnerId && r.id === expanded.sessionId);
   const childRow = (c: Row) => <SessionRow key={c.id} row={c} now={now} selected={!!selected && c.id === selected.sessionId} child />;
   // A session can have a hundred subagents: a few rows (running first, the open one always), the
   // rest behind "N more", which opens the whole list.
@@ -117,6 +120,16 @@ export function Sidebar() {
           />
         )}
       </>
+    );
+  };
+
+  const sessionRow = (r: Row) => {
+    const isExp = !!expanded && r.runnerId === expanded.runnerId && r.id === expanded.sessionId;
+    return (
+      <Fragment key={`${r.runnerId}:${r.id}`}>
+        <SessionRow row={r} now={now} selected={isExp && !selParent} runnerLabel={many ? runnerName(r.runnerId) : undefined} canPin={canPin(runners, r.runnerId)} />
+        {isExp && childRows()}
+      </Fragment>
     );
   };
 
@@ -172,6 +185,14 @@ export function Sidebar() {
         />
       </SideNavSection>
 
+      {pinned.length > 0 && (
+        <>
+          <div className="t-list-head">
+            <span className="t-grow">Pinned</span>
+          </div>
+          <div className="t-rows">{pinned.map(sessionRow)}</div>
+        </>
+      )}
       <div className="t-list-head">
         {filter ? (
           <>
@@ -187,17 +208,9 @@ export function Sidebar() {
         )}
       </div>
       <div className="t-rows">
-        {rows.length === 0 && <div className="t-empty-line">{q ? "No sessions match." : online.length ? "No sessions yet." : "No runner connected."}</div>}
-        {rows.slice(0, shown).map((r) => {
-          const isExp = !!expanded && r.runnerId === expanded.runnerId && r.id === expanded.sessionId;
-          return (
-            <Fragment key={`${r.runnerId}:${r.id}`}>
-              <SessionRow row={r} now={now} selected={isExp && !selParent} runnerLabel={many ? runnerName(r.runnerId) : undefined} />
-              {isExp && childRows()}
-            </Fragment>
-          );
-        })}
-        {rows.length > shown && (
+        {rest.length === 0 && <div className="t-empty-line">{q ? "No sessions match." : !online.length ? "No runner connected." : pinned.length ? "No other recent sessions." : "No sessions yet."}</div>}
+        {rest.slice(0, shown).map(sessionRow)}
+        {rest.length > shown && (
           <button type="button" className="t-more" onClick={() => setShown(shown + PAGE)}>
             Show more
           </button>

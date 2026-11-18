@@ -8,14 +8,29 @@ import type { MoveOptions } from "../../../shared/move";
 import { CLAUDE_UNSET, type HarnessCapabilities, type HarnessId, type LiveState, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
-import { failedSend, loadModels, modelListKey, setArchived, useStore } from "../store";
+import { canPin } from "../runners";
+import { pinMenuLabel } from "../sessionList";
+import { failedSend, loadModels, modelListKey, setArchived, setPinned, useStore } from "../store";
 import { focusComposerOf } from "./SessionView";
 import { azureDeployments, DeploymentPicker, SourcePicker } from "./SourcePicker";
 
-/** The session's menu, in the header: Change session harness and its dialog (SPEC §15). */
+/** The session's menu, in the header: Change session harness and its dialog (SPEC §15), Pin, Archive. */
 export function SessionMenu({ runnerId, session, state, canMove }: { runnerId: string; session: SessionSummary; state: LiveState; canMove: boolean }) {
   const [open, setOpen] = useState(false);
   const [archiveBusy, setArchiveBusy] = useState(false);
+  const [pinBusy, setPinBusy] = useState(false);
+  const pinLabel = pinMenuLabel(runnerId, session, useStore((s) => canPin(s.runners, runnerId)));
+  const pin = async () => {
+    if (pinBusy) return;
+    setPinBusy(true);
+    try {
+      await setPinned(runnerId, session.id, !session.pinned);
+    } catch (e) {
+      failedSend(runnerId, session.id, `${session.pinned ? "Unpin" : "Pin"} failed: ${(e as Error).message}`);
+    } finally {
+      setPinBusy(false);
+    }
+  };
   const archive = async () => {
     if (archiveBusy) return;
     setArchiveBusy(true);
@@ -38,6 +53,7 @@ export function SessionMenu({ runnerId, session, state, canMove }: { runnerId: s
         )}
       >
         {canMove && <DropdownMenuItem label="Change session harness" onClick={() => setOpen(true)} />}
+        {pinLabel && <DropdownMenuItem label={pinLabel} isDisabled={pinBusy} onClick={() => void pin()} />}
         <DropdownMenuItem label={session.archived ? "Unarchive" : "Archive"} isDisabled={archiveBusy} onClick={() => void archive()} />
       </DropdownMenu>
       {open && <MoveDialog runnerId={runnerId} session={session} state={state} onClose={() => setOpen(false)} />}
