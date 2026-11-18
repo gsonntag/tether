@@ -1,12 +1,12 @@
 /* The Files tab (FilesView.tsx): the tree, the filter and the viewer, in the Changes pane. */
 
-.t-files {
+.t-filesview {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
-.t-files[hidden] {
+.t-filesview[hidden] {
   display: none;
 }
 .t-files-bar,
@@ -43,6 +43,7 @@
 .t-files-body {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   overflow: auto;
   overscroll-behavior: contain;
 }

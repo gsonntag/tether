@@ -184,7 +184,7 @@ export function FilesView({ runnerId, sessionId, status, cover, reload, onLoadin
   if (file) {
     const v = read && read.path === file ? viewOf(read) : undefined;
     return (
-      <div className="t-files">
+      <div className="t-filesview">
         <div className="t-files-viewbar">
           <IconButton label="Back to files" tooltip="Back" size="sm" variant="ghost" icon={<Icon icon={ArrowLeftIcon} />} onClick={() => setFile(undefined)} />
           <span className="t-files-path" title={file}>
@@ -246,7 +246,7 @@ export function FilesView({ runnerId, sessionId, status, cover, reload, onLoadin
   }
 
   return (
-    <div className="t-files">
+    <div className="t-filesview">
       <div className="t-files-bar">
         <input className="t-search t-files-filter" type="search" placeholder="Filter by name" aria-label="Filter by name" value={query} autoCapitalize="off" autoCorrect="off" spellCheck={false} onChange={(e) => setQuery(e.target.value)} />
         <IconButton
