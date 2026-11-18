@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { SessionSummary } from "../../shared/transcript";
-import { childrenOf, folderName, groupByProject, mergeRows, pinMenuLabel, recentSessions, setHomeFolders, splitPinned, waitingOn , inbox } from "./sessionList";
+import { childrenOf, folderName, groupByProject, mergeRows, recentGroups, pinMenuLabel, recentSessions, setHomeFolders, splitPinned, waitingOn , inbox } from "./sessionList";
 
 const s = (id: string, updatedAt: number, extra: Partial<SessionSummary> = {}): SessionSummary => ({ id, harness: "claude", nativeId: id, projectPath: "/p/web", title: `T ${id}`, mode: "stored", status: "idle", updatedAt, ...extra });
 const summaries = {
@@ -95,4 +95,20 @@ test("Recent by project: groups in order of their newest session, newest first w
 test("Recent by project: folders with the same name are told apart by their parent", () => {
   const r = (id: string, at: number, projectPath: string) => ({ ...s(id, at, { projectPath }), runnerId: "a" });
   expect(groupByProject([r("x", 3, "/home/me/a/web/"), r("y", 2, "/home/me/b/web"), r("z", 1, "/srv/api")]).map((g) => g.label)).toEqual(["a/web", "b/web", "api"]);
+});
+
+test("Recent by project: a trailing slash is the same folder; deep same-name folders take parents until unique", () => {
+  const r = (id: string, at: number, projectPath: string) => ({ ...s(id, at, { projectPath }), runnerId: "a" });
+  expect(groupByProject([r("x", 2, "/p/web/"), r("y", 1, "/p/web")]).map((g) => [g.path, g.label, g.rows.length])).toEqual([["/p/web", "web", 2]]);
+  const deep = groupByProject([r("a", 4, "/home/me/x/src/web"), r("b", 3, "/home/me/y/src/web"), r("c", 2, "/srv/src/api"), r("d", 1, "/opt/web")]);
+  expect(deep.map((g) => g.label)).toEqual(["x/src/web", "y/src/web", "api", "opt/web"]);
+  expect(groupByProject([r("root", 1, "/")]).map((g) => g.label)).toEqual(["/"]);
+});
+
+test("Recent by project: no groups while searching or in a project's list", () => {
+  const list = [{ ...s("x", 1), runnerId: "a" }];
+  expect(recentGroups(list, {})?.map((g) => g.label)).toEqual(["web"]);
+  expect(recentGroups(list, { query: "fix" })).toBeUndefined();
+  expect(recentGroups(list, { query: "  " })).toBeDefined();
+  expect(recentGroups(list, { filter: "/p/web" })).toBeUndefined();
 });

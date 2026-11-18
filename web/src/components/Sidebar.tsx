@@ -7,7 +7,7 @@ import { Cog6ToothIcon, HomeIcon, LinkIcon, PlusIcon, UserCircleIcon } from "@he
 import type { ProjectInfo } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { navigate, useRoute } from "../route";
-import { folderName, groupByProject, isHomeChat, mergeRows, recentSessions, splitPinned, waitingOn, type Row } from "../sessionList";
+import { folderName, isHomeChat, recentGroups, mergeRows, recentSessions, splitPinned, waitingOn, type Row } from "../sessionList";
 import { avatarSrc } from "../avatar";
 import { canPin } from "../runners";
 import { useStore } from "../store";
@@ -210,9 +210,10 @@ export function Sidebar() {
       </div>
       <div className="t-rows">
         {rest.length === 0 && <div className="t-empty-line">{q ? "No sessions match." : !online.length ? "No runner connected." : pinned.length ? "No other recent sessions." : "No sessions yet."}</div>}
-        {q || filter
-          ? rest.slice(0, shown).map((r) => sessionRow(r))
-          : groupByProject(rest.slice(0, shown)).map((g) => (
+        {(() => {
+          const groups = recentGroups(rest.slice(0, shown), { query: q, filter });
+          if (!groups) return rest.slice(0, shown).map((r) => sessionRow(r));
+          return groups.map((g) => (
               <Fragment key={g.path}>
                 <button
                   type="button"
@@ -228,7 +229,8 @@ export function Sidebar() {
                 </button>
                 {g.rows.map((r) => sessionRow(r, true))}
               </Fragment>
-            ))}
+            ));
+        })()}
         {rest.length > shown && (
           <button type="button" className="t-more" onClick={() => setShown(shown + PAGE)}>
             Show more
