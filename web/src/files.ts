@@ -79,10 +79,14 @@ export function changeMarks(c: FileChanges | undefined, hidden: boolean): Marks 
   return { files, folders: new Set(c.folders ?? []), dirs };
 }
 
-/** The mark on `path`: its own, else untracked when a folder above it is (git names an untracked folder once). */
-export function markAt(marks: Marks, path: string): ChangeMark | undefined {
+/**
+ * The mark on `path`: its own, else untracked when a folder above it is (git names an untracked
+ * folder once), but not for an entry git ignores (`ignored`: a listDir row's), which isn't a change.
+ */
+export function markAt(marks: Marks, path: string, ignored = false): ChangeMark | undefined {
   const own = marks.files.get(path);
   if (own) return own;
+  if (ignored) return undefined;
   for (let up = parentOf(path); up; up = parentOf(up)) if (marks.folders.has(up) && marks.files.get(up) === "untracked") return "untracked";
   return undefined;
 }
@@ -98,8 +102,8 @@ export function changedList(c: FileChanges | undefined, hidden: boolean): { path
 }
 
 /** What a row says of its changes: a mark's word, or a folder's count; "" when none. */
-export function markText(marks: Marks, path: string, folder: boolean): string {
-  const own = markAt(marks, path);
+export function markText(marks: Marks, path: string, folder: boolean, ignored = false): string {
+  const own = markAt(marks, path, ignored);
   if (own) return MARKS[own].label;
   const n = folder ? (marks.dirs.get(path) ?? 0) : 0;
   return n ? `${n} ${n === 1 ? "change" : "changes"} inside` : "";

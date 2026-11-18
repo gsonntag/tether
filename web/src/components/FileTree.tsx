@@ -93,8 +93,8 @@ export function FileTree({ rows, hidden, marks, mentioned, onToggle, onOpen, onM
         const folder = isFolder(e);
         const openable = canOpen(e);
         const note = e.badName ? "name isn't UTF-8" : e.to ? LINK_NOTE[e.to] : "";
-        const mark = markAt(marks, r.path);
-        const changed = markText(marks, r.path, folder);
+        const mark = markAt(marks, r.path, e.ignored);
+        const changed = markText(marks, r.path, folder, e.ignored);
         const said = [note, changed].filter(Boolean).join(", ");
         const act = () => (folder ? onToggle(r.path) : openable ? onOpen(r.path) : undefined);
         return (

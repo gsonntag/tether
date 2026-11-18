@@ -156,6 +156,10 @@ test("change marks: files keep their own, folders count what's under them, hidde
   expect(markAt(m, "nested")).toBe("untracked");
   expect(markAt(m, "nested/a/b.txt")).toBe("untracked");
   expect(markAt(m, "src/deep/other.ts")).toBeUndefined();
+  // an entry git ignores under an untracked folder isn't a change
+  expect(markAt(m, "nested/node_modules", true)).toBeUndefined();
+  expect(markText(m, "nested/debug.log", false, true)).toBe("");
+  expect(markAt(m, "nested", true)).toBe("untracked");
   // words, not colour alone
   expect(markText(m, "src/a.ts", false)).toBe("modified");
   expect(markText(m, "c.ts", false)).toBe("conflict");

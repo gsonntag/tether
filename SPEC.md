@@ -1383,7 +1383,7 @@ git names outside it is dropped; outside a repo `repo: false`, no marks) as modi
 to add too), untracked, renamed (its old path deleted), deleted (both-deleted conflicts too) or
 conflict; a deleted path that's there untracked is untracked. An untracked folder is one path
 (`folders` says which are folders: those, nested repos, submodules), and everything under it shows
-untracked. Like git status, it may run the repo's configured clean filters. Asked on opening the tab,
+untracked (but what git ignores). Like git status, it may run the repo's configured clean filters. Asked on opening the tab,
 Refresh and a turn's end (the eye only filters what's there), joined against the rows: a file's name
 is coloured and gets a letter (M, A, U, R, C; deleted files have no row), a folder with changes under
 it a dot (dot-named paths count only with the eye), each said in words in the row's label and title,
