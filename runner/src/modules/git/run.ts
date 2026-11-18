@@ -1,6 +1,7 @@
 // Running git for the git module: an argv (never a shell), in a folder, with a time limit and a cap
 // on what it may print. Optional locks are off so even `git diff` leaves the index alone, the repo's
-// external diff and textconv programs never run, and neither do its hooks or fsmonitor. Checkpoints
+// external diff and textconv programs never run, and neither does fsmonitor, nor its hooks unless
+// asked (`hooks`: Commit and Push, which run them as git would). Checkpoints
 // (../checkpoints) write through here too, with their own index file (`env`).
 
 import { childEnv } from "../../childEnv";
@@ -25,12 +26,15 @@ export interface GitOpts {
   env?: Record<string, string>;
   /** written to git's stdin */
   input?: string;
+  /** the repo's hooks run (Commit's pre-commit, Push's pre-push): only for what the person asked git to do */
+  hooks?: boolean;
 }
 
 export const GIT_TIMEOUT_MS = 15_000;
 
 /** The same in every call: plain paths, no color, no pager, no prompts, no fsmonitor hook. */
-const CONFIG = ["-c", "core.quotepath=off", "-c", "color.ui=never", "-c", "core.fsmonitor=false", "-c", "core.pager=cat", "-c", "core.hooksPath=/dev/null"];
+const CONFIG = ["-c", "core.quotepath=off", "-c", "color.ui=never", "-c", "core.fsmonitor=false", "-c", "core.pager=cat"];
+const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
 
 export class GitError extends Error {
   constructor(
@@ -47,7 +51,7 @@ export async function git(cwd: string, args: string[], opts: GitOpts = {}): Prom
   const { timeoutMs = GIT_TIMEOUT_MS, maxBytes = 16 * 1024 * 1024, ok = [0] } = opts;
   let p: ReturnType<typeof Bun.spawn<"ignore" | "pipe", "pipe", "pipe">>;
   try {
-    p = Bun.spawn(["git", ...CONFIG, ...args], {
+    p = Bun.spawn(["git", ...CONFIG, ...(opts.hooks ? [] : NO_HOOKS), ...args], {
       cwd,
       stdin: opts.input === undefined ? "ignore" : "pipe",
       stdout: "pipe",
