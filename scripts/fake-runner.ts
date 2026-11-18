@@ -298,9 +298,18 @@ async function handle(op: string, a: any): Promise<unknown> {
       if (typeof a.archived !== "boolean") throw new Error("archived must be true or false.");
       const s = get(a.sessionId);
       if (!!s.summary.archived === a.archived) return null;
-      s.summary = { ...s.summary, archived: a.archived || undefined };
+      s.summary = { ...s.summary, archived: a.archived || undefined, ...(a.archived ? { pinned: undefined } : {}) };
       if (summaries().includes(s.summary)) summary({ kind: "upsert", epoch, seq: ++summarySeq, sessions: [s.summary] });
       else summary({ kind: "remove", epoch, seq: ++summarySeq, ids: [s.summary.id] });
+      return null;
+    }
+    case "pinSession": {
+      if (typeof a.pinned !== "boolean") throw new Error("pinned must be true or false.");
+      const s = get(a.sessionId);
+      if (!!s.summary.pinned === a.pinned) return null;
+      if (a.pinned && s.summary.archived) throw new Error("Unarchive the session to pin it.");
+      s.summary = { ...s.summary, pinned: a.pinned ? Date.now() : undefined };
+      summary({ kind: "upsert", epoch, seq: ++summarySeq, sessions: [s.summary] });
       return null;
     }
     case "setModel":

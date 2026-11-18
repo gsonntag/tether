@@ -50,6 +50,8 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
   const [archived, setArchived] = useState(!!row.archived);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [archiveError, setArchiveError] = useState<string>();
+  const [pinned, setPinned] = useState(!!row.pinned);
+  const [pinBusy, setPinBusy] = useState(false);
   const titleInput = useRef<HTMLInputElement>(null);
   const editing = useRef(false);
 
@@ -60,6 +62,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
     }
   }, [editingTitle]);
   useEffect(() => setArchived(!!row.archived), [row.archived]);
+  useEffect(() => setPinned(!!row.pinned), [row.pinned]);
   // The error is shown once: gone after a few seconds or at the next click or key.
   useEffect(() => {
     if (!archiveError) return;
@@ -101,9 +104,24 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
       await saveArchived(row.runnerId, row.id, !archived);
       setArchived(!archived);
     } catch (e) {
-      setArchiveError((e as Error).message);
+      setArchiveError(`Archive failed: ${(e as Error).message}`);
     } finally {
       setArchiveBusy(false);
+    }
+  };
+
+  // Errors share the archive button's line: one row action at a time.
+  const togglePin = async () => {
+    if (pinBusy) return;
+    setPinBusy(true);
+    setArchiveError(undefined);
+    try {
+      await rpc(row.runnerId, "pinSession", { sessionId: row.id, pinned: !pinned });
+      setPinned(!pinned);
+    } catch (e) {
+      setArchiveError(`${pinned ? "Unpin" : "Pin"} failed: ${(e as Error).message}`);
+    } finally {
+      setPinBusy(false);
     }
   };
 
@@ -111,7 +129,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
     <div
       className={`t-row${child ? " t-child" : ""}${row.unread ? " unread" : ""}${selected ? " selected" : ""}`}
       onDoubleClick={(e) => {
-        if ((e.target as HTMLElement).closest("input, .t-row-archive")) return;
+        if ((e.target as HTMLElement).closest("input, .t-row-archive, .t-row-pin")) return;
         beginRename();
       }}
     >
@@ -165,6 +183,22 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
           {row.unread && !row.requests && row.status !== "waiting" && !(row.unread === "finished" && row.backgroundSubagents) && <span className={`t-unread ${row.unread}`}>· {row.unread === "failed" ? "Failed" : "Finished"}</span>}
           <StatusDot status={row.status} requests={row.requests} />
         </span>
+        {!child && !archived && (
+          <button
+            type="button"
+            className={`t-row-archive t-row-pin${pinned ? " on" : ""}`}
+            aria-label={`${pinned ? "Unpin" : "Pin"} session: ${row.title || "Untitled"}`}
+            aria-pressed={pinned}
+            title={`${pinned ? "Unpin" : "Pin"} session`}
+            disabled={pinBusy}
+            onClick={(e) => {
+              e.stopPropagation();
+              void togglePin();
+            }}
+          >
+            <PinIcon filled={pinned} />
+          </button>
+        )}
         {!child && (
           <button
             type="button"
@@ -181,8 +215,18 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
           </button>
         )}
         {renameError && <span className="t-row-rename-error" role="status">Rename failed: {renameError}</span>}
-        {archiveError && <span className="t-row-archive-error" role="status">Archive failed: {archiveError}</span>}
+        {archiveError && <span className="t-row-archive-error" role="status">{archiveError}</span>}
       </div>
     </div>
+  );
+}
+
+/** A pushpin in Heroicons' outline style (Heroicons has none); filled when pinned. */
+function PinIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M15 4.5l-4 4-4 1.5-1.5 1.5 7 7 1.5-1.5 1.5-4 4-4z" />
+      <path d="M9 15l-4.5 4.5M14.5 4l5.5 5.5" />
+    </svg>
   );
 }

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { SessionSummary } from "../../shared/transcript";
-import { childrenOf, folderName, mergeRows, recentSessions, waitingOn , inbox } from "./sessionList";
+import { childrenOf, folderName, mergeRows, recentSessions, splitPinned, waitingOn , inbox } from "./sessionList";
 
 const s = (id: string, updatedAt: number, extra: Partial<SessionSummary> = {}): SessionSummary => ({ id, harness: "claude", nativeId: id, projectPath: "/p/web", title: `T ${id}`, mode: "stored", status: "idle", updatedAt, ...extra });
 const summaries = {
@@ -48,4 +48,16 @@ test("archived sessions: out of Recent unless searching, still on Home while the
   expect(recentSessions(sums).map((r) => r.id)).toEqual(["y"]);
   expect(recentSessions(sums, "old").map((r) => r.id)).toEqual(["x"]);
   expect(inbox(sums).map((r) => `${r.id}:${r.inbox}`)).toEqual(["w:needs", "r:working"]);
+});
+
+test("pinned sessions: their own group in pin order across runners, out of the rest; never an archived one", () => {
+  const sums = {
+    a: { epoch: "e", seq: 1, sessions: { x: s("x", 3, { pinned: 20 }), y: s("y", 5), w: s("w", 1, { pinned: 30, archived: true }) } },
+    b: { epoch: "f", seq: 1, sessions: { z: s("z", 4, { pinned: 10 }), v: s("v", 9) } },
+  };
+  const { pinned, rest } = splitPinned(recentSessions(sums));
+  expect(pinned.map((r) => `${r.runnerId}:${r.id}`)).toEqual(["b:z", "a:x"]);
+  expect(rest.map((r) => r.id)).toEqual(["v", "y"]);
+  // searching shows the archived one, still not as pinned
+  expect(splitPinned(recentSessions(sums, "T w")).rest.map((r) => r.id)).toEqual(["w"]);
 });

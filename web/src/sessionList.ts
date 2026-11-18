@@ -35,6 +35,16 @@ export function recentSessions(summaries: Record<string, SummaryState>, query = 
     .sort(newestFirst);
 }
 
+/**
+ * The Sidebar's Pinned group and the rest (Recent): pinned main sessions in the order they were
+ * pinned, across runners. An archived one is never pinned (archiving unpins).
+ */
+export function splitPinned(list: Row[]): { pinned: Row[]; rest: Row[] } {
+  const isPinned = (r: Row) => !!r.pinned && !r.archived && !r.parentSessionId;
+  const pinned = list.filter(isPinned).sort((a, b) => a.pinned! - b.pinned! || a.runnerId.localeCompare(b.runnerId) || a.id.localeCompare(b.id));
+  return { pinned, rest: list.filter((r) => !isPinned(r)) };
+}
+
 /** A session's subagents that the summaries know (live ones, mostly), newest first. */
 export function childrenOf(summaries: Record<string, SummaryState>, runnerId: string, sessionId: string): Row[] {
   return rows(summaries)

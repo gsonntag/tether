@@ -135,6 +135,12 @@
   width: 16px;
   height: 16px;
 }
+.t-row-pin {
+  right: 22px;
+}
+.t-row-pin.on {
+  color: var(--color-text-primary);
+}
 .t-archived {
   font-size: 11px;
 }
@@ -146,7 +152,7 @@
 }
 @media (hover: hover) and (pointer: fine) {
   .t-row-archive { opacity: 0; pointer-events: none; }
-  .t-row:hover .t-row-archive, .t-row:focus-within .t-row-archive { opacity: 1; pointer-events: auto; }
+  .t-row:hover .t-row-archive, .t-row:focus-within .t-row-archive, .t-row-pin.on { opacity: 1; pointer-events: auto; }
 }
 .t-row-title {
   display: block;
@@ -157,7 +163,7 @@
   white-space: nowrap;
 }
 .t-row:not(.t-child) .t-row-title {
-  padding-right: 28px;
+  padding-right: 54px;
 }
 .t-row-title-editor {
   display: flex;
