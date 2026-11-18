@@ -25,6 +25,15 @@ export const VIEW_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "homeAgent",
   "resolveLink",
   "linkFor",
+  // The session folder's changes and files: read-only, only inside it.
+  "gitDiff",
+  "checkpoints",
+  "gitStatus",
+  "gitPr",
+  "listDir",
+  "readFile",
+  "findFiles",
+  "fileChanges",
 ]);
 
 /**
