@@ -480,11 +480,12 @@ export class LiveControl {
 
   private async replaceWith(s: Session, n: Session) {
     const prefs = this.core.o.prefs;
-    const { title } = prefs.get(s.id);
+    const { title, pinned, pinnedRow } = prefs.get(s.id);
     const kept = this.keptPrefs(s);
-    prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...kept });
+    // The pin goes with the conversation: the new thread takes the old one's place in Pinned.
+    prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
     n.setState(kept);
-    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
+    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
     prefs.flush();
     s.movedTo = n.id;
     this.core.book.remove([s.id]);
@@ -528,7 +529,8 @@ export class LiveControl {
       const { nativeId, opts } = await a.renew!(folder, { ...(credential ? { credential } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) });
       const n = this.core.create(s.summary.harness, nativeId, folder, opts);
       const kept = this.keptPrefs(s);
-      this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...kept });
+      const { pinned, pinnedRow } = this.core.o.prefs.get(s.id);
+      this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
       n.setState(kept);
       this.core.touch(n);
       try {
@@ -539,7 +541,7 @@ export class LiveControl {
         throw e;
       }
       s.movedTo = n.id;
-      this.core.o.prefs.set(s.id, { blank: undefined, movedTo: n.id });
+      this.core.o.prefs.set(s.id, { blank: undefined, movedTo: n.id, pinned: undefined, pinnedRow: undefined });
       return n;
     } finally {
       this.core.unpin(s);

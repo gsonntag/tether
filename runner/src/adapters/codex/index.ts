@@ -2,12 +2,14 @@
 // through the shared app-server daemon, subagents as child threads (§6a), and a shared terminal:
 // Codex's own TUI joins the live thread beside Tether (§8).
 
+import { join } from "node:path";
+import { DATA_DIR } from "../../credentials";
 import { HARNESS_KEYS } from "../../../../shared/credentials";
 import type { Msg } from "../../../../shared/transcript";
 import type { Adapter, QuitStep, StartOpts } from "../../core/adapter";
 import { HARNESS_BINS } from "../detect";
 import { call } from "./daemon";
-import { DAEMON_SOCKET } from "./rpc";
+import { CODEX_HOME, DAEMON_SOCKET } from "./rpc";
 import { codexBackgroundRuns, codexHistory, codexNoStore, codexPlan, codexProjects, codexSessionInfo, codexSessions, codexStoredBilling, codexStoredContext, codexSubagents, threadSettings, watchThread } from "./discovery";
 import { codexCommandRoute, commandList, enabledSkills } from "./commands";
 import { CodexDriver, codexTools, createThread } from "./driver";
@@ -76,6 +78,7 @@ export const codexAdapter: Adapter = {
   readHistory: fullHistory,
   storedContext: (nativeId) => codexStoredContext(nativeId),
   planUsage: codexPlan,
+  usageStores: () => [{ dir: join(CODEX_HOME, "sessions") }, { dir: join(CODEX_HOME, "archived_sessions") }, { dir: join(DATA_DIR, "codex-keys"), private: true }],
   storedBilling: (nativeId) => codexStoredBilling(nativeId),
   watchHistory: (nativeId, projectPath, onChange) => watchThread(nativeId, projectPath, onChange, fullHistory),
 

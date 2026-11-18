@@ -88,6 +88,7 @@ export function createRunner(o: RunnerOptions) {
     protocol: PROTOCOL_VERSION,
     harnesses: await harnesses,
     ...(o.homeFolder ? { homeFolder: o.homeFolder } : {}),
+    pinning: true,
   });
 
   const conn = new Connection({
@@ -204,6 +205,8 @@ export function createRunner(o: RunnerOptions) {
       loaded: () => [...core.sessions.values()].map(lookAt),
       viewersOf: (id: string) => live.read.viewersOf(id),
       homeFolder: o.homeFolder,
+      apiCost: (id: string) => (costs.has(id) ? costs.get(id) : undefined),
+      hiddenFolder: (path: string) => core.hidden(path),
       announceHomeChat: (u: HomeChatUpdate) => void conn.send({ t: "homeChat", ...u }),
       sessions: {
         adapters: () => o.adapters ?? [],
@@ -247,7 +250,7 @@ export function createRunner(o: RunnerOptions) {
           live.answerRequest(id, requestId, a.allow ? { ...a, ...(a.notes ? { notes: defang(a.notes) } : {}) } : { allow: false, ...(a.reason ? { reason: defang(a.reason) } : {}) }),
         carrier: (f: (id: string, source: BillingSource) => Promise<string>) => { live.carrier = f; },
         projects: () => core.listProjects(),
-        list: () => core.book.list(),
+        list: () => core.listed(),
         archived: async () => (await core.listSessions({ archived: true, limit: 2000 })).sessions,
         folder: (path: string) => core.folder(path),
         queue: (id: string, text: string, attachments: Attachment[] = []) => (live.attachments.markUsed(attachments), live.queue.add(id, text, attachments)),
