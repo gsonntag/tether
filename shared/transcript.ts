@@ -170,6 +170,11 @@ export interface Msg {
   partsOmitted?: number;
   /** notice, on a session being exported (shared/move.ts): the summary a compaction left */
   compactSummary?: string;
+  /**
+   * The harness can't fork at this message (SPEC §16): history brought into the session from
+   * elsewhere that isn't in its own store's turns (Codex: a move's import, a source change's earlier thread).
+   */
+  noFork?: true;
 }
 
 // ---------- live state ----------

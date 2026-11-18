@@ -483,12 +483,13 @@ export class LiveControl {
     const { title } = prefs.get(s.id);
     const kept = this.keptPrefs(s);
     prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...kept });
-    n.setState(kept);
+    const { forkedFrom, ...state } = kept;
+    n.setState(state);
     prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
     prefs.flush();
     s.movedTo = n.id;
     this.core.book.remove([s.id]);
-    this.core.touch(n, { title: title ?? s.summary.title });
+    this.core.touch(n, { title: title ?? s.summary.title, ...(forkedFrom ? { forkedFrom } : {}) });
     this.core.book.upsert([n.summary]);
     this.carryCost(s, n);
     await this.close(s, true);
@@ -527,8 +528,9 @@ export class LiveControl {
       const n = this.core.create(s.summary.harness, nativeId, folder, opts);
       const kept = this.keptPrefs(s);
       this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...kept });
-      n.setState(kept);
-      this.core.touch(n);
+      const { forkedFrom, ...state } = kept;
+      n.setState(state);
+      this.core.touch(n, forkedFrom ? { forkedFrom } : {});
       try {
         await this.ensureDriver(n);
       } catch (e) {
@@ -1466,10 +1468,10 @@ export class LiveControl {
     s.setState(patch);
   }
 
-  /** What a session's successor on another id keeps. */
+  /** What a session's successor on another id keeps (a fork's link back too, SPEC §16). */
   keptPrefs(s: Session) {
-    const { autoKey, lastKey, fallbackKeys } = this.core.o.prefs.get(s.id);
-    return { ...(autoKey ? { autoKey } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}) };
+    const { autoKey, lastKey, fallbackKeys, forkedFrom } = this.core.o.prefs.get(s.id);
+    return { ...(autoKey ? { autoKey } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}) };
   }
 
   /**

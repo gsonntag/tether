@@ -5,6 +5,7 @@
 // approvals and questions go to the broker through the sink, and close as resolved elsewhere when
 // another client (the TUI) answers first (serverRequest/resolved).
 
+import { forkError } from "./forkGone";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { parseCommand, type HarnessCommand } from "../../../../shared/commands";
@@ -196,7 +197,7 @@ export class CodexDriver implements Driver {
       // loaded (Codex's TUI), so changes are applied after, and checked (started).
       const r = await rpc.call("thread/resume", { threadId: nativeId, excludeTurns: true, ...withTools(codexResumeExtras(projectPath), projectPath) }).catch((e: any) => {
         if (NO_ROLLOUT.test(String(e?.message))) throw new Error("This Codex session never got a message, so there's nothing to reopen. Start a new one.");
-        throw e;
+        throw forkError(e);
       });
       d.threadPath = r.thread?.path;
       await d.started(r, opts);

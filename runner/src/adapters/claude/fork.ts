@@ -20,10 +20,19 @@ import type { Msg } from "../../../../shared/transcript";
 
 /** The entry a fork through transcript message `upTo` ends at: the last entry of that message. */
 export function forkEntry(chain: Entry[], upTo: string): string | undefined {
-  return chain.findLast((e) => e.type === "assistant" && !String(e.message?.model ?? "").startsWith("<") && messageId(e.message?.id, e.uuid) === upTo)?.uuid;
+  // Only Claude Code's own "<synthetic>" replies aren't in the transcript as replies; a moved-in
+  // reply ("<moved>", move.ts) is, and can end a fork.
+  return chain.findLast((e) => e.type === "assistant" && e.message?.model !== "<synthetic>" && messageId(e.message?.id, e.uuid) === upTo)?.uuid;
 }
 
+const remove = (nativeId: string, projectPath: string) => {
+  const f = sessionFile(nativeId, projectPath);
+  if (f) rmSync(f, { force: true });
+};
+
 export const claudeFork: AdapterFork = {
+  discard: async (nativeId, projectPath) => remove(nativeId, projectPath),
+
   async fork({ nativeId, projectPath, upTo, title }: ForkRequest) {
     const { session, agent } = splitNative(nativeId);
     if (agent) throw new Error("A subagent can't be forked.");
@@ -35,17 +44,13 @@ export const claudeFork: AdapterFork = {
       if (!at) throw new Error("That message isn't in the session's store.");
     }
     const { sessionId } = await forkSession(session, { dir: projectPath, title, ...(at ? { upToMessageId: at } : {}) });
-    const drop = () => {
-      const f = sessionFile(sessionId, projectPath);
-      if (f) rmSync(f, { force: true });
-    };
     try {
       const said = (msgs: Msg[]) => msgs.filter((m) => m.role !== "notice");
       const msgs = said(await readHistory(sessionId, projectPath));
       const ok = upTo ? msgs.at(-1)?.id === upTo : msgs.length > 0 && msgs.length === said(await readHistory(session, projectPath)).length;
       if (!ok) throw new Error("The fork didn't read back as the conversation.");
     } catch (e) {
-      drop();
+      remove(sessionId, projectPath);
       throw e;
     }
     // The original's latest start, on the same source: shown until the fork's own first start confirms it.

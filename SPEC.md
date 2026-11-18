@@ -1664,17 +1664,26 @@ it works in plan mode too.
 **Fork** in the session's ⋯ menu makes a new session with the same conversation, in the same folder,
 on the same harness and source, with the same model, effort and mode. **Fork from here** under a
 reply makes one whose conversation ends at that reply. The original is never changed, and the fork
-opens. It is a module (`runner/src/modules/fork/`, op `forkSession { sessionId, messageId? }`); other
-modules fork through `SessionActions.fork` (side chats, §16a, build on it).
+opens ("Forking…" in the chat meanwhile). It is a module (`runner/src/modules/fork/`, op
+`forkSession { sessionId, messageId? }`); other modules fork through `SessionActions.fork` (side
+chats, §16a, build on it).
 
 **Fork points** (`shared/fork.ts`, the UI and runner alike): the assistant reply that ends a turn,
 that is a reply with no error, ending on text (one ending on a tool call is mid-turn), followed by
 your next message or by nothing. A stopped turn's reply counts: its turn ended. User messages,
-notices and errors aren't fork points. Desktop shows Fork from here on hover; touch, always.
+notices and errors aren't fork points, nor is history the harness can't fork at (`Msg.noFork`:
+Codex's imported messages and a source change's earlier thread, which aren't in its own turns).
+Desktop shows Fork from here on hover (hidden, it takes no clicks but stays in the tab order);
+touch, always.
 
-**While a turn runs** the running turn is never forked: its replies aren't fork points, and Fork
+**While a turn may run** the running turn is never forked: its replies aren't fork points, and Fork
 takes the conversation through the last finished turn ("No turn has finished yet" when none has).
-A turn another Codex client runs counts as running.
+That's a turn in Tether, one another Codex client runs, and anything while a handoff harness's TUI
+has the session (Claude's: Tether doesn't follow its turns). And Fork of a whole session whose store
+doesn't end on a fork point (a turn in the CLI, outside Tether, ending on your message or mid-reply;
+a failed turn) takes it through the last fork point too. A whole fork that stops short says so in
+its notice: "Forked through the last finished turn; the failed (unfinished, running) turn after it
+isn't included."
 
 **Not forked:** a subagent (fork its main session; the fork's tool cards don't link the original's
 subagents); a session whose source change isn't confirmed yet (`nextBilling`: send first); a harness
@@ -1682,19 +1691,29 @@ without `capabilities.fork`.
 
 | Harness | How |
 |---|---|
-| Claude Code | The Agent SDK's `forkSession` (a file operation: fresh entry ids, `forkedFrom` on each entry), `upToMessageId` the last entry of the reply's API message. Replies keep their message ids, so the fork must read back ending on that id (a whole fork: as many messages), else it's deleted |
-| Codex | `thread/fork` with `lastTurnId`, the reply's turn (inclusive), so nothing is rolled back: later turns are never copied. A reply followed by a message steered into its turn isn't a fork point here. Checked on 0.164: no turn starts, the rollout is written at once, turn ids are kept. The fork is read back (its last turn) and named, else archived |
-| Codex on a key | Its thread lives on a private app-server that serves one thread, so it's copied instead (`Adapter.fork.copyInstead`): §15's native import of the history through that reply, into a new thread on the same source. Tool calls travel as text and Tether's opening reads as a move's |
+| Claude Code | The Agent SDK's `forkSession` (a file operation: fresh entry ids, `forkedFrom` on each entry), `upToMessageId` the last entry of the reply's API message (a moved-in `<moved>` reply too; only `<synthetic>` ones aren't replies). Replies keep their message ids, so the fork must read back ending on that id (a whole fork: as many messages), else it's deleted. Across a compaction, as recorded, too |
+| Codex | `thread/fork` with `lastTurnId`, the reply's turn (inclusive), so nothing is rolled back: later turns are never copied. A reply followed by a message steered into its turn isn't a fork point here. Checked on daemon 0.169.1: no turn starts, turn ids are kept, and the fork's rollout holds only its own lines, its `session_meta` pointing at the original's (`forked_from_id`, `forked_from_ordinal_exclusive`). The fork is read back (its last turn) and named, else archived. So a fork reads its history from the original's rollout: archiving the original is safe, Codex refuses to delete an original a fork refers to, and removing its file by hand breaks the fork, whose opening (or history) then says "This fork's original history is gone (its Codex rollout was removed)." (the daemon's `missing source rollout`) |
+| Codex, copied | Copied instead (`Adapter.fork.copyInstead`) with §15's native import of the history through that reply, into a new thread on the same source: a thread on a key's private app-server, which serves one thread; and a thread with history brought in (a move's import, a source change), as its fork wouldn't show that history (Tether reads it from the thread's own rollout head: checked, a fork reads none back). So Fork right after a source change copies it whole. Tool calls travel as text and Tether's opening reads as a move's |
+
+A fork that can't be adopted once made (its settings, its notice) is removed from the store
+(`Adapter.fork.discard`: Claude's file, Codex's thread archived) and its row archived.
 
 **Billing.** A fork starts nothing and bills nothing: both harnesses fork in their stores. It's
 saved as the original's source (`SessionPrefs.source`) and settings, stored, and its first send
-starts it as any stored session, confirming the source first. Until then its chip shows what the
-original's latest start confirmed (copied in `claude-windows.json`, `codex-threads.json`). A key's
-copy starts that key's private app-server to make its thread, but no turn.
+starts it as any stored session, confirming the source first. Its chip meanwhile shows what the
+original's latest start confirmed (copied in `claude-windows.json`, `codex-threads.json`): the one
+exception to "the label changes only after harness confirmation". It's safe because the fork has
+exactly that source saved (a pending change refuses the fork), the label says what the harness
+confirmed for that source, so the API colour shows before anything is typed, and nothing is sent
+until the fork's own start confirms it again; a mismatch refuses the send as for any session. A
+key's copy starts that key's private app-server to make its thread, but no turn. The original's key
+preferences (`lastKey`, `fallbackKeys`) come along; its **When the plan runs out** switch doesn't,
+as it's ticked per session.
 
-**Links.** `SessionSummary.forkedFrom { sessionId, messageId?, title }` (`SessionPrefs.forkedFrom`):
-the header says "Forked from “<title>”", by the original's title now, and opens it. A notice under
-what the fork took says the same, with Open it. The original gets nothing.
+**Links.** `SessionSummary.forkedFrom { sessionId, messageId?, title }` (`SessionPrefs.forkedFrom`,
+kept across a source change like the session's other settings): the header says "Forked from
+“<title>”", by the original's title now, and opens it. A notice under what the fork took says the
+same, with Open it. The original gets nothing.
 
 ## 16a. Side chats
 
@@ -1731,4 +1750,3 @@ is allowed and never forked. It is a module (`runner/src/modules/sideChats/`, op
   decides what goes into a working session. Refused while the side chat is answering.
 - **Close** (×) archives it. Side chats opens it again.
 - **Billing** is the fork's: the session's source, model and effort; its turns are real turns.
-

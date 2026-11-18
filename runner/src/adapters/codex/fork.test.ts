@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { forkPoints } from "../../../../shared/fork";
+import { forkPoints, wholeForkPoint } from "../../../../shared/fork";
 import { setConnector } from "./daemon";
 import { codexFork, forkTurn } from "./fork";
+import { FORK_SOURCE_GONE, forkError } from "./forkGone";
 import { historyMsgs } from "./items";
 import { remember, remembered, rememberIn } from "./remember";
 import { CodexRpc } from "./rpc";
@@ -13,12 +14,13 @@ const ORIG = "01a187c7-9ae6-7631-b0cc-596277bb8c13";
 const TURNS: any[] = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "approval-steer-turns.json"), "utf8"));
 
 /** A scripted daemon with threads: thread/fork copies turns through lastTurnId, as the real one does. */
-function daemon(fail?: string) {
+function daemon(fail?: string, message = `${fail} failed`) {
   const threads = new Map<string, any[]>([[ORIG, TURNS]]);
   const sent: any[] = [];
   const rpc = new CodexRpc();
   const answer = (method: string, p: any): unknown => {
-    if (method === fail) throw new Error(`${method} failed`);
+    if (method === fail) throw new Error(message);
+    if (method === "thread/read") return { thread: { id: p.threadId, cwd: "/p", status: { type: "idle" } } };
     if (method === "thread/turns/list") return { data: threads.get(p.threadId) ?? [], nextCursor: null };
     if (method === "thread/fork") {
       const turns = threads.get(p.threadId)!;
@@ -91,10 +93,50 @@ describe("forking a Codex thread", () => {
     expect(d.calls("thread/archive").map((p) => p.threadId)).toEqual(["fork-1"]);
   });
 
-  test("a thread on a key's own process is copied instead", async () => {
+  test("a thread on a key's own process, or with history brought in, is copied instead", async () => {
     rememberIn(undefined);
+    expect(codexFork.copyInstead!(ORIG)).toBe(false);
     remember(ORIG, { source: { id: "a".repeat(32), source: "openai", projectPath: "/p" } });
     expect(codexFork.copyInstead!(ORIG)).toBe(true);
     await expect(codexFork.fork({ nativeId: ORIG, projectPath: "/p", title: "x" })).rejects.toThrow("copied");
+    rememberIn(undefined);
+    remember(ORIG, { imported: true });
+    expect(codexFork.copyInstead!(ORIG)).toBe(true);
+  });
+
+  test("a carried thread: the earlier thread's messages aren't fork points; right after the change, Fork copies it whole", async () => {
+    rememberIn(undefined);
+    daemon();
+    remember("NEW", { carriedFrom: ORIG, imported: true });
+    const { codexAdapter } = await import("./index");
+    const msgs = await codexAdapter.readHistory("NEW", "/p");
+    expect(msgs.length).toBe(historyMsgs(TURNS, "/p").length);
+    expect(msgs.every((m) => m.noFork)).toBe(true);
+    expect(forkPoints(msgs, false).size).toBe(0);
+    expect(wholeForkPoint(msgs, false)).toEqual({});
+    expect(codexFork.copyInstead!("NEW")).toBe(true);
+    // The earlier thread itself is its own: forkable.
+    expect(forkPoints(await codexAdapter.readHistory(ORIG, "/p"), false).size).toBeGreaterThan(0);
+  });
+
+  test("a failed adoption's fork is archived", async () => {
+    rememberIn(undefined);
+    const d = daemon();
+    await codexFork.discard!("fork-9", "/p");
+    expect(d.calls("thread/archive")).toEqual([{ threadId: "fork-9" }]);
+  });
+});
+
+describe("a fork whose original rollout was removed", () => {
+  test("opening it says so plainly, as does reading its history", async () => {
+    rememberIn(undefined);
+    const { CodexDriver } = await import("./driver");
+    const { TestSink } = await import("./testSink");
+    const { threadTurns } = await import("./discovery");
+    daemon("thread/resume", "thread/resume failed: missing source rollout");
+    await expect(CodexDriver.open("fork-1", "/tmp", {}, new TestSink() as any, true)).rejects.toThrow(FORK_SOURCE_GONE);
+    daemon("thread/turns/list", "missing source rollout");
+    await expect(threadTurns("fork-1")).rejects.toThrow(FORK_SOURCE_GONE);
+    expect(forkError(new Error("other"))).toEqual(new Error("other"));
   });
 });

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
-import { canFork, forkedFromTitle } from "./fork";
+import { canFork, forkedFromTitle, forkRunning } from "./fork";
 import { forkPoints } from "../../shared/fork";
 import type { HarnessCapabilities, Msg } from "../../shared/transcript";
 
@@ -44,4 +44,24 @@ test("a fork's header links back to where it came from, by that session's title 
   expect(forkedFromTitle(listed, "r", from)).toBe("New name");
   expect(forkedFromTitle({}, "r", from)).toBe("Old name");
   expect(forkedFromTitle({}, "r", { sessionId: "x" })).toBeUndefined();
+});
+
+test("a TUI that took the session over counts as running; a shared one doesn't", () => {
+  expect(forkRunning({ status: "idle", mode: "stored" }, caps(true))).toBe(false);
+  expect(forkRunning({ status: "running", mode: "live" }, caps(true))).toBe(true);
+  expect(forkRunning({ status: "idle", mode: "terminal" }, caps(true))).toBe(true);
+  expect(forkRunning({ status: "idle", mode: "live", terminal: { tmuxSession: "x" } as any }, { ...caps(true), terminal: "shared" })).toBe(false);
+});
+
+test("history brought in from elsewhere gets no Fork from here", () => {
+  const msgs: Msg[] = [{ id: "m1", role: "user", ts: 1, noFork: true, parts: [{ type: "text", text: "moved" }] }, { ...reply("m2", "Ready."), noFork: true }];
+  expect(forkPoints(msgs, false).size).toBe(0);
+});
+
+test("hidden on desktop, Fork from here takes no clicks but stays focusable", async () => {
+  const css = await Bun.file(new URL("./app.css", import.meta.url)).text();
+  const rule = css.slice(css.indexOf("@media (hover: hover) and (pointer: fine) {\n  /* Hidden, it takes no clicks"));
+  expect(rule).toContain("pointer-events: none");
+  expect(rule).not.toMatch(/\.t-fork-here\s*{[^}]*(display: none|visibility: hidden)/);
+  expect(rule).toContain(".t-fork-here:focus-visible");
 });
