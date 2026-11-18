@@ -24,7 +24,8 @@ export const usageRoots = (adapters: Adapter[]): UsageRoot[] => adapters.flatMap
  */
 export function claudeSource(f: FileState, latestStart: Adapter["latestStart"]): SourceSpan {
   const start = f.session ? latestStart?.(f.session) : undefined;
-  const kind: Source = start?.kind === "plan" ? "plan" : start?.kind === "apiKey" ? "key" : start?.kind === "provider" ? "provider" : "unknown";
+  // An auth token (ANTHROPIC_AUTH_TOKEN) goes to a gateway or proxy, whose prices aren't Anthropic's.
+  const kind: Source = start?.kind === "plan" ? "plan" : start?.kind === "apiKey" && start.label !== "Anthropic auth token" ? "key" : start?.kind === "provider" || start?.kind === "apiKey" ? "provider" : "unknown";
   return kind === "unknown" ? { kind } : { kind, since: start!.at };
 }
 

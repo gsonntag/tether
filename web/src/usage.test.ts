@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { emptyTotals } from "../../shared/usage";
-import { bars, dayLabel, fmtPart, fmtPrice, fmtTokens, modelName, niceMax, scanLine, unpricedNote } from "./usage";
+import { bars, dayLabel, fmtPart, fmtPrice, fmtTokens, modelName, niceMax, partial, scanLine, unpricedNote } from "./usage";
 
 test("token counts read short", () => {
   expect([0, 950, 1000, 12_345, 999_499, 999_500, 3_449_999, 123_456_789, 8_722_131_942].map(fmtTokens)).toEqual(["0", "950", "1k", "12k", "999k", "1M", "3.4M", "123M", "8.7B"]);
@@ -19,6 +19,14 @@ test("a price says when it's partial, and when there is none", () => {
   expect(unpricedNote({ unpriced: 2 }, "estimate")).toBe("+ 2 requests with no published price");
   // An empty row is a priced zero, not "no price".
   expect(fmtPrice(emptyTotals())).toBe("$0.00");
+});
+
+test("a scan that couldn't read everything makes dollar figures lower bounds", () => {
+  expect(partial(false, "$1.00", "estimate")).toEqual({ value: "$1.00", note: "estimate" });
+  expect(partial(true, "$1.00", "estimate")).toEqual({ value: "$1.00+", note: "estimate; some logs couldn't be read" });
+  expect(partial(true, "$1.00+", "x").value).toBe("$1.00+");
+  expect(partial(true, "no price", "x")).toEqual({ value: "no price", note: "x" });
+  expect(partial(true, "—", "x").value).toBe("—");
 });
 
 test("axis tops are round", () => {

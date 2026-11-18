@@ -287,7 +287,7 @@ export interface Adapter {
   /** Where the harness keeps its session logs, for Settings → Usage (`private`: a home only Tether's API-key threads use). Read-only. */
   usageStores?(): { dir: string; private?: boolean }[];
   /** What a stored session drew from on its latest start and when (ms), as Tether recorded it; undefined if it didn't. */
-  latestStart?(nativeId: string): { kind: Billing["kind"]; at: number } | undefined;
+  latestStart?(nativeId: string): { kind: Billing["kind"]; label?: string; at: number } | undefined;
   /** calls onChange with the whole transcript whenever the store changes; returns the stop function */
   watchHistory(nativeId: string, projectPath: string, onChange: (msgs: Msg[]) => void): () => void;
   /**

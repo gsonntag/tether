@@ -6,7 +6,7 @@ import { planLines } from "../../../shared/labels";
 import { totalTokens, type UsageReport, type UsageTotals } from "../../../shared/usage";
 import { rpc } from "../connection";
 import { useStore } from "../store";
-import { bars, browserTimeZone, dayLabel, fmtPart, fmtPrice, fmtTokens, modelName, scanLine, SERIES, unpricedNote, type Metric } from "../usage";
+import { bars, browserTimeZone, dayLabel, fmtPart, fmtPrice, fmtTokens, modelName, partial, scanLine, SERIES, unpricedNote, type Metric } from "../usage";
 import { useNow } from "./useNow";
 
 const POLL_MS = 1500;
@@ -62,6 +62,8 @@ function Report({ report, now }: { report: UsageReport; now: number }) {
   const t = report.total;
   const src = t.sources;
   const providers = src.provider.requests > 0;
+  // Logs that couldn't be read: every dollar figure from them is a lower bound.
+  const lost = report.scan.errors > 0;
   const plans = report.plans.map((p) => ({ ...p, lines: planLines(p.plan, now) })).filter((p) => p.lines.length);
   return <>
     {plans.length > 0 && (
@@ -71,13 +73,13 @@ function Report({ report, now }: { report: UsageReport; now: number }) {
     )}
     <dl className="t-usage-summary">
       <Tile label="Tokens" value={fmtTokens(totalTokens(t))} note={`${t.requests.toLocaleString()} requests`} />
-      <Tile label="At API prices (est.)" value={fmtPrice(t)} note={t.unpriced ? `${t.unpriced.toLocaleString()} requests have no published price` : "what it would cost on the API"} />
-      <Tile label="Plan usage at API prices" value={fmtPart(src.plan)} note={unpricedNote(src.plan, "estimate; plans don't bill per token")} />
-      <Tile label="API keys at API prices" value={fmtPart(src.key)} note={unpricedNote(src.key, "estimate")} />
+      <Tile label="At API prices (est.)" {...partial(lost, fmtPrice(t), t.unpriced ? `${t.unpriced.toLocaleString()} requests have no published price` : "what it would cost on the API")} />
+      <Tile label="Plan usage at API prices" {...partial(lost, fmtPart(src.plan), unpricedNote(src.plan, "estimate; plans don't bill per token"))} />
+      <Tile label="API keys at API prices" {...partial(lost, fmtPart(src.key), unpricedNote(src.key, "estimate"))} />
       {report.ledger && <Tile label="Billed to API keys" value={`${dollars(report.ledger.usd)}${report.ledger.complete ? "" : "+"}`} note={`Tether's ledger, ${report.ledger.sessions} session${report.ledger.sessions === 1 ? "" : "s"}' whole totals${report.ledger.complete ? "" : "; part isn't known"}`} />}
       {src.provider.requests > 0 && <Tile label="Providers" value={`${src.provider.requests.toLocaleString()} requests`} note="Bedrock, Vertex, Azure and the like set their own prices: none here" />}
-      {src.unknown.requests > 0 && <Tile label="Source unknown" value={fmtPart(src.unknown)} note={unpricedNote(src.unknown, "at API prices; before Tether's record of the session's latest start, or none")} />}
-      <Tile label="Cache savings (est.)" value={dollars(t.savings)} note="cache reads at the full input price, less their cost" />
+      {src.unknown.requests > 0 && <Tile label="Source unknown" {...partial(lost, fmtPart(src.unknown), unpricedNote(src.unknown, "at API prices; before Tether's record of the session's latest start, or none"))} />}
+      <Tile label="Cache savings (est.)" {...partial(lost, dollars(t.savings), "cache reads at the full input price, less their cost")} />
     </dl>
     <Daily report={report} />
     <Table title="By model" providers={providers} rows={report.byModel.map((m) => ({ key: `${m.harness}:${m.model}`, name: modelName(m.harness, m.model), title: m.model, t: m }))} />

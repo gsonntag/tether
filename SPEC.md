@@ -1242,9 +1242,12 @@ unnamed row). A table's first column stays put while a phone scrolls it sideways
 
 A sum that leaves out requests with no price ends in **+** (a tile says how many), a source with
 nothing priced says **no price**, one with no requests **—**, and a dollar bar for such a day has a +
-over it: a partial subtotal is never shown as whole. No price: a model the tables don't list, a tier
+over it: a partial subtotal is never shown as whole. When some logs couldn't be read (`scan.errors`),
+every dollar tile is a lower bound too: **+** and a note. No price: a model the tables don't list, a tier
 other than standard (Claude's `service_tier`, Codex's `thread_settings_applied`), a provider
-(Bedrock, Vertex, Foundry, a gateway, Azure: they set their own prices), Codex over 272K input. Hosted
+(Bedrock, Vertex, Foundry, a gateway or an auth token, Azure: they set their own prices), Codex over
+272K input, Sonnet 4.5 over 200K (its long-context beta's premium isn't listed: no price rather than
+a low one). Hosted
 tool fees (web search) aren't tokens and aren't counted. Prices: Anthropic's published first-party
 table (`shared/anthropicRates.ts`: 5-minute and 1-hour writes, Haiku 5.5's long-prompt rates, fast
 mode, US-only inference, the published dated ids of the 4.5 models) and OpenAI's Standard table
@@ -1253,8 +1256,9 @@ mode, US-only inference, the published dated ids of the 4.5 models) and OpenAI's
 Sources. Codex, per request from its rollout: a key's provider (`tether_openai`) or a private home is
 a key, any other provider is a provider, OpenAI's own whose token count after it carried plan limits
 (`rate_limits.plan_type`) is the plan, else unknown. Claude, as of Tether's last start of the session
-(`Adapter.latestStart`: its source and time): that source from then on; before it unknown, since it
-may have been another.
+(`Adapter.latestStart`: its source and time; an "Anthropic auth token" start is a provider): that
+source from then on; before it unknown, since it may have been another. A Codex token count of rate
+limits only (no usage) marks only the record just before it.
 
 The `usage` module reads the harness stores, not Tether's records: each adapter's
 `usageStores()` (Claude's `projects/`, subagents included; Codex's `sessions/`, `archived_sessions/`
@@ -1267,8 +1271,8 @@ counted). Copies of a request in several files merge to their largest counts and
 of the session the entry names.
 
 Nothing is read until the page first asks; then the scan runs in the background, again when the op is
-called over a minute after the last (or Refresh). Folders are walked by hand: symlinks aren't
-followed, and a folder or file that can't be read is counted in `scan.errors`, which the page shows,
+called over a minute after the last (or Refresh). Folders are walked by hand (an entry of unknown type is
+`lstat`ed): symlinks aren't followed, and a folder or file that can't be read is counted in `scan.errors`, which the page shows,
 without stopping the rest. One file at a time, in 4 MB chunks, yielding between them. Only a line
 whose first 2 KB has a parser's marker is decoded and parsed; a line over 64 MB is skipped (counted)
 without failing its file. Each file's records are cached in the module's data dir with its size,

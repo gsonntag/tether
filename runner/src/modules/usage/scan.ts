@@ -11,7 +11,7 @@
 // counted in `errors`, not the end of its root.
 
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { open, readdir, stat } from "node:fs/promises";
+import { lstat, open, readdir, stat } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import type { HarnessId } from "../../../../shared/transcript";
 import { HEAD, keyOf, lineParser, type FileState } from "./parse";
@@ -128,8 +128,13 @@ export class UsageScanner {
       for (const d of entries) {
         if (this.stopped) return;
         const path = join(dir, d.name);
-        if (d.isDirectory()) await walk(root, path, false);
-        else if (d.isFile() && d.name.endsWith(".jsonl") && (root.harness !== "codex" || d.name.startsWith("rollout-"))) {
+        let kind: { isDirectory(): boolean; isFile(): boolean } = d;
+        // Some filesystems don't say a dirent's type: ask, without following a link.
+        if (!d.isDirectory() && !d.isFile() && !d.isSymbolicLink()) {
+          try { kind = await lstat(path); } catch { error(); continue; }
+        }
+        if (kind.isDirectory()) await walk(root, path, false);
+        else if (kind.isFile() && d.name.endsWith(".jsonl") && (root.harness !== "codex" || d.name.startsWith("rollout-"))) {
           try {
             const s = await stat(path);
             if (s.mtimeMs >= cutoff) out.push({ path, harness: root.harness, ...(root.private ? { private: true } : {}), size: s.size, mtime: s.mtimeMs });

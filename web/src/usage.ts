@@ -24,6 +24,12 @@ export const fmtPart = (p: SourcePart) => (p.requests ? fmtPrice(p) : "—");
 /** What a tile adds under a partial price. */
 export const unpricedNote = (p: Pick<SourcePart, "unpriced">, otherwise: string) => (p.unpriced ? `+ ${p.unpriced.toLocaleString()} request${p.unpriced === 1 ? "" : "s"} with no published price` : otherwise);
 
+/** A dollar figure from a scan that couldn't read everything is a lower bound: "+" (once), and a note. */
+export function partial(lost: boolean, value: string, note: string): { value: string; note: string } {
+  if (!lost || !value.startsWith("$")) return { value, note };
+  return { value: value.endsWith("+") ? value : `${value}+`, note: `${note}; some logs couldn't be read` };
+}
+
 export const SERIES: { key: keyof UsageTokens; label: string }[] = [
   { key: "input", label: "Input" },
   { key: "output", label: "Output" },

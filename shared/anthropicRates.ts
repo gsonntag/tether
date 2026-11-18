@@ -2,8 +2,10 @@
 // https://platform.claude.com/docs/en/about-claude/pricing, read 2026-11-18. Only what that page lists,
 // by the exact model id Claude Code records. Models before the 4.6 generation are also recorded by
 // their dated ids, which their aliases resolve to (models overview); the three published ones are here.
-// Sonnet 4.5 and older have a 200K window, so no long-context rates apply. Server tool fees (web
-// search, $10 per 1,000) and code execution time aren't tokens and aren't counted. Cache writes are the
+// Sonnet 4.5's window is 200K; its 1M long-context beta bills a premium above 200K that the page
+// doesn't list, so a Sonnet 4.5 request with a prompt over 200K has no price here (`maxPrompt`)
+// rather than a low one. Server tool fees (web search, $10 per 1,000) and code execution time aren't
+// tokens and aren't counted. Cache writes are the
 // page's 5-minute and 1-hour rates; reads its "cache hits and refreshes". Fast mode and US-only
 // inference are multipliers on these (below); Bedrock, Vertex and other partners price their own.
 // These price estimates, never invoices: a plan's usage at these rates is what the API would cost.
@@ -12,8 +14,11 @@ export const ANTHROPIC_RATES_DATE = "2026-11-18";
 export const ANTHROPIC_RATES_SOURCE = "Anthropic API pricing page (first-party, USD)";
 
 export interface AnthropicBand { input: number; write5m: number; write1h: number; read: number; output: number }
-/** `long`: the rates of a request whose prompt (input, cache reads and writes) is over `longAbove` tokens. */
-export interface AnthropicRates extends AnthropicBand { longAbove?: number; long?: AnthropicBand }
+/**
+ * `long`: the rates of a request whose prompt (input, cache reads and writes) is over `longAbove`
+ * tokens. `maxPrompt`: a longer prompt has rates the page doesn't list: no price.
+ */
+export interface AnthropicRates extends AnthropicBand { longAbove?: number; long?: AnthropicBand; maxPrompt?: number }
 
 const band = (input: number, write5m: number, write1h: number, read: number, output: number): AnthropicBand => ({ input, write5m, write1h, read, output });
 
@@ -34,8 +39,8 @@ export const ANTHROPIC_RATES: Record<string, AnthropicRates> = {
   "claude-sonnet-5-5": band(2, 2.5, 4, 0.1, 10),
   "claude-sonnet-5": band(2, 2.5, 4, 0.2, 10),
   "claude-sonnet-4-6": band(3, 3.75, 6, 0.3, 15),
-  "claude-sonnet-4-5": band(3, 3.75, 6, 0.3, 15),
-  "claude-sonnet-4-5-20250929": band(3, 3.75, 6, 0.3, 15),
+  "claude-sonnet-4-5": { ...band(3, 3.75, 6, 0.3, 15), maxPrompt: 200_000 },
+  "claude-sonnet-4-5-20250929": { ...band(3, 3.75, 6, 0.3, 15), maxPrompt: 200_000 },
   "claude-haiku-5-5": { ...band(0.1, 0.125, 0.2, 0.01, 0.5), longAbove: 100_000, long: band(0.5, 0.625, 1, 0.05, 2.5) },
   "claude-haiku-4-5": band(1, 1.25, 2, 0.1, 5),
   "claude-haiku-4-5-20251001": band(1, 1.25, 2, 0.1, 5),

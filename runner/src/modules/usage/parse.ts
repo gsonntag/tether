@@ -56,6 +56,8 @@ export interface FileState {
   total?: number;
   records?: boolean;
   last?: number;
+  /** the line just before was a usage record (its token count comes next) */
+  fresh?: boolean;
   recs: Rec[];
 }
 
@@ -129,6 +131,8 @@ export function codexLine(line: string, f: FileState, index: Map<string, number>
   try { e = JSON.parse(line); } catch { return; }
   const p = e?.payload;
   if (!p || typeof p !== "object") return;
+  const fresh = f.fresh;
+  f.fresh = false;
   if (e.type === "session_meta") {
     if (!f.session && typeof p.id === "string") f.session = p.id;
     if (!f.project && typeof p.cwd === "string") f.project = p.cwd;
@@ -152,13 +156,15 @@ export function codexLine(line: string, f: FileState, index: Map<string, number>
     const own = p.thread_id === undefined || !f.session || p.thread_id === f.session;
     const r = codexRec(f, `r:${p.response_id ?? `${t}:${p.thread_token_usage?.total_tokens}`}`, t, p.usage, own);
     if (r) put(f, index, r);
+    f.fresh = !!r;
     return;
   }
   if (e.type !== "event_msg" || p.type !== "token_count") return;
   const plan = typeof p.rate_limits?.plan_type === "string" && !!p.rate_limits.plan_type;
   const info = p.info;
   const total = info?.total_token_usage?.total_tokens;
-  if (typeof total === "number") {
+  const reports = typeof total === "number";
+  if (reports) {
     const repeat = total === f.total;
     f.total = total;
     if (!f.records && !repeat) {
@@ -166,8 +172,9 @@ export function codexLine(line: string, f: FileState, index: Map<string, number>
       if (r) put(f, index, r);
     }
   }
-  // The response this count reports: the record before it, or the one it just made.
-  if (plan && f.last !== undefined && f.recs[f.last]) f.recs[f.last]![8] |= PLAN;
+  // The response this count reports: the record just before it, or the one it just made. A count of
+  // rate limits only (no usage) reports no response: it doesn't mark an older one.
+  if (plan && (reports || fresh) && f.last !== undefined && f.recs[f.last]) f.recs[f.last]![8] |= PLAN;
 }
 
 export const lineParser = (h: HarnessId) => (h === "claude" ? { marks: claudeMarks, parse: claudeLine } : { marks: codexMarks, parse: codexLine });

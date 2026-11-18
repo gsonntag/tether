@@ -24,7 +24,9 @@ export function priceRec(harness: HarnessId, r: Rec, provider?: string): Price |
       x *= ANTHROPIC_FAST[model]!;
     }
     if (flags & US_GEO) x *= ANTHROPIC_US_GEO;
-    const b = rates.long && input + read + w1 + w2 > rates.longAbove! ? rates.long : rates;
+    const prompt = input + read + w1 + w2;
+    if (rates.maxPrompt !== undefined && prompt > rates.maxPrompt) return undefined;
+    const b = rates.long && prompt > rates.longAbove! ? rates.long : rates;
     return {
       usd: (x * (input * b.input + output * b.output + read * b.read + w1 * b.write5m + w2 * b.write1h)) / 1e6,
       savings: (x * read * (b.input - b.read)) / 1e6,

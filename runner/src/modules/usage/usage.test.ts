@@ -115,8 +115,10 @@ describe("Codex lines", () => {
   });
   test("a record's plan limits come in the token count after it", () => {
     const record = (id: string) => JSON.stringify({ timestamp: T, type: "token_usage_record", payload: { response_id: id, thread_id: "t3", usage: usage(10, 0, 1) } });
-    const f = feed("codex", [meta("t3", "/w"), record("a"), tokenCount(T, 11, usage(10, 0, 1), "plus"), record("b"), tokenCount(T, 22, usage(10, 0, 1))]);
-    expect(f.recs.map((r) => [r[8] & PLAN, r[8] & OWN])).toEqual([[PLAN, OWN], [0, OWN]]);
+    const limitsOnly = JSON.stringify({ timestamp: T, type: "event_msg", payload: { type: "token_count", info: null, rate_limits: { plan_type: "plus" } } });
+    const f = feed("codex", [meta("t3", "/w"), record("a"), tokenCount(T, 11, usage(10, 0, 1), "plus"), record("b"), tokenCount(T, 22, usage(10, 0, 1)), limitsOnly, record("c"), limitsOnly]);
+    // A count of limits only marks the record just before it, never an older one.
+    expect(f.recs.map((r) => [r[8] & PLAN, r[8] & OWN])).toEqual([[PLAN, OWN], [0, OWN], [PLAN, OWN]]);
   });
 });
 
@@ -131,6 +133,9 @@ describe("prices", () => {
     expect(priceRec("claude", rec("claude-opus-5-5", 1e6, 0, 0, 0, 0, US_GEO))!.usd).toBeCloseTo(4.4);
     expect(priceRec("claude", rec("claude-sonnet-5-5", 1e6, 0, 0, 0, 0, FAST))).toBeUndefined();
     expect(priceRec("claude", rec("claude-future-9", 1, 1, 1, 1, 1))).toBeUndefined();
+    // Sonnet 4.5 over 200K (its long-context beta's premium isn't listed): no price, not a low one.
+    expect(priceRec("claude", rec("claude-sonnet-4-5-20250929", 100_000, 0, 100_000, 0, 0))!.usd).toBeCloseTo(0.33);
+    expect(priceRec("claude", rec("claude-sonnet-4-5", 100_000, 0, 100_001, 0, 0))).toBeUndefined();
   });
   test("Haiku 5.5 prices a prompt over 100K tokens at its long rates", () => {
     expect(priceRec("claude", rec("claude-haiku-5-5", 50_000, 0, 50_000, 0, 0))!.usd).toBeCloseTo((50_000 * 0.1 + 50_000 * 0.01) / 1e6);
@@ -366,12 +371,14 @@ describe("scanner: hard cases", () => {
 describe("sources and the op", () => {
   test("Claude: the latest start's source from that start on, unknown before it; a provider isn't a key", async () => {
     const { claudeSource } = await import(".");
-    const starts: Record<string, { kind: any; at: number }> = { plan: { kind: "plan", at: 1000 }, key: { kind: "apiKey", at: 2000 }, bedrock: { kind: "provider", at: 3000 } };
+    const starts: Record<string, { kind: any; label?: string; at: number }> = { plan: { kind: "plan", at: 1000 }, key: { kind: "apiKey", label: "Anthropic API key", at: 2000 }, bedrock: { kind: "provider", at: 3000 }, token: { kind: "apiKey", label: "Anthropic auth token", at: 4000 } };
     const latest = (id: string) => starts[id];
     const at = (s: string) => ({ ...fresh("claude"), session: s });
     expect(claudeSource(at("plan"), latest)).toEqual({ kind: "plan", since: 1000 });
     expect(claudeSource(at("key"), latest)).toEqual({ kind: "key", since: 2000 });
     expect(claudeSource(at("bedrock"), latest)).toEqual({ kind: "provider", since: 3000 });
+    // An auth token goes to a gateway: a provider, not a key at Anthropic's prices.
+    expect(claudeSource(at("token"), latest)).toEqual({ kind: "provider", since: 4000 });
     expect(claudeSource(at("none"), latest)).toEqual({ kind: "unknown" });
     expect(claudeSource(at("plan"), undefined)).toEqual({ kind: "unknown" });
 
