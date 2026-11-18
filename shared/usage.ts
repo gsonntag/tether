@@ -14,6 +14,16 @@ export const USAGE_DAYS_MAX = 30;
  */
 export interface UsageTokens { input: number; output: number; cacheRead: number; cacheWrite: number }
 
+/**
+ * What requests drew from, as the harness or Tether recorded it: a plan, an API key, a provider
+ * (Bedrock, Vertex, Foundry, a gateway, Azure: their own prices, none here), or not known.
+ */
+export type UsageSource = "plan" | "key" | "provider" | "unknown";
+export const USAGE_SOURCES: UsageSource[] = ["plan", "key", "provider", "unknown"];
+
+/** One source's part of a row: its requests, the API price of those priced, and how many weren't. */
+export interface SourcePart { requests: number; usd: number; unpriced: number }
+
 export interface UsageTotals extends UsageTokens {
   /** model requests (one per API response) */
   requests: number;
@@ -21,10 +31,8 @@ export interface UsageTotals extends UsageTokens {
   usd: number;
   /** requests with no published price: their tokens are counted, their dollars aren't */
   unpriced: number;
-  /** `usd` by what the requests drew from, as the harness or Tether recorded it */
-  plan: number;
-  key: number;
-  unknown: number;
+  /** the same by source: a part with unpriced requests is a partial subtotal */
+  sources: Record<UsageSource, SourcePart>;
   /** cache reads at the full input price, less what they cost: what caching saved, estimated */
   savings: number;
 }
@@ -55,7 +63,7 @@ export interface UsageReport {
   byModel: UsageModel[];
   /** the top projects, then the rest together, then hidden ones together */
   byProject: UsageProject[];
-  /** what Tether's API session ledgers hold for the sessions with usage in the range: whole-session totals */
+  /** what Tether's API session ledger holds for the sessions with usage in the range: whole-session totals */
   ledger?: { usd: number; sessions: number; complete: boolean };
   /** each harness's latest plan limits report */
   plans: { harness: HarnessId; label: string; plan: PlanUsage }[];
@@ -67,12 +75,24 @@ export interface UsageReport {
     /** when the last whole scan ended, and how long it took (ms) */
     at?: number;
     ms?: number;
-    /** files that couldn't be read */
+    /** folders and files that couldn't be read */
     errors: number;
+    /** lines too long to read (over 64 MB), skipped */
+    skipped?: number;
   };
 }
 
-export const emptyTotals = (): UsageTotals => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, requests: 0, usd: 0, unpriced: 0, plan: 0, key: 0, unknown: 0, savings: 0 });
+const part = (): SourcePart => ({ requests: 0, usd: 0, unpriced: 0 });
+export const emptyTotals = (): UsageTotals => ({
+  input: 0, output: 0, cacheRead: 0, cacheWrite: 0, requests: 0, usd: 0, unpriced: 0, savings: 0,
+  sources: { plan: part(), key: part(), provider: part(), unknown: part() },
+});
+
+/** Adds `b` into `a`. */
+export function addTotals(a: UsageTotals, b: UsageTotals) {
+  for (const k of ["input", "output", "cacheRead", "cacheWrite", "requests", "usd", "unpriced", "savings"] as const) a[k] += b[k];
+  for (const s of USAGE_SOURCES) for (const k of ["requests", "usd", "unpriced"] as const) a.sources[s][k] += b.sources[s][k];
+}
 
 export const totalTokens = (t: UsageTokens) => t.input + t.output + t.cacheRead + t.cacheWrite;
 

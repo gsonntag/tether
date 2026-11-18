@@ -1,14 +1,14 @@
-// The usage op's answer from the scanner's records: deduped across files, bucketed by day in the
+// The usage op's answer from the scanner's records: merged across files, bucketed by day in the
 // browser's time zone, priced, by model and by project.
 
 import { basename } from "node:path";
-import { emptyTotals, totalTokens, type UsageModel, type UsageProject, type UsageReport, type UsageTotals } from "../../../../shared/usage";
-import type { FileState } from "./parse";
-import { priceRec } from "./price";
+import { addTotals, emptyTotals, totalTokens, type UsageModel, type UsageProject, type UsageReport, type UsageSource, type UsageTotals } from "../../../../shared/usage";
+import { merge, OWN, PLAN, type FileState, type Rec } from "./parse";
+import { priceRec, type Price } from "./price";
 
-export type Source = "plan" | "key" | "unknown";
-/** What a file's requests drew from: `kind` from `since` (ms) on, `before` (default unknown) earlier. */
-export interface SourceSpan { kind: Source; since?: number; before?: Source }
+export type Source = UsageSource;
+/** What a file's requests drew from: `kind` from `since` (ms) on, unknown before it. */
+export interface SourceSpan { kind: Source; since?: number }
 
 /** How many projects get a row of their own. */
 export const TOP_PROJECTS = 8;
@@ -40,7 +40,7 @@ export interface ReportInput {
   days: number;
   timeZone: string;
   now: number;
-  /** what a file's requests drew from */
+  /** what a file's requests drew from (a Codex file's own record decides per request: codexSource) */
   source: (f: FileState) => Source | SourceSpan;
   /** a folder TETHER_HIDE_PROJECTS (or the Home agent) hides */
   hidden?: (path: string) => boolean;
@@ -48,19 +48,22 @@ export interface ReportInput {
   ledger?: (sessionId: string) => { usd?: number; complete: boolean } | undefined;
 }
 
-function add(t: UsageTotals, r: { input: number; output: number; cacheRead: number; cacheWrite: number }, price: { usd: number; savings: number } | undefined, source: Source) {
-  t.input += r.input;
-  t.output += r.output;
-  t.cacheRead += r.cacheRead;
-  t.cacheWrite += r.cacheWrite;
+function add(t: UsageTotals, r: Rec, price: Price | undefined, source: Source) {
+  t.input += r[3];
+  t.output += r[4];
+  t.cacheRead += r[5];
+  t.cacheWrite += r[6] + r[7];
   t.requests++;
+  const part = t.sources[source];
+  part.requests++;
   if (!price) {
     t.unpriced++;
+    part.unpriced++;
     return;
   }
   t.usd += price.usd;
   t.savings += price.savings;
-  t[source] += price.usd;
+  part.usd += price.usd;
 }
 
 const byWorth = (a: UsageTotals, b: UsageTotals) => b.usd - a.usd || totalTokens(b) - totalTokens(a);
@@ -71,41 +74,49 @@ export function buildReport(o: ReportInput): Omit<UsageReport, "plans" | "scan">
   const from = range[0]!, to = range[range.length - 1]!;
   // Anything in range is newer than this (a day and a half's slack covers every zone's offset).
   const since = o.now / 1000 - (o.days + 1.5) * 86_400;
+  // One request, once: copies in several files merge to their largest counts, and belong to the
+  // file whose session the entry names (a resumed or forked session's copy doesn't take it).
+  const requests = new Map<string, { r: Rec; f: FileState }>();
+  for (const [, f] of [...o.files].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+    for (const r of f.recs) {
+      if (r[1] < since) continue;
+      const had = requests.get(r[0]);
+      if (!had) {
+        requests.set(r[0], { r: [...r], f });
+        continue;
+      }
+      if (r[8] & OWN && !(had.r[8] & OWN)) had.f = f;
+      merge(had.r, r);
+    }
+  }
   const total = emptyTotals();
   const days = new Map(range.map((day) => [day, { day, ...emptyTotals() }]));
   const models = new Map<string, UsageModel>();
   const projects = new Map<string, UsageProject>();
   const hiddenRow: UsageProject = { name: "Hidden projects", hidden: true, ...emptyTotals() };
-  const seen = new Set<string>();
   const sessions = new Set<string>();
-  // Files in a fixed order, so which copy of a repeated request counts doesn't change between answers.
-  const files = [...o.files].sort((a, b) => (a[0] < b[0] ? -1 : 1));
-  for (const [, f] of files) {
-    const got = o.source(f);
-    const span = typeof got === "string" ? { kind: got } : got;
-    const path = f.project;
-    const hide = !!path && !!o.hidden?.(path);
-    let any = false;
-    for (const r of f.recs) {
-      if (r[1] < since || seen.has(r[0])) continue;
-      const day = days.get(key(r[1]));
-      if (!day) continue;
-      seen.add(r[0]);
-      any = true;
-      const source = r[1] * 1000 >= (span.since ?? 0) ? span.kind : (span.before ?? "unknown");
-      const tokens = { input: r[3], output: r[4], cacheRead: r[5], cacheWrite: r[6] + r[7] };
-      const price = priceRec(f.harness, r, f.harness === "codex" ? f.provider : undefined);
-      add(total, tokens, price, source);
-      add(day, tokens, price, source);
-      const mk = `${f.harness}\u0000${r[2]}`;
-      let m = models.get(mk);
-      if (!m) models.set(mk, (m = { harness: f.harness, model: r[2], ...emptyTotals() }));
-      add(m, tokens, price, source);
-      let p = hide ? hiddenRow : projects.get(path ?? "");
-      if (!p) projects.set(path ?? "", (p = path ? { path, name: basename(path) || path, ...emptyTotals() } : { name: "Unknown folder", ...emptyTotals() }));
-      add(p, tokens, price, source);
+  const spans = new Map<FileState, SourceSpan>();
+  for (const { r, f } of requests.values()) {
+    const day = days.get(key(r[1]));
+    if (!day) continue;
+    let span = spans.get(f);
+    if (!span) {
+      const got = o.source(f);
+      spans.set(f, (span = typeof got === "string" ? { kind: got } : got));
     }
-    if (any && f.session) sessions.add(`${f.harness}:${f.session}`);
+    const source: Source = f.harness === "codex" ? codexSource(f, r) : r[1] * 1000 >= (span.since ?? 0) ? span.kind : "unknown";
+    const price = source === "provider" ? undefined : priceRec(f.harness, r, f.harness === "codex" ? f.provider : undefined);
+    add(total, r, price, source);
+    add(day, r, price, source);
+    const mk = `${f.harness}\u0000${r[2]}`;
+    let m = models.get(mk);
+    if (!m) models.set(mk, (m = { harness: f.harness, model: r[2], ...emptyTotals() }));
+    add(m, r, price, source);
+    const path = f.project;
+    let p = path && o.hidden?.(path) ? hiddenRow : projects.get(path ?? "");
+    if (!p) projects.set(path ?? "", (p = path ? { path, name: basename(path) || path, ...emptyTotals() } : { name: "Unknown folder", ...emptyTotals() }));
+    add(p, r, price, source);
+    if (f.session) sessions.add(`${f.harness}:${f.session}`);
   }
   const ranked = [...projects.values()].sort(byWorth);
   const byProject = ranked.slice(0, TOP_PROJECTS);
@@ -113,7 +124,7 @@ export function buildReport(o: ReportInput): Omit<UsageReport, "plans" | "scan">
   if (rest.length === 1) byProject.push(rest[0]!);
   else if (rest.length) {
     const other: UsageProject = { name: `${rest.length} other projects`, others: rest.length, ...emptyTotals() };
-    for (const p of rest) for (const k of Object.keys(emptyTotals()) as (keyof UsageTotals)[]) other[k] += p[k];
+    for (const p of rest) addTotals(other, p);
     byProject.push(other);
   }
   if (hiddenRow.requests) byProject.push(hiddenRow);
@@ -139,9 +150,15 @@ export function buildReport(o: ReportInput): Omit<UsageReport, "plans" | "scan">
   };
 }
 
-const KEY_PROVIDERS = ["tether_openai", "tether_azure", "azure"];
-/** Codex: what a thread drew from, by its rollout. A private home or a key's provider is a key; OpenAI's own with plan limits in its token counts is the plan. */
-export function codexSource(f: FileState): Source {
-  if (f.private || KEY_PROVIDERS.includes(f.provider ?? "")) return "key";
-  return f.provider === "openai" && f.plan ? "plan" : "unknown";
+/**
+ * Codex: what a request drew from, by its rollout. OpenAI's API through Tether's private home is a
+ * key; Azure and other providers are providers; OpenAI's own whose token count carried a plan's
+ * limits is the plan; anything else isn't known.
+ */
+export function codexSource(f: FileState, r?: Rec): Source {
+  const provider = f.provider ?? "";
+  if (provider === "tether_openai") return "key";
+  if (provider && provider !== "openai") return "provider";
+  if (f.private) return "key";
+  return provider === "openai" && r && r[8] & PLAN ? "plan" : "unknown";
 }

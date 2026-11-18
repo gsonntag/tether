@@ -1,6 +1,9 @@
 // Anthropic's first-party API rates, USD per 1M tokens, from the Model pricing table on
 // https://platform.claude.com/docs/en/about-claude/pricing, read 2026-11-18. Only what that page lists,
-// by the exact model id Claude Code records (plus Haiku 4.5's published dated id). Cache writes are the
+// by the exact model id Claude Code records. Models before the 4.6 generation are also recorded by
+// their dated ids, which their aliases resolve to (models overview); the three published ones are here.
+// Sonnet 4.5 and older have a 200K window, so no long-context rates apply. Server tool fees (web
+// search, $10 per 1,000) and code execution time aren't tokens and aren't counted. Cache writes are the
 // page's 5-minute and 1-hour rates; reads its "cache hits and refreshes". Fast mode and US-only
 // inference are multipliers on these (below); Bedrock, Vertex and other partners price their own.
 // These price estimates, never invoices: a plan's usage at these rates is what the API would cost.
@@ -27,10 +30,12 @@ export const ANTHROPIC_RATES: Record<string, AnthropicRates> = {
   "claude-opus-4-7": band(5, 6.25, 10, 0.5, 25),
   "claude-opus-4-6": band(5, 6.25, 10, 0.5, 25),
   "claude-opus-4-5": band(5, 6.25, 10, 0.5, 25),
+  "claude-opus-4-5-20251101": band(5, 6.25, 10, 0.5, 25),
   "claude-sonnet-5-5": band(2, 2.5, 4, 0.1, 10),
   "claude-sonnet-5": band(2, 2.5, 4, 0.2, 10),
   "claude-sonnet-4-6": band(3, 3.75, 6, 0.3, 15),
   "claude-sonnet-4-5": band(3, 3.75, 6, 0.3, 15),
+  "claude-sonnet-4-5-20250929": band(3, 3.75, 6, 0.3, 15),
   "claude-haiku-5-5": { ...band(0.1, 0.125, 0.2, 0.01, 0.5), longAbove: 100_000, long: band(0.5, 0.625, 1, 0.05, 2.5) },
   "claude-haiku-4-5": band(1, 1.25, 2, 0.1, 5),
   "claude-haiku-4-5-20251001": band(1, 1.25, 2, 0.1, 5),

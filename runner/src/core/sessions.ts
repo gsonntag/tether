@@ -192,6 +192,11 @@ export class SessionCore {
     return !!p.carrying || !!(p.carried && p.movedTo);
   }
 
+  /** A folder TETHER_HIDE_PROJECTS (or the Home agent's) names. */
+  hidden(path: string): boolean {
+    return !!this.hide?.test(path);
+  }
+
   /** Left out of the lists: a folder TETHER_HIDE_PROJECTS names, unless the session is open or live right now. */
   private shown(row: SessionSummary) {
     if (this.replaced(row.id)) return false;
