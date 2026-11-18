@@ -174,6 +174,8 @@ export class ShellRuns {
     try {
       s = await this.core.open(sessionId);
       if (s.summary.parentSessionId) throw new Error("Run commands from the main session.");
+      const held = this.live.heldWhy(s.id);
+      if (held) throw new Error(held);
       // A new worktree's setup runs in this folder now: a command would race it (SPEC §4).
       if (!setup && s.state.setup === "running") throw new Error("The worktree's setup is still running. Run commands once it's done.");
       const cwd = s.summary.projectPath;

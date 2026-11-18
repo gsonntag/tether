@@ -8,6 +8,7 @@ import { HARNESS_KEYS } from "../../../../shared/credentials";
 import type { Msg } from "../../../../shared/transcript";
 import type { Adapter, QuitStep, StartOpts } from "../../core/adapter";
 import { HARNESS_BINS } from "../detect";
+import { codexAsk } from "./ask";
 import { call } from "./daemon";
 import { CODEX_HOME, DAEMON_SOCKET } from "./rpc";
 import { codexBackgroundRuns, codexHistory, codexNoStore, codexPlan, codexProjects, codexSessionInfo, codexSessions, codexStoredBilling, codexStoredContext, codexSubagents, threadSettings, watchThread } from "./discovery";
@@ -73,6 +74,7 @@ export const codexAdapter: Adapter = {
   async available() {
     return !!Bun.which(HARNESS_BINS.codex);
   },
+  ask: codexAsk,
 
   listProjects: codexProjects,
   listSessions: (opts) => codexSessions(opts),

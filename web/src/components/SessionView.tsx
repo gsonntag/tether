@@ -25,6 +25,9 @@ import { useChildren } from "./useChildren";
 import { useFitViewport } from "./useFitViewport";
 import { useTermCover } from "./useTermCover";
 import { PanelHandle } from "./WidthHandle";
+import { ChangesPane } from "./ChangesPane";
+import { PrChip, usePr } from "./PrChip";
+import { reviewSent } from "../reviewStore";
 import { billingForDisplay } from "../sourceMenu";
 import { RateLimitRetry } from "./RateLimitRetry";
 
@@ -46,6 +49,11 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   const models = useStore((s) => (harness ? s.modelLists[modelListKey(runnerId, harness)] : undefined));
   const linkOpen = useStore((s) => s.link === "open");
   const runnerOnline = useStore((s) => s.runners.find((r) => r.id === runnerId)?.online);
+  /** the runner has the git module (an older one doesn't: no Changes button) */
+  const runnerGit = useStore((s) => !!s.runners.find((r) => r.id === runnerId)?.git);
+  /** and its git actions (Commit, Push, Open PR, the PR chip) */
+  const runnerGitActions = useStore((s) => !!s.runners.find((r) => r.id === runnerId)?.gitActions);
+  const runnerFiles = useStore((s) => !!s.runners.find((r) => r.id === runnerId)?.files);
   const children = useChildren(runnerId, sessionId);
   const pending = usePending(runnerId, sessionId);
   const composer = useRef<ComposerHandle>(null);
@@ -63,6 +71,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     terminalNext = undefined;
     return { tab: "tui", wantTui: true, nonce: 1 };
   });
+  /** The Changes pane (SPEC §10 Changes): in the terminal panel's place, one or the other. */
+  const [changes, setChanges] = useState(false);
   /** the side chat in the panel's place (SPEC §16a), for this session */
   const [sideFor, setSideFor] = useState<{ k: string; side: SideState } | null>(null);
   const side = sideFor?.k === k ? sideFor.side : null;
@@ -105,7 +115,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   // The TUI went away (Back to Tether, or it exited), whichever tab was in front: opening it again
   // is a new handoff, asked first when busy, never a reattach to what was (SPEC §8).
   // A panel over the chat covers the session: it doesn't count as looking at it (presence.ts).
-  const covering = !!panel && !panel.hidden && cover;
+  const covering = ((!!panel && !panel.hidden) || changes) && cover;
   useEffect(() => {
     setSessionCovered(covering);
     return () => setSessionCovered(false);
@@ -148,6 +158,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     () => ({ runnerId, sessionId, projectPath: summary?.projectPath, ...(forks ? { fork: { running: forkBusy, from: (messageId: string) => void forkSession(runnerId, sessionId, messageId) } } : {}) }),
     [runnerId, sessionId, summary?.projectPath, forks, forkBusy],
   );
+  // The session's PR (SPEC §10 Git actions): its chip in the header, and the pane's Open PR.
+  const prs = usePr(runnerId, sessionId, { enabled: runnerGitActions && !!summary && !summary.parentSessionId && !summary.sideOf, paneOpen: changes, status: view?.state?.status ?? "idle" });
 
   if (!view?.window || !view.state || !summary) {
     if (view?.error)
@@ -169,6 +181,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   /** A side chat beside this session (SPEC §16a), asked `question`: the panel opens at once, on the fork once it's made. */
   const openSide = async (question: string) => {
     setPanel(null);
+    setChanges(false);
     setSide({ opening: true, question });
     const mine = ++sideOpening.current;
     try {
@@ -185,6 +198,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   const reopenSide = (id: string) => {
     sideOpening.current++;
     setPanel(null);
+    setChanges(false);
     setSide({ id });
     if (sideChats.find((c) => c.id === id)?.archived) void setArchived(runnerId, id, false).catch(() => {});
   };
@@ -219,11 +233,13 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
       setPanel((p) => (p ? { ...p, tab: "tui", hidden: false } : p));
       return setAsk(q);
     }
+    setChanges(false);
     setPanel((p) => ({ tab: "tui", wantTui: true, stop, nonce: (p?.nonce ?? 0) + 1 }));
   };
   /** A project shell beside the chat (SPEC §8): the session stays live in Tether, nothing is handed over. */
   const openShell = () => {
     setAsk(null);
+    setChanges(false);
     setPanel((p) => ({ tab: SHELL_TAB, wantTui: !!p?.wantTui, nonce: (p?.nonce ?? 0) + 1 }));
   };
   const panelShown = !!panel && !panel.hidden;
@@ -245,6 +261,29 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     >
       <span aria-hidden>❯_</span>
       <span>Terminal</span>
+    </button>
+  );
+  // Changes: the folder's git diff beside the chat, in the terminal panel's place.
+  // A side chat is read-only and has no terminal (SPEC §16a): no Changes either.
+  const changesChip = !summary.parentSessionId && !summary.sideOf && runnerGit && (
+    <button
+      type="button"
+      className="t-chip t-chip-term t-chip-changes"
+      aria-label="Changes"
+      aria-pressed={changes}
+      title={changes ? undefined : "This folder's git changes, beside the chat"}
+      onClick={() => {
+        setAsk(null);
+        if (!changes) {
+          setPanel(null);
+          // In the side chat's place too: tucked away (Side chats opens it again), not closed.
+          setSide(null);
+        }
+        setChanges(!changes);
+      }}
+    >
+      <span aria-hidden>±</span>
+      <span>Changes</span>
     </button>
   );
   const isChild = !!summary.parentSessionId;
@@ -302,9 +341,9 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
 
   return (
     <SessionCtx.Provider value={ctx}>
-      <div className={`t-session-split${panel ? " with-terminal" : side ? " with-side" : ""}${cover || (side && noRoom) ? " t-term-cover" : ""}`} ref={rootRef}>
+      <div className={`t-session-split${panel || changes ? " with-terminal" : side ? " with-side" : ""}${cover || (side && noRoom) ? " t-term-cover" : ""}`} ref={rootRef}>
       <div className="t-session">
-        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move && !summary.sideOf} canFork={canFork(summary, view.capabilities, state)} onSideChat={sides ? () => void openSide("") : undefined} />}{terminalChip}</>} sideChats={<SideChatChips chats={sideChats} onOpen={reopenSide} />} capabilities={view.capabilities} />
+        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move && !summary.sideOf} canFork={canFork(summary, view.capabilities, state)} onSideChat={sides ? () => void openSide("") : undefined} />}<PrChip lookup={prs.pr} />{changesChip}{terminalChip}</>} sideChats={<SideChatChips chats={sideChats} onOpen={reopenSide} />} capabilities={view.capabilities} />
         {ask && !panelShown && (
           <div className="t-term-ask" role="group" aria-label="Open the terminal">
             <span>{ask.text}</span>
@@ -393,10 +432,12 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
               if (btw !== undefined) return void openSide(btw);
               const attachments = list.length ? { attachments: list } : {};
               // A `!` command: runs now, whatever the agent does (SPEC §9 Shell commands).
-              if (kind === "shell") await rpc(runnerId, "runShell", { sessionId, command: text });
-              else if (kind === "steer") await rpc(runnerId, "steer", { sessionId, text, ...attachments });
+              if (kind === "shell") return void (await rpc(runnerId, "runShell", { sessionId, command: text }));
+              if (kind === "steer") await rpc(runnerId, "steer", { sessionId, text, ...attachments });
               else if (kind === "queue") await rpc(runnerId, "queue", { sessionId, text, ...attachments });
               else await rpc(runnerId, "send", { sessionId, text, ...attachments, ...(kind === "stopSend" ? { stop: true } : {}) });
+              // It went: the review comments it carries are done (Changes pane).
+              reviewSent(runnerId, sessionId, text);
             }}
             // Send later (SPEC §9 Scheduled sends): it waits in the queue for its time.
             onSchedule={async (at, text, list) => void (await rpc(runnerId, "queue", { sessionId, text, at, ...(list.length ? { attachments: list } : {}) }))}
@@ -404,7 +445,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             sendNow={inTerminal ? undefined : (kind, text, list) => {
               const btw = btwQuestion(text, sides);
               if (btw !== undefined) return void openSide(btw);
-              void sendPending(runnerId, sessionId, text, list, { stop: kind === "stopSend" });
+              void sendPending(runnerId, sessionId, text, list, { stop: kind === "stopSend", sent: () => reviewSent(runnerId, sessionId, text) });
             }}
             onStop={async () => {
               await rpc(runnerId, "interrupt", { sessionId });
@@ -413,7 +454,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           />
         )}
       </div>
-      {side && !panel && (
+      {side && !panel && !changes && (
         <SideChatPanel
           runnerId={runnerId}
           side={side}
@@ -433,6 +474,23 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
         />
       )}
       {panel && !cover && <PanelHandle />}
+      {changes && !panel && !cover && <PanelHandle label="Resize changes" />}
+      {changes && !panel && (
+        <ChangesPane
+          runnerId={runnerId}
+          sessionId={sessionId}
+          status={state.status}
+          cover={cover}
+          git={runnerGitActions ? prs : undefined}
+          filesTab={runnerFiles}
+          onClose={() => setChanges(false)}
+          onSent={() => {
+            // On a phone the composer is under the pane: back to the chat with the message in the box.
+            if (cover) setChanges(false);
+            composer.current?.focus();
+          }}
+        />
+      )}
       {panel && (
         <TerminalPanel
           runnerId={runnerId}

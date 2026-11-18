@@ -1,4 +1,4 @@
-// The drag handles on the sidebar's and the terminal panel's inner edges (desktop): Astryx's handle
+// The drag handles on the sidebar's and the side panel's (terminal, changes) inner edges (desktop): Astryx's handle
 // (pointer capture, cursor, arrow keys) over widths kept per device. A double click goes back to the
 // default. Each writes its width straight onto the layout, so a drag re-renders only the handle.
 
@@ -117,12 +117,12 @@ export function SidebarHandle() {
 }
 
 /** Lives between the transcript and the panel in `.t-session-split`. */
-export function PanelHandle() {
+export function PanelHandle({ label = "Resize terminal" }: { label?: string }) {
   if (!useDesktop()) return null;
   return (
     <WidthHandle
       storageKey="tether.width.panel"
-      label="Resize terminal"
+      label={label}
       min={panelFloor(cellWidth())}
       max={(el) => panelMax(el.parentElement?.clientWidth ?? 0)}
       sized={(el) => el.nextElementSibling as HTMLElement | null}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { StopIcon } from "@heroicons/react/24/outline";
@@ -87,6 +87,17 @@ export function SessionHeader({
   const rank = (m?: string) => modes.findIndex((x) => x.id === m);
   // The harness says (by approval policy and sandbox, for any combination); else by the list's order.
   const tighter = turn?.looser ?? (turn?.permissionMode !== undefined && rank(state.permissionMode) >= 0 && rank(turn.permissionMode) > rank(state.permissionMode));
+  // The title leaves room for the pinned buttons, however many there are (--t-pin-w).
+  const pin = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = pin.current;
+    if (!el) return;
+    const fit = () => el.parentElement?.style.setProperty("--t-pin-w", `${Math.ceil(el.offsetWidth)}px`);
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [!!extra]);
   const efforts = current?.efforts ? (models?.efforts ?? []).filter((e) => current.efforts!.includes(e.id)) : (models?.efforts ?? []);
 
   return (
@@ -155,7 +166,7 @@ export function SessionHeader({
         </div>
       </div>
       {/* The ❯_ button, pinned outside the chips (which scroll sideways on a phone): always on screen. */}
-      {extra && <div className="t-header-pin">{extra}</div>}
+      {extra && <div className="t-header-pin" ref={pin}>{extra}</div>}
       {turn && !isChild && (
         <div className="t-inline-status t-turn-settings" role="status">
           <span>

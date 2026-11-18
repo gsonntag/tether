@@ -1,0 +1,513 @@
+/* The Changes pane (ChangesPane.tsx, DiffFile.tsx): beside the transcript in the terminal panel's
+   place (its width and handle), full screen over the chat when there's no room (.t-term-cover). */
+
+.t-changes {
+  flex: 1 1 0;
+  min-width: min(var(--t-panel-min, 0px), 520px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--t-border);
+  background: var(--color-background-body, var(--color-background-surface, var(--t-card)));
+  color: var(--color-text-primary);
+}
+.t-term-handle + .t-changes {
+  border-left: none;
+}
+.t-session-split[data-panel-sized] > .t-changes {
+  flex: 0 1 var(--t-panel-w);
+}
+.t-term-cover > .t-changes {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  min-width: 0;
+  border-left: none;
+  padding-top: env(safe-area-inset-top);
+}
+
+.t-chip-changes {
+  margin-right: 6px;
+}
+.t-chip-changes > span:first-child {
+  font-weight: 700;
+}
+
+/* ---------- head ---------- */
+
+.t-changes-head {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--t-border);
+  background: var(--t-card);
+}
+.t-changes-title {
+  font-weight: var(--font-weight-semibold, 600);
+  font-size: 14px;
+}
+/* Changes | Files: the title, as tabs */
+.t-changes-tabs {
+  display: flex;
+  gap: 4px;
+}
+.t-changes-tab {
+  all: unset;
+  box-sizing: border-box;
+  font-size: 14px;
+  padding: 3px 6px;
+  cursor: pointer;
+  color: var(--t-muted);
+  border-bottom: 2px solid transparent;
+  touch-action: manipulation;
+}
+.t-changes-tab[aria-selected="true"] {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold, 600);
+  border-bottom-color: var(--color-accent);
+}
+.t-changes-tab:focus-visible {
+  outline: 2px solid var(--color-accent);
+}
+.t-files-slot {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* The Changes tab's own parts lay out as the pane's. */
+.t-changes-panel {
+  display: contents;
+}
+.t-files-slot[hidden] {
+  display: none;
+}
+.t-changes-scopes {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--t-soft);
+}
+.t-changes-scope {
+  all: unset;
+  box-sizing: border-box;
+  font-size: 13px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--t-muted);
+  touch-action: manipulation;
+}
+.t-changes-scope[aria-selected="true"] {
+  background: var(--t-card);
+  color: var(--color-text-primary);
+  box-shadow: 0 0 0 1px var(--t-border);
+}
+.t-changes-scope:focus-visible {
+  outline: 2px solid var(--color-accent);
+}
+.t-changes-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.t-changes-sub {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--t-muted);
+  border-bottom: 1px solid var(--t-border);
+}
+.t-changes-base {
+  margin-left: auto;
+  font-family: var(--t-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.t-changes-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 12px;
+  color: var(--t-muted);
+  font-size: 14px;
+}
+.t-changes-note.error {
+  color: var(--color-text-red, var(--color-error));
+  padding: 8px 12px;
+}
+.t-changes-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* ---------- files ---------- */
+
+.t-dfile {
+  border-bottom: 1px solid var(--t-border);
+}
+.t-dfile-head {
+  all: unset;
+  box-sizing: border-box;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px 6px 8px;
+  min-height: 34px;
+  font-size: 13px;
+  cursor: pointer;
+  background: var(--t-card);
+  border-bottom: 1px solid var(--t-border);
+}
+.t-dfile-head:hover {
+  background: color-mix(in srgb, var(--color-overlay-hover) 60%, var(--t-card));
+}
+.t-dfile-head:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+.t-dfile-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: ltr;
+}
+.t-dpath-dir {
+  color: var(--t-muted);
+}
+.t-dpath-name {
+  font-weight: var(--font-weight-semibold, 600);
+}
+.t-dstatus {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--t-mono);
+  color: var(--color-text-yellow, var(--color-warning));
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+.t-dstatus.added,
+.t-dstatus.untracked {
+  color: var(--color-text-green, var(--color-success));
+}
+.t-dstatus.deleted {
+  color: var(--color-text-red, var(--color-error));
+}
+.t-dstatus.renamed,
+.t-dstatus.copied {
+  color: var(--color-text-blue, var(--color-accent));
+}
+.t-dcounts {
+  flex: none;
+  font-family: var(--t-mono);
+  font-size: 12px;
+}
+.t-dcounts .add {
+  color: var(--color-text-green, var(--color-success));
+}
+.t-dcounts .del {
+  color: var(--color-text-red, var(--color-error));
+}
+.t-dnote {
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--t-muted);
+  font-style: italic;
+}
+
+/* ---------- lines ---------- */
+
+.t-dhunk {
+  font-family: var(--t-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.t-dhunk-head {
+  padding: 2px 12px;
+  color: var(--t-muted);
+  background: color-mix(in srgb, var(--color-accent) 7%, transparent);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.t-dline {
+  display: flex;
+  align-items: flex-start;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.t-dline:hover {
+  background: var(--color-overlay-hover);
+}
+.t-dline.add {
+  background: color-mix(in srgb, var(--color-success) 14%, transparent);
+}
+.t-dline.del {
+  background: color-mix(in srgb, var(--color-error) 14%, transparent);
+}
+.t-dline.meta {
+  color: var(--t-muted);
+  font-style: italic;
+  cursor: default;
+}
+.t-dline.noted > .t-dl-num {
+  box-shadow: inset 3px 0 0 var(--color-warning, #d4a017);
+}
+.t-dline.sel {
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+.t-dl-num {
+  flex: none;
+  display: flex;
+  color: var(--t-muted);
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: row-resize;
+}
+.t-dl-num > span {
+  /* the file's biggest line number, and a space (DiffFile.tsx) */
+  width: var(--t-dl-w, 4.5ch);
+  padding-right: 0.5ch;
+  text-align: right;
+}
+.t-dl-op {
+  flex: none;
+  width: 2ch;
+  text-align: center;
+  user-select: none;
+  -webkit-user-select: none;
+  color: var(--t-muted);
+}
+.t-dl-text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding-right: 8px;
+}
+/* A phone: one number column (new, else old) is enough. */
+@media (max-width: 767px) {
+  .t-dl-num > .old {
+    display: none;
+  }
+  .t-dline.del > .t-dl-num > .old {
+    display: inline;
+  }
+  .t-dline.del > .t-dl-num > .new {
+    display: none;
+  }
+}
+
+/* ---------- comments ---------- */
+
+.t-rform,
+.t-rcomment {
+  font-family: var(--font-family-body, inherit);
+  font-size: 13px;
+  margin: 6px 10px 8px;
+  padding: 8px;
+  border: 1px solid var(--t-border);
+  border-radius: var(--radius-element, 8px);
+  background: var(--t-card);
+  cursor: auto;
+}
+.t-rcomment .t-rform {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+.t-rform-box {
+  box-sizing: border-box;
+  width: 100%;
+  resize: vertical;
+  min-height: 52px;
+  font: inherit;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--t-border);
+  background: var(--t-soft);
+  color: var(--color-text-primary);
+  outline: none;
+}
+.t-rform-box:focus {
+  border-color: var(--color-border-emphasized);
+}
+.t-rform-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 6px;
+}
+.t-rform-hint {
+  flex: 1;
+  min-width: 0;
+  color: var(--t-muted);
+  font-size: 12px;
+  font-family: var(--t-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.t-rcomment-handed {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--t-muted);
+}
+.t-dline:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+.t-rcomment-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.t-rcomment-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-top: 2px;
+}
+.t-rcomment-place {
+  all: unset;
+  display: block;
+  font-family: var(--t-mono);
+  font-size: 12px;
+  color: var(--color-text-accent);
+  cursor: pointer;
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
+}
+.t-rcomment-place:disabled {
+  color: var(--t-muted);
+  cursor: default;
+}
+
+/* ---------- the tray ---------- */
+
+.t-review-tray {
+  flex: none;
+  border-top: 1px solid var(--t-border);
+  background: var(--t-card);
+}
+.t-review-tray.cover {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.t-review-list {
+  max-height: 40vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-bottom: 1px solid var(--t-border);
+}
+.t-review-list .t-rcomment {
+  margin: 8px 10px;
+}
+.t-review-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+}
+.t-review-count {
+  all: unset;
+  flex: 1;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 2px;
+}
+.t-review-count::after {
+  content: " ▴";
+  color: var(--t-muted);
+}
+.t-review-count[aria-expanded="true"]::after {
+  content: " ▾";
+}
+.t-review-count:focus-visible {
+  outline: 2px solid var(--color-accent);
+}
+@media (pointer: coarse) {
+  /* 16px, or iOS zooms in on focus */
+  .t-rform-box {
+    font-size: 16px;
+  }
+  .t-changes-scope {
+    padding: 8px 12px;
+  }
+  .t-dfile-head {
+    min-height: 44px;
+  }
+  .t-dhunk {
+    font-size: 12.5px;
+  }
+}
+.t-changes-owed {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--t-border);
+}
+
+/* ---------- the Turn scope (TurnBar.tsx) ---------- */
+
+.t-turnbar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--t-border);
+}
+.t-turnbar-pick {
+  width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+.t-turnbar-restore {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+.t-turnbar-note {
+  flex: 1 1 220px;
+  font-size: 12px;
+  color: var(--t-muted);
+}
+.t-turnbar-skipped {
+  font-size: 12px;
+  color: var(--t-muted);
+}
+.t-turnbar-skipped summary {
+  cursor: pointer;
+}
+.t-turnbar-skipped ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  max-height: 140px;
+  overflow: auto;
+}
+.t-turnbar-skipped code {
+  font-family: var(--t-mono);
+}

@@ -91,7 +91,7 @@ export const SENT_GRACE_MS = 8000;
 
 /** Sends a message optimistically: its copy shows at once, `sending`; the answer marks it sent or failed. Returns its clientId. */
 export function pendingSender(io: PendingIO) {
-  return (runnerId: string, sessionId: string, text: string, attachments: Attachment[] = [], o: { stop?: boolean; clientId?: string } = {}): string => {
+  return (runnerId: string, sessionId: string, text: string, attachments: Attachment[] = [], o: { stop?: boolean; clientId?: string; /** called once the runner took it */ sent?: () => void } = {}): string => {
     const k = io.key(runnerId, sessionId);
     const clientId = o.clientId ?? crypto.randomUUID();
     const after = io.newest(k);
@@ -102,6 +102,7 @@ export function pendingSender(io: PendingIO) {
     const mine = () => !!io.list(k)?.some((p) => p.clientId === clientId);
     void io.send(runnerId, { sessionId, text, clientId, ...(attachments.length ? { attachments } : {}), ...(o.stop ? { stop: true } : {}) }).then(
       () => {
+        o.sent?.();
         if (!mine()) return;
         patch({ status: "sent" });
         io.settle(k);

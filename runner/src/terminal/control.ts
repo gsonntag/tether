@@ -193,6 +193,8 @@ export class TerminalControl {
       const s = await this.o.live.current(opened);
       if (s !== opened) opened.setState({ continuedIn: s.id });
       if (s.summary.parentSessionId) throw new Error("A subagent runs inside its main session. Open the main session's terminal.");
+      const held = this.o.live.heldWhy(s.id);
+      if (held) throw new Error(held);
       // Its TUI would take no read-only gate (SPEC §16a).
       if (s.summary.sideOf) throw new Error("A side chat is read-only: it has no terminal. Open the session's.");
       if (a.reattach && (!this.tuis.has(s.id) || this.returning.has(s.id))) throw new Error(TERMINAL_CLOSED);

@@ -9,9 +9,10 @@
 
 import { Commands } from "./commands";
 import { createHash, randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { CredentialStore, redact, redactValue, type CredentialSnapshot } from "../credentials";
 import { isBillingSource, keyTarget, type BillingSource, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
-import type { CostLedger } from "../costs";
+import { addSideCost, type CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
 import { FROM_TETHER } from "../../../shared/fromTether";
@@ -108,6 +109,10 @@ export class LiveControl {
    * and `restartWait`, so a restart meanwhile comes back here.
    */
   private restartWaits = new Set<string>();
+  /** sessions a module holds for a moment (a checkpoint restore), and why: sends queue meanwhile */
+  private holds = new Map<string, string>();
+  /** folders (real paths) a module holds, and why: every main session in one is held, stored or new */
+  private heldFolders = new Map<string, string>();
   /** messages to subagents the main agent was asked to pass on (via-parent), by main session */
   private relays = new Map<string, { childId: string; nativeId: string; msgId: string; text: string }[]>();
 
@@ -127,6 +132,7 @@ export class LiveControl {
       identity: (s) => this.retryIdentity(s),
       revision: (s) => core.adapter(s.summary.harness).storeRevision?.(s.summary.nativeId, s.summary.projectPath),
       blocked: (s) => s.state.mode === "terminal" || !!s.state.terminal || !!s.state.requests.length || !!this.terminal?.blocked(s) || !!core.o.prefs.get(s.id).nextSource || this.restartWaits.has(s.id),
+      held: (s) => !!this.heldWhy(s.id),
       send: (s, r) => this.send(s.id, r.text, r.attachments, { tether: r.tether, retryId: r.id }),
     });
     this.desk = new RequestDesk(core, broker, {
@@ -138,6 +144,7 @@ export class LiveControl {
     this.queue = new MessageQueue(core, {
       send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }),
       waiting: (id) => this.restartWaits.has(id),
+      paused: (id) => !!this.heldWhy(id),
       settingUp: (id) => core.sessions.get(id)?.state.setup === "running",
     });
     this.read = new ReadState(core);
@@ -299,6 +306,12 @@ export class LiveControl {
     // the queue held before; it goes on once the wait ends.
     if (!o.continued && this.restartWaits.has(id)) {
       if (o.queued) throw new Error(WAITING_TEXT);
+      return void (await this.queue.add(id, text, attachments));
+    }
+    // Held by a module (a checkpoint restore changing the files): it waits in the queue till the release.
+    const held = this.heldWhy(id);
+    if (held) {
+      if (o.queued) throw new Error(held);
       return void (await this.queue.add(id, text, attachments));
     }
     // A new worktree's setup runs, or failed (SPEC §4): nothing goes before it's done, or you say
@@ -709,6 +722,53 @@ export class LiveControl {
     let at: Session | undefined = s;
     for (let i = 0; at?.summary.parentSessionId && i < 50; i++) at = this.core.sessions.get(at.summary.parentSessionId);
     return at;
+  }
+
+  /**
+   * Holds an idle session (modules: a checkpoint restore): sends queue and the queue waits until the
+   * release, which lets it go on. Refused unless it's idle with nothing being sent.
+   */
+  /** why the session is held, when it is (shell commands and the terminal refuse meanwhile) */
+  heldWhy(id: string): string | undefined {
+    const own = this.holds.get(id);
+    if (own || !this.heldFolders.size) return own;
+    const s = this.core.sessions.get(id);
+    if (!s || s.summary.parentSessionId) return undefined;
+    const p = realOf(s.summary.projectPath);
+    for (const [root, why] of this.heldFolders) if (overlaps(p, root)) return why;
+    return undefined;
+  }
+
+  /**
+   * Holds every main session whose folder is in `folder` or holds it (its agent can edit it there),
+   * loaded or not, and any made there meanwhile (a checkpoint restore changing a repo's files): as
+   * `hold`. Refused while one of them is working.
+   */
+  holdFolder(folder: string, why: string): () => void {
+    const root = realOf(folder);
+    if (this.heldFolders.has(root)) throw new Error(this.heldFolders.get(root));
+    const inside = (s: Session) => !s.summary.parentSessionId && overlaps(realOf(s.summary.projectPath), root);
+    for (const s of this.core.sessions.values()) {
+      if (inside(s) && (s.state.status !== "idle" || s.sending || s.starting)) throw new Error(`“${s.summary.title || AGENT_NAMES[s.summary.harness]}” is working.`);
+    }
+    this.heldFolders.set(root, why);
+    return () => {
+      if (this.heldFolders.get(root) !== why) return;
+      this.heldFolders.delete(root);
+      for (const s of this.core.sessions.values()) if (inside(s)) this.queue.later(s.id);
+    };
+  }
+
+  hold(id: string, why: string): () => void {
+    const s = this.core.sessions.get(id);
+    if (s && (s.state.status !== "idle" || s.sending || s.starting)) throw new Error(`${AGENT_NAMES[s.summary.harness]} is working.`);
+    if (this.holds.has(id)) throw new Error(this.holds.get(id));
+    this.holds.set(id, why);
+    return () => {
+      if (this.holds.get(id) !== why) return;
+      this.holds.delete(id);
+      this.queue.later(id);
+    };
   }
 
   async interrupt(id: string) {
@@ -1475,6 +1535,33 @@ export class LiveControl {
     return this.beginCost(s.id, s.fresh || this.spendKnown(s, before));
   }
 
+  /**
+   * What a side query spent on the session's key (git actions' generated text, Adapter.ask): added to
+   * one running report of its own in the session's API ledger (SPEC "API session dollars"). A query
+   * whose spend wasn't reported leaves that report, and so the total, partial.
+   */
+  async sideCost(id: string, spent: SessionCost) {
+    const costs = this.opts.costs;
+    if (!costs) return;
+    // Looked up now, not when the query started: the session may have been unloaded or reloaded since.
+    const s = this.core.sessions.get(id) ?? (await this.core.open(id).catch(() => undefined));
+    if (!s) {
+      try {
+        costs.report(id, "side-queries", addSideCost(costs.reportOf(id, "side-queries"), spent));
+      } catch {}
+      return;
+    }
+    if (s.summary.parentSessionId) return;
+    try {
+      this.startCost(s);
+      const cost = costs.report(s.id, "side-queries", addSideCost(costs.reportOf(s.id, "side-queries"), spent));
+      s.setState({ cost });
+    } catch {
+      this.core.log("Couldn't persist a side query's API cost. The session's total is unknown.");
+    }
+    this.core.touch(s);
+  }
+
   /** A new entry, and a note in the session's prefs that it had one. */
   beginCost(id: string, known: boolean): SessionCost | undefined {
     const cost = this.opts.costs?.begin(id, known);
@@ -1925,4 +2012,19 @@ export class LiveControl {
 function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   let t: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([p, new Promise<never>((_, rej) => (t = setTimeout(() => rej(new Error(what)), ms)))]).finally(() => clearTimeout(t));
+}
+
+/** A folder's real path (symlinks resolved), or the path itself when it isn't there. */
+function realOf(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/** One folder is the other or inside it, either way round. */
+function overlaps(a: string, b: string): boolean {
+  const under = (x: string, y: string) => x === y || x.startsWith(y.endsWith("/") ? y : `${y}/`);
+  return under(a, b) || under(b, a);
 }

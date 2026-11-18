@@ -39,6 +39,8 @@ export interface QueueHost {
   send(sessionId: string, text: string, attachments: Attachment[]): Promise<void>;
   /** the session is in the quiet wait after a restart: nothing may go out yet */
   waiting(sessionId: string): boolean;
+  /** a module holds the session for a moment (live.ts `hold`): nothing goes out until it lets go */
+  paused?(sessionId: string): boolean;
   /** a new worktree's setup runs (SPEC §4): nothing may go out yet */
   settingUp?(sessionId: string): boolean;
 }
@@ -400,8 +402,9 @@ export class MessageQueue {
     // Background work doesn't hold it: this waits for the turn, and the main agent's is over.
     const busy = s.state.status !== "idle" && !s.driver?.onlyBackground?.();
     // A worktree's setup gates scheduled messages too: none goes while it runs, nor after it failed
-    // until Send anyway (Resume ends the gate) or a re-run succeeds.
-    if (s.state.mode === "terminal" || busy || s.sending || s.starting || this.host.waiting(id) || this.host.settingUp?.(id) || s.state.setup === "failed") return;
+    // until Send anyway (Resume ends the gate) or a re-run succeeds. A module's hold (a checkpoint
+    // restore) holds them too, until it lets go.
+    if (s.state.mode === "terminal" || busy || s.sending || s.starting || this.host.waiting(id) || this.host.paused?.(id) || this.host.settingUp?.(id) || s.state.setup === "failed") return;
     const next = this.next(s);
     if (!next) return;
     const rest = s.state.queue.filter((m) => m !== next);

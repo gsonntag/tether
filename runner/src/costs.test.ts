@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CostLedger, estimateTokenCost, priceResponse } from "./costs";
+import { addSideCost, CostLedger, estimateTokenCost, priceResponse } from "./costs";
 
 const file = () => { const root = "/tmp/claude-1001/keys/unit"; mkdirSync(root, { recursive: true }); return join(mkdtempSync(join(root, "cost-")), "costs.json"); };
 describe("session API dollars", () => {
@@ -308,4 +308,21 @@ describe("reasons and carrying", () => {
     ledger.begin("b", true);
     expect(ledger.carry("a", "b")).toEqual({ usd: 1, estimated: true, complete: false, reasons: ["long-context"] });
   });
+});
+
+test("side queries (generated text on a key) add up in one report of the session's; an unknown spend leaves it partial", () => {
+  const ledger = new CostLedger();
+  ledger.begin("s", true);
+  let side = addSideCost(ledger.reportOf("s", "side-queries"), { usd: 0.002, estimated: true, complete: true });
+  ledger.report("s", "side-queries", side);
+  ledger.report("s", "turns", { usd: 1, estimated: false, complete: true });
+  side = addSideCost(ledger.reportOf("s", "side-queries"), { usd: 0.003, estimated: true, complete: true });
+  ledger.report("s", "side-queries", side);
+  expect(ledger.get("s")).toMatchObject({ complete: true });
+  expect(ledger.get("s").usd).toBeCloseTo(1.005, 6);
+  side = addSideCost(ledger.reportOf("s", "side-queries"), { estimated: true, complete: false, reasons: ["no-usage"] });
+  ledger.report("s", "side-queries", side);
+  expect(ledger.get("s")).toMatchObject({ complete: false });
+  expect(ledger.get("s").usd).toBeCloseTo(1.005, 6);
+  expect(addSideCost(side, { usd: 0.001, estimated: true, complete: true }).complete).toBe(false);
 });

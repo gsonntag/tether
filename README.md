@@ -41,6 +41,19 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
   TUI is a choice in the same panel. Claude hands the session off to `claude --resume` in tmux and
   takes it back when you click **Back to Tether**. Codex shares the live thread with its TUI.
   Terminals outlive runner restarts.
+- **Changes** (SPEC §10): the session folder's git diff beside the chat, uncommitted or the whole
+  branch. Click lines to comment, then **Send to agent** puts the comments in the composer as one
+  message.
+- **Files** (SPEC §10): a tab beside Changes with the session folder as a tree (respecting
+  `.gitignore`, hidden files behind a toggle), a filter by name, and a viewer for text, Markdown
+  and images. **Mention** puts `@path` in the composer. It reads only inside the session's folder.
+- **Turn checkpoints** (SPEC §10): each turn's files are snapshotted under hidden git refs, so the
+  Changes pane's **Turn** scope shows what a turn changed, and **Restore files to before this turn**
+  puts them back (undoable). Your index, `HEAD` and stash are never touched.
+- **Git actions** (SPEC §10): the Changes pane shows the branch and how far it is ahead of or behind
+  its upstream, with **Commit** (a generated message you can edit; the default branch needs a
+  tick), **Push** (never forced) and **Open PR** through `gh`. The session's PR shows as a chip in
+  its header, with its state and checks.
 - **A worktree per session** (SPEC §4): in a git repo, New session can make a new worktree beside
   it (`<repo>-worktrees/<slug>`, on a new branch `tether/<slug>` from the default branch) and run
   the session there. The repo's `.tether/setup` (an executable) or `.tether/config.json`
