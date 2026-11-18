@@ -6,7 +6,7 @@
 import { join } from "node:path";
 import { USAGE_DAYS_MAX, validTimeZone, type UsageReport } from "../../../../shared/usage";
 import type { HarnessId } from "../../../../shared/transcript";
-import { keptBilling } from "../../adapters/claude/context";
+import { keptStart } from "../../adapters/claude/context";
 import { projectsDir } from "../../adapters/claude/paths";
 import { CODEX_HOME } from "../../adapters/codex/rpc";
 import { CostLedger } from "../../costs";
@@ -14,7 +14,7 @@ import { hidePattern } from "../../core/sessions";
 import { DATA_DIR } from "../../credentials";
 import type { Module } from "..";
 import type { FileState } from "./parse";
-import { buildReport, codexSource, type Source } from "./report";
+import { buildReport, codexSource, type Source, type SourceSpan } from "./report";
 import { UsageScanner, type UsageRoot } from "./scan";
 
 const FRESH_MS = 60_000;
@@ -28,12 +28,18 @@ export const usageRoots = (): UsageRoot[] => [
   { harness: "codex", dir: join(DATA_DIR, "codex-keys"), private: true },
 ];
 
-/** Claude: what a session drew from on its latest start (Tether's record), else a ledger entry says it was on a key. */
-export function claudeSource(f: FileState, inLedger: (id: string) => boolean): Source {
-  const kind = f.session ? keptBilling(f.session).kind : "unknown";
-  if (kind === "plan") return "plan";
-  if (kind === "apiKey" || kind === "provider") return "key";
-  return f.session && inLedger(`claude:${f.session}`) ? "key" : "unknown";
+/**
+ * Claude: Tether records only a session's latest start (what it drew from, and when). A session
+ * Tether never metered on a key (no ledger entry) whose latest start was the plan was on the plan
+ * throughout, as far as Tether knows. Otherwise the latest start's source holds from that start on,
+ * and what came before is unknown: it may have changed.
+ */
+export function claudeSource(f: FileState, inLedger: (id: string) => boolean): SourceSpan {
+  const start = f.session ? keptStart(f.session) : undefined;
+  const kind: Source = start?.kind === "plan" ? "plan" : start?.kind === "apiKey" || start?.kind === "provider" ? "key" : "unknown";
+  if (kind === "unknown") return { kind };
+  if (kind === "plan" && !inLedger(`claude:${f.session}`)) return { kind };
+  return { kind, since: start!.at };
 }
 
 export const usageModule: Module = {

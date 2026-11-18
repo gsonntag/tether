@@ -251,3 +251,27 @@ describe("scanner", () => {
     expect(s.files.size).toBe(1);
   });
 });
+
+describe("sources", () => {
+  test("Claude: the latest start's source from that start on; a plan session never metered on a key, throughout", async () => {
+    const { keepBilling, windowsIn } = await import("../../adapters/claude/context");
+    const { claudeSource } = await import(".");
+    windowsIn(undefined);
+    keepBilling("s-plan", { kind: "plan", label: "Claude plan" });
+    keepBilling("s-key", { kind: "apiKey", label: "Anthropic API key" });
+    keepBilling("s-back", { kind: "plan", label: "Claude plan" });
+    const inLedger = (id: string) => id === "claude:s-key" || id === "claude:s-back";
+    const at = (s: string) => ({ ...fresh("claude"), session: s });
+    expect(claudeSource(at("s-plan"), inLedger)).toEqual({ kind: "plan" });
+    expect(claudeSource(at("s-none"), inLedger)).toEqual({ kind: "unknown" });
+    const key = claudeSource(at("s-key"), inLedger);
+    expect(key.kind).toBe("key");
+    expect(Math.abs(key.since! - Date.now())).toBeLessThan(5000);
+    expect(claudeSource(at("s-back"), inLedger)).toMatchObject({ kind: "plan", since: expect.any(Number) });
+
+    const NOW = Date.parse("2026-11-18T12:00:00Z");
+    const recs: Rec[] = [["a", NOW / 1000 - 7200, "claude-opus-5-5", 0, 1e6, 0, 0, 0, 0], ["b", NOW / 1000 - 60, "claude-opus-5-5", 0, 1e6, 0, 0, 0, 0]];
+    const rep = buildReport({ files: [["/x", { ...fresh("claude"), project: "/w", recs }]], days: 1, timeZone: "UTC", now: NOW, source: () => ({ kind: "key", since: NOW - 3_600_000 }) });
+    expect([rep.total.key, rep.total.unknown]).toEqual([20, 20]);
+  });
+});

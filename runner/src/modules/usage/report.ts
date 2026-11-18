@@ -7,6 +7,8 @@ import type { FileState } from "./parse";
 import { priceRec } from "./price";
 
 export type Source = "plan" | "key" | "unknown";
+/** What a file's requests drew from: `kind` from `since` (ms) on, `before` (default unknown) earlier. */
+export interface SourceSpan { kind: Source; since?: number; before?: Source }
 
 /** How many projects get a row of their own. */
 export const TOP_PROJECTS = 8;
@@ -39,7 +41,7 @@ export interface ReportInput {
   timeZone: string;
   now: number;
   /** what a file's requests drew from */
-  source: (f: FileState) => Source;
+  source: (f: FileState) => Source | SourceSpan;
   /** a folder TETHER_HIDE_PROJECTS (or the Home agent) hides */
   hidden?: (path: string) => boolean;
   /** Tether's API cost ledger: whole-session totals by Tether session id */
@@ -79,7 +81,8 @@ export function buildReport(o: ReportInput): Omit<UsageReport, "plans" | "scan">
   // Files in a fixed order, so which copy of a repeated request counts doesn't change between answers.
   const files = [...o.files].sort((a, b) => (a[0] < b[0] ? -1 : 1));
   for (const [, f] of files) {
-    const source = o.source(f);
+    const got = o.source(f);
+    const span = typeof got === "string" ? { kind: got } : got;
     const path = f.project;
     const hide = !!path && !!o.hidden?.(path);
     let any = false;
@@ -89,6 +92,7 @@ export function buildReport(o: ReportInput): Omit<UsageReport, "plans" | "scan">
       if (!day) continue;
       seen.add(r[0]);
       any = true;
+      const source = r[1] * 1000 >= (span.since ?? 0) ? span.kind : (span.before ?? "unknown");
       const tokens = { input: r[3], output: r[4], cacheRead: r[5], cacheWrite: r[6] + r[7] };
       const price = priceRec(f.harness, r, f.harness === "codex" ? f.provider : undefined);
       add(total, tokens, price, source);
