@@ -3112,3 +3112,35 @@
 .t-updates-warning { color: var(--color-text-yellow, var(--color-warning)); font-weight: 600; }
 /* The computer's name on Home: tap to rename; keeps the list's own type size */
 .t-title-button.t-runner-name { font-size: inherit; font-weight: inherit; max-width: 100%; }
+
+/* Fork (SPEC §16): a fork's link back, and Fork from here under a reply that ends a turn. Quiet:
+   shown on hover where there is one, always on touch. */
+.t-header-fork {
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.t-header-fork .t-link {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+}
+.t-fork-here {
+  margin-top: 4px;
+  color: var(--t-muted);
+}
+@media (hover: hover) and (pointer: fine) {
+  .t-fork-here {
+    opacity: 0;
+  }
+  .t-msg.assistant:hover .t-fork-here,
+  .t-fork-here:focus-visible {
+    opacity: 1;
+  }
+}
+@media (max-width: 767px), (pointer: coarse) {
+  /* Under the chips, a line of its own, out of the way of the title. */
+  .t-header > .t-header-fork { order: 3; flex: 1 1 100%; }
+}

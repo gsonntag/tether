@@ -4,11 +4,18 @@ import type { Part } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { partRev, RowStore } from "../rowStore";
 
+/** Fork from here (SPEC §16): whether a turn runs (its replies aren't fork points yet), and the call. */
+export interface SessionFork {
+  running: boolean;
+  from(messageId: string): void;
+}
+
 /**
  * Which session the transcript below belongs to (for fullPart and links to subagents). `home`: it's
- * the Home agent's chat, where Tether's reports fold to a line (shared/homeReport.ts).
+ * the Home agent's chat, where Tether's reports fold to a line (shared/homeReport.ts). `fork`: its
+ * replies that end a turn offer Fork from here.
  */
-export const SessionCtx = createContext<{ runnerId: string; sessionId: string; projectPath?: string; home?: boolean }>({ runnerId: "", sessionId: "" });
+export const SessionCtx = createContext<{ runnerId: string; sessionId: string; projectPath?: string; home?: boolean; fork?: SessionFork }>({ runnerId: "", sessionId: "" });
 export const useSessionCtx = () => useContext(SessionCtx);
 
 const rows = new RowStore();

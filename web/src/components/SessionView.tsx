@@ -16,6 +16,7 @@ import { QueueList } from "./QueueList";
 import { backQuestion, SHELL_TAB, TerminalPanel, type PanelState } from "./TerminalPanel";
 import { RequestDock } from "./RequestDock";
 import { dropRows, SessionCtx } from "./sessionContext";
+import { canFork, forkSession } from "../fork";
 import { SessionHeader } from "./SessionHeader";
 import { Transcript } from "./Transcript";
 import { useChildren } from "./useChildren";
@@ -129,7 +130,13 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     }
   }, [ready, k]);
 
-  const ctx = useMemo(() => ({ runnerId, sessionId, projectPath: summary?.projectPath }), [runnerId, sessionId, summary?.projectPath]);
+  // Fork from here on the replies that end a finished turn (SPEC §16): a main session whose harness forks.
+  const forks = !!view?.state && !!summary && canFork(summary, view.capabilities, view.state);
+  const forkBusy = view?.state ? view.state.status !== "idle" : false;
+  const ctx = useMemo(
+    () => ({ runnerId, sessionId, projectPath: summary?.projectPath, ...(forks ? { fork: { running: forkBusy, from: (messageId: string) => void forkSession(runnerId, sessionId, messageId) } } : {}) }),
+    [runnerId, sessionId, summary?.projectPath, forks, forkBusy],
+  );
 
   if (!view?.window || !view.state || !summary) {
     if (view?.error)
@@ -257,7 +264,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     <SessionCtx.Provider value={ctx}>
       <div className={`t-session-split${panel ? " with-terminal" : ""}${cover ? " t-term-cover" : ""}`} ref={rootRef}>
       <div className="t-session">
-        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move} />}{terminalChip}</>} capabilities={view.capabilities} />
+        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move} canFork={canFork(summary, view.capabilities, state)} />}{terminalChip}</>} capabilities={view.capabilities} />
         {ask && !panelShown && (
           <div className="t-term-ask" role="group" aria-label="Open the terminal">
             <span>{ask.text}</span>

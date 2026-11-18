@@ -7,7 +7,8 @@ import { HARNESS_LABELS, type HarnessCapabilities, type LiveState, type ModelLis
 import { rpc } from "../connection";
 import { openSession } from "../route";
 import type { Row } from "../sessionList";
-import { loadModels } from "../store";
+import { loadModels, useStore } from "../store";
+import { forkedFromTitle } from "../fork";
 import { BillingChip, useSources } from "./BillingChip";
 import { ChoiceMenu } from "./ChoiceMenu";
 import { shownStatus } from "../sessionList";
@@ -99,6 +100,7 @@ export function SessionHeader({
       <div className="t-header-sub" title={session.projectPath}>
         {isChild ? `Subagent${session.agentType ? ` · ${session.agentType}` : ""} · ${session.projectPath}` : session.projectPath}
       </div>
+      {session.forkedFrom && <ForkedFrom runnerId={runnerId} from={session.forkedFrom} />}
       <div className={`t-chips${paid ? " t-paid-chips" : ""}`}>
         <BillingChip runnerId={runnerId} session={session} state={state} capabilities={capabilities} onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))} onAutoKey={(on) => void call(rpc(runnerId, "setAutoKey", { sessionId: session.id, on }))} />
         {nextBilling && <span className={`t-chip t-chip-info t-next-source${isApiBilling(nextBilling) ? " t-next-api" : ""}`} title={`${nextBilling.label} from the next start`}>Next: {nextBilling.label}</span>}
@@ -177,6 +179,18 @@ export function SessionHeader({
         </div>
       )}
       {error && <div className="t-inline-status error">{error}</div>}
+    </div>
+  );
+}
+
+/** A fork's link back to the session it was made from (SPEC §16), by that session's title now. */
+export function ForkedFrom({ runnerId, from }: { runnerId: string; from: NonNullable<SessionSummary["forkedFrom"]> }) {
+  const title = useStore((s) => forkedFromTitle(s.summaries, runnerId, from));
+  return (
+    <div className="t-header-fork">
+      <button type="button" className="t-link" title="Open the session this was forked from" onClick={() => openSession(runnerId, from.sessionId)}>
+        Forked from {title ? `“${title}”` : "another session"}
+      </button>
     </div>
   );
 }

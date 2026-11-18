@@ -134,8 +134,8 @@ function isCheckIn(msg: Msg) {
   return tetherPurpose(text) === "checkIn" || (msg.origin?.kind === "tether" && tetherPurpose(FROM_TETHER + text) === "checkIn");
 }
 
-export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed?: boolean }) {
-  const { projectPath, runnerId, home } = useSessionCtx();
+export const Message = memo(function Message({ msg, failed, forkable }: { msg: Msg; failed?: boolean; forkable?: boolean }) {
+  const { projectPath, runnerId, home, fork } = useSessionCtx();
   const { full, loading, error, load } = useFullParts(msg.id, msg.parts);
   if (msg.role === "notice") {
     const text = msg.parts.map((p) => (p.type === "text" ? (msg.level === "error" ? localizeUsageLimitRetry(p.text, undefined, msg.ts) : p.text) : "")).join("\n");
@@ -306,6 +306,12 @@ export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed
         {checkIn !== null && <div className={`t-checkin-status${settled ? " settled" : ""}`}>{checkInStatus(checkIn)}</div>}
         {missing.length > 0 && <CutNote loading={missing.some((i) => loading.includes(i))} error={error} onLoad={() => load(missing)} />}
         {msg.error && <div className="t-msg-error">{localizeUsageLimitRetry(msg.error, undefined, msg.ts)}</div>}
+        {forkable && fork && (
+          // A new session whose conversation ends here (SPEC §16); this one stays as it is.
+          <button type="button" className="t-link t-fork-here" title="A new session with the conversation up to here" onClick={() => fork.from(msg.id)}>
+            Fork from here
+          </button>
+        )}
       </div>
     </div>
   );

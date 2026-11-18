@@ -12,6 +12,8 @@ import { collapseErrors } from "../../../shared/notices";
 import type { TranscriptWindow } from "../../../shared/window";
 import { Follow, FOLLOW_KEEP, Gesture, nextWindow, remap, restoreTop, rowAt, scrollInFlight, type Anchor } from "../scrollKeep";
 import { Message } from "./Message";
+import { useSessionCtx } from "./sessionContext";
+import { forkPoints } from "../../../shared/fork";
 
 const NEAR_BOTTOM = 40;
 /** Fetch or mount older messages this far from the top, so a page is usually in before a fling gets there. */
@@ -67,6 +69,8 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
   const [paging, setPaging] = useState(false);
 
   const rows = useMemo(() => collapseErrors(w.messages), [w.messages]);
+  const { fork } = useSessionCtx();
+  const forkable = useMemo(() => (fork ? forkPoints(w.messages, fork.running) : undefined), [w.messages, fork?.running, !!fork]);
   const msgs = rows.messages;
   const ids = useMemo(() => msgs.map((m) => m.id), [msgs]);
   // A row that went (an older page brought the first of its run): its kept copy stands in for it.
@@ -321,7 +325,7 @@ export function Transcript({ window: w, onOlder, footer }: { window: TranscriptW
           <div ref={list}>
             {msgs.slice(win.lo, win.hi).map((m) => (
               <div key={m.id} data-id={m.id}>
-                <Message msg={m} failed={rows.failed.has(m.id)} />
+                <Message msg={m} failed={rows.failed.has(m.id)} forkable={!!forkable?.has(m.id)} />
               </div>
             ))}
           </div>
