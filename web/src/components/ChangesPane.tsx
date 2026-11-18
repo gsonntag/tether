@@ -6,8 +6,8 @@
 // session; Send to agent puts them in the composer as one message, to edit and send, and they stay
 // until a message carrying them is sent (reviewStore.ts).
 //
-// The pane is the place later git views join: git actions (commit, push, a PR) go in the header's
-// actions, and Files a tab beside Changes.
+// Git actions (GitBar.tsx: the branch, Commit, Push, Open PR) sit under the header. Files, a later
+// git view, would be a tab beside Changes.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
@@ -16,6 +16,7 @@ import { Icon } from "@astryxdesign/core/Icon";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { ArrowPathIcon, XMarkIcon } from "@heroicons/react/24/solid";
 import type { CheckpointList } from "../../../shared/checkpoints";
+import type { PrLookup } from "../../../shared/gitActions";
 import { DIFF_SCOPES, isDiffScope, numberLines, type DiffScope, type GitDiff } from "../../../shared/gitDiff";
 import type { RunStatus } from "../../../shared/transcript";
 import { rpc } from "../connection";
@@ -24,6 +25,7 @@ import { updateComments, useComments, useUnsaved } from "../reviewStore";
 import { useStore, viewKey } from "../store";
 import { draftOf, putDraft } from "./Composer";
 import { CommentCard, Counts, DiffFileView, fileKey, type Sel } from "./DiffFile";
+import { GitBar } from "./GitBar";
 import { TurnBar } from "./TurnBar";
 import { useFitViewport } from "./useFitViewport";
 import "./ChangesPane.css";
@@ -53,6 +55,7 @@ export function ChangesPane({
   sessionId,
   status,
   cover,
+  git,
   onClose,
   onSent,
 }: {
@@ -62,6 +65,8 @@ export function ChangesPane({
   status: RunStatus;
   /** over the chat (a phone) rather than beside it */
   cover: boolean;
+  /** the runner has git actions: the session's PR, and how to update it (SessionView's usePr) */
+  git?: { pr?: PrLookup; update: (fresh: boolean, l?: PrLookup) => void };
   onClose: () => void;
   /** Send to agent put the comments in the composer */
   onSent: () => void;
@@ -91,10 +96,13 @@ export function ChangesPane({
   const [restoring, setRestoring] = useState(false);
 
   const seq = useRef(0);
+  /** loads so far: the git bar reads the branch again with each */
+  const [tick, setTick] = useState(0);
   const load = useCallback(
     async (s: DiffScope) => {
       const n = ++seq.current;
       setLoading(true);
+      setTick((t) => t + 1);
       try {
         let checkpoint: string | undefined;
         if (s === "turn") {
@@ -275,6 +283,7 @@ export function ChangesPane({
           <IconButton label="Close changes" tooltip="Close" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={onClose} />
         </div>
       </div>
+      {git && <GitBar runnerId={runnerId} sessionId={sessionId} status={status} tick={tick} pr={git.pr} onPr={git.update} onChanged={() => (setOwed(false), void load(scope))} />}
       {scope === "turn" && cps && <TurnBar list={cps} picked={cps.checkpoints.find((c) => c.id === cp)} onPick={pickTurn} onRestore={(id) => void restore(id)} restoring={restoring} />}
       {shown?.state === "ok" && (
         <div className="t-changes-sub">
