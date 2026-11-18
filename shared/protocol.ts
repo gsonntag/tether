@@ -30,6 +30,7 @@ import type { AzureDeployment, BillingSource, CredentialSource, CredentialStatus
 import type { TokenRates } from "./costs";
 import type { AutoUpdateStatus, HarnessReport } from "./harnessUpdates";
 import type { PartChunk } from "./limits";
+import type { UsageReport } from "./usage";
 import type { HarnessId, ModelList, Msg, ProjectInfo, RequestAnswer, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
 
 /** Close code the server uses for a runner connection that a newer one with the same id replaced. */
@@ -163,6 +164,13 @@ export interface Ops {
   harnessAutoUpdate: { args: { on?: boolean }; result: AutoUpdateStatus };
   /** Starts updating one harness (one at a time per runner) and answers at once; poll harnessVersions for its output. Running sessions aren't stopped */
   harnessUpdate: { args: { id: string }; result: HarnessReport };
+  /**
+   * Settings → Usage: tokens and API-price estimates from the harness stores, by day in `timeZone`
+   * (IANA; the browser's), by model and by project, for the last `days` (≤ 30, default 30). Answers at
+   * once with what's read: a scan runs in the background when the last is over a minute old or `refresh`
+   * asks, and `scan.running` says to ask again. Reveals every project's activity: a drive op.
+   */
+  usage: { args: { days?: number; timeZone?: string; refresh?: boolean }; result: UsageReport };
   /** a round trip through the relay to the runner */
   ping: { args: Record<string, never>; result: { runnerId: string; at: number } };
   /** start receiving a session's events; answers with a fresh snapshot of the newest `limit` messages */
