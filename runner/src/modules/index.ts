@@ -79,6 +79,8 @@ export interface SessionActions {
   interrupt(id: string): Promise<void>;
   /** keeps a session out of Recent (or puts it back), as the archive button does */
   setArchived(id: string, archived: boolean): Promise<void>;
+  /** holds an idle, loaded session for a while (a checkpoint restore): what's sent to it waits in its queue, held, until the release */
+  hold?(id: string, why: string): () => void;
 }
 
 export interface ModuleContext {

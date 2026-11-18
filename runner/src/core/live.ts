@@ -105,6 +105,8 @@ export class LiveControl {
    * and `restartWait`, so a restart meanwhile comes back here.
    */
   private restartWaits = new Set<string>();
+  /** sessions a module holds for a moment (a checkpoint restore), and why: sends queue meanwhile */
+  private holds = new Map<string, string>();
   /** messages to subagents the main agent was asked to pass on (via-parent), by main session */
   private relays = new Map<string, { childId: string; nativeId: string; msgId: string; text: string }[]>();
 
@@ -123,7 +125,7 @@ export class LiveControl {
     this.retries = new RetryControl(core, {
       identity: (s) => this.retryIdentity(s),
       revision: (s) => core.adapter(s.summary.harness).storeRevision?.(s.summary.nativeId, s.summary.projectPath),
-      blocked: (s) => s.state.mode === "terminal" || !!s.state.terminal || !!s.state.requests.length || !!this.terminal?.blocked(s) || !!core.o.prefs.get(s.id).nextSource || this.restartWaits.has(s.id),
+      blocked: (s) => s.state.mode === "terminal" || !!s.state.terminal || !!s.state.requests.length || !!this.terminal?.blocked(s) || !!core.o.prefs.get(s.id).nextSource || this.restartWaits.has(s.id) || this.holds.has(s.id),
       send: (s, r) => this.send(s.id, r.text, r.attachments, { tether: r.tether, retryId: r.id }),
     });
     this.desk = new RequestDesk(core, broker, {
@@ -132,7 +134,7 @@ export class LiveControl {
       tell: (id, text) => this.tell(id, text),
       beforePlan: (id) => core.o.prefs.get(id).beforePlan,
     });
-    this.queue = new MessageQueue(core, { send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }), waiting: (id) => this.restartWaits.has(id) });
+    this.queue = new MessageQueue(core, { send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }), waiting: (id) => this.restartWaits.has(id), paused: (id) => this.holds.has(id) });
     this.read = new ReadState(core);
     this.commands = new Commands({ core, models: (s) => this.listModels(s.summary.harness, s.id), setModel: (id, m) => this.setModel(id, m), setEffort: (id, e) => this.setEffort(id, e), status: (s, st) => this.status(s, st) });
     this.attachments = new AttachmentStore(opts.attachmentsDir ?? "/nonexistent-tether-attachments");
@@ -290,6 +292,11 @@ export class LiveControl {
     // the queue held before; it goes on once the wait ends.
     if (!o.continued && this.restartWaits.has(id)) {
       if (o.queued) throw new Error(WAITING_TEXT);
+      return void (await this.queue.add(id, text, attachments));
+    }
+    // Held by a module (a checkpoint restore changing the files): it waits in the queue till the release.
+    if (this.holds.has(id)) {
+      if (o.queued) throw new Error(this.holds.get(id));
       return void (await this.queue.add(id, text, attachments));
     }
     if (o.stop && (s.state.status !== "idle" || s.sending)) {
@@ -679,6 +686,22 @@ export class LiveControl {
     let at: Session | undefined = s;
     for (let i = 0; at?.summary.parentSessionId && i < 50; i++) at = this.core.sessions.get(at.summary.parentSessionId);
     return at;
+  }
+
+  /**
+   * Holds an idle session (modules: a checkpoint restore): sends queue and the queue waits until the
+   * release, which lets it go on. Refused unless it's idle with nothing being sent.
+   */
+  hold(id: string, why: string): () => void {
+    const s = this.core.sessions.get(id);
+    if (s && (s.state.status !== "idle" || s.sending || s.starting)) throw new Error(`${AGENT_NAMES[s.summary.harness]} is working.`);
+    if (this.holds.has(id)) throw new Error(this.holds.get(id));
+    this.holds.set(id, why);
+    return () => {
+      if (this.holds.get(id) !== why) return;
+      this.holds.delete(id);
+      this.queue.later(id);
+    };
   }
 
   async interrupt(id: string) {
