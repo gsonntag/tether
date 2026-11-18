@@ -224,7 +224,7 @@ export class Checkpoints {
     const rec = sc?.root === root ? (id ? sc.items.find((c) => c.id === id) : sc.items.at(-1)) : undefined;
     if (!rec || !(await treeOf(root, rec.before))) return { ...none, ...where, state: "noBase" };
     const to = rec.after ?? (await this.serial(`r:${root}`, () => snapshotTree(root, this.tmp)));
-    return { scope: "turn", state: "ok", ...where, checkpoint: rec.id, base: rec.kind === "turn" ? `before turn ${rec.n}` : "before the restore", ...(await diffRange(root, rec.before, { to })) };
+    return { scope: "turn", state: "ok", ...where, checkpoint: rec.id, base: `${rec.kind === "turn" ? `turn ${rec.n}` : "restore"}: before → ${rec.after ? "after" : "now"}`, ...(await diffRange(root, rec.before, { to })) };
   }
 
   /** Puts the files back to before checkpoint `id`, after checkpointing them as they are. */

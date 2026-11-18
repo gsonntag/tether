@@ -52,7 +52,7 @@ export interface GitDiff {
   root?: string;
   /** the checked-out branch; none when detached or not a repo */
   branch?: string;
-  /** what `branch` compares with, e.g. "origin/main" */
+  /** what `branch` compares with, e.g. "origin/main"; the turn scope: which pair, e.g. "turn 3: before → after" */
   base?: string;
   files: DiffFile[];
   /** files left out past DIFF_FILES_MAX */

@@ -102,7 +102,7 @@ test("a turn's diff: before → after, and before → working tree while it runs
   writeFileSync(join(d, "a.txt"), "one\ntwo\nthree\n");
   writeFileSync(join(d, "made.txt"), "made\n");
   const live = await c.diff("claude:s1", undefined);
-  expect(live).toMatchObject({ scope: "turn", state: "ok", checkpoint: "1", base: "before turn 1" });
+  expect(live).toMatchObject({ scope: "turn", state: "ok", checkpoint: "1", base: "turn 1: before → now" });
   expect(live.files.map((f) => [f.path, f.status])).toEqual([["a.txt", "modified"], ["made.txt", "added"]]);
   expect((await c.list("claude:s1")).checkpoints[0]).toMatchObject({ open: true });
   look.status = "idle";

@@ -251,8 +251,8 @@ export function ChangesPane({
           </span>
           <Counts added={shown.added} removed={shown.removed} />
           <span className="t-changes-base" title={shown.root}>
-            {shown.branch ?? "detached HEAD"}
-            {scope !== "uncommitted" && shown.base ? ` vs ${shown.base}` : ""}
+            {scope === "turn" ? shown.base : (shown.branch ?? "detached HEAD")}
+            {scope === "branch" && shown.base ? ` vs ${shown.base}` : ""}
           </span>
         </div>
       )}
