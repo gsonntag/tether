@@ -21,8 +21,8 @@ browser ──wss──► server (Foliation app: UI + relay) ◄──wss──
 
 **Sessions.** The runner finds your existing Claude Code (`~/.claude/projects`) and Codex sessions
 and shows them all in one transcript format. Nothing starts until you send. The sidebar has Recent
-(the last 3 days plus every live session) and per-project lists, and search finds the rest. You can
-rename and archive sessions from the sidebar. A session goes live when you send and goes back to
+(the last 3 days plus every live session, grouped by project) and per-project lists, and search finds the rest. You can
+rename, pin and archive sessions from the sidebar (or a session's ⋯ menu); pinned ones stay at the top on every device. A session goes live when you send and goes back to
 stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–§6a.
 
 - **Composer** (SPEC §9): Enter sends, or steers a running turn. Tab queues the message and
@@ -30,6 +30,9 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
   harness's own commands and skills. Text starting with `!` runs a shell command in the session's
   folder right away, and its card has a Stop button. You can attach images and files by pasting,
   dropping, the file picker or the camera.
+- **Send later** (SPEC §9): schedule a message from the send menu (in 1 hour, tonight, tomorrow
+  morning or any time). It waits in the queue with its time, survives runner restarts (sent late on
+  start, or held for you if the runner was off for over a day after its time), and can be edited, sent now or cancelled.
 - **Requests** (SPEC §7): permission prompts, questions and plans go to every device watching the
   session, and the first answer wins. A plan opens in a review view where you can comment on it.
 - **Stop a running command:** while the agent waits on a shell command, a Stop button on the
@@ -38,6 +41,12 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
   TUI is a choice in the same panel. Claude hands the session off to `claude --resume` in tmux and
   takes it back when you click **Back to Tether**. Codex shares the live thread with its TUI.
   Terminals outlive runner restarts.
+- **A worktree per session** (SPEC §4): in a git repo, New session can make a new worktree beside
+  it (`<repo>-worktrees/<slug>`, on a new branch `tether/<slug>` from the default branch) and run
+  the session there. The repo's `.tether/setup` (an executable) or `.tether/config.json`
+  `"setup"` command runs in it first, as a card in the session; your first message waits until it
+  succeeds, and if it fails you can re-run it or send anyway. Archive done removes the worktree and its branch once
+  the work is merged. The Home agent can start sessions in a worktree too.
 - **Change session harness** (SPEC §15): continues a session on the other harness, or on the same
   harness with another billing source. The old session stays as it was.
 - **Fork** (SPEC §16): the session menu's Fork makes a new session with the same conversation, folder,
@@ -66,7 +75,7 @@ through (SPEC §10):
   turn, fails or starts waiting for you.
 - **Archive done sessions** (also something you can ask the agent for): the agent asks each idle
   session whether its work is done and merged, and tells finished sessions to remove the worktrees
-  they made. It checks each answer against git, then archives the finished sessions and reports on
+  they made (a worktree Tether made for a session, Tether removes itself). It checks each answer against git, then archives the finished sessions and reports on
   the rest. Busy sessions are skipped, never interrupted.
 
 **Sessions talking to each other** (SPEC §9a): every live session gets a `tether` MCP server with
@@ -84,6 +93,13 @@ when the session is made:
 You add keys under **Settings → Credentials** and **Settings → Azure**, and they're stored on the
 runner. New sessions start on the subscription. The header's billing chip shows the source and
 switches it, and API sessions show what they've cost in dollars.
+
+**Usage** (SPEC §10, *Usage*): **Settings → Usage** shows a runner's last 7 or 30 days of tokens
+(input, output, cache reads and writes) by day, by harness and model, and by project, read from
+Claude Code's and Codex's own logs, so CLI sessions count too. Dollars are estimates at published API
+prices, split into plan usage and API keys, next to what Tether's own ledgers billed to API keys and
+what caching saved. The plan's 5-hour and weekly limits are at the top. The logs are first read when
+you open the page, which can take a few seconds; after that only what's new is read.
 
 **Texting** (iMessage through [Photon Spectrum](https://photon.codes), or a Discord bot): the runner can text you when
 a session has a request, needs you in the terminal, fails, or ends its turn with a question. Nothing

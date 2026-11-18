@@ -25,11 +25,13 @@
 
 import type { HarnessCommand } from "./commands";
 import type { MoveOptions } from "./move";
+import type { WorkspaceInfo, WorktreeMade } from "./worktree";
 import type { Attachment } from "./attachments";
 import type { AzureDeployment, BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
 import type { TokenRates } from "./costs";
 import type { AutoUpdateStatus, HarnessReport } from "./harnessUpdates";
 import type { PartChunk } from "./limits";
+import type { UsageReport } from "./usage";
 import type { HarnessId, ModelList, Msg, ProjectInfo, RequestAnswer, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
 
 /** Close code the server uses for a runner connection that a newer one with the same id replaced. */
@@ -73,6 +75,8 @@ export interface RunnerInfo {
   connectedAt?: number;
   /** the Home agent's folder: its chats show on Home, never in the lists. Absent: no Home agent */
   homeFolder?: string;
+  /** it takes `pinSession` (SPEC §10 Pinning). Absent: a runner from before it, and no pin buttons */
+  pinning?: boolean;
 }
 
 /** Runner-wide settings (the Settings page), kept in runner.json. */
@@ -127,6 +131,8 @@ export interface Ops {
   renameSession: { args: { sessionId: string; title: string }; result: null };
   /** Keeps a session out of Recent; archived sessions remain searchable. */
   setSessionArchived: { args: { sessionId: string; archived: boolean }; result: null };
+  /** Puts a main session in the Sidebar's Pinned group (the last of it), or takes it out. Archiving unpins. */
+  pinSession: { args: { sessionId: string; pinned: boolean }; result: null };
   /** the Home agent's chats (Home's tabs, oldest first; absent from a runner from before tabs) and its current one (where watch reports go), the folder its chats run in, and what it runs on. `rev`: as in HomeChatUpdate */
   homeAgent: { args: Record<string, never>; result: { sessionId?: string; chats?: string[]; labels?: Record<string, number>; folder: string; rev: number; settings?: HomeAgentSettings; harnesses?: HarnessId[] } };
   /**
@@ -163,6 +169,13 @@ export interface Ops {
   harnessAutoUpdate: { args: { on?: boolean }; result: AutoUpdateStatus };
   /** Starts updating one harness (one at a time per runner) and answers at once; poll harnessVersions for its output. Running sessions aren't stopped */
   harnessUpdate: { args: { id: string }; result: HarnessReport };
+  /**
+   * Settings → Usage: tokens and API-price estimates from the harness stores, by day in `timeZone`
+   * (IANA; the browser's), by model and by project, for the last `days` (≤ 30, default 30). Answers at
+   * once with what's read: a scan runs in the background when the last is over a minute old or `refresh`
+   * asks, and `scan.running` says to ask again. Reveals every project's activity: a drive op.
+   */
+  usage: { args: { days?: number; timeZone?: string; refresh?: boolean }; result: UsageReport };
   /** a round trip through the relay to the runner */
   ping: { args: Record<string, never>; result: { runnerId: string; at: number } };
   /** start receiving a session's events; answers with a fresh snapshot of the newest `limit` messages */
@@ -231,6 +244,22 @@ export interface Ops {
   };
   /** What newSession would find at a path on the runner. Read-only. */
   checkFolder: { args: { projectPath: string }; result: FolderCheck };
+  /** Whether a folder is in a git repo, and what New worktree would make there (SPEC §4). Read-only. */
+  workspaceInfo: { args: { projectPath: string }; result: WorkspaceInfo };
+  /**
+   * newSession in a new worktree of the folder's repo (SPEC §4): `git worktree add` beside the repo
+   * on a new branch (`branch`, else tether/<a slug of `name`, or a random one>) from the default
+   * branch; the session runs there, and the repo's setup runs first. Refused outside git, or when
+   * the branch or the folder is taken, or with `terminal` when the repo has a setup (nothing would
+   * wait for it). `expectSetup` (workspaceInfo's setupId of what the dialog showed): refused, with
+   * nothing made, when the base (once fetched) has another setup.
+   */
+  newWorktreeSession: {
+    args: { harness: HarnessId; projectPath: string; model?: string; effort?: string; permissionMode?: string; terminal?: boolean; source?: BillingSource; branch?: string; name?: string; expectSetup?: string };
+    result: WorktreeMade;
+  };
+  /** Runs a worktree session's setup again, after it failed or a restart cut it off (SPEC §4). */
+  rerunSetup: { args: { sessionId: string }; result: null };
   /** The folders inside a folder on the runner (Add project's folder browser). Read-only. */
   listFolders: { args: { path: string }; result: FolderList };
   /**
@@ -261,13 +290,19 @@ export interface Ops {
   steer: { args: { sessionId: string; text: string; attachments?: Attachment[] }; result: null };
   /**
    * Queues a message to go out after the running turn, one per turn (SPEC §9). On an idle session
-   * whose queue isn't held, it goes out now.
+   * whose queue isn't held, it goes out now. `at` (ms, UTC): scheduled, it goes at that time
+   * instead (SPEC §9 Scheduled sends).
    */
-  queue: { args: { sessionId: string; text: string; attachments?: Attachment[] }; result: { id: string } };
-  /** Changes a waiting message's text (its attachments stay). */
-  editQueued: { args: { sessionId: string; id: string; text: string }; result: null };
+  queue: { args: { sessionId: string; text: string; attachments?: Attachment[]; at?: number }; result: { id: string } };
+  /**
+   * A waiting message's time: `at` (ms, UTC) schedules it (or gives a scheduled one a new time);
+   * null sends it now (as soon as the session is free, ahead of the rest of the queue; `asap`).
+   */
+  scheduleQueued: { args: { sessionId: string; id: string; at: number | null }; result: null };
+  /** Changes a waiting message's text (its attachments stay); `at`: a scheduled message's new time with it, in one change. */
+  editQueued: { args: { sessionId: string; id: string; text: string; at?: number }; result: null };
   cancelQueued: { args: { sessionId: string; id: string }; result: null };
-  /** Moves a waiting message to position `to` (0 goes next). */
+  /** Moves a waiting message to position `to` among the unscheduled ones (0 goes next). */
   moveQueued: { args: { sessionId: string; id: string; to: number }; result: null };
   /** Releases a held queue: the next message goes out when the session is idle. */
   resumeQueue: { args: { sessionId: string }; result: null };

@@ -20,6 +20,7 @@ import { ArchiveDoneButton, ArchiveDoneResult, useArchiveDone, useHomeRunner } f
 import { HomeChat } from "./HomeChat";
 import { RunnerDot, runnerStatus } from "./RunnerStatus";
 import { useNow } from "./useNow";
+import { whenLabel } from "../schedule";
 
 export function Home() {
   const runners = useStore((s) => s.runners);
@@ -60,7 +61,7 @@ export function Home() {
   );
 }
 
-const KIND_LABEL: Record<InboxKind, string> = { needs: "Needs you", failed: "Failed", finished: "Finished", working: "Working" };
+const KIND_LABEL: Record<InboxKind, string> = { needs: "Needs you", failed: "Failed", finished: "Finished", working: "Working", scheduled: "Scheduled" };
 
 /** One ranked list of what needs you, across runners (SPEC §10). */
 function Inbox() {
@@ -99,6 +100,7 @@ function Inbox() {
                   <span>· {shortAgo(r.updatedAt, now)}</span>
                   {r.inbox === "needs" && (r.requests ?? 0) > 1 && <span>· {r.requests} requests</span>}
                   {(r.queued ?? 0) > 0 && <span>· {r.queued} queued{r.queuePaused ? ", paused" : ""}</span>}
+                  {r.scheduledAt !== undefined && <span>· Scheduled {whenLabel(r.scheduledAt, now).replace(/^at /, "")}</span>}
                 </span>
                 {r.inbox === "failed" && r.failure && <span className="t-inbox-why">{r.failure}</span>}
               </button>

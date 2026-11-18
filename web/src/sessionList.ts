@@ -38,6 +38,63 @@ export function recentSessions(summaries: Record<string, SummaryState>, query = 
     .sort(newestFirst);
 }
 
+/**
+ * The Sidebar's Pinned group and the rest (Recent): pinned main sessions in the order they were
+ * pinned, across runners. An archived one is never pinned (archiving unpins).
+ */
+export function splitPinned(list: Row[]): { pinned: Row[]; rest: Row[] } {
+  // Each runner stamps its own pins: across runners the order is as good as their clocks.
+  const isPinned = (r: Row) => !!r.pinned && !r.archived && listed(r);
+  const pinned = list.filter(isPinned).sort((a, b) => a.pinned! - b.pinned! || a.runnerId.localeCompare(b.runnerId) || a.id.localeCompare(b.id));
+  return { pinned, rest: list.filter((r) => !isPinned(r)) };
+}
+
+export interface ProjectGroup {
+  /** the folder (one group per path, across runners) */
+  path: string;
+  /** its short name: the folder's, with as many parent folders as it takes to tell it from the others */
+  label: string;
+  rows: Row[];
+}
+
+/**
+ * Recent, by project: one group per folder, in the order of each group's newest session (`list`
+ * comes newest first, so a page of it groups the same way), sessions newest first within.
+ */
+export function groupByProject(list: Row[]): ProjectGroup[] {
+  const by = new Map<string, Row[]>();
+  for (const r of [...list].sort(newestFirst)) {
+    const key = r.projectPath.replace(/(.)\/+$/, "$1");
+    const g = by.get(key);
+    if (g) g.push(r);
+    else by.set(key, [r]);
+  }
+  const groups = [...by].map(([path, rows]) => ({ path, parts: path.split("/").filter(Boolean), depth: 1, label: "", rows }));
+  const tail = (g: (typeof groups)[number]) => g.parts.slice(-g.depth).join("/") || g.path;
+  // Same-named folders take one more parent each round, until every label differs (or a path runs out).
+  for (;;) {
+    for (const g of groups) g.label = tail(g);
+    const count = new Map<string, number>();
+    for (const g of groups) count.set(g.label, (count.get(g.label) ?? 0) + 1);
+    const clash = groups.filter((g) => count.get(g.label)! > 1 && g.depth < g.parts.length);
+    if (!clash.length) break;
+    for (const g of clash) g.depth++;
+  }
+  return groups.map(({ path, label, rows }) => ({ path, label, rows }));
+}
+
+/** Recent's groups, or none where the list stays flat: search results and a project's list. */
+export const recentGroups = (list: Row[], o: { query?: string; filter?: string }): ProjectGroup[] | undefined => (o.query?.trim() || o.filter ? undefined : groupByProject(list));
+
+/**
+ * The session menu's pin item: "Pin" or "Unpin", or none where pinning isn't offered (a runner from
+ * before pinSession, an archived session, a subagent, a side chat, a Home agent chat).
+ */
+export function pinMenuLabel(runnerId: string, s: SessionSummary, canPin: boolean): "Pin" | "Unpin" | undefined {
+  if (!canPin || s.archived || !listed(s) || isHomeChat(runnerId, s.projectPath)) return undefined;
+  return s.pinned ? "Unpin" : "Pin";
+}
+
 /** A session's subagents that the summaries know (live ones, mostly), newest first. */
 export function childrenOf(summaries: Record<string, SummaryState>, runnerId: string, sessionId: string): Row[] {
   return rows(summaries)
@@ -102,25 +159,27 @@ export function mergeRows(a: Row[], b: Row[]): Row[] {
 /** The last part of a path: "/home/me/web" -> "web". */
 export const folderName = (path: string) => path.replace(/\/+$/, "").split("/").pop() || path;
 
-export type InboxKind = "needs" | "failed" | "finished" | "working";
+export type InboxKind = "needs" | "failed" | "finished" | "working" | "scheduled";
 export interface InboxRow extends Row {
   inbox: InboxKind;
 }
 
 /**
  * Home's inbox (SPEC §10), across runners: what needs you (open requests, a TUI asking), then
- * failed and finished turns nobody has looked at, then what is working. Main sessions only (a
- * subagent's request counts in its parent's).
+ * failed and finished turns nobody has looked at, then what is working, then sessions with a
+ * message scheduled (SPEC §9; never needing you for that). Main sessions only (a subagent's
+ * request counts in its parent's).
  */
 export function inbox(summaries: Record<string, SummaryState>): InboxRow[] {
   const out: InboxRow[] = [];
   for (const r of rows(summaries)) {
-    if (!listed(r)) continue;
+    // A pinned session its runner can't find is only a saved row: never on Home.
+    if (!listed(r) || r.missing) continue;
     const kind: InboxKind | undefined =
-      (r.requests ?? 0) > 0 || r.status === "waiting" || (r.queuePaused && r.status === "idle") ? "needs" : r.unread === "failed" ? "failed" : r.unread === "finished" && !r.backgroundSubagents ? "finished" : r.status === "running" ? "working" : undefined;
+      (r.requests ?? 0) > 0 || r.status === "waiting" || (r.queuePaused && r.status === "idle") ? "needs" : r.unread === "failed" ? "failed" : r.unread === "finished" && !r.backgroundSubagents ? "finished" : r.status === "running" ? "working" : r.scheduledAt !== undefined && !r.archived ? "scheduled" : undefined;
     if (kind) out.push({ ...r, inbox: kind });
   }
-  const rank: Record<InboxKind, number> = { needs: 0, failed: 1, finished: 2, working: 3 };
-  // Waiting longest first; the rest newest first.
-  return out.sort((a, b) => rank[a.inbox] - rank[b.inbox] || (a.inbox === "needs" ? a.updatedAt - b.updatedAt : b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
+  const rank: Record<InboxKind, number> = { needs: 0, failed: 1, finished: 2, working: 3, scheduled: 4 };
+  // Waiting longest first; scheduled soonest first; the rest newest first.
+  return out.sort((a, b) => rank[a.inbox] - rank[b.inbox] || (a.inbox === "needs" ? a.updatedAt - b.updatedAt : a.inbox === "scheduled" ? a.scheduledAt! - b.scheduledAt! : b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
 }

@@ -140,6 +140,8 @@ export interface Msg {
   level?: "info" | "warning" | "error";
   /** notice: when the plan resets (ms), shown in the reader's own time after the text */
   resetsAt?: number;
+  /** notice: a scheduled message went out late; when it was scheduled for (ms; `ts` is when it went) */
+  scheduledFor?: number;
   /** notice: a session it points to ("Open it") */
   link?: { sessionId: string; label: string };
   /** assistant: the turn ended in this error */
@@ -262,6 +264,20 @@ export interface QueuedMessage {
   truncated?: number;
   /** a `!` command's output on its way to the agent: the command, and its card's message id */
   shell?: { command: string; cardId: string };
+  /**
+   * Scheduled (SPEC §9 Scheduled sends): it goes at this time (ms, UTC), apart from the rest of the
+   * queue: it neither waits for the other messages nor holds them. Kept once due, until it goes.
+   */
+  at?: number;
+  /**
+   * A scheduled message that came due but waits for you (Send now, a new time, or cancel): the runner
+   * was off for more than a day after its time (`late`), its send or the turn before it failed, a
+   * Stop came while it was due, a restart cut the turn before it off and didn't continue it, or the
+   * rate limit retry it waited behind was cancelled (`retry`).
+   */
+  held?: "late" | "failed" | "stopped" | "restart" | "retry";
+  /** Send now (`scheduleQueued` with null): due at once, never marked or held late */
+  asap?: true;
 }
 
 export interface TerminalState {
@@ -367,7 +383,12 @@ export interface LiveState {
    * (released when you send, or with Resume). `queueHeldBy` says why.
    */
   queueHeld?: boolean;
-  queueHeldBy?: "terminal" | "stopped" | "restart" | "failed";
+  queueHeldBy?: "terminal" | "stopped" | "restart" | "failed" | "setup";
+  /**
+   * A new worktree's setup (SPEC §4): while it runs, messages queue held ("setup"); when it fails
+   * they stay held until you send something or Resume (Send anyway). Gone once it succeeds.
+   */
+  setup?: "running" | "failed";
   /**
    * Waiting for Claude Code from before a restart (SPEC §4): messages sent now queue, held, and
    * Resume can't release them until this clears.
@@ -410,6 +431,15 @@ export interface SessionSummary {
   billing?: Billing;
   /** Kept out of Recent; still available from session search. */
   archived?: boolean;
+  /**
+   * The session runs in a worktree Tether made for it (New worktree, SPEC §4): that repo's main
+   * checkout, so a list can group it under its project.
+   */
+  worktreeOf?: string;
+  /** When it was pinned (ms): the Sidebar's Pinned group, in this order, listed however old. */
+  pinned?: number;
+  /** A pinned session its harness can't find (now): listed as it was last seen, until someone unpins it. */
+  missing?: boolean;
   /** `${harness}:${nativeId}` */
   id: string;
   harness: HarnessId;
@@ -428,10 +458,15 @@ export interface SessionSummary {
   unread?: "finished" | "failed";
   /** a failed turn's error, with `unread: "failed"` */
   failure?: string;
-  /** messages waiting in its queue */
+  /** messages waiting in its queue (not counting scheduled ones) */
   queued?: number;
-  /** its queue is paused for you (after Stop, a failure or a restart): Home shows it as needing you */
+  /**
+   * its queue is paused for you (after Stop, a failure or a restart), or a scheduled message came
+   * due but waits for you: Home shows it as needing you
+   */
   queuePaused?: boolean;
+  /** the next scheduled message's time (ms): Home shows it, without counting it as needing you */
+  scheduledAt?: number;
   /** LiveState.backgroundSubagents: the session is still working */
   backgroundSubagents?: number;
   /** a subagent: the session that started it, and the tool call that did (SPEC §6a) */

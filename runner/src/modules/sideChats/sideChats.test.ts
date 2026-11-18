@@ -96,6 +96,13 @@ describe("side chats", () => {
     expect((await call("listSessions", { sideOf: "claude:s1" })).sessions).toMatchObject([{ id: sessionId, archived: true }]);
   });
 
+  test("never pinned: it shows under its session", async () => {
+    const { call } = await setup();
+    const { sessionId } = await call("openSideChat", { sessionId: "claude:s1" });
+    await expect(call("pinSession", { sessionId, pinned: true })).rejects.toThrow("side chat can't be pinned");
+    await call("pinSession", { sessionId: "claude:s1", pinned: true });
+  });
+
   test("stays read-only: its mode can't change, and nothing it asks to do is allowed; questions still go to you", async () => {
     const { a, runner, call } = await setup();
     const { sessionId } = await call("openSideChat", { sessionId: "claude:s1" });

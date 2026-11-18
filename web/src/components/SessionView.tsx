@@ -386,7 +386,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             loadCommands={view.capabilities?.commands ? () => rpc(runnerId, "listCommands", { sessionId }).then((r) => (sides ? withBtw(r.commands) : r.commands)) : undefined}
             // `/btw` takes a question, not files: refused with a note, nothing dropped.
             refuse={(text, files) => (files && btwQuestion(text, sides) !== undefined ? BTW_NO_FILES : undefined)}
-            shell={summary.sideOf ? undefined : { folder: summary.projectPath, heldBy: state.restartWait ? "restartWait" : state.queueHeld ? state.queueHeldBy : undefined }}
+            shell={summary.sideOf ? undefined : { folder: summary.projectPath, heldBy: state.restartWait ? "restartWait" : state.setup === "running" ? "setupRunning" : state.setup === "failed" ? "setup" : state.queueHeld ? state.queueHeldBy : undefined }}
             onSend={async (kind, text, list) => {
               // `/btw <question>`: Tether's, never the harness's (SPEC §16a). Whatever the session does.
               const btw = btwQuestion(text, sides);
@@ -398,6 +398,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
               else if (kind === "queue") await rpc(runnerId, "queue", { sessionId, text, ...attachments });
               else await rpc(runnerId, "send", { sessionId, text, ...attachments, ...(kind === "stopSend" ? { stop: true } : {}) });
             }}
+            // Send later (SPEC §9 Scheduled sends): it waits in the queue for its time.
+            onSchedule={async (at, text, list) => void (await rpc(runnerId, "queue", { sessionId, text, at, ...(list.length ? { attachments: list } : {}) }))}
             // In the terminal a message waits in the queue (its own row): no pending copy.
             sendNow={inTerminal ? undefined : (kind, text, list) => {
               const btw = btwQuestion(text, sides);

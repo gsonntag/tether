@@ -8,7 +8,7 @@ import { stat } from "node:fs/promises";
 import type { Adapter, Driver, QuitStep, ScreenRead, StartOpts } from "../../core/adapter";
 import { movedDir } from "../../core/moved";
 import { CLAUDE_BIN } from "./bin";
-import { chainContext, keepBilling, keptBilling, keptPlan } from "./context";
+import { chainContext, keepBilling, keptBilling, keptPlan, keptStart } from "./context";
 import { HARNESS_KEYS } from "../../../../shared/credentials";
 import { claudeAuthSettings, claudeLoggedIn, claudeTerminalScripts, prepareClaudeTerminal } from "./credentials";
 import { claudeNeverStarted, claudeProjects, claudeSessionInfo, claudeSessions, claudeStoredMode, claudeSubagents } from "./discovery";
@@ -20,7 +20,7 @@ import { claudeFork } from "./fork";
 import { pinStore, readStore } from "./jsonl";
 import { claudeModels } from "./models";
 import { claudeCommandRoute, claudeCommands } from "./commands";
-import { sessionFile, splitNative, storedSubagents } from "./paths";
+import { projectsDir, sessionFile, splitNative, storedSubagents } from "./paths";
 import { hookSettings } from "../../terminal/hooks";
 import { claudeTools, setClaudeSetup } from "./setup";
 
@@ -191,6 +191,8 @@ export const claudeAdapter: Adapter = {
   },
   readHistory,
   planUsage: async () => keptPlan(),
+  usageStores: () => [{ dir: projectsDir() }],
+  latestStart: (nativeId) => keptStart(splitNative(nativeId).session),
   storedBilling: async (nativeId) => keptBilling(splitNative(nativeId).session),
   async storedContext(nativeId, projectPath) {
     const { session, agent } = splitNative(nativeId);

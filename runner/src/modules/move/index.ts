@@ -2,6 +2,7 @@
 // old one left as it is, each pointing at the other. Knows no harness: sources export and targets
 // import through shared/move.ts, and capabilities say which route a target has.
 
+import { unscheduled } from "../../../../shared/schedule";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { parseSessionId } from "../../../../shared/ids";
@@ -26,7 +27,8 @@ export function refusal(s: SessionLook): string | undefined {
   if (s.state.mode === "terminal" || s.state.terminal) return "Close the terminal first.";
   if (s.state.requests.length || s.requests.length) return "Answer the open request first.";
   if (s.status !== "idle") return "Wait for the turn to end, or stop it.";
-  if (s.state.queue.length) return "Send or cancel the waiting messages first.";
+  // Scheduled messages move with it (Mover.move); the others must go first.
+  if (unscheduled(s.state.queue).length) return "Send or cancel the waiting messages first.";
   if (s.busy) return "Wait for what's running in this session to finish.";
   return undefined;
 }
@@ -223,6 +225,8 @@ export class Mover {
       await this.ctx.sessions.notice(id, notice(`n-moved-to-${moved.sessionId}`, movedTo(name(target, source)), moved.sessionId));
       // Its side chats (SPEC §16a) go under the session it went on in (on their own harness, as they were).
       this.ctx.sessions.moveSides?.(id, moved.sessionId);
+      // Messages scheduled here go on from the new session (SPEC §9).
+      await this.ctx.sessions.handOverQueue(id, moved.sessionId).catch((e) => this.ctx.log(`${id}: its scheduled messages stayed: ${(e as Error).message}`));
       this.ctx.log(`moved ${id} to ${moved.sessionId}: ${moved.kept} of ${moved.total} messages in context`);
       return { sessionId: moved.sessionId };
     } finally {

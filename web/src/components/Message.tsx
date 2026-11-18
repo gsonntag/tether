@@ -1,6 +1,7 @@
 // One transcript message: a user prompt, an assistant reply (markdown, thinking, tool cards), or a
 // quiet notice. Parts cut short to travel get "Show all", which loads them whole (fullPart).
 
+import { clock, whenLabel } from "../schedule";
 import { memo, useMemo } from "react";
 import { imageSize } from "../imageSize";
 import { Icon } from "@astryxdesign/core/Icon";
@@ -164,6 +165,7 @@ export const Message = memo(function Message({ msg, failed, forkable }: { msg: M
             text
           )}
           {msg.resetsAt && ` Plan resets ${resetTime(msg.resetsAt)}.`}
+          {msg.scheduledFor && ` It was for ${whenLabel(msg.scheduledFor, msg.ts).replace(/^at /, "")}; sent at ${clock(msg.ts)}.`}
           {msg.link && (
             <>
               {" "}

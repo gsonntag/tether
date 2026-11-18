@@ -1,6 +1,7 @@
 // A `!` command you ran from the composer (SPEC §9 Shell commands): the command, its output as it
 // streams, how it ended, and where the output is on its way to the agent:
 //   Running ──► Waiting in queue ──► Sent to Claude        (or Not sent, with why)
+// A new worktree's setup (SPEC §4) is one too, whose output stays here: Running ──► Setup done (or failed).
 
 import { useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
@@ -10,6 +11,7 @@ import { StopIcon } from "@heroicons/react/24/outline";
 import { formatSize } from "../../../shared/attachments";
 import { endedHow } from "../../../shared/shellRun";
 import { agentOf, type LiveState, type Msg, type ToolPart } from "../../../shared/transcript";
+import { SETUP_MAX_MS } from "../../../shared/worktree";
 import { rpc } from "../connection";
 import { useStore, viewKey } from "../store";
 import { useSessionCtx } from "./sessionContext";
@@ -19,6 +21,7 @@ const HELD: Record<NonNullable<LiveState["queueHeldBy"]>, string> = {
   stopped: "paused after Stop",
   failed: "paused after a failed turn",
   restart: "paused after a restart",
+  setup: "held for the worktree's setup",
 };
 
 export function ShellCard({ msg }: { msg: Msg }) {
@@ -36,6 +39,14 @@ export function ShellCard({ msg }: { msg: Msg }) {
     return st.queueHeldBy ? HELD[st.queueHeldBy] : "paused";
   });
   const busy = useStore((s) => run.state === "queued" && (s.views[viewKey(runnerId, sessionId)]?.state?.status ?? "idle") !== "idle");
+  // The newest setup card of a session whose setup failed (or a restart cut off) offers the ways on.
+  const setupFailed = useStore((s) => {
+    if (!run.setup) return false;
+    const v = s.views[viewKey(runnerId, sessionId)];
+    if (v?.state?.setup !== "failed") return false;
+    const last = [...(v.window?.messages ?? [])].reverse().find((m) => m.shell?.setup);
+    return last?.id === msg.id;
+  });
   const out = useRef<HTMLPreElement>(null);
   const follow = useRef(true);
   const output = tool?.output ?? "";
@@ -44,6 +55,24 @@ export function ShellCard({ msg }: { msg: Msg }) {
     const el = out.current;
     if (el && follow.current) el.scrollTop = el.scrollHeight;
   }, [output]);
+
+  /** a Re-run setup or Send anyway on its way: the buttons wait for it */
+  const [acting, setActing] = useState(false);
+  const actingNow = useRef(false);
+  const act = async (f: () => Promise<unknown>) => {
+    if (actingNow.current) return;
+    actingNow.current = true;
+    setActing(true);
+    setError(undefined);
+    try {
+      await f();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      actingNow.current = false;
+      setActing(false);
+    }
+  };
 
   const stop = async () => {
     setError(undefined);
@@ -59,8 +88,13 @@ export function ShellCard({ msg }: { msg: Msg }) {
   const running = run.state === "running";
   const ended = running ? undefined : endedHow(run);
   const failed = !running && (run.stopped || run.cutOff || !!run.signal || (run.exitCode ?? 0) !== 0);
-  const where =
-    run.state === "running"
+  const where = run.setup
+    ? running
+      ? `Setting up the new worktree (at most ${SETUP_MAX_MS / 60_000} min) · your first message waits for it`
+      : failed
+        ? "Setup failed · what you send waits until you choose Send anyway"
+        : "Setup done"
+    : run.state === "running"
       ? `Running · the output goes to ${agent} when it finishes`
       : run.state === "queued"
         ? `Waiting in queue · goes to ${agent} ${held ? `(${held})` : busy ? "when this turn ends" : "next"}`
@@ -72,7 +106,7 @@ export function ShellCard({ msg }: { msg: Msg }) {
     <div className="t-msg shellrun" data-state={run.state}>
       <div className={`t-shellcard${failed ? " failed" : ""}`}>
         <div className="t-shellcard-head">
-          <span className="t-shellcard-who">You ran</span>
+          <span className="t-shellcard-who">{run.setup ? "Worktree setup" : "You ran"}</span>
           <code className="t-shellcard-cmd" title={tool?.command}>
             <span aria-hidden>$ </span>
             {tool?.command}
@@ -104,7 +138,7 @@ export function ShellCard({ msg }: { msg: Msg }) {
         )}
         {(run.omitted ?? 0) > 0 && !running && (
           <div className="t-shellcard-note">
-            {formatSize(run.bytes ?? 0)} of output; the middle {formatSize(run.omitted!)} isn't kept. {agent} gets the start and the end.
+            {formatSize(run.bytes ?? 0)} of output; the middle {formatSize(run.omitted!)} isn't kept.{run.setup ? "" : ` ${agent} gets the start and the end.`}
           </div>
         )}
         {error && <div className="t-inline-status error">{error}</div>}
@@ -112,6 +146,12 @@ export function ShellCard({ msg }: { msg: Msg }) {
           {run.state === "queued" && <Spinner size="sm" />}
           {where}
         </div>
+        {setupFailed && (
+          <div className="t-shellcard-actions">
+            <Button label="Re-run setup" size="sm" variant="secondary" isDisabled={acting} onClick={() => void act(() => rpc(runnerId, "rerunSetup", { sessionId }))} />
+            <Button label="Send anyway" size="sm" variant="secondary" isDisabled={acting} onClick={() => void act(() => rpc(runnerId, "resumeQueue", { sessionId }))} />
+          </div>
+        )}
       </div>
     </div>
   );

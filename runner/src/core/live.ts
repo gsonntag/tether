@@ -38,6 +38,8 @@ export const IDLE_CLOSE_MS = 5 * 60_000;
 
 /** What the quiet wait after a restart shows (SPEC §4). */
 const WAITING_TEXT = "Waiting for Claude Code from before the restart to finish…";
+const SETUP_TEXT = "The worktree's setup is still running.";
+const SETUP_FAILED_TEXT = "The worktree's setup failed.";
 const notice = (text: string, level: Msg["level"] = "info"): Msg => ({ id: `n-${randomUUID()}`, role: "notice", level, ts: Date.now(), parts: [{ type: "text", text }] });
 
 /**
@@ -133,7 +135,11 @@ export class LiveControl {
       tell: (id, text) => this.tell(id, text),
       beforePlan: (id) => core.o.prefs.get(id).beforePlan,
     });
-    this.queue = new MessageQueue(core, { send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }), waiting: (id) => this.restartWaits.has(id) });
+    this.queue = new MessageQueue(core, {
+      send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }),
+      waiting: (id) => this.restartWaits.has(id),
+      settingUp: (id) => core.sessions.get(id)?.state.setup === "running",
+    });
     this.read = new ReadState(core);
     this.commands = new Commands({ core, models: (s) => this.listModels(s.summary.harness, s.id), setModel: (id, m) => this.setModel(id, m), setEffort: (id, e) => this.setEffort(id, e), status: (s, st) => this.status(s, st) });
     this.attachments = new AttachmentStore(opts.attachmentsDir ?? "/nonexistent-tether-attachments");
@@ -168,12 +174,13 @@ export class LiveControl {
    * which listeners (peers, Home agent, texting) skipped: its real end is now, as a stop. A Tether
    * send that replaces the chain neither holds the queue nor ends the turn: its own turn's end does.
    */
-  private cancelRetrySession(s: Session, o: { tether?: boolean } = {}) {
+  private cancelRetrySession(s: Session, o: { tether?: boolean; due?: "stopped" } = {}) {
     const waiting = (s.retry ?? this.core.o.prefs.get(s.id).retry)?.phase === "waiting";
     s.retrySuppressed = true;
     this.retries.clear(s);
     if (o.tether) return;
-    this.queue.hold(s, "stopped");
+    // Scheduled messages due behind the retry wait for you: you stopped it, or it was cancelled.
+    this.queue.hold(s, "stopped", { due: o.due ?? "retry" });
     if (waiting) this.core.o.bus.emit("turnEnded", { sessionId: s.id, stopped: true });
   }
 
@@ -292,6 +299,12 @@ export class LiveControl {
     // the queue held before; it goes on once the wait ends.
     if (!o.continued && this.restartWaits.has(id)) {
       if (o.queued) throw new Error(WAITING_TEXT);
+      return void (await this.queue.add(id, text, attachments));
+    }
+    // A new worktree's setup runs, or failed (SPEC §4): nothing goes before it's done, or you say
+    // Send anyway (Resume); what you send waits, held.
+    if (!o.continued && s.state.setup) {
+      if (o.queued) throw new Error(s.state.setup === "running" ? SETUP_TEXT : SETUP_FAILED_TEXT);
       return void (await this.queue.add(id, text, attachments));
     }
     if (o.stop && (s.state.status !== "idle" || s.sending)) {
@@ -481,12 +494,13 @@ export class LiveControl {
 
   private async replaceWith(s: Session, n: Session) {
     const prefs = this.core.o.prefs;
-    const { title } = prefs.get(s.id);
+    const { title, pinned, pinnedRow } = prefs.get(s.id);
     const kept = this.keptPrefs(s);
-    prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...kept });
+    // The pin goes with the conversation: the new thread takes the old one's place in Pinned.
+    prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
     const { forkedFrom, ...state } = kept;
     n.setState(state);
-    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
+    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
     this.core.moveSides(s.id, n.id);
     prefs.flush();
     s.movedTo = n.id;
@@ -494,6 +508,8 @@ export class LiveControl {
     this.core.touch(n, { title: title ?? s.summary.title, ...(forkedFrom ? { forkedFrom } : {}) });
     this.core.book.upsert([n.summary]);
     this.carryCost(s, n);
+    // What waits (scheduled messages too) goes on in the new thread, where the views go.
+    await this.queue.handOver(s.id, n.id).catch((e) => this.core.log(`${s.id}: its queue stayed: ${e?.message ?? e}`));
     await this.close(s, true);
     s.setState({ continuedIn: n.id, carried: true, nextBilling: undefined, sourceSwitchFailed: undefined });
   }
@@ -529,7 +545,8 @@ export class LiveControl {
       const { nativeId, opts } = await a.renew!(folder, { ...(credential ? { credential } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) });
       const n = this.core.create(s.summary.harness, nativeId, folder, opts);
       const kept = this.keptPrefs(s);
-      this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...kept });
+      const { pinned, pinnedRow } = this.core.o.prefs.get(s.id);
+      this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
       const { forkedFrom, ...state } = kept;
       n.setState(state);
       this.core.touch(n, forkedFrom ? { forkedFrom } : {});
@@ -541,7 +558,7 @@ export class LiveControl {
         throw e;
       }
       s.movedTo = n.id;
-      this.core.o.prefs.set(s.id, { blank: undefined, movedTo: n.id });
+      this.core.o.prefs.set(s.id, { blank: undefined, movedTo: n.id, pinned: undefined, pinnedRow: undefined });
       this.core.moveSides(s.id, n.id);
       return n;
     } finally {
@@ -696,7 +713,7 @@ export class LiveControl {
 
   async interrupt(id: string) {
     const s = await this.core.open(id);
-    if (s.retry) this.cancelRetrySession(s);
+    if (s.retry) this.cancelRetrySession(s, { due: "stopped" });
     const parentId = s.summary.parentSessionId;
     if (parentId) {
       // A subagent: stop just it (SPEC §6a). Its main session's process runs it, however deep it is nested.
@@ -870,7 +887,7 @@ export class LiveControl {
       if (!quiet) {
         this.read.set(id, { failure: "Couldn't tell whether Claude Code from before the restart was still working." });
         s.apply({ type: "msg", msg: notice("Couldn't tell whether Claude Code from before the restart was still working. Send a message to carry on.", "warning") });
-        this.queue.hold(s, "restart");
+        this.queue.hold(s, "restart", { due: "restart" });
         return this.endWait(s);
       }
       await this.terminal?.settled(s);
@@ -925,7 +942,7 @@ export class LiveControl {
     if (s) {
       // One notice: a failed start already said why in the transcript.
       if (!s.state.error) s.apply({ type: "msg", msg: notice(`Couldn't continue after the restart: ${why}. Send a message to continue.`, "warning") });
-      this.queue.hold(s, "restart");
+      this.queue.hold(s, "restart", { due: "restart" });
       this.core.touch(s);
     }
   }
@@ -1001,6 +1018,7 @@ export class LiveControl {
     // What's open now is asked again after the restart: it stays saved.
     this.stopping = true;
     this.retries.stop();
+    this.queue.stop();
     this.desk.broker.freeze();
     await Promise.all([...this.core.sessions.values()].filter((s) => s.driver).map((s) => this.close(s)));
   }
@@ -1245,6 +1263,9 @@ export class LiveControl {
     s.starting ??= this.startDriver(s, observe).finally(() => {
       s.starting = undefined;
       this.core.scheduleEvict(s);
+      // A queue let go while it started (a worktree's setup ended, Resume), or a scheduled message
+      // that came due meanwhile, couldn't drain then (drain decides what may go).
+      if (s.state.queue.length) this.queue.later(s.id);
     });
     return s.starting;
   }

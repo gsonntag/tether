@@ -9,15 +9,30 @@ import { CLAUDE_UNSET, type HarnessCapabilities, type HarnessId, type LiveState,
 import { rpc } from "../connection";
 import { forkSession, useForking } from "../fork";
 import { openSession } from "../route";
-import { failedSend, loadModels, modelListKey, setArchived, useStore } from "../store";
+import { canPin } from "../runners";
+import { pinMenuLabel } from "../sessionList";
+import { failedSend, loadModels, modelListKey, setArchived, setPinned, useStore } from "../store";
 import { focusComposerOf } from "./SessionView";
 import { azureDeployments, DeploymentPicker, SourcePicker } from "./SourcePicker";
 
-/** The session's menu, in the header: Fork (SPEC §16), Change session harness and its dialog (SPEC §15), Archive. */
+/** The session's menu, in the header: Side chat, Fork (SPEC §16), Change session harness and its dialog (SPEC §15), Pin, Archive. */
 export function SessionMenu({ runnerId, session, state, canMove, canFork, onSideChat }: { runnerId: string; session: SessionSummary; state: LiveState; canMove: boolean; canFork?: boolean; onSideChat?: () => void }) {
   const [open, setOpen] = useState(false);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const forking = useForking(session.id);
+  const [pinBusy, setPinBusy] = useState(false);
+  const pinLabel = pinMenuLabel(runnerId, session, useStore((s) => canPin(s.runners, runnerId)));
+  const pin = async () => {
+    if (pinBusy) return;
+    setPinBusy(true);
+    try {
+      await setPinned(runnerId, session.id, !session.pinned);
+    } catch (e) {
+      failedSend(runnerId, session.id, `${session.pinned ? "Unpin" : "Pin"} failed: ${(e as Error).message}`);
+    } finally {
+      setPinBusy(false);
+    }
+  };
   const archive = async () => {
     if (archiveBusy) return;
     setArchiveBusy(true);
@@ -42,6 +57,7 @@ export function SessionMenu({ runnerId, session, state, canMove, canFork, onSide
         {onSideChat && <DropdownMenuItem label="Side chat" onClick={onSideChat} />}
         {canFork && <DropdownMenuItem label={forking ? "Forking…" : "Fork"} isDisabled={forking} onClick={() => void forkSession(runnerId, session.id)} />}
         {canMove && <DropdownMenuItem label="Change session harness" onClick={() => setOpen(true)} />}
+        {pinLabel && <DropdownMenuItem label={pinLabel} isDisabled={pinBusy} onClick={() => void pin()} />}
         <DropdownMenuItem label={session.archived ? "Unarchive" : "Archive"} isDisabled={archiveBusy} onClick={() => void archive()} />
       </DropdownMenu>
       {open && <MoveDialog runnerId={runnerId} session={session} state={state} onClose={() => setOpen(false)} />}

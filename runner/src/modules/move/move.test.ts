@@ -179,6 +179,18 @@ describe("N-way: three harnesses, every direction, one code path", () => {
     expect(first.link?.sessionId).toBe("pi:s1");
   });
 
+  test("a message scheduled there goes on from the new session (SPEC §9)", async () => {
+    const pi = a();
+    const omp = b();
+    const { mover, runner } = setup([pi, omp]);
+    pi.stored_("s1", convo);
+    const at = Date.now() + 60 * 60 * 1000;
+    await runner.live.queue.add("pi:s1", "later", [], { at });
+    const r = await mover.move("pi:s1", "omp", {});
+    expect((await runner.core.open(r.sessionId)).state.queue.map((m) => [m.text, m.at])).toEqual([["later", at]]);
+    expect((await runner.core.open("pi:s1")).state.queue).toEqual([]);
+  });
+
   test("a native import that fails falls back to the file; the agent still gets it all", async () => {
     const pi = a();
     const omp = b();
@@ -363,6 +375,7 @@ describe("what stops a move", () => {
     expect(refusal(look({ state: { terminal: { kind: "shared" } } }))).toContain("terminal");
   });
   test("waiting messages", () => expect(refusal(look({ state: { queue: [{}] } }))).toContain("waiting"));
+  test("a scheduled message moves with it", () => expect(refusal(look({ state: { queue: [{ at: Date.now() + 60_000 }] } }))).toBeUndefined());
   test("a subagent", () => expect(refusal(look({ summary: { parentSessionId: "x" } }))).toContain("main session"));
   test("the op says so and makes nothing", async () => {
     const pi = new Neutral("pi", true);

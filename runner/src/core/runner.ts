@@ -23,9 +23,9 @@ import { OpRegistry } from "./ops";
 import { NoticeStore } from "./notices";
 import { Prefs } from "./prefs";
 import { readRunnerSettingsFrom } from "./runnerSettings";
-import { cleanRunnerName } from "../config";
+import { cleanRunnerName, type WorktreeRecord } from "../config";
 import { registerSessionOps } from "./sessionOps";
-import { registerShellOps, ShellRuns } from "./shellRuns";
+import { registerShellOps, ShellRuns, type SetupRun } from "./shellRuns";
 import type { Session } from "./session";
 import { chosenOf, SessionCore } from "./sessions";
 import type { SpawnPty } from "../terminal/attach";
@@ -90,6 +90,7 @@ export function createRunner(o: RunnerOptions) {
     protocol: PROTOCOL_VERSION,
     harnesses: await harnesses,
     ...(o.homeFolder ? { homeFolder: o.homeFolder } : {}),
+    pinning: true,
   });
 
   const conn = new Connection({
@@ -211,6 +212,8 @@ export function createRunner(o: RunnerOptions) {
       loaded: () => [...core.sessions.values()].map(lookAt),
       viewersOf: (id: string) => live.read.viewersOf(id),
       homeFolder: o.homeFolder,
+      apiCost: (id: string) => (costs.has(id) ? costs.get(id) : undefined),
+      hiddenFolder: (path: string) => core.hidden(path),
       announceHomeChat: (u: HomeChatUpdate) => void conn.send({ t: "homeChat", ...u }),
       sessions: {
         adapters: () => o.adapters ?? [],
@@ -260,10 +263,11 @@ export function createRunner(o: RunnerOptions) {
         moveSides: (from: string, to: string) => core.moveSides(from, to),
         projects: () => core.listProjects(),
         // Side chats (SPEC §16a) aren't in the lists: they show under their session.
-        list: () => core.book.list().filter((r) => !r.sideOf),
+        list: () => core.listed().filter((r) => !r.sideOf),
         archived: async () => (await core.listSessions({ archived: true, limit: 2000 })).sessions,
         folder: (path: string) => core.folder(path),
         queue: (id: string, text: string, attachments: Attachment[] = []) => (live.attachments.markUsed(attachments), live.queue.add(id, text, attachments)),
+        handOverQueue: (from: string, to: string) => live.queue.handOver(from, to),
         recent: async (id: string, limit: number) => {
           const s = await core.open(id);
           return (await core.load(s)).newest(limit).messages;
@@ -276,6 +280,24 @@ export function createRunner(o: RunnerOptions) {
         },
         interrupt: (id: string) => live.interrupt(id),
         setArchived: async (id: string, archived: boolean) => core.setArchived(await core.open(id), archived),
+        setWorktree: async (id: string, worktree: WorktreeRecord) => core.setWorktree(await core.open(id), worktree),
+        worktree: (id: string) => prefs.get(id).worktree,
+        setup: async (id: string, command: string, { beforeRelease, ...run }: Omit<SetupRun, "done"> & { beforeRelease?: () => void | Promise<void> } = {}) => {
+          const s = await core.open(id);
+          live.queue.setupStarted(s);
+          let settle!: (v: { ok: boolean; why: string }) => void;
+          const done = new Promise<{ ok: boolean; why: string }>((r) => (settle = r));
+          const end = async (ok: boolean, why: string) => {
+            // What the setup left, taken before anything waiting can reach the agent (the gate holds until then).
+            await Promise.resolve(beforeRelease?.()).catch(() => {});
+            live.queue.setupEnded(s, ok);
+            // Home shows it as needing you, whether or not anything waits.
+            if (!ok) live.read.set(s.id, { failure: `${why} What you send waits: re-run the setup, or send anyway.` });
+            settle({ ok, why });
+          };
+          await shellRuns.run(id, command, { ...run, done: (ok, why) => void end(ok, why) }).catch((e) => end(false, `The worktree's setup couldn't start: ${(e as Error).message}`));
+          return { done };
+        },
         notice: async (id: string, msg: Msg, where: { first?: boolean; after?: string } = {}) => {
           const s = core.sessions.get(id);
           // Not read yet: it joins what the store has when it's read.
@@ -303,6 +325,8 @@ export function createRunner(o: RunnerOptions) {
       await terminal?.start();
       // Queues come back after the sessions that kept running are joined again and the TUIs are
       // readopted (a queue held for a terminal that is gone must not wait for it).
+      // A worktree setup a restart cut off: failed, so what's sent waits for Re-run setup or Send anyway.
+      for (const id of live.queue.setupsCutOff()) live.read.set(id, { failure: "The worktree's setup was cut off by a runner restart. What you send waits: re-run the setup, or send anyway." });
       void rejoined.finally(async () => { await live.restoreRetries(); await live.queue.restore(); });
       conn.start();
     },
