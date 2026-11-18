@@ -25,6 +25,7 @@
 
 import type { HarnessCommand } from "./commands";
 import type { MoveOptions } from "./move";
+import type { WorkspaceInfo, WorktreeMade } from "./worktree";
 import type { Attachment } from "./attachments";
 import type { AzureDeployment, BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
 import type { TokenRates } from "./costs";
@@ -219,6 +220,18 @@ export interface Ops {
   };
   /** What newSession would find at a path on the runner. Read-only. */
   checkFolder: { args: { projectPath: string }; result: FolderCheck };
+  /** Whether a folder is in a git repo, and what New worktree would make there (SPEC §4). Read-only. */
+  workspaceInfo: { args: { projectPath: string }; result: WorkspaceInfo };
+  /**
+   * newSession in a new worktree of the folder's repo (SPEC §4): `git worktree add` beside the repo
+   * on a new branch (`branch`, else tether/<a slug of `name`, or a random one>) from the default
+   * branch; the session runs there, and the repo's setup runs first. Refused outside git, or when
+   * the branch or the folder is taken.
+   */
+  newWorktreeSession: {
+    args: { harness: HarnessId; projectPath: string; model?: string; effort?: string; permissionMode?: string; terminal?: boolean; source?: BillingSource; branch?: string; name?: string };
+    result: WorktreeMade;
+  };
   /** The folders inside a folder on the runner (Add project's folder browser). Read-only. */
   listFolders: { args: { path: string }; result: FolderList };
   /**

@@ -37,6 +37,7 @@ export const IDLE_CLOSE_MS = 5 * 60_000;
 
 /** What the quiet wait after a restart shows (SPEC §4). */
 const WAITING_TEXT = "Waiting for Claude Code from before the restart to finish…";
+const SETUP_TEXT = "The worktree's setup is still running.";
 const notice = (text: string, level: Msg["level"] = "info"): Msg => ({ id: `n-${randomUUID()}`, role: "notice", level, ts: Date.now(), parts: [{ type: "text", text }] });
 
 /**
@@ -132,7 +133,11 @@ export class LiveControl {
       tell: (id, text) => this.tell(id, text),
       beforePlan: (id) => core.o.prefs.get(id).beforePlan,
     });
-    this.queue = new MessageQueue(core, { send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }), waiting: (id) => this.restartWaits.has(id) });
+    this.queue = new MessageQueue(core, {
+      send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }),
+      waiting: (id) => this.restartWaits.has(id),
+      settingUp: (id) => core.sessions.get(id)?.state.setup === "running",
+    });
     this.read = new ReadState(core);
     this.commands = new Commands({ core, models: (s) => this.listModels(s.summary.harness, s.id), setModel: (id, m) => this.setModel(id, m), setEffort: (id, e) => this.setEffort(id, e), status: (s, st) => this.status(s, st) });
     this.attachments = new AttachmentStore(opts.attachmentsDir ?? "/nonexistent-tether-attachments");
@@ -221,6 +226,27 @@ export class LiveControl {
     }
   }
 
+  /** A new worktree's setup started (SPEC §4): sends queue, held ("setup"), until it ends. */
+  setupStarted(s: Session) {
+    s.setState({ setup: "running" });
+    this.core.touch(s);
+  }
+
+  /**
+   * The setup ended. Done: what waited goes now. Failed: it stays held (you send something, or
+   * Resume as Send anyway), and Home shows the session failed.
+   */
+  setupEnded(s: Session, ok: boolean, why = "The worktree's setup failed.") {
+    if (s.state.setup !== "running") return;
+    s.setState({ setup: ok ? undefined : "failed" });
+    if (ok) {
+      if (s.state.queueHeldBy === "setup") this.queue.release(s);
+      this.queue.later(s.id);
+    } else if (s.state.queue.length) this.read.set(s.id, { failure: `${why} Your message waits: fix it, or send it anyway.` });
+    else this.read.set(s.id, { failure: why });
+    this.core.touch(s);
+  }
+
   async newSession(args: { harness: HarnessId; projectPath: string; terminal?: boolean; createFolder?: boolean; source?: BillingSource } & StartOpts, background = false): Promise<{ sessionId: string }> {
     this.core.adapter(args.harness); // throws for a harness this runner can't drive, before anything is made
     if (args.terminal && !this.terminal) throw new Error("This runner has no terminal support (is tmux installed?).");
@@ -290,6 +316,11 @@ export class LiveControl {
     // the queue held before; it goes on once the wait ends.
     if (!o.continued && this.restartWaits.has(id)) {
       if (o.queued) throw new Error(WAITING_TEXT);
+      return void (await this.queue.add(id, text, attachments));
+    }
+    // A new worktree's setup runs (SPEC §4): nothing goes before it's done; what you send waits, held.
+    if (!o.continued && s.state.setup === "running") {
+      if (o.queued) throw new Error(SETUP_TEXT);
       return void (await this.queue.add(id, text, attachments));
     }
     if (o.stop && (s.state.status !== "idle" || s.sending)) {

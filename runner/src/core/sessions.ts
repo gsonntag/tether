@@ -10,6 +10,7 @@ import { accessSync, constants, existsSync, lstatSync, mkdirSync, statSync } fro
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import type { CostLedger } from "../costs";
+import type { SessionPrefs, WorktreeRecord } from "../config";
 import { partChunk, type PartChunk } from "../../../shared/limits";
 import type { FolderCheck, RunnerToServer } from "../../../shared/protocol";
 import { parseSessionId, sessionId } from "../../../shared/ids";
@@ -163,11 +164,11 @@ export class SessionCore {
           const s = this.sessions.get(f.id);
           if (s && !s.live && !s.childRunning) {
             const prefs = this.o.prefs.get(f.id);
-            s.summary = { ...f, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
+            s.summary = { ...f, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...worktreeOf(prefs), ...(s.state.billing ? { billing: s.state.billing } : {}), mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
           }
         }
         this.book.refresh(
-          found.filter((f) => this.shown(f)).map((f) => ({ ...f, ...(this.o.prefs.get(f.id).archived ? { archived: true } : {}) })),
+          found.filter((f) => this.shown(f)).map((f) => ({ ...f, ...(this.o.prefs.get(f.id).archived ? { archived: true } : {}), ...worktreeOf(this.o.prefs.get(f.id)) })),
           (id) => this.owned(id),
           (id) => this.watched.has(id),
         );
@@ -215,7 +216,7 @@ export class SessionCore {
     return list.map((s) => {
       const row = this.owned(s.id) ? this.sessions.get(s.id)!.summary : s;
       const prefs = this.o.prefs.get(row.id);
-      return { ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : { archived: undefined }) };
+      return { ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : { archived: undefined }), ...worktreeOf(prefs) };
     });
   }
 
@@ -270,7 +271,7 @@ export class SessionCore {
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;
-    const s = this.add(new Session({ ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
+    const s = this.add(new Session({ ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...worktreeOf(prefs), mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
     if (blank) {
       // Back as new: the first message starts it (live.ts current). No row until something happens.
       s.transcript = new Transcript(withOverlay([], s.overlay));
@@ -541,6 +542,13 @@ export class SessionCore {
     await this.discover();
   }
 
+  /** Records the worktree Tether made for a session as its own (New worktree, SPEC §4): saved at once. */
+  setWorktree(s: Session, worktree: WorktreeRecord) {
+    this.o.prefs.set(s.id, { projectPath: s.summary.projectPath, worktree });
+    this.o.prefs.flush();
+    this.touch(s);
+  }
+
   /**
    * The session's row changed (status, mode, title, activity): the sidebar hears. `queuePaused` is
    * a queue waiting for you, so neither one the terminal holds nor one the restart wait holds.
@@ -551,10 +559,13 @@ export class SessionCore {
     const n = s.state.requests.length;
     const q = s.state.queue.length;
     const title = this.o.prefs.get(s.id).title;
-    s.summary = { ...rest, ...(s.state.retry ? { retry: s.state.retry } : {}), ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait && !s.retry ? { queuePaused: true } : {}) };
+    s.summary = { ...rest, ...(s.state.retry ? { retry: s.state.retry } : {}), ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...worktreeOf(this.o.prefs.get(s.id)), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait && s.state.setup !== "running" && !s.retry ? { queuePaused: true } : {}) };
     if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
   }
 }
+
+/** A session in a worktree Tether made: the summary names that repo's main checkout. */
+const worktreeOf = (p: SessionPrefs) => (p.worktree?.repo ? { worktreeOf: p.worktree.repo } : {});
 
 /** The settings fields of prefs or defaults, without empty ones. */
 function pick(o: StartOpts): StartOpts {

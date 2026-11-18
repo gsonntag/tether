@@ -34,6 +34,13 @@ export interface RunnerConfig {
 }
 
 /** What Tether keeps for a session: the settings picked for it, applied when it (re)starts. */
+/** A worktree Tether made for a session: its folder (the session's), its branch, and the repo's main checkout. */
+export interface WorktreeRecord {
+  path: string;
+  branch: string;
+  repo: string;
+}
+
 export interface SessionPrefs {
   retry?: SavedRetry;
   /** A title chosen in Tether, kept across harness discovery and process restarts. */
@@ -89,7 +96,9 @@ export interface SessionPrefs {
   /** messages waiting to go out after the running turn (SPEC §9) */
   queue?: QueuedMessage[];
   /** the queue waits until released, and why (LiveState.queueHeldBy) */
-  queueHeldBy?: "terminal" | "stopped" | "restart" | "failed";
+  queueHeldBy?: "terminal" | "stopped" | "restart" | "failed" | "setup";
+  /** the worktree Tether made for this session (New worktree, SPEC §4): Archive done removes it once merged */
+  worktree?: WorktreeRecord;
   /** its TUI was started and hasn't been seen gone; `entries`: the mode entries its store had then (only later ones are that TUI's) */
   tui?: { entries?: number };
   /** a turn ended and nobody has looked since (Home's inbox) */

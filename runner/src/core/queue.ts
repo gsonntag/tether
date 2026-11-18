@@ -3,7 +3,8 @@
 // and changes the same one: edit, reorder, cancel.
 //
 // The queue waits (held) while the harness's TUI drives a handed-off session (released by Back to
-// Tether), after Stop, after a failed turn, and after a turn cut off by a runner restart. Sending a
+// Tether), after Stop, after a failed turn, after a turn cut off by a runner restart, and while a new
+// worktree's setup runs or after it failed (SPEC §4). Sending a
 // message yourself, or Resume, releases it; nothing is ever sent on your behalf while it is held.
 // During the quiet wait after a restart (live.ts autoContinue) it stays held whatever you do: the
 // wait's end releases it.
@@ -27,6 +28,8 @@ export interface QueueHost {
   send(sessionId: string, text: string, attachments: Attachment[]): Promise<void>;
   /** the session is in the quiet wait after a restart: nothing may go out yet */
   waiting(sessionId: string): boolean;
+  /** a new worktree's setup runs (SPEC §4): nothing may go out yet */
+  settingUp?(sessionId: string): boolean;
 }
 
 export class MessageQueue {
@@ -96,7 +99,7 @@ export class MessageQueue {
     this.roomFor(all, text, o.shell ? jsonBytes(o.shell.command) : 0);
     const m: QueuedMessage = { id: randomUUID(), text, ...(attachments.length ? { attachments } : {}), ...(o.shell ? { shell: o.shell } : {}), queuedAt: this.core.now() };
     // Queued while the TUI drives: it waits for Back to Tether. During the quiet wait: for its end.
-    const by = s.state.queueHeld ? undefined : s.state.mode === "terminal" ? "terminal" : this.host.waiting(s.id) ? "restart" : undefined;
+    const by = s.state.queueHeld ? undefined : s.state.mode === "terminal" ? "terminal" : this.host.waiting(s.id) ? "restart" : this.host.settingUp?.(s.id) ? "setup" : undefined;
     this.save(s, [...s.state.queue, m], by);
     this.later(s.id);
     return { id: m.id };
@@ -143,6 +146,7 @@ export class MessageQueue {
     if (s.state.mode === "terminal") throw new Error("The terminal is driving. Go back to Tether to send what waits.");
     if (this.host.waiting(s.id)) throw new Error("Claude Code from before the restart may still be working. What waits goes on once it's finished.");
     if (s.retry) throw new Error("A rate limit retry is waiting. Cancel it or wait for it to finish.");
+    if (this.host.settingUp?.(s.id)) throw new Error("The worktree's setup is still running. What waits goes once it's done.");
     this.release(s);
     this.later(s.id);
   }
@@ -202,7 +206,7 @@ export class MessageQueue {
     if (!s || this.draining.has(id) || !s.state.queue.length || s.state.queueHeld || s.retry || this.core.o.prefs.get(id).retry) return;
     // Background work doesn't hold it: this waits for the turn, and the main agent's is over.
     const busy = s.state.status !== "idle" && !s.driver?.onlyBackground?.();
-    if (s.state.mode === "terminal" || busy || s.sending || s.starting || this.host.waiting(id)) return;
+    if (s.state.mode === "terminal" || busy || s.sending || s.starting || this.host.waiting(id) || this.host.settingUp?.(id)) return;
     const [next, ...rest] = s.state.queue;
     this.draining.add(id);
     // Out of the shown queue at once (every device sees it go), but out of runner.json only once

@@ -21,9 +21,9 @@ import { OpRegistry } from "./ops";
 import { NoticeStore } from "./notices";
 import { Prefs } from "./prefs";
 import { readRunnerSettingsFrom } from "./runnerSettings";
-import { cleanRunnerName } from "../config";
+import { cleanRunnerName, type WorktreeRecord } from "../config";
 import { registerSessionOps } from "./sessionOps";
-import { registerShellOps, ShellRuns } from "./shellRuns";
+import { registerShellOps, ShellRuns, type SetupRun } from "./shellRuns";
 import type { Session } from "./session";
 import { chosenOf, SessionCore } from "./sessions";
 import type { SpawnPty } from "../terminal/attach";
@@ -263,6 +263,20 @@ export function createRunner(o: RunnerOptions) {
         },
         interrupt: (id: string) => live.interrupt(id),
         setArchived: async (id: string, archived: boolean) => core.setArchived(await core.open(id), archived),
+        setWorktree: async (id: string, worktree: WorktreeRecord) => core.setWorktree(await core.open(id), worktree),
+        worktree: (id: string) => prefs.get(id).worktree,
+        setup: async (id: string, command: string, run: Omit<SetupRun, "done"> = {}) => {
+          const s = await core.open(id);
+          live.setupStarted(s);
+          let settle!: (v: { ok: boolean; why: string }) => void;
+          const done = new Promise<{ ok: boolean; why: string }>((r) => (settle = r));
+          const end = (ok: boolean, why: string) => {
+            live.setupEnded(s, ok, why);
+            settle({ ok, why });
+          };
+          await shellRuns.run(id, command, { ...run, done: end }).catch((e) => end(false, `The worktree's setup couldn't start: ${(e as Error).message}`));
+          return { done };
+        },
         notice: async (id: string, msg: Msg, where: { first?: boolean; after?: string } = {}) => {
           const s = core.sessions.get(id);
           // Not read yet: it joins what the store has when it's read.
