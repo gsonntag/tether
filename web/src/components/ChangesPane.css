@@ -49,6 +49,38 @@
   font-weight: var(--font-weight-semibold, 600);
   font-size: 14px;
 }
+/* Changes | Files: the title, as tabs */
+.t-changes-tabs {
+  display: flex;
+  gap: 4px;
+}
+.t-changes-tab {
+  all: unset;
+  box-sizing: border-box;
+  font-size: 14px;
+  padding: 3px 6px;
+  cursor: pointer;
+  color: var(--t-muted);
+  border-bottom: 2px solid transparent;
+  touch-action: manipulation;
+}
+.t-changes-tab[aria-selected="true"] {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold, 600);
+  border-bottom-color: var(--color-accent);
+}
+.t-changes-tab:focus-visible {
+  outline: 2px solid var(--color-accent);
+}
+.t-files-slot {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.t-files-slot[hidden] {
+  display: none;
+}
 .t-changes-scopes {
   display: flex;
   gap: 2px;
