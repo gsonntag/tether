@@ -21,6 +21,11 @@ export interface StartOpts {
   model?: string;
   effort?: string;
   permissionMode?: string;
+  /**
+   * A side chat (SPEC §16a): the harness refuses anything but reading, whatever its mode and the
+   * person's own settings allow. A harness whose read-only mode is enforced by itself needs nothing more.
+   */
+  readOnly?: boolean;
 }
 
 /**

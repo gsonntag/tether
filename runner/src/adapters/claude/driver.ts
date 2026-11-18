@@ -25,6 +25,7 @@ import { claudeAsk, claudeResult } from "./requests";
 import { ClaudeStream } from "./stream";
 import { ClaudeCostCounter } from "./cost";
 import { claudeSetupFor, claudeToolServerFor } from "./setup";
+import { READ_ONLY_PROMPT, readOnlyGate } from "./readOnly";
 
 /** The tool that starts a subagent ("Task" before Claude Code 2.1.x renamed it). */
 const SUBAGENT_TOOLS = "^(Agent|Task)$";
@@ -108,6 +109,7 @@ export class ClaudeDriver implements Driver {
     };
     // Every other session: Tether's MCP server (sessions talking to each other), its tools allowed.
     const tools = extra ? undefined : claudeToolServerFor(this.projectPath, this.nativeId);
+    const append = [extra ? extra.append : tools?.append, opts.readOnly ? READ_ONLY_PROMPT : undefined].filter(Boolean).join("\n\n");
     const allowed = [...(existsSync(movedDir(`claude:${this.nativeId}`)) ? [movedReadRule(this.nativeId)] : []), ...(extra?.allow ?? []), ...(tools?.allow ?? [])];
     this.q = query({
       prompt: this.input,
@@ -130,9 +132,10 @@ export class ClaudeDriver implements Driver {
         settingSources: ["user", "project", "local"],
         settings: claudeAuthSettings(this.lease.helper),
         // Tether's instructions: the Home agent's own, or every other session's (concise replies, texting).
-        systemPrompt: { type: "preset", preset: "claude_code", ...(extra ? { append: extra.append } : tools?.append ? { append: tools.append } : {}) },
+        systemPrompt: { type: "preset", preset: "claude_code", ...(append ? { append } : {}) },
         canUseTool,
-        hooks: { PreToolUse: [{ matcher: SUBAGENT_TOOLS, hooks: [background] }] },
+        // A side chat (SPEC §16a): nothing but reading, whatever the mode and settings allow.
+        hooks: { PreToolUse: [...(opts.readOnly ? [{ hooks: [readOnlyGate] }] : []), { matcher: SUBAGENT_TOOLS, hooks: [background] }] },
         env: claudeEnv(opts.credential),
         pathToClaudeCodeExecutable: CLAUDE_BIN,
         stderr: (data: string) => {

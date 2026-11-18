@@ -72,6 +72,8 @@ describe("side chats", () => {
     expect(runner.core.o.prefs.get(sessionId)).toMatchObject({ sideOf: "claude:s1", permissionMode: "plan" });
     // The question is the person's, sent there; the session itself got nothing.
     expect(a.drivers.find((d) => d.nativeId === "f1")?.sent).toEqual(["What did we say about 7?"]);
+    // Its harness is told to stay read-only (Claude Code: a gate on every tool).
+    expect(a.drivers.find((d) => d.nativeId === "f1")?.opts.readOnly).toBe(true);
     expect(a.drivers.find((d) => d.nativeId === "s1")).toBeUndefined();
     expect(main.state.status).toBe("running");
   });

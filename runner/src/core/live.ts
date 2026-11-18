@@ -1243,7 +1243,8 @@ export class LiveControl {
    */
   chosen(s: Session, observe = false): StartOpts {
     const credential = observe ? undefined : this.credentialFor(s.summary.harness, this.sourceOf(s), this.deploymentOf(s));
-    return { ...chosenOf(this.core.adapter(s.summary.harness), this.core.o.prefs.get(s.id)), ...(credential ? { credential } : {}) };
+    const prefs = this.core.o.prefs.get(s.id);
+    return { ...chosenOf(this.core.adapter(s.summary.harness), prefs), ...(prefs.sideOf ? { readOnly: true } : {}), ...(credential ? { credential } : {}) };
   }
 
   /**
