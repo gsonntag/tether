@@ -24,8 +24,21 @@ export interface CheckpointInfo {
   to?: string;
   /** a restore: that checkpoint's turn number, for its label */
   toN?: number;
-  /** a restore: what it couldn't put back (a folder in the way of a file) */
-  skipped?: string[];
+  /** a restore: the paths it left alone, and why */
+  skipped?: Skipped[];
+  /** a turn: its before snapshot finished well after the turn started, so it may hold the turn's first edits */
+  late?: true;
+}
+
+/**
+ * Why a restore left a path alone: in or is a nested repository; a folder where a file goes; under a
+ * symlink, or a file in its folder's place; couldn't be read; ignored by the restored rules; not
+ * taken in that snapshot (too big, unreadable, or untracked files weren't taken); not a repo path.
+ */
+export type SkipReason = "nested" | "folder" | "symlink" | "blocked" | "unreadable" | "ignored" | "notTaken" | "outside";
+export interface Skipped {
+  path: string;
+  why: SkipReason;
 }
 
 export interface OtherSession {
@@ -42,7 +55,7 @@ export interface CheckpointList {
   checkpoints: CheckpointInfo[];
   /** live sessions in the same repo: a restore changes their files too */
   others: OtherSession[];
-  /** why a restore can't run now (the session is working or has waiting messages) */
+  /** why a restore can't run now (this session or another live one in the repo is working, or it has waiting messages) */
   blocked?: string;
 }
 
@@ -51,6 +64,7 @@ export interface RestoreResult {
   checkpoint: CheckpointInfo;
   written: number;
   removed: number;
+  skipped: Skipped[];
 }
 
 /** Checkpoints kept per session, at most */

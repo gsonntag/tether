@@ -3,6 +3,7 @@
 // snapshots alive in the repo; this keeps their order, times and labels.
 
 import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { CheckpointInfo } from "../../../../shared/checkpoints";
 
@@ -11,6 +12,12 @@ export interface Checkpoint extends CheckpointInfo {
   before: string;
   /** and after (none while open) */
   after?: string;
+  /** untracked paths the before snapshot left out (too big, unreadable): a restore to it never removes them */
+  left?: string[];
+  /** the before snapshot took no untracked file: a restore to it removes none */
+  noUntracked?: true;
+  /** when the before snapshot started (a turn: `at` is when the turn did) */
+  snapAt?: number;
 }
 
 export interface SessionCheckpoints {
@@ -23,10 +30,18 @@ export interface SessionCheckpoints {
   items: Checkpoint[];
 }
 
-/** A session id as one ref name component: letters, digits, `.`, `_` and `-` only. */
+/**
+ * A session id as one ref name component (and file name), one to one: letters, digits and `-` stay,
+ * `_` becomes `__`, any other byte `_XX` (hex). Past 120 characters, the start and a hash of the whole.
+ */
 export function refSafe(sessionId: string): string {
-  const s = sessionId.replace(/[^A-Za-z0-9_-]/g, "-").replace(/^-+/, "");
-  return s.slice(0, 120) || "session";
+  let s = "";
+  for (const b of Buffer.from(sessionId, "utf8")) {
+    const c = String.fromCharCode(b);
+    s += /[A-Za-z0-9-]/.test(c) ? c : c === "_" ? "__" : `_${b.toString(16).toUpperCase().padStart(2, "0")}`;
+  }
+  if (!s) return "_";
+  return s.length <= 120 ? s : `${s.slice(0, 96)}-${createHash("sha256").update(sessionId).digest("hex").slice(0, 20)}`;
 }
 
 export const refName = (sessionId: string, n: number) => `refs/tether/checkpoints/${refSafe(sessionId)}/${n}`;

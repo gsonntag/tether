@@ -7,24 +7,29 @@
 // Ordering. turnStarted comes when the core marks the session running, before it hands the message
 // to the harness; the snapshot starts then, not awaited (a turn never waits on git). The harness
 // needs a model round trip before its first write, so the before snapshot normally holds none of
-// the turn's edits; on a huge repo (a long `add`) the earliest writes could land in it. Each
-// session's jobs run in order, and each repo's one at a time (sessions sharing a repo, restores).
-// A turn the runner restart cut off has no end snapshot: the next turn's start closes it.
+// the turn's edits; one that finished over LATE_MS after the turn started is marked `late` (it may
+// hold the turn's first edits). Each session's jobs run in order. Snapshots in a repo run side by
+// side; a restore has the repo to itself (nothing else snapshots or restores meanwhile), holds its
+// session (what's sent waits in the queue) and is refused while any live session in the repo works.
+// Looking at an open turn snapshots outside both, so it never delays a turn's start. A turn the
+// runner restart cut off has no end snapshot: the next turn's start closes it.
 //
 // Started by the git module (its gitDiff answers the turn scope from here); the core knows nothing
 // of it.
 
 import { join } from "node:path";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync } from "node:fs";
 import { CHECKPOINT_TTL_MS, CHECKPOINTS_MAX, type CheckpointInfo, type CheckpointList, type OtherSession, type RestoreResult } from "../../../../shared/checkpoints";
 import type { GitDiff } from "../../../../shared/gitDiff";
 import type { Msg, SessionSummary } from "../../../../shared/transcript";
 import type { ModuleContext, SessionLook } from "..";
 import { currentBranch, diffRange, repoRoot } from "../git/diff";
-import { changedFiles, commitTree, restoreTree, snapshotTree, treeOf, updateRefs } from "./snap";
+import { changedFiles, commitTree, restoreTo, snapshot, treeOf, updateRefs, type Snap } from "./snap";
 import { CheckpointStore, refName, type Checkpoint, type SessionCheckpoints } from "./store";
 
 const PROMPT_MAX = 140;
+/** A before snapshot done later than this after its turn started is marked late. */
+export const LATE_MS = 2000;
 
 interface Turn {
   at: number;
@@ -33,6 +38,8 @@ interface Turn {
   rec?: Checkpoint;
   /** ended `recovering` (a rate-limit retry follows): the retry continues this turn */
   recovering?: boolean;
+  /** started again after `recovering`: a message that isn't the retried one starts a new turn */
+  resumed?: boolean;
 }
 
 export interface CheckpointsOpts {
@@ -40,19 +47,31 @@ export interface CheckpointsOpts {
   look(id: string): SessionLook | undefined;
   open(id: string): Promise<SessionLook>;
   list(): SessionSummary[];
+  /** holds a session: what's sent to it waits in its queue until the release */
+  hold?(id: string, why: string): () => void;
   log(line: string): void;
   now?: () => number;
 }
 
-const info = ({ before: _b, after: _a, ...rest }: Checkpoint): CheckpointInfo => rest;
+const info = ({ before: _b, after: _a, left: _l, noUntracked: _n, snapAt: _s, ...rest }: Checkpoint): CheckpointInfo => rest;
+const real = (p: string) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+};
 const inside = (root: string, p: string) => p === root || p.startsWith(root.endsWith("/") ? root : `${root}/`);
+const snapOf = (c: Checkpoint, tree: string): Snap => ({ tree, ...(c.left ? { left: c.left } : {}), ...(c.noUntracked ? { noUntracked: true } : {}) });
 
 /** Why a restore can't run now, if it can't. */
-export function blockedWhy(look: SessionLook): string | undefined {
+export function blockedWhy(look: SessionLook, others: OtherSession[] = []): string | undefined {
   if (look.status === "running") return "The session is working. Wait for its turn to finish, or stop it.";
   if (look.status === "waiting") return "The session is waiting on you. Answer it or stop it first.";
-  if (look.busy) return "The session is still running something (a command or a subagent).";
+  if (look.busy || look.background) return "The session is still running something (a command, a subagent or a background task).";
   if (look.state.queue?.length) return "The session has messages waiting to go. Send or cancel them first.";
+  const other = others.find((o) => o.status !== "idle");
+  if (other) return `“${other.title || "Another session"}” in this repository is ${other.status === "waiting" ? "waiting on you" : "working"}. Wait for it first.`;
   return undefined;
 }
 
@@ -60,6 +79,8 @@ export class Checkpoints {
   readonly store: CheckpointStore;
   private tmp: string;
   private chains = new Map<string, Promise<unknown>>();
+  /** per repo: the restore chain, and the snapshots running now */
+  private locks = new Map<string, { excl: Promise<void>; shared: Set<Promise<unknown>> }>();
   private turns = new Map<string, Turn>();
   private now: () => number;
 
@@ -81,6 +102,30 @@ export class Checkpoints {
     return run;
   }
 
+  private lock(root: string) {
+    let l = this.locks.get(root);
+    if (!l) this.locks.set(root, (l = { excl: Promise.resolve(), shared: new Set() }));
+    return l;
+  }
+
+  /** `f` beside other snapshots in the repo, but never during a restore there. */
+  shared<T>(root: string, f: () => Promise<T>): Promise<T> {
+    const l = this.lock(root);
+    const run = l.excl.then(f);
+    l.shared.add(run);
+    void run.then(() => l.shared.delete(run), () => l.shared.delete(run));
+    return run;
+  }
+
+  /** `f` with the repo to itself: after the snapshots running now, before any asked for later. */
+  exclusive<T>(root: string, f: () => Promise<T>): Promise<T> {
+    const l = this.lock(root);
+    const running = [...l.shared];
+    const run = l.excl.then(() => Promise.allSettled(running)).then(f);
+    l.excl = run.then(() => {}, () => {});
+    return run;
+  }
+
   /** Everything queued for a session so far is done (tests, and the list before it answers). */
   settled(sessionId: string): Promise<void> {
     return this.serial(`s:${sessionId}`, async () => {});
@@ -93,11 +138,15 @@ export class Checkpoints {
     const look = this.o.look(sessionId);
     if (!look || look.summary.parentSessionId) return;
     const prev = this.turns.get(sessionId);
-    if (prev?.recovering) return void (prev.recovering = false);
+    if (prev?.recovering) return void Object.assign(prev, { recovering: false, resumed: true });
+    this.startTurn(sessionId, look.summary.projectPath);
+  }
+
+  private startTurn(sessionId: string, path: string): Turn {
     const t: Turn = { at: this.now() };
     this.turns.set(sessionId, t);
-    const path = look.summary.projectPath;
     this.serial(`s:${sessionId}`, () => this.begin(sessionId, path, t)).catch((e) => this.o.log(`${sessionId}: no checkpoint at the turn's start: ${(e as Error).message}`));
+    return t;
   }
 
   turnEnded(sessionId: string, recovering?: boolean) {
@@ -108,13 +157,23 @@ export class Checkpoints {
     this.serial(`s:${sessionId}`, () => this.finish(sessionId, t)).catch((e) => this.o.log(`${sessionId}: no checkpoint at the turn's end: ${(e as Error).message}`));
   }
 
-  /** The turn's first message from the person labels its checkpoint. */
+  /**
+   * The turn's first message from the person labels its checkpoint. After a rate-limit retry
+   * resumed the turn, a different message means something else was sent instead: a new turn.
+   */
   message(sessionId: string, msg: Msg) {
-    const t = this.turns.get(sessionId);
-    if (!t || t.msgId || msg.role !== "user" || msg.origin || msg.localCommand) return;
+    let t = this.turns.get(sessionId);
+    if (!t || msg.role !== "user" || msg.origin || msg.localCommand) return;
     const text = msg.parts.find((p) => p.type === "text")?.text?.trim().replace(/\s+/g, " ");
     if (!text) return;
-    t.prompt = text.length > PROMPT_MAX ? `${text.slice(0, PROMPT_MAX - 1)}…` : text;
+    const prompt = text.length > PROMPT_MAX ? `${text.slice(0, PROMPT_MAX - 1)}…` : text;
+    if (t.msgId) {
+      const look = this.o.look(sessionId);
+      if (!t.resumed || msg.id === t.msgId || prompt === t.prompt || !look) return;
+      this.turnEnded(sessionId);
+      t = this.startTurn(sessionId, look.summary.projectPath);
+    }
+    t.prompt = prompt;
     t.msgId = msg.id;
     if (t.rec) {
       Object.assign(t.rec, { prompt: t.prompt, msgId: t.msgId });
@@ -125,22 +184,42 @@ export class Checkpoints {
 
   // ---------- taking them ----------
 
-  private record(sessionId: string, root: string): SessionCheckpoints {
+  private async record(sessionId: string, root: string): Promise<SessionCheckpoints> {
     const sc = this.store.get(sessionId);
-    // A folder that's now in another repo starts afresh (the old refs go with the TTL prune of that repo… or stay: they're tiny).
-    return sc && sc.root === root ? sc : { sessionId, root, next: sc?.next ?? 1, items: [] };
+    if (sc && sc.root === root) return sc;
+    // The folder is in another repo now: the old repo's refs go, and the list starts afresh.
+    if (sc?.items.length) {
+      const old = sc.root;
+      await this.shared(old, () => updateRefs(old, {}, sc.items.map((c) => refName(sessionId, c.n)))).catch((e) => this.o.log(`${sessionId}: couldn't remove the checkpoints in ${old}: ${(e as Error).message}`));
+    }
+    return { sessionId, root, next: sc?.next ?? 1, items: [] };
   }
 
   private async begin(sessionId: string, path: string, t: Turn) {
     const root = await repoRoot(path).catch(() => undefined);
     if (!root) return;
-    await this.serial(`r:${root}`, async () => {
-      const tree = await snapshotTree(root, this.tmp);
-      const before = await commitTree(root, tree, "Tether checkpoint");
-      const sc = this.record(sessionId, root);
+    const sc = await this.record(sessionId, root);
+    await this.shared(root, async () => {
+      const snapAt = this.now();
+      const snap = await snapshot(root, this.tmp);
+      const late = this.now() - t.at > LATE_MS;
+      const before = await commitTree(root, snap.tree, "Tether checkpoint");
       const last = sc.items.at(-1);
-      if (last?.open) await this.close(root, sessionId, last, tree);
-      const rec: Checkpoint = { id: String(sc.next), n: sc.next, kind: "turn", at: t.at, before, open: true, ...(t.prompt ? { prompt: t.prompt } : {}), ...(t.msgId ? { msgId: t.msgId } : {}) };
+      if (last?.open) await this.close(root, sessionId, last, snap.tree);
+      const rec: Checkpoint = {
+        id: String(sc.next),
+        n: sc.next,
+        kind: "turn",
+        at: t.at,
+        snapAt,
+        before,
+        open: true,
+        ...(late ? { late: true as const } : {}),
+        ...(snap.left ? { left: snap.left } : {}),
+        ...(snap.noUntracked ? { noUntracked: true as const } : {}),
+        ...(t.prompt ? { prompt: t.prompt } : {}),
+        ...(t.msgId ? { msgId: t.msgId } : {}),
+      };
       sc.items.push(rec);
       sc.next++;
       const drop = this.prune(sc);
@@ -154,8 +233,8 @@ export class Checkpoints {
     const rec = t.rec;
     const sc = this.store.get(sessionId);
     if (!rec || !sc || !rec.open) return;
-    await this.serial(`r:${sc.root}`, async () => {
-      await this.close(sc.root, sessionId, rec, await snapshotTree(sc.root, this.tmp));
+    await this.shared(sc.root, async () => {
+      await this.close(sc.root, sessionId, rec, (await snapshot(sc.root, this.tmp)).tree);
       this.store.put(sc);
     });
   }
@@ -188,7 +267,7 @@ export class Checkpoints {
         if (!sc) return;
         const drop = this.prune(sc);
         if (!drop.length) return;
-        await this.serial(`r:${sc.root}`, () => updateRefs(sc.root, {}, drop)).catch(() => {});
+        await this.shared(sc.root, () => updateRefs(sc.root, {}, drop)).catch(() => {});
         this.store.put(sc);
       });
     }
@@ -203,12 +282,18 @@ export class Checkpoints {
     await this.settled(sessionId);
     const sc = this.store.get(sessionId);
     const items = sc?.root === root ? sc.items : [];
-    const others: OtherSession[] = this.o
-      .list()
-      .filter((s) => s.id !== sessionId && !s.parentSessionId && (s.mode !== "stored" || s.status !== "idle") && inside(root, s.projectPath))
-      .map((s) => ({ id: s.id, title: s.title, status: s.status }));
-    const blocked = blockedWhy(look);
+    const others = this.others(sessionId, root);
+    const blocked = blockedWhy(look, others);
     return { state: "ok", root, checkpoints: items.map(info).reverse(), others, ...(blocked ? { blocked } : {}) };
+  }
+
+  /** Live sessions in the repo besides this one (paths compared as real paths). */
+  private others(sessionId: string, root: string): OtherSession[] {
+    const r = real(root);
+    return this.o
+      .list()
+      .filter((s) => s.id !== sessionId && !s.parentSessionId && (s.mode !== "stored" || s.status !== "idle") && inside(r, real(s.projectPath)))
+      .map((s) => ({ id: s.id, title: s.title, status: s.status }));
   }
 
   /** What a checkpoint changed: before → after, or → the working tree while it's open. */
@@ -223,44 +308,75 @@ export class Checkpoints {
     const sc = this.store.get(sessionId);
     const rec = sc?.root === root ? (id ? sc.items.find((c) => c.id === id) : sc.items.at(-1)) : undefined;
     if (!rec || !(await treeOf(root, rec.before))) return { ...none, ...where, state: "noBase" };
-    const to = rec.after ?? (await this.serial(`r:${root}`, () => snapshotTree(root, this.tmp)));
+    // Outside the repo's lock: only a look, it never waits behind (or delays) a turn's snapshot.
+    const to = rec.after ?? (await snapshot(root, this.tmp)).tree;
     return { scope: "turn", state: "ok", ...where, checkpoint: rec.id, base: `${rec.kind === "turn" ? `turn ${rec.n}` : "restore"}: before → ${rec.after ? "after" : "now"}`, ...(await diffRange(root, rec.before, { to })) };
   }
 
   /** Puts the files back to before checkpoint `id`, after checkpointing them as they are. */
   async restore(sessionId: string, id: string): Promise<RestoreResult> {
     const look = await this.o.open(sessionId);
-    const why = blockedWhy(look);
-    if (why) throw new Error(why);
     const root = await repoRoot(look.summary.projectPath);
     if (!root) throw new Error("This folder isn't in a git repository.");
+    const blocked = () => blockedWhy(this.o.look(sessionId) ?? look, this.others(sessionId, root));
+    const why = blocked();
+    if (why) throw new Error(why);
     return this.serial(`s:${sessionId}`, () =>
-      this.serial(`r:${root}`, async () => {
-        const again = blockedWhy(this.o.look(sessionId) ?? look);
+      this.exclusive(root, async () => {
+        const again = blocked();
         if (again) throw new Error(again);
-        const sc = this.store.get(sessionId);
-        const target = sc?.root === root ? sc.items.find((c) => c.id === id) : undefined;
-        const targetTree = target && (await treeOf(root, target.before));
-        if (!sc || !target || !targetTree) throw new Error("That checkpoint is gone.");
-        // The undo point first, saved before any file changes.
-        const tree = await snapshotTree(root, this.tmp);
-        const rec: Checkpoint = { id: String(sc.next), n: sc.next, kind: "restore", at: this.now(), before: await commitTree(root, tree, "Tether checkpoint"), open: true, to: target.id, toN: target.n };
-        sc.items.push(rec);
-        sc.next++;
-        const drop = this.prune(sc);
-        await updateRefs(root, { [refName(sessionId, rec.n)]: rec.before }, drop);
-        this.store.put(sc);
+        // Checked and held with no await between: from here what's sent waits in the queue.
+        const release = this.o.hold?.(sessionId, "Restoring files…");
         try {
-          const r = await restoreTree(root, tree, targetTree, this.tmp);
-          if (r.skipped.length) rec.skipped = r.skipped.slice(0, 50);
-          await this.close(root, sessionId, rec, await snapshotTree(root, this.tmp));
-          this.o.log(`${sessionId}: restored files to before checkpoint ${target.n} (${r.written} written, ${r.removed} removed${r.skipped.length ? `, ${r.skipped.length} left alone` : ""})`);
-          return { checkpoint: info(rec), written: r.written, removed: r.removed };
+          return await this.restoring(sessionId, root, id, blocked);
         } finally {
-          this.store.put(sc);
+          release?.();
         }
       }),
     );
+  }
+
+  private async restoring(sessionId: string, root: string, id: string, blocked: () => string | undefined): Promise<RestoreResult> {
+    const sc = this.store.get(sessionId);
+    const target = sc?.root === root ? sc.items.find((c) => c.id === id) : undefined;
+    const targetTree = target && (await treeOf(root, target.before));
+    if (!sc || !target || !targetTree) throw new Error("That checkpoint is gone.");
+    let rec: Checkpoint | undefined;
+    const r = await restoreTo(root, snapOf(target, targetTree), this.tmp, async (u) => {
+      // The undo point, saved before any file changes; then a last look that nothing started.
+      rec = {
+        id: String(sc.next),
+        n: sc.next,
+        kind: "restore",
+        at: this.now(),
+        before: await commitTree(root, u.tree, "Tether checkpoint"),
+        open: true,
+        to: target.id,
+        toN: target.n,
+        ...(u.left ? { left: u.left } : {}),
+        ...(u.noUntracked ? { noUntracked: true as const } : {}),
+      };
+      sc.items.push(rec);
+      sc.next++;
+      await updateRefs(root, { [refName(sessionId, rec.n)]: rec.before }, this.prune(sc));
+      this.store.put(sc);
+      const why = blocked();
+      if (why) {
+        sc.items = sc.items.filter((c) => c !== rec);
+        await updateRefs(root, {}, [refName(sessionId, rec.n)]).catch(() => {});
+        this.store.put(sc);
+        throw new Error(why);
+      }
+    });
+    const done = rec!;
+    try {
+      if (r.skipped.length) done.skipped = r.skipped.slice(0, 200);
+      await this.close(root, sessionId, done, (await snapshot(root, this.tmp)).tree);
+      this.o.log(`${sessionId}: restored files to before checkpoint ${target.n} (${r.written} written, ${r.removed} removed${r.skipped.length ? `, ${r.skipped.length} left alone` : ""})`);
+      return { checkpoint: info(done), written: r.written, removed: r.removed, skipped: r.skipped };
+    } finally {
+      this.store.put(sc);
+    }
   }
 }
 
@@ -271,6 +387,7 @@ export function startCheckpoints(ctx: ModuleContext): { checkpoints: Checkpoints
     look: (id) => ctx.session(id),
     open: (id) => (ctx.session(id) ? Promise.resolve(ctx.session(id)!) : ctx.sessions.open(id)),
     list: () => ctx.sessions.list(),
+    hold: ctx.sessions.hold ? (id, why) => ctx.sessions.hold!(id, why) : undefined,
     log: ctx.log,
   });
   const offs = [
