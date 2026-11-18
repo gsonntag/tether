@@ -2619,7 +2619,7 @@
   }
 }
 .t-header:has(> .t-header-pin) > .t-header-top {
-  padding-right: 170px;
+  padding-right: calc(var(--t-pin-w, 162px) + 8px);
 }
 @media (pointer: coarse) {
   .t-header:has(> .t-header-pin) > .t-header-top {

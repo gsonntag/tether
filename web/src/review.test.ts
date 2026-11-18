@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { numberLines, type DiffHunk } from "../../shared/gitDiff";
-import { cleanComments, location, readComments, reviewKey, reviewMessage, selectionOf, writeComments, type LineComment } from "./review";
+import { afterSend, cleanComments, findLines, lineKey, location, readComments, reviewKey, reviewMessage, selectionOf, writeComments, type LineComment } from "./review";
 
 const hunk: DiffHunk = { header: "@@ -10,4 +10,5 @@", oldStart: 10, oldLines: 4, newStart: 10, newLines: 5, lines: [" a", "-b", "+B", "+C", " d", " e", "\\ No newline at end of file"] };
 const lines = numberLines(hunk);
@@ -81,4 +81,41 @@ test("what's stored is cleaned: junk dropped, fields defaulted", () => {
   expect(cleanComments([null, { id: "a" }, { id: "b", path: "p", text: "t", start: "x", end: 1 }, { id: "c", path: "p", text: "t", start: 2, end: 3, lines: ["+a", 5], side: "weird", scope: "branch" }])).toEqual([
     { id: "c", path: "p", side: "new", start: 2, end: 3, lines: ["+a"], text: "t", scope: "branch" },
   ]);
+});
+
+test("removed lines say what their numbers count in", () => {
+  expect(location({ path: "a.ts", side: "old", start: 3, end: 3, base: "main" })).toBe("a.ts:3 (removed; lines in main)");
+  expect(reviewMessage([c({ side: "old", start: 3, end: 3, base: "HEAD", lines: ["-x"] })])).toContain("`a.ts:3 (removed; lines in HEAD)`");
+});
+
+test("a pick is found again by its lines after a reload, or not at all", () => {
+  const ka = lineKey(lines[1]!);
+  const kb = lineKey(lines[3]!);
+  expect(findLines([lines], ka, kb)).toEqual({ hunk: 0, a: 1, b: 3 });
+  // Two lines added above: the same lines, further down, in the second hunk now.
+  const moved = numberLines({ ...hunk, oldStart: 10, newStart: 10 });
+  const other = numberLines({ header: "", oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [" z"] });
+  expect(findLines([other, moved], ka, kb)).toEqual({ hunk: 1, a: 1, b: 3 });
+  // Renumbered (lines added above it): not the same line, so the pick goes.
+  const shifted = numberLines({ ...hunk, newStart: 12 });
+  expect(findLines([shifted], ka, kb)).toBeUndefined();
+});
+
+test("comments put in the composer are done once a message carrying them is sent", () => {
+  const handed = c({ id: "h", path: "a.ts", start: 4, end: 4, handed: true });
+  const kept = c({ id: "k", path: "b.ts" });
+  const list = [handed, kept];
+  // Something else was sent: the handed comment waits.
+  expect(afterSend(list, "just a question")).toEqual(list);
+  // The review message (edited) went: every handed one is done, the rest stay.
+  expect(afterSend(list, "Comments on the changes:\n\nsomething else")).toEqual([kept]);
+  // Only its place survived the edit: still done.
+  expect(afterSend(list, "about `a.ts:4` please")).toEqual([kept]);
+});
+
+test("storage keeps base and handed; a refused write says so", () => {
+  expect(cleanComments([{ ...c({ base: "HEAD", handed: true }) }])[0]).toMatchObject({ base: "HEAD", handed: true });
+  const full = { getItem: () => null, setItem: () => { throw new Error("full"); }, removeItem: () => {} };
+  expect(writeComments(full, "k", [c({})])).toBe(false);
+  expect(writeComments(memory(), "k", [c({})])).toBe(true);
 });

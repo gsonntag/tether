@@ -860,8 +860,8 @@ event (with the message's text) and the queued message's id from `SessionActions
   draws from, and on a plan its 5-hour window when known, "ChatGPT plan · 5h 10%"; its weekly window,
   "Claude plan · Week 63%", when there's no 5-hour figure or the week is at 100% or reported exhausted
   (a Claude `rate_limit_event` rejected on `seven_day`); tooltip the windows and
-  their resets) and the **Terminal** button. Those two
-  chips come last in the row, so on a phone they are what scrolls out of view. Always follow the bottom unless you scroll up.
+  their resets) and, pinned at the right outside the chips, the **Changes** and **Terminal** buttons.
+  The context and usage chips come last in the row, so on a phone they are what scrolls out of view. Always follow the bottom unless you scroll up.
 - **Terminal panel:** full screen on phones, beside or instead of the transcript on desktop.
 - **Changes pane:** the session folder's git diff, in the terminal panel's place (Changes below).
 - **Home** (P5): one ranked inbox: requests, then finished-unread, then working. An archived session
@@ -1102,25 +1102,38 @@ source change switches in place, so there is nothing to wait for.
 ### Changes
 
 **Changes** in the session header opens the folder's git diff where the terminal panel goes (one or
-the other): beside the transcript, a full-screen sheet on a phone. Scopes: **Uncommitted** (working
-tree and index against `HEAD`, untracked files included) and **Branch** (since the merge base with
-`origin/HEAD`, else `main` or `master`, committed or not). The `git` module's `gitDiff { sessionId,
-scope }` answers with files (path, old path, status, added and removed lines, hunks), the branch and
-the base. It reads only: git as an argv in the session's folder, a timeout, optional locks off, no
-external diff or textconv; untracked files from `ls-files --others --exclude-standard`, each diffed
-against `/dev/null` with `--no-index`. A file over 3,000 changed lines or 512 KB of hunks shows its
-counts only, as do files past 1.5 MB of hunks in all, and past 1,000 files the rest are a count.
-Binary files say so, and so does a folder outside a repo or a branch with nothing to compare with.
-The pane loads on opening, on a scope change, when a turn ends, and on Refresh. Read access is
-enough: it changes nothing.
+the other): beside the transcript, a full-screen sheet on a phone. Only runners whose hello says
+`git: true` get the button. Scopes: **Uncommitted** (working tree and index against `HEAD`,
+untracked files included) and **Branch** (since the merge base with `origin/HEAD`, else `main` or
+`master`, committed or not). The `git` module's `gitDiff { sessionId, scope }` answers with files
+(path, old path, status, added and removed lines, hunks), the branch and the base. It never writes:
+git as an argv in the session's folder, a timeout, optional locks off, no lazy fetch, no external
+diff or textconv, no inherited `GIT_DIR`-style or config variables; untracked files from `ls-files
+--others --exclude-standard`, each diffed as `./path` against `/dev/null` with `--no-index`.
+Patches come 40 files per git call; a call cut at its cap asks again file by file, so a file too big
+on its own (a minified bundle) shows its counts only and nothing else is lost. Sizes are JSON bytes
+(UTF-8, as frames are measured): a file over 3,000 changed lines or 512 KB of hunks shows its counts
+only, files fill 3 MB of hunks in path order and the rest show counts, past 1,000 files the rest are
+a count, and after 30 s the files not reached show counts (`timedOut`). Binary files say so, as do
+names that aren't UTF-8, a folder outside a repo, a missing default branch and a branch with no
+history in common with it. It reads the folder itself, untracked files included, so it needs drive
+access: it is never a view-only op (`VIEW_OPS`).
 
-**Line comments.** Click or tap a line for a comment; Shift-click or drag the numbers (a second tap
-on touch, while the comment is empty) for a range within a hunk. Comments show under their lines
-and collect in a tray; they're drafts in this browser per session (`localStorage`) until **Send to
-agent** puts them in the composer as one message, each as `` `path:line` `` (or `path:a-b`, with
-"(removed)" for old-file lines) over its lines in a diff block. The message can be edited before it's
-sent; on a phone the sheet closes to show it. Later git views join this pane: a Turn scope, git
-actions in its header, a Files tab.
+The pane loads on opening, on a scope change, on Refresh, and when a turn ends; while a comment is
+being written that reload waits until it's saved or cancelled. A pick of lines is kept by their
+numbers and text, so a reload either finds the same lines or drops the pick: a comment never lands
+on other lines.
+
+**Line comments.** Click or tap a line (or focus it and press Enter) for a comment; Shift-click or
+drag the numbers (a second tap on touch, while the comment is empty) for a range within a hunk.
+Comments show under their lines in the scope they were made in and collect in a tray; they're
+drafts in this browser per session (`localStorage`; a write it refuses is said inline). **Send to
+agent** puts them in the composer as one message, each as `` `path:line` `` (or `path:a-b`; removed
+lines say "removed; lines in HEAD" or the branch's base) over its lines in a diff block. The message
+can be edited before it's sent; on a phone the sheet closes to show it. The comments stay, marked
+as in the message box (**Take back** unmarks them), until a message carrying them is sent: one
+with the review's opening line, or one still quoting a comment's place. Later git views join this
+pane: a Turn scope, git actions in its header, a Files tab.
 
 ### Session names
 

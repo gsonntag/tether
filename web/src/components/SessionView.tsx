@@ -23,6 +23,7 @@ import { useFitViewport } from "./useFitViewport";
 import { useTermCover } from "./useTermCover";
 import { PanelHandle } from "./WidthHandle";
 import { ChangesPane } from "./ChangesPane";
+import { reviewSent } from "../reviewStore";
 import { billingForDisplay } from "../sourceMenu";
 import { RateLimitRetry } from "./RateLimitRetry";
 
@@ -44,6 +45,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   const models = useStore((s) => (harness ? s.modelLists[modelListKey(runnerId, harness)] : undefined));
   const linkOpen = useStore((s) => s.link === "open");
   const runnerOnline = useStore((s) => s.runners.find((r) => r.id === runnerId)?.online);
+  /** the runner has the git module (an older one doesn't: no Changes button) */
+  const runnerGit = useStore((s) => !!s.runners.find((r) => r.id === runnerId)?.git);
   const children = useChildren(runnerId, sessionId);
   const pending = usePending(runnerId, sessionId);
   const composer = useRef<ComposerHandle>(null);
@@ -206,7 +209,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     </button>
   );
   // Changes: the folder's git diff beside the chat, in the terminal panel's place.
-  const changesChip = !summary.parentSessionId && (
+  const changesChip = !summary.parentSessionId && runnerGit && (
     <button
       type="button"
       className="t-chip t-chip-term t-chip-changes"
@@ -358,6 +361,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             shell={{ folder: summary.projectPath, heldBy: state.restartWait ? "restartWait" : state.queueHeld ? state.queueHeldBy : undefined }}
             onSend={async (kind, text, list) => {
               const attachments = list.length ? { attachments: list } : {};
+              // Review comments the message carries are done (Changes pane).
+              if (kind !== "shell") reviewSent(runnerId, sessionId, text);
               // A `!` command: runs now, whatever the agent does (SPEC §9 Shell commands).
               if (kind === "shell") await rpc(runnerId, "runShell", { sessionId, command: text });
               else if (kind === "steer") await rpc(runnerId, "steer", { sessionId, text, ...attachments });
@@ -365,7 +370,14 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
               else await rpc(runnerId, "send", { sessionId, text, ...attachments, ...(kind === "stopSend" ? { stop: true } : {}) });
             }}
             // In the terminal a message waits in the queue (its own row): no pending copy.
-            sendNow={inTerminal ? undefined : (kind, text, list) => void sendPending(runnerId, sessionId, text, list, { stop: kind === "stopSend" })}
+            sendNow={
+              inTerminal
+                ? undefined
+                : (kind, text, list) => {
+                    reviewSent(runnerId, sessionId, text);
+                    void sendPending(runnerId, sessionId, text, list, { stop: kind === "stopSend" });
+                  }
+            }
             onStop={async () => {
               await rpc(runnerId, "interrupt", { sessionId });
             }}

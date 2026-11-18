@@ -3,19 +3,20 @@
 // drag down the numbers, for a range; on a touch screen a second tap extends the range while the
 // comment is still empty. Comments show under the last line they're about.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { ChevronDownIcon, ChevronRightIcon } from "@heroicons/react/24/solid";
 import { numberLines, type DiffFile, type FileStatus, type NumberedLine } from "../../../shared/gitDiff";
-import { location, selectionOf, type LineComment } from "../review";
+import { findLines, lineKey, location, selectionOf, type LineComment } from "../review";
 
-/** The lines picked for a new comment: indices into one hunk's lines. */
+/** The lines picked for a new comment, by lineKey: after a reload they're found again, or dropped. */
 export interface Sel {
   path: string;
-  hunk: number;
-  a: number;
-  b: number;
+  /** where the pick started */
+  ka: string;
+  /** where it ends now */
+  kb: string;
 }
 
 const STATUS: Record<FileStatus, { letter: string; label: string }> = {
@@ -73,6 +74,7 @@ export function CommentCard({ c, onEdit, onRemove, showPlace, onPlace }: { c: Li
       ) : (
         <>
           <div className="t-rcomment-text">{c.text}</div>
+          {c.handed && <div className="t-rcomment-handed">In the message box: kept until it's sent</div>}
           <div className="t-rcomment-actions">
             <Button label="Edit" size="sm" variant="ghost" onClick={() => setEditing(true)} />
             <Button label="Remove" size="sm" variant="ghost" onClick={onRemove} />
@@ -131,7 +133,10 @@ function hintFor(lines: NumberedLine[], lo: number, hi: number, path: string, to
   return hi > lo ? where : `${where} · ${touch ? "tap another line for a range" : "Shift-click or drag the numbers for a range"}`;
 }
 
-export function DiffFileView({
+/** What the line numbers need to fit: the file's biggest. */
+const numberWidth = (hunks: NumberedLine[][]) => `${Math.max(3, String(Math.max(0, ...hunks.flatMap((h) => h.map((l) => Math.max(l.old ?? 0, l.new ?? 0))))).length) + 1.5}ch`;
+
+export const DiffFileView = memo(function DiffFileView({
   file,
   open,
   onToggle,
@@ -145,15 +150,15 @@ export function DiffFileView({
 }: {
   file: DiffFile;
   open: boolean;
-  onToggle: () => void;
+  onToggle: (path: string) => void;
   /** the selection, when it's in this file */
   sel?: Sel;
   onSelect: (s: Sel | null) => void;
   /** a touch screen: a second tap extends the range */
   touch: boolean;
-  /** this file's comments */
+  /** this file's comments in this scope */
   comments: LineComment[];
-  onComment: (s: Sel, lines: NumberedLine[], text: string) => void;
+  onComment: (path: string, at: NonNullable<ReturnType<typeof selectionOf>>, text: string) => void;
   onEdit: (id: string, text: string) => void;
   onRemove: (id: string) => void;
 }) {
@@ -180,15 +185,20 @@ export function DiffFileView({
     if (!sel) typed.current = "";
   }, [!sel]);
 
+  /** the selection's place in this diff (none: its lines are gone) */
+  const at = useMemo(() => (sel ? findLines(hunks, sel.ka, sel.kb) : undefined), [sel, hunks]);
   const pick = (hunk: number, i: number, extend: boolean) => {
-    if (extend && sel && sel.hunk === hunk) onSelect({ ...sel, b: i });
+    const k = lineKey(hunks[hunk]![i]!);
+    if (extend && sel && at?.hunk === hunk) onSelect({ ...sel, kb: k });
     else {
       typed.current = "";
-      onSelect({ path: file.path, hunk, a: i, b: i });
+      onSelect({ path: file.path, ka: k, kb: k });
     }
   };
   const st = STATUS[file.status];
-  const body = file.binary ? (
+  const body = file.badPath ? (
+    <div className="t-dnote">Can't show this file: its name isn't UTF-8.</div>
+  ) : file.binary ? (
     <div className="t-dnote">Binary file</div>
   ) : file.tooLarge ? (
     <div className="t-dnote">{file.tooLarge === "file" ? "Too large to show here." : "Not shown: the whole diff is too large."}</div>
@@ -196,31 +206,41 @@ export function DiffFileView({
     <div className="t-dnote">{file.status === "renamed" ? "Renamed, no line changes." : file.added + file.removed === 0 ? "No line changes." : "Not shown."}</div>
   ) : (
     hunks.map((lines, h) => {
-      const lo = sel?.hunk === h ? Math.min(sel.a, sel.b) : -1;
-      const hi = sel?.hunk === h ? Math.max(sel.a, sel.b) : -1;
+      const lo = at?.hunk === h ? Math.min(at.a, at.b) : -1;
+      const hi = at?.hunk === h ? Math.max(at.a, at.b) : -1;
       return (
         <div key={h} className="t-dhunk">
           <div className="t-dhunk-head">{file.hunks![h]!.header}</div>
           {lines.map((l, i) => {
             const here = comments.filter((c) => anchorOf(c, l));
             const marked = l.op !== "\\" && comments.some((c) => covers(c, l));
+            const meta = l.op === "\\";
             return (
               <div key={i} className="t-dline-wrap">
                 <div
-                  className={`t-dline ${l.op === "+" ? "add" : l.op === "-" ? "del" : l.op === "\\" ? "meta" : "ctx"}${i >= lo && i <= hi ? " sel" : ""}${marked ? " noted" : ""}`}
+                  className={`t-dline ${l.op === "+" ? "add" : l.op === "-" ? "del" : meta ? "meta" : "ctx"}${i >= lo && i <= hi ? " sel" : ""}${marked ? " noted" : ""}`}
+                  role={meta ? undefined : "button"}
+                  tabIndex={meta ? undefined : 0}
                   // Shift-click picks a range, not text.
                   onMouseDown={(e) => e.shiftKey && e.preventDefault()}
                   onClick={(e) => {
                     // A click that ends selecting text is for copying.
-                    if (l.op === "\\" || (!e.shiftKey && getSelection()?.toString())) return;
+                    if (meta || (!e.shiftKey && getSelection()?.toString())) return;
                     pick(h, i, e.shiftKey || (touch && !typed.current.trim()));
                   }}
-                  onPointerEnter={() => dragging.current && sel?.hunk === h && sel.b !== i && onSelect({ ...sel, b: i })}
+                  onKeyDown={(e) => {
+                    if (meta || (e.key !== "Enter" && e.key !== " ") || e.target !== e.currentTarget) return;
+                    e.preventDefault();
+                    pick(h, i, e.shiftKey);
+                  }}
+                  onPointerEnter={() => {
+                    if (dragging.current && sel && at?.hunk === h && !meta) onSelect({ ...sel, kb: lineKey(l) });
+                  }}
                 >
                   <span
                     className="t-dl-num"
                     onPointerDown={(e) => {
-                      if (e.pointerType !== "mouse" || e.button !== 0 || l.op === "\\") return;
+                      if (e.pointerType !== "mouse" || e.button !== 0 || meta) return;
                       e.preventDefault();
                       dragging.current = true;
                       setDrag(true);
@@ -231,7 +251,7 @@ export function DiffFileView({
                     <span className="new">{l.new ?? ""}</span>
                   </span>
                   <span className="t-dl-op" aria-hidden>
-                    {l.op === "\\" ? "" : l.op}
+                    {meta ? "" : l.op}
                   </span>
                   <span className="t-dl-text">{l.text}</span>
                 </div>
@@ -240,10 +260,13 @@ export function DiffFileView({
                 ))}
                 {i === hi && sel && !drag && (
                   <CommentForm
-                    key={`${sel.hunk}:${lo}`}
+                    key={`${h}:${lo}`}
                     hint={hintFor(lines, lo, hi, file.path, touch)}
                     onText={(t) => (typed.current = t)}
-                    onSave={(t) => onComment(sel, lines, t)}
+                    onSave={(t) => {
+                      const s = selectionOf(lines, lo, hi);
+                      if (s) onComment(file.path, s, t);
+                    }}
                     onCancel={() => onSelect(null)}
                   />
                 )}
@@ -255,8 +278,8 @@ export function DiffFileView({
     })
   );
   return (
-    <section className="t-dfile" aria-label={file.path}>
-      <button type="button" className="t-dfile-head" aria-expanded={open} onClick={onToggle}>
+    <section className="t-dfile" aria-label={file.path} style={{ "--t-dl-w": numberWidth(hunks) } as React.CSSProperties}>
+      <button type="button" className="t-dfile-head" aria-expanded={open} onClick={() => onToggle(file.path)}>
         <Icon icon={open ? ChevronDownIcon : ChevronRightIcon} size="sm" />
         <span className={`t-dstatus ${file.status}`} title={st.label} aria-label={st.label}>
           {st.letter}
@@ -274,4 +297,4 @@ export function DiffFileView({
       {open && <div className="t-dfile-body">{body}</div>}
     </section>
   );
-}
+});

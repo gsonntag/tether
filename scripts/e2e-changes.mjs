@@ -2,7 +2,8 @@
 // is needed: sessions are only started, never sent to.
 //   PLAYWRIGHT=/path/to/playwright/index.mjs node scripts/e2e-changes.mjs
 // Environment:
-//   BASE, RUNNER   the web app and the dev runner's id
+//   PLAYWRIGHT     Playwright's index.mjs (else the `playwright` package, if it resolves)
+//   BASE, RUNNER   the web app and the dev runner's id (README Development: 5180, tether-dev)
 //   REPO           a git repo on branch `feature` (off `main`) with uncommitted changes; made fresh
 //                  when unset
 //   SHOTS          where screenshots go
@@ -12,9 +13,9 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const { chromium } = await import(process.env.PLAYWRIGHT ?? "/home/ubuntu/foliation/web/site/node_modules/playwright/index.mjs");
-const BASE = process.env.BASE ?? "http://127.0.0.1:5192";
-const RUNNER = process.env.RUNNER ?? "tether-f2";
+const { chromium } = await import(process.env.PLAYWRIGHT ?? "playwright");
+const BASE = process.env.BASE ?? "http://127.0.0.1:5180";
+const RUNNER = process.env.RUNNER ?? "tether-dev";
 const SHOTS = process.env.SHOTS ?? "/tmp/tether-changes-shots";
 mkdirSync(SHOTS, { recursive: true });
 
@@ -141,14 +142,38 @@ await pane(p).getByRole("button", { name: "Refresh" }).click();
 await pane(p).locator('.t-dfile[aria-label="added-later.txt"]').waitFor({ timeout: 10_000 });
 ok("desktop: Refresh shows a new file");
 
-// Send to agent: one message in the composer, the tray empties.
+// A pick follows its lines through a refresh, and goes when they change.
+await line(p, "notes.md", "notes for later").click();
+writeFileSync(join(REPO, "added-later.txt"), "later, changed\n");
+await pane(p).getByRole("button", { name: "Refresh" }).click();
+await pane(p).locator('.t-dfile[aria-label="added-later.txt"] .t-dline', { hasText: "changed" }).waitFor();
+if (!(await pane(p).locator(".t-rform-hint").innerText()).includes("notes.md:1")) fail("pick lost on an unrelated refresh");
+writeFileSync(join(REPO, "notes.md"), "NOTES for later\nsecond line\n");
+await pane(p).getByRole("button", { name: "Refresh" }).click();
+await line(p, "notes.md", /NOTES/).waitFor();
+if (await pane(p).locator(".t-rform").count()) fail("pick kept on lines that changed");
+ok("desktop: a pick follows its lines through Refresh and goes when they change");
+
+// The keyboard: a focused line takes Enter.
+await line(p, "src/app.ts", "return a - b").focus();
+await p.keyboard.press("Enter");
+await pane(p).locator("textarea.t-rform-box").waitFor();
+await p.keyboard.press("Escape");
+ok("desktop: Enter on a focused line opens a comment");
+
+// Send to agent: one message in the composer; the comments wait, marked, until it's sent.
 await pane(p).getByRole("button", { name: "Send to agent" }).click();
 const draft = await composer(p).inputValue();
 if (!draft.startsWith("Comments on the changes:") || !draft.includes("`notes.md:1-2`") || !draft.includes("Is sub needed?")) fail(`composer: ${draft}`);
-if (await pane(p).locator(".t-review-tray").count()) fail("tray still there");
+await pane(p).locator(".t-review-count", { hasText: "3 in the message box" }).waitFor();
+if (await pane(p).getByRole("button", { name: "Send to agent" }).count()) fail("Send to agent still offered");
+await pane(p).getByRole("button", { name: "Take back" }).click();
+await pane(p).locator(".t-review-count", { hasText: "3 comments" }).waitFor();
+while (await pane(p).locator(".t-dfile").getByRole("button", { name: "Remove", exact: true }).count()) await pane(p).locator(".t-dfile").getByRole("button", { name: "Remove", exact: true }).first().click();
+await pane(p).locator(".t-review-tray").waitFor({ state: "detached" });
 if (git(REPO, "status", "--porcelain").includes("A  notes.md")) fail("the index changed");
 await shot(p, "desktop-sent");
-ok(`desktop: Send to agent filled the composer (${draft.split("\n").length} lines), tray cleared, index untouched`);
+ok(`desktop: Send to agent filled the composer (${draft.split("\n").length} lines), comments kept as in the message box, Take back, Remove; index untouched`);
 await composer(p).fill("");
 
 // Not a repo.
@@ -175,6 +200,9 @@ await pane(q).locator(".t-review-count").tap();
 await shot(q, "phone-tray");
 await pane(q).getByRole("button", { name: "Send to agent" }).tap();
 await pane(q).waitFor({ state: "detached" });
+await q.getByRole("button", { name: "Changes", exact: true }).tap();
+await pane(q).locator(".t-review-count", { hasText: "1 in the message box" }).waitFor();
+await pane(q).getByRole("button", { name: "Close changes" }).tap();
 const pdraft = await composer(q).inputValue();
 if (!pdraft.includes("Rename to subtract.")) fail(`phone composer: ${pdraft}`);
 await shot(q, "phone-sent");
