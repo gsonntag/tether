@@ -159,6 +159,7 @@ const people: Record<string, Viewer> = {
   owner2: { id: "u-owner2", email: "p@x", name: "Other owner", role: "owner", service: false, picture: "" },
   guest: { id: "u-guest", email: "g@x", name: "Guest", role: "editor", service: false, picture: "", guest: true },
   editor: { id: "u-ed", email: "ed@x", name: "Ed", role: "editor", service: false, picture: "" },
+  cli: { id: "u-cli", email: "cli@x", name: "Cli", role: "viewer", service: false, picture: "", token: true },
   runner: { id: "svc:1", email: "", name: "runner", role: "editor", service: true, picture: "" },
   alice: { id: "svc:2", email: "", name: "runner-alice", role: "editor", service: true, picture: "" },
 };
@@ -201,6 +202,8 @@ describe("/api/ws-ticket", () => {
     expect((await ok.json()).ticket).toMatch(/^[\w-]+\.[\w-]+$/);
     expect((await fetch(url)).status).toBe(401);
     expect((await fetch(url, as("editor"))).status).toBe(200);
+    // An app user token (fol app-token): the person, from their command line, with no Origin.
+    expect((await fetch(url, as("cli"))).status).toBe(200);
     for (const who of ["guest", "runner", "alice"]) expect((await fetch(url, as(who))).status).toBe(403);
     expect((await fetch(url, as("owner", { Origin: "https://evil.example" }))).status).toBe(403);
     expect((await fetch(url, as("owner", { Origin: `http://${base}` }))).status).toBe(200);

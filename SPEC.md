@@ -83,8 +83,12 @@ share only ever views. The list lives on the runner (runner.json `sharedWith`, o
 `setRunnerAccess`) and the relay enforces it on every frame (shared/access.ts: `VIEW_OPS`, and
 `MANAGE_OPS` that stay the owner's: sharing, name, keys, texting, updates, runner settings). A
 change applies at once; a Foliation role change at the next renew ticket, which carries the role.
-Public-link visitors and app calls never get in. With TETHER_RUNNER_OWNERS, a runner's listed
-people are its owners.
+Public-link visitors and app calls never get in. A person's app user token (`fol app-token
+tether`, Foliation contracts/app-user-tokens.md: the identity carries `tok: true` with their current
+role) is that person: the same sign-in, tickets and runner sharing as their browser, with no Origin
+header to check. The server verifies identities with Foliation's own claim rules
+(server/src/claims.ts), tested against Foliation's identity vectors (server/src/testdata). With
+TETHER_RUNNER_OWNERS, a runner's listed people are its owners.
 
 **Who may connect.** A browser must be an app owner or shared person when it opens its socket, and keeps proving
 it: the page fetches a short-lived ticket from `GET /api/ws-ticket` (an ordinary request the edge

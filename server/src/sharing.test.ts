@@ -93,6 +93,18 @@ describe("sharing runners", () => {
     expect(w.r1.take("rpc").map((m) => m.op)).toEqual(["setRunnerAccess"]);
   });
 
+  test("a runner saying hello again doesn't fail a viewer's reads in flight", () => {
+    const w = world();
+    w.r1.take();
+    w.rpc(w.viewer, "1", "box", "listSessions");
+    const [r] = w.r1.take("rpc");
+    w.viewer.take();
+    w.hello([{ email: "vi@x.com", access: "view" }]);
+    expect(w.viewer.take("result")).toEqual([]);
+    w.relay.onRunnerMessage(w.r1, { t: "result", id: r.id, ok: true, data: { sessions: [] } });
+    expect(w.viewer.take("result")).toEqual([expect.objectContaining({ id: "1", ok: true })]);
+  });
+
   test("a viewer's presence doesn't count as someone looking", () => {
     const w = world();
     w.r1.take();
