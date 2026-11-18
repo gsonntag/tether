@@ -133,6 +133,11 @@ export function keptBilling(sessionId: string): Billing {
   const b = load().billing?.[sessionId];
   return b ? { kind: b.kind, label: b.label } : UNKNOWN_BILLING;
 }
+/** The same, with when that start was (ms); undefined when none is kept. */
+export function keptStart(sessionId: string): (Billing & { at: number }) | undefined {
+  const b = load().billing?.[sessionId];
+  return b && typeof b.at === "number" ? { kind: b.kind, label: b.label, at: b.at } : undefined;
+}
 
 /** The latest report, kept for stored sessions after a restart. */
 export function keepPlan(report: PlanUsage) {

@@ -21,8 +21,8 @@ browser ──wss──► server (Foliation app: UI + relay) ◄──wss──
 
 **Sessions.** The runner finds your existing Claude Code (`~/.claude/projects`) and Codex sessions
 and shows them all in one transcript format. Nothing starts until you send. The sidebar has Recent
-(the last 3 days plus every live session) and per-project lists, and search finds the rest. You can
-rename and archive sessions from the sidebar. A session goes live when you send and goes back to
+(the last 3 days plus every live session, grouped by project) and per-project lists, and search finds the rest. You can
+rename, pin and archive sessions from the sidebar (or a session's ⋯ menu); pinned ones stay at the top on every device. A session goes live when you send and goes back to
 stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–§6a.
 
 - **Composer** (SPEC §9): Enter sends, or steers a running turn. Tab queues the message and
@@ -82,6 +82,13 @@ when the session is made:
 You add keys under **Settings → Credentials** and **Settings → Azure**, and they're stored on the
 runner. New sessions start on the subscription. The header's billing chip shows the source and
 switches it, and API sessions show what they've cost in dollars.
+
+**Usage** (SPEC §10, *Usage*): **Settings → Usage** shows a runner's last 7 or 30 days of tokens
+(input, output, cache reads and writes) by day, by harness and model, and by project, read from
+Claude Code's and Codex's own logs, so CLI sessions count too. Dollars are estimates at published API
+prices, split into plan usage and API keys, next to what Tether's own ledgers billed to API keys and
+what caching saved. The plan's 5-hour and weekly limits are at the top. The logs are first read when
+you open the page, which can take a few seconds; after that only what's new is read.
 
 **Texting** (iMessage through [Photon Spectrum](https://photon.codes), or a Discord bot): the runner can text you when
 a session has a request, needs you in the terminal, fails, or ends its turn with a question. Nothing

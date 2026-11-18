@@ -31,6 +31,7 @@ import type { AzureDeployment, BillingSource, CredentialSource, CredentialStatus
 import type { TokenRates } from "./costs";
 import type { AutoUpdateStatus, HarnessReport } from "./harnessUpdates";
 import type { PartChunk } from "./limits";
+import type { UsageReport } from "./usage";
 import type { HarnessId, ModelList, Msg, ProjectInfo, RequestAnswer, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
 
 /** Close code the server uses for a runner connection that a newer one with the same id replaced. */
@@ -74,6 +75,8 @@ export interface RunnerInfo {
   connectedAt?: number;
   /** the Home agent's folder: its chats show on Home, never in the lists. Absent: no Home agent */
   homeFolder?: string;
+  /** it takes `pinSession` (SPEC §10 Pinning). Absent: a runner from before it, and no pin buttons */
+  pinning?: boolean;
 }
 
 /** Runner-wide settings (the Settings page), kept in runner.json. */
@@ -128,6 +131,8 @@ export interface Ops {
   renameSession: { args: { sessionId: string; title: string }; result: null };
   /** Keeps a session out of Recent; archived sessions remain searchable. */
   setSessionArchived: { args: { sessionId: string; archived: boolean }; result: null };
+  /** Puts a main session in the Sidebar's Pinned group (the last of it), or takes it out. Archiving unpins. */
+  pinSession: { args: { sessionId: string; pinned: boolean }; result: null };
   /** the Home agent's chats (Home's tabs, oldest first; absent from a runner from before tabs) and its current one (where watch reports go), the folder its chats run in, and what it runs on. `rev`: as in HomeChatUpdate */
   homeAgent: { args: Record<string, never>; result: { sessionId?: string; chats?: string[]; labels?: Record<string, number>; folder: string; rev: number; settings?: HomeAgentSettings; harnesses?: HarnessId[] } };
   /**
@@ -164,6 +169,13 @@ export interface Ops {
   harnessAutoUpdate: { args: { on?: boolean }; result: AutoUpdateStatus };
   /** Starts updating one harness (one at a time per runner) and answers at once; poll harnessVersions for its output. Running sessions aren't stopped */
   harnessUpdate: { args: { id: string }; result: HarnessReport };
+  /**
+   * Settings → Usage: tokens and API-price estimates from the harness stores, by day in `timeZone`
+   * (IANA; the browser's), by model and by project, for the last `days` (≤ 30, default 30). Answers at
+   * once with what's read: a scan runs in the background when the last is over a minute old or `refresh`
+   * asks, and `scan.running` says to ask again. Reveals every project's activity: a drive op.
+   */
+  usage: { args: { days?: number; timeZone?: string; refresh?: boolean }; result: UsageReport };
   /** a round trip through the relay to the runner */
   ping: { args: Record<string, never>; result: { runnerId: string; at: number } };
   /** start receiving a session's events; answers with a fresh snapshot of the newest `limit` messages */

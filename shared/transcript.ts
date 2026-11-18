@@ -405,6 +405,10 @@ export interface SessionSummary {
    * checkout, so a list can group it under its project.
    */
   worktreeOf?: string;
+  /** When it was pinned (ms): the Sidebar's Pinned group, in this order, listed however old. */
+  pinned?: number;
+  /** A pinned session its harness can't find (now): listed as it was last seen, until someone unpins it. */
+  missing?: boolean;
   /** `${harness}:${nativeId}` */
   id: string;
   harness: HarnessId;

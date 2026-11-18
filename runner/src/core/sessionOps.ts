@@ -33,6 +33,17 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
     await core.setArchived(s, a.archived);
     return null;
   });
+  ops.register("pinSession", async (a) => {
+    if (typeof a.pinned !== "boolean") throw new Error("pinned must be true or false.");
+    const id = str(a.sessionId, "sessionId");
+    // A pinned session that's gone from its harness can still be unpinned.
+    const s = await core.open(id).catch((e) => {
+      if (a.pinned || !core.o.prefs.get(id).pinned) throw e;
+    });
+    if (s) core.setPinned(s, a.pinned);
+    else core.dropPin(id);
+    return null;
+  });
   ops.register("listProjects", async () => ({ projects: await core.listProjects() }));
   ops.register("listSessions", (a) =>
     core.listSessions({ projectPath: optStr(a.projectPath), parentSessionId: optStr(a.parentSessionId), query: optStr(a.query), limit: optNum(a.limit) }),

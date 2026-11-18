@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { RunnerInfo } from "../../shared/protocol";
-import { ago, mergeRunners, reconnected, type KnownRunner } from "./runners";
+import { ago, canPin, mergeRunners, reconnected, type KnownRunner } from "./runners";
 
 const info = (id: string, connectedAt = 1): RunnerInfo => ({ id, name: id, hostname: id, version: "0", protocol: 1, harnesses: [], connectedAt });
 
@@ -26,4 +26,12 @@ test("relative times", () => {
   expect(ago(now - 5 * 60_000, now)).toBe("5 min ago");
   expect(ago(now - 3 * 3600_000, now)).toBe("3 h ago");
   expect(ago(now - 72 * 3600_000, now)).toBe("3 days ago");
+});
+
+test("pin buttons only for a runner that says it takes pinSession", () => {
+  const r = (id: string, extra: object = {}) => ({ id, name: id, hostname: "h", version: "1", protocol: 2, harnesses: [], ...extra });
+  const list = [r("new", { pinning: true }), r("old")];
+  expect(canPin(list, "new")).toBe(true);
+  expect(canPin(list, "old")).toBe(false);
+  expect(canPin(list, "gone")).toBe(false);
 });
