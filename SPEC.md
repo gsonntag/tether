@@ -99,6 +99,25 @@ claim any id not starting with `runner-` (`CLOSE_RUNNER_ID` otherwise; server/sr
   New session can make a folder: the dialog asks the runner (`checkFolder`), warns when it doesn't
   exist yet, and only a confirmed `createFolder` on `newSession` makes it, parents too. Only a path
   starting with `/` or `~/` is made.
+- **A worktree per session** (`modules/worktrees`). For a folder in git (`workspaceInfo`), New
+  session offers **Workspace**: *This folder* (default) or *New worktree*, with an optional branch
+  (default `tether/<slug>`: a slug of the Home agent's title or brief, else `wt-<random>`).
+  `newWorktreeSession` runs `git worktree add --no-track -b <branch> <repo>-worktrees/<slug>
+  <base>` from the main checkout, base = `origin/HEAD`, else `origin/main|master`, else local
+  `main|master`, else `HEAD` (no fetch first). A branch or folder that exists is refused when you
+  named it; a default takes the next free slug (`-2`, `-3`). git runs as argv with time limits and
+  no prompts; `worktree add` runs the repo's post-checkout hook, as a person's would (the agent gets
+  the same access there anyway). Then `newSession` in it (a failed start removes the worktree and
+  branch), and runner.json records `worktree: {path, branch, repo}` on the session: its own. The
+  summary carries `worktreeOf` (the main checkout) for grouping. **Setup:** `.tether/setup`
+  (executable, run directly) or `.tether/config.json`'s `"setup"` (via `$SHELL -c`), the worktree's
+  own before the main checkout's, runs in the worktree with `TETHER_WORKTREE`, `TETHER_REPO` and
+  `TETHER_BRANCH` as a `!` card (§9) marked `setup`, whose output never goes to the agent (state
+  `done`). While it runs (`LiveState.setup: "running"`) every send, the Home agent's too, queues held
+  (`queueHeldBy: "setup"`, not shown as needing you) and Resume refuses; success releases the queue;
+  failure (`setup: "failed"`) keeps it held, Home shows the session failed, and Resume ("Send
+  anyway") or sending something lets it go. A restart mid-setup cuts the card off and leaves the hold
+  for Resume. The Home agent's `start_session` takes `worktree: true`. Archive done (§10) removes it.
 - **Session:** `harness` + `nativeId` (the harness's own id) + `projectPath`. Tether's id is
   `${harness}:${nativeId}`. A session is in exactly one **mode** at a time:
 
@@ -228,7 +247,8 @@ is dropped, so `plan` is always the plan's.
 `queue`, `editQueued`, `cancelQueued`, `interrupt`, `answerRequest`, `setModel`, `setEffort`,
 `setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `setSessionArchived`, `openTerminal`, `closeTerminal`,
 `terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands). The move module
-adds `moveOptions` and `moveSession` (§15).
+adds `moveOptions` and `moveSession` (§15); the worktrees module `workspaceInfo` and
+`newWorktreeSession` (§4).
 
 ## 6. Adapters
 
@@ -1157,6 +1177,11 @@ answer against git: a named branch, or the session's own separate worktree, must
 main (by ancestry or as equal patches, after one `git fetch origin` per repo), and no worktree it
 used may be left. The main checkout's uncommitted changes count as applied. Only a session that is
 done, merged and cleaned up is archived, as the archive button does it (`SessionCore.setArchived`).
+A worktree Tether made for the session (§4, runner.json's `worktree`) the session is told to leave;
+once the answer passes, Tether removes it itself (`git worktree remove` without `--force`, then its
+branch: `-D` when its commits are in main by ancestry or equal patches, else `-d`) and then
+archives. One git won't remove keeps the session, with why; one another listed session works in
+stays, and the session is archived.
 
 The answer isn't one of a started session's reports. When all have answered, or after 10 minutes,
 the chat gets one report of what was archived, what wasn't and why, and what wasn't asked. A
