@@ -490,6 +490,8 @@ export class LiveControl {
     this.core.touch(n, { title: title ?? s.summary.title });
     this.core.book.upsert([n.summary]);
     this.carryCost(s, n);
+    // What waits (scheduled messages too) goes on in the new thread, where the views go.
+    await this.queue.handOver(s.id, n.id).catch((e) => this.core.log(`${s.id}: its queue stayed: ${e?.message ?? e}`));
     await this.close(s, true);
     s.setState({ continuedIn: n.id, carried: true, nextBilling: undefined, sourceSwitchFailed: undefined });
   }
