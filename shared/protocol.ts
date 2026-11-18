@@ -73,6 +73,8 @@ export interface RunnerInfo {
   connectedAt?: number;
   /** the Home agent's folder: its chats show on Home, never in the lists. Absent: no Home agent */
   homeFolder?: string;
+  /** it takes `pinSession` (SPEC §10 Pinning). Absent: a runner from before it, and no pin buttons */
+  pinning?: boolean;
 }
 
 /** Runner-wide settings (the Settings page), kept in runner.json. */

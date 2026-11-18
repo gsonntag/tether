@@ -6,7 +6,7 @@ import { HARNESS_LABELS, type Billing, type HarnessId, type RunStatus } from "..
 import { rpc } from "../connection";
 import { openSession } from "../route";
 import { folderName, type Row } from "../sessionList";
-import { setArchived as saveArchived, useStore } from "../store";
+import { setArchived as saveArchived, setPinned as savePinned, useStore } from "../store";
 
 /** "now", "5m", "3h", "2d", "Oct 3" */
 export function shortAgo(ts: number, now = Date.now()): string {
@@ -42,7 +42,8 @@ export function BillingMarker({ billing }: { billing?: Billing }) {
   return null;
 }
 
-export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Row; now: number; selected: boolean; child?: boolean; runnerLabel?: string }) {
+/** `canPin`: its runner takes pinSession (runners.ts canPin). */
+export function SessionRow({ row, now, selected, child, runnerLabel, canPin }: { row: Row; now: number; selected: boolean; child?: boolean; runnerLabel?: string; canPin?: boolean }) {
   const close = () => useStore.setState({ sidebarOpen: false });
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleBusy, setTitleBusy] = useState(false);
@@ -52,6 +53,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
   const [archiveError, setArchiveError] = useState<string>();
   const [pinned, setPinned] = useState(!!row.pinned);
   const [pinBusy, setPinBusy] = useState(false);
+  const pinnable = !!canPin && !child && !archived;
   const titleInput = useRef<HTMLInputElement>(null);
   const editing = useRef(false);
 
@@ -116,7 +118,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
     setPinBusy(true);
     setArchiveError(undefined);
     try {
-      await rpc(row.runnerId, "pinSession", { sessionId: row.id, pinned: !pinned });
+      await savePinned(row.runnerId, row.id, !pinned);
       setPinned(!pinned);
     } catch (e) {
       setArchiveError(`${pinned ? "Unpin" : "Pin"} failed: ${(e as Error).message}`);
@@ -127,7 +129,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
 
   return (
     <div
-      className={`t-row${child ? " t-child" : ""}${row.unread ? " unread" : ""}${selected ? " selected" : ""}`}
+      className={`t-row${child ? " t-child" : ""}${row.unread ? " unread" : ""}${selected ? " selected" : ""}${pinnable ? " t-pinnable" : ""}${pinnable && pinned ? " t-pinned" : ""}`}
       onDoubleClick={(e) => {
         if ((e.target as HTMLElement).closest("input, .t-row-archive, .t-row-pin")) return;
         beginRename();
@@ -183,11 +185,11 @@ export function SessionRow({ row, now, selected, child, runnerLabel }: { row: Ro
           {row.unread && !row.requests && row.status !== "waiting" && !(row.unread === "finished" && row.backgroundSubagents) && <span className={`t-unread ${row.unread}`}>· {row.unread === "failed" ? "Failed" : "Finished"}</span>}
           <StatusDot status={row.status} requests={row.requests} />
         </span>
-        {!child && !archived && (
+        {pinnable && (
           <button
             type="button"
             className={`t-row-archive t-row-pin${pinned ? " on" : ""}`}
-            aria-label={`${pinned ? "Unpin" : "Pin"} session: ${row.title || "Untitled"}`}
+            aria-label={`Pin session: ${row.title || "Untitled"}`}
             aria-pressed={pinned}
             title={`${pinned ? "Unpin" : "Pin"} session`}
             disabled={pinBusy}

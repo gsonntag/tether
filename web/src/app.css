@@ -127,19 +127,19 @@
 .t-row-archive:focus-visible {
   outline: 2px solid var(--color-accent);
 }
-.t-row-archive:disabled {
-  cursor: default;
-  opacity: 0.5;
-}
 .t-row-archive svg {
   width: 16px;
   height: 16px;
 }
 .t-row-pin {
-  right: 22px;
+  right: 26px; /* a 4px gap from archive's target */
 }
 .t-row-pin.on {
   color: var(--color-text-primary);
+}
+/* Touch: only a pinned row shows its pin (tap to unpin); ⋯ in the session header pins. */
+@media (hover: none), (pointer: coarse) {
+  .t-row-pin:not(.on) { display: none; }
 }
 .t-archived {
   font-size: 11px;
@@ -153,6 +153,13 @@
 @media (hover: hover) and (pointer: fine) {
   .t-row-archive { opacity: 0; pointer-events: none; }
   .t-row:hover .t-row-archive, .t-row:focus-within .t-row-archive, .t-row-pin.on { opacity: 1; pointer-events: auto; }
+  /* the pin shows on hover: room for it then */
+  .t-row.t-pinnable:is(:hover, :focus-within) .t-row-title { padding-right: 58px; }
+}
+/* busy: after the reveal rules, so they don't override it */
+.t-row .t-row-archive:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 .t-row-title {
   display: block;
@@ -163,7 +170,10 @@
   white-space: nowrap;
 }
 .t-row:not(.t-child) .t-row-title {
-  padding-right: 54px;
+  padding-right: 28px;
+}
+.t-row.t-pinned .t-row-title {
+  padding-right: 58px;
 }
 .t-row-title-editor {
   display: flex;

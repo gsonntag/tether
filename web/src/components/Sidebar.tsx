@@ -9,6 +9,7 @@ import { rpc } from "../connection";
 import { navigate, useRoute } from "../route";
 import { folderName, isHomeChat, mergeRows, recentSessions, splitPinned, waitingOn, type Row } from "../sessionList";
 import { avatarSrc } from "../avatar";
+import { canPin } from "../runners";
 import { useStore } from "../store";
 import { RunnerDot } from "./RunnerStatus";
 import { SessionRow } from "./SessionRow";
@@ -126,7 +127,7 @@ export function Sidebar() {
     const isExp = !!expanded && r.runnerId === expanded.runnerId && r.id === expanded.sessionId;
     return (
       <Fragment key={`${r.runnerId}:${r.id}`}>
-        <SessionRow row={r} now={now} selected={isExp && !selParent} runnerLabel={many ? runnerName(r.runnerId) : undefined} />
+        <SessionRow row={r} now={now} selected={isExp && !selParent} runnerLabel={many ? runnerName(r.runnerId) : undefined} canPin={canPin(runners, r.runnerId)} />
         {isExp && childRows()}
       </Fragment>
     );
@@ -207,7 +208,7 @@ export function Sidebar() {
         )}
       </div>
       <div className="t-rows">
-        {rows.length === 0 && <div className="t-empty-line">{q ? "No sessions match." : online.length ? "No sessions yet." : "No runner connected."}</div>}
+        {rest.length === 0 && <div className="t-empty-line">{q ? "No sessions match." : !online.length ? "No runner connected." : pinned.length ? "No other recent sessions." : "No sessions yet."}</div>}
         {rest.slice(0, shown).map(sessionRow)}
         {rest.length > shown && (
           <button type="button" className="t-more" onClick={() => setShown(shown + PAGE)}>

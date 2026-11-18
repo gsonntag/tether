@@ -40,6 +40,7 @@ export function recentSessions(summaries: Record<string, SummaryState>, query = 
  * pinned, across runners. An archived one is never pinned (archiving unpins).
  */
 export function splitPinned(list: Row[]): { pinned: Row[]; rest: Row[] } {
+  // Each runner stamps its own pins: across runners the order is as good as their clocks.
   const isPinned = (r: Row) => !!r.pinned && !r.archived && !r.parentSessionId;
   const pinned = list.filter(isPinned).sort((a, b) => a.pinned! - b.pinned! || a.runnerId.localeCompare(b.runnerId) || a.id.localeCompare(b.id));
   return { pinned, rest: list.filter((r) => !isPinned(r)) };

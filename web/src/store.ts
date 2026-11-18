@@ -354,6 +354,11 @@ export async function setArchived(runnerId: string, sessionId: string, archived:
   set({ archiveEdit: { runnerId, sessionId, archived } });
 }
 
+/** Pins or unpins a session (SPEC §10 Pinning); throws the runner's error. The row's change comes as a summary. */
+export async function setPinned(runnerId: string, sessionId: string, pinned: boolean) {
+  await rpc(runnerId, "pinSession", { sessionId, pinned });
+}
+
 /** A runner's Home agent tabs and current chat, from an rpc's answer or a broadcast: only a newer one replaces what's here. */
 export function noteHomeChat(runnerId: string, u: HomeChatUpdate) {
   const next = mergeHomeChat(get().homeChats[runnerId], u);
