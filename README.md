@@ -38,6 +38,9 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
   TUI is a choice in the same panel. Claude hands the session off to `claude --resume` in tmux and
   takes it back when you click **Back to Tether**. Codex shares the live thread with its TUI.
   Terminals outlive runner restarts.
+- **Changes** (SPEC §10): the session folder's git diff beside the chat, uncommitted or the whole
+  branch. Click lines to comment, then **Send to agent** puts the comments in the composer as one
+  message.
 - **Change session harness** (SPEC §15): continues a session on the other harness, or on the same
   harness with another billing source. The old session stays as it was.
 

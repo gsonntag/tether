@@ -228,7 +228,7 @@ is dropped, so `plan` is always the plan's.
 `queue`, `editQueued`, `cancelQueued`, `interrupt`, `answerRequest`, `setModel`, `setEffort`,
 `setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `setSessionArchived`, `openTerminal`, `closeTerminal`,
 `terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands). The move module
-adds `moveOptions` and `moveSession` (§15).
+adds `moveOptions` and `moveSession` (§15), the git module `gitDiff` (§10 Changes).
 
 ## 6. Adapters
 
@@ -863,6 +863,7 @@ event (with the message's text) and the queued message's id from `SessionActions
   their resets) and the **Terminal** button. Those two
   chips come last in the row, so on a phone they are what scrolls out of view. Always follow the bottom unless you scroll up.
 - **Terminal panel:** full screen on phones, beside or instead of the transcript on desktop.
+- **Changes pane:** the session folder's git diff, in the terminal panel's place (Changes below).
 - **Home** (P5): one ranked inbox: requests, then finished-unread, then working. An archived session
   stays while it needs you or is working.
 - **Responsive:** one layout that works at 375 px. Every action reachable by touch.
@@ -1097,6 +1098,29 @@ would go to the source being left, a deployment name to the shared ChatGPT daemo
 Azure process. The carry itself drops an Azure deployment name leaving Azure and takes the deployment
 matching the model (else the first) arriving there; the model can be changed once it's done. On Claude a
 source change switches in place, so there is nothing to wait for.
+
+### Changes
+
+**Changes** in the session header opens the folder's git diff where the terminal panel goes (one or
+the other): beside the transcript, a full-screen sheet on a phone. Scopes: **Uncommitted** (working
+tree and index against `HEAD`, untracked files included) and **Branch** (since the merge base with
+`origin/HEAD`, else `main` or `master`, committed or not). The `git` module's `gitDiff { sessionId,
+scope }` answers with files (path, old path, status, added and removed lines, hunks), the branch and
+the base. It reads only: git as an argv in the session's folder, a timeout, optional locks off, no
+external diff or textconv; untracked files from `ls-files --others --exclude-standard`, each diffed
+against `/dev/null` with `--no-index`. A file over 3,000 changed lines or 512 KB of hunks shows its
+counts only, as do files past 1.5 MB of hunks in all, and past 1,000 files the rest are a count.
+Binary files say so, and so does a folder outside a repo or a branch with nothing to compare with.
+The pane loads on opening, on a scope change, when a turn ends, and on Refresh. Read access is
+enough: it changes nothing.
+
+**Line comments.** Click or tap a line for a comment; Shift-click or drag the numbers (a second tap
+on touch, while the comment is empty) for a range within a hunk. Comments show under their lines
+and collect in a tray; they're drafts in this browser per session (`localStorage`) until **Send to
+agent** puts them in the composer as one message, each as `` `path:line` `` (or `path:a-b`, with
+"(removed)" for old-file lines) over its lines in a diff block. The message can be edited before it's
+sent; on a phone the sheet closes to show it. Later git views join this pane: a Turn scope, git
+actions in its header, a Files tab.
 
 ### Session names
 
