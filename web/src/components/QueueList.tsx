@@ -50,9 +50,9 @@ interface Edit {
 
 /** Why a scheduled message that came due waits for you. */
 const STUCK: Record<NonNullable<QueuedMessage["held"]>, string> = {
-  late: "Not sent: its time passed while the runner was off.",
-  failed: "Not sent: the send failed (see above).",
-  stopped: "Not sent: stopped as it went out.",
+  late: "Not sent: the runner was off for more than a day after its time.",
+  failed: "Not sent: the send failed or the turn before it failed.",
+  stopped: "Not sent: you pressed Stop while it was due.",
 };
 
 /**
@@ -195,13 +195,12 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
       // Saving it empty cancels it: that's what you asked for, not an edit to keep.
       if (!text.trim()) setEdit(undefined);
       try {
-        // A new time first: one refused (passed) keeps the edit open, the text unchanged.
-        if (edit?.when !== undefined && edit.when !== edit.whenOriginal && text.trim()) {
-          const at = fromLocalInput(edit.when);
-          if (at === undefined) throw new Error("Pick a date and time.");
-          await rpc(runnerId, "scheduleQueued", { sessionId, id: m.id, at });
-        }
-        if (editable(m) && (text !== m.text || !text.trim())) await rpc(runnerId, "editQueued", { sessionId, id: m.id, text });
+        // Text and a new time in one change (a time refused keeps the edit open, nothing changed).
+        // An unchanged time stays as it was (a held message stays held).
+        const newTime = edit?.when !== undefined && edit.when !== edit.whenOriginal && !!text.trim();
+        const at = newTime ? fromLocalInput(edit!.when!) : undefined;
+        if (newTime && at === undefined) throw new Error("Pick a date and time.");
+        if (newTime || (editable(m) && (text !== m.text || !text.trim()))) await rpc(runnerId, "editQueued", { sessionId, id: m.id, text: editable(m) ? text : m.text, ...(at !== undefined ? { at } : {}) });
         setEdit(undefined);
       } catch (e) {
         // It left the queue just now: the panel above keeps the edit.
@@ -335,7 +334,7 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
                       <>
                         <span className="t-scheduled-main">
                           <span className="t-scheduled-when">
-                            {m.held ? `${STUCK[m.held]} It was for ${whenLabel(m.at!, now)}.` : m.at! <= now ? `Due ${whenLabel(m.at!, now)}: goes when the session is free.` : `Sends ${whenLabel(m.at!, now)}`}
+                            {m.held ? `${STUCK[m.held]} It was for ${whenLabel(m.at!, now)}.` : m.asap ? "Sending now: goes when the session is free." : m.at! <= now ? `Due ${whenLabel(m.at!, now)}: goes when the session is free.` : `Sends ${whenLabel(m.at!, now)}`}
                           </span>
                           {body(m)}
                         </span>
@@ -349,9 +348,9 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
                             aria-label="Edit"
                             title={editable(m) ? "Edit the message or its time" : "Change its time"}
                             onClick={() => {
-                              // A time that passed (held) starts the field at an hour from now.
-                              const when = toLocalInput(m.at! > Date.now() ? m.at! : Date.now() + 60 * 60 * 1000);
-                              setEdit({ id: m.id, original: m.text, draft: m.text, when, whenOriginal: m.held ? undefined : toLocalInput(m.at!) });
+                              // The field starts at its time: saved unchanged, the time stays (a held one stays held).
+                              const when = toLocalInput(m.at!);
+                              setEdit({ id: m.id, original: m.text, draft: m.text, when, whenOriginal: when });
                             }}
                           >
                             <PencilIcon aria-hidden />

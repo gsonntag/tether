@@ -36,7 +36,8 @@ export function SendLater({ onPick, onClose, busy }: { onPick: (at: number) => v
       <span className="t-send-later-title">Send later</span>
       <span className="t-send-later-presets">
         {list.map((p) => (
-          <Button key={p.key} label={p.label} size="sm" variant="secondary" isDisabled={busy} onClick={() => onPick(p.at)} />
+          // Computed again on the click: a picker left open a while still means "in 1 hour" from now.
+          <Button key={p.key} label={p.label} size="sm" variant="secondary" isDisabled={busy} onClick={() => onPick(presets(new Date()).find((x) => x.key === p.key)?.at ?? p.at)} />
         ))}
       </span>
       <span className="t-send-later-custom">
@@ -57,7 +58,11 @@ export function SendLater({ onPick, onClose, busy }: { onPick: (at: number) => v
         <Button label="Schedule" size="sm" variant="primary" isDisabled={busy} onClick={pickCustom} />
         <Button label="Cancel" size="sm" variant="ghost" onClick={onClose} />
       </span>
-      {error && <span className="t-inline-status error">{error}</span>}
+      {error && (
+        <span className="t-inline-status error" role="alert">
+          {error}
+        </span>
+      )}
     </div>
   );
 }

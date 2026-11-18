@@ -40,8 +40,10 @@ test("only scheduled: no head, no Resume", () => {
 });
 
 test("one that waits for you says why", () => {
-  expect(html(state([{ id: "b", text: "x", queuedAt: 1, at: Date.now() - 2 * 86400_000, held: "late" }]))).toContain("Not sent: its time passed while the runner was off.");
+  expect(html(state([{ id: "b", text: "x", queuedAt: 1, at: Date.now() - 2 * 86400_000, held: "late" }]))).toContain("Not sent: the runner was off for more than a day after its time.");
   expect(html(state([{ id: "b", text: "x", queuedAt: 1, at: Date.now() - 1000 }]))).toContain("goes when the session is free");
+  expect(html(state([{ id: "b", text: "x", queuedAt: 1, at: Date.now() - 1000, asap: true }]))).toContain("Sending now");
+  expect(html(state([{ id: "b", text: "x", queuedAt: 1, at: Date.now() - 1000, held: "stopped" }]))).toContain("you pressed Stop while it was due");
 });
 
 test("the late notice says when it was for and when it went, in local time", () => {
