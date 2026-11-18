@@ -231,8 +231,8 @@ export interface Ops {
   listDir: { args: { sessionId: string; path: string; hidden?: boolean }; result: DirList };
   /** a file in the session's folder: text, an image (base64) or "binary"; over 1 MB `tooBig` unless `head` (a text file's first 1 MB). Read-only, only inside */
   readFile: { args: { sessionId: string; path: string; maxBytes?: number; head?: boolean }; result: FileRead };
-  /** files in the session's folder whose path matches `query` (the Files tab's filter), best first. gitignored ones never */
-  findFiles: { args: { sessionId: string; query: string; hidden?: boolean }; result: FindResult };
+  /** files in the session's folder whose path matches `query` (the Files tab's filter), best first. gitignored ones never. The folder's list is kept 5 s; `fresh` lists it again */
+  findFiles: { args: { sessionId: string; query: string; hidden?: boolean; fresh?: boolean }; result: FindResult };
   /** moves a session to another harness: a new session there; the old one stays as it is */
   moveSession: { args: { sessionId: string; harness: string; model?: string; effort?: string; source?: BillingSource }; result: { sessionId: string } };
 

@@ -20,9 +20,9 @@ export const filesModule: Module = {
     ctx.ops.register("readFile", async ({ sessionId, path, maxBytes, head }) =>
       readFile(await rootOf(sessionId), path, { ...(typeof maxBytes === "number" ? { maxBytes } : {}), head: head === true }),
     );
-    ctx.ops.register("findFiles", async ({ sessionId, query, hidden }) => {
+    ctx.ops.register("findFiles", async ({ sessionId, query, hidden, fresh }) => {
       if (typeof query !== "string") throw new Error("query is required.");
-      return finder.find(await rootOf(sessionId), query.slice(0, 200), hidden === true);
+      return finder.find(await rootOf(sessionId), query.slice(0, 200), hidden === true, fresh === true);
     });
   },
 };

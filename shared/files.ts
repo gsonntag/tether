@@ -30,7 +30,16 @@ export interface DirList {
 }
 
 export type FileRead =
-  | { path: string; size: number; kind: "text"; text: string; /** only the first `maxBytes` (head) */ cut?: boolean }
+  | {
+      path: string;
+      size: number;
+      kind: "text";
+      text: string;
+      /** only the first `maxBytes` (head) */
+      cut?: boolean;
+      /** (head only) not UTF-8, shown with U+FFFD, or cut further to fit (control characters escape to 6 bytes each) */
+      lossy?: boolean;
+    }
   | { path: string; size: number; kind: "image"; mime: string; /** base64 */ data: string }
   | { path: string; size: number; kind: "binary" }
   | { path: string; size: number; kind: "tooBig" };
@@ -137,8 +146,8 @@ export function rankMatches(paths: Iterable<string>, query: string, max = FIND_R
   return { paths: hits.slice(0, max).map((h) => h.p), more: hits.length > max };
 }
 
-/** What Mention puts in the composer: `@path`, quoted when it has spaces. */
-export const mentionOf = (path: string) => (/\s|"/.test(path) ? `@"${path.replace(/"/g, '\\"')}"` : `@${path}`);
+/** What Mention puts in the composer: `@path`, `@"path"` when it has spaces (and no `"`, which can't be quoted). */
+export const mentionOf = (path: string) => (/\s/.test(path) && !path.includes('"') ? `@"${path}"` : `@${path}`);
 
 /** "12 KB" */
 export function sizeLabel(n: number): string {

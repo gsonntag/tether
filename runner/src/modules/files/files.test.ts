@@ -276,3 +276,97 @@ test("the ops: the session's folder, checked args", async () => {
   const f = await ops.handle("findFiles", { sessionId: "s", query: "readme" });
   expect(f.ok && f.data).toEqual({ paths: ["README.md"], more: false });
 });
+
+test("a link swapped in on the path while reading is refused by the handle (Linux)", async () => {
+  if (process.platform !== "linux") return;
+  const base = temp();
+  const d = join(base, "root");
+  mkdirSync(join(d, "sub"), { recursive: true });
+  writeFileSync(join(d, "sub", "f.txt"), "inside\n");
+  mkdirSync(join(base, "outside", "secretdir"), { recursive: true });
+  writeFileSync(join(base, "outside", "secretdir", "f.txt"), "SECRET\n");
+  writeFileSync(join(base, "outside", "secretdir", "hidden-name.txt"), "x\n");
+  // Swaps sub for a link out and back, as fast as it can, for 2.5 s.
+  const swap = Bun.spawn(
+    ["python3", "-c", "import os,sys,time\nos.chdir(sys.argv[1])\nend=time.time()+2.5\nwhile time.time()<end:\n  os.rename('sub','subx'); os.symlink('../outside/secretdir','sub'); os.unlink('sub'); os.rename('subx','sub')", d],
+    { stdout: "ignore", stderr: "ignore" },
+  );
+  const root = await realRoot(d);
+  let leaks = 0;
+  let tries = 0;
+  const end = Date.now() + 2200;
+  while (Date.now() < end) {
+    tries++;
+    try {
+      if ((await listDir(root, "sub", true)).entries.some((e) => e.name === "hidden-name.txt")) leaks++;
+    } catch {}
+    try {
+      const r = await readFile(root, "sub/f.txt");
+      if (r.kind === "text" && r.text.includes("SECRET")) leaks++;
+    } catch {}
+    try {
+      if ((await new Finder(() => tries * 10_000).find(root, "hidden-name", true)).paths.length) leaks++;
+    } catch {}
+  }
+  await swap.exited;
+  expect(tries).toBeGreaterThan(20);
+  expect(leaks).toBe(0);
+}, 10_000);
+
+test("links: outside whether or not the target exists; broken only by an inside target", async () => {
+  const { base, d } = folder();
+  symlinkSync(join(base, "no-such-thing"), join(d, "out-missing"));
+  symlinkSync("../../etc/nope", join(d, "out-rel-missing"));
+  const by = Object.fromEntries((await listDir(await realRoot(d), "", true)).entries.map((e) => [e.name, e.to]));
+  expect(by["out-missing"]).toBe("outside");
+  expect(by["out-rel-missing"]).toBe("outside");
+  expect(by["broken"]).toBe("broken");
+  expect(by["loop-a"]).toBe("broken");
+});
+
+test("head: text that isn't UTF-8 or is mostly escapes shows lossily, marked; whole files stay binary", async () => {
+  const d = temp();
+  const root = await realRoot(d);
+  writeFileSync(join(d, "latin.txt"), Buffer.concat([Buffer.from("caf"), Buffer.alloc(FILE_VIEW_MAX + 10, 0xe9)]));
+  const l = await readFile(root, "latin.txt", { head: true });
+  expect(l).toMatchObject({ kind: "text", cut: true, lossy: true });
+  expect((l as { text: string }).text.startsWith("caf�")).toBe(true);
+  writeFileSync(join(d, "ctl.txt"), "\u0001".repeat(FILE_VIEW_MAX + 10));
+  const c = await readFile(root, "ctl.txt", { head: true });
+  expect(c).toMatchObject({ kind: "text", cut: true, lossy: true });
+  expect(utf8Length(JSON.stringify(c))).toBeLessThan(FRAME_BYTES_MAX);
+  writeFileSync(join(d, "small-latin.txt"), Buffer.from([0x63, 0xe9]));
+  expect((await readFile(root, "small-latin.txt")).kind).toBe("binary");
+  // A NUL is binary even for the head.
+  writeFileSync(join(d, "nul.txt"), Buffer.concat([Buffer.from([0]), Buffer.alloc(FILE_VIEW_MAX + 10, 0x61)]));
+  expect((await readFile(root, "nul.txt", { head: true })).kind).toBe("binary");
+});
+
+test("a file that says it's empty (/proc) is read as empty, but for the head", async () => {
+  if (process.platform !== "linux") return;
+  const root = await realRoot("/proc/self");
+  expect(await readFile(root, "environ")).toMatchObject({ kind: "text", text: "", size: 0 });
+});
+
+test("find: the walk's cap says partial; nested repos and gitlinks aren't files; fresh lists again", async () => {
+  const d = temp();
+  for (let i = 0; i < 5; i++) writeFileSync(join(d, `f${i}.txt`), "");
+  const capped = await new Finder(Date.now, 3).find(await realRoot(d), "f", false);
+  expect(capped.paths.length).toBe(3);
+  expect(capped.partial).toBe(true);
+
+  const r = temp();
+  sh(r, "init", "-q");
+  writeFileSync(join(r, "top.txt"), "");
+  mkdirSync(join(r, "nested"));
+  sh(join(r, "nested"), "init", "-q");
+  writeFileSync(join(r, "nested", "inner.txt"), "");
+  const root = await realRoot(r);
+  let now = 0;
+  const f = new Finder(() => now);
+  expect((await f.find(root, "nested", true)).paths).toEqual([]);
+  expect((await f.find(root, "top", true)).paths).toEqual(["top.txt"]);
+  writeFileSync(join(r, "top2.txt"), "");
+  expect((await f.find(root, "top", true)).paths).toEqual(["top.txt"]);
+  expect((await f.find(root, "top", true, true)).paths).toEqual(["top.txt", "top2.txt"]);
+});

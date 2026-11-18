@@ -44,7 +44,8 @@ test("rankMatches: best first, shorter paths first among equals, capped", () => 
 test("mentionOf: @path, quoted with spaces", () => {
   expect(mentionOf("src/a.ts")).toBe("@src/a.ts");
   expect(mentionOf("my docs/a b.md")).toBe('@"my docs/a b.md"');
-  expect(mentionOf('we"ird.txt')).toBe('@"we\\"ird.txt"');
+  expect(mentionOf("we\"ird.txt")).toBe("@we\"ird.txt");
+  expect(mentionOf("a \"b\".txt")).toBe("@a \"b\".txt");
 });
 
 test("imageType and sizeLabel", () => {
