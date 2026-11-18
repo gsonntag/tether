@@ -311,6 +311,11 @@ export interface PlanWindow {
 export interface PlanUsage {
   fiveHour?: PlanWindow;
   week?: PlanWindow;
+  /**
+   * A report only: it names every window the account has, so one it leaves out is gone (a plan
+   * switched to one without it). Absent: it may name just some, the rest stand.
+   */
+  complete?: boolean;
 }
 
 /**

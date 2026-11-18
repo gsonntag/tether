@@ -1130,6 +1130,15 @@ describe("context", () => {
     expect((await core.subscribe("claude:late")).state.plan).toEqual({ week: { percent: 10 }, fiveHour: { percent: 3 } });
   });
 
+  test("a complete plan report clears a window the plan no longer has", async () => {
+    const { adapter, core } = setup();
+    adapter.addStored("a", [user("a")]);
+    await core.subscribe("claude:a");
+    core.notePlan("claude", { week: { percent: 10 }, fiveHour: { percent: 3 } });
+    core.notePlan("claude", { week: { percent: 12 }, complete: true });
+    expect(core.sessions.get("claude:a")!.state.plan).toEqual({ week: { percent: 12 } });
+  });
+
   test("a harness that knows its plan limits without a turn reports them on opening", async () => {
     const { adapter, core } = setup();
     adapter.addStored("a", [user("a")]);

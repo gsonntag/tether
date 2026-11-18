@@ -102,7 +102,13 @@ export function planLines(plan: PlanUsage | undefined, now = Date.now()): string
 
 /** A report's windows, marked with when it came. */
 export function reportedAt(plan: PlanUsage, at = Date.now()): PlanUsage {
-  return { ...(plan.fiveHour ? { fiveHour: { ...plan.fiveHour, at } } : {}), ...(plan.week ? { week: { ...plan.week, at } } : {}) };
+  return { ...(plan.fiveHour ? { fiveHour: { ...plan.fiveHour, at } } : {}), ...(plan.week ? { week: { ...plan.week, at } } : {}), ...(plan.complete ? { complete: true } : {}) };
+}
+
+/** What's known after a report: a complete one replaces it all, a partial one only the windows it names. */
+export function mergePlan(known: PlanUsage | undefined, report: PlanUsage): PlanUsage {
+  const { complete, ...windows } = report;
+  return complete ? windows : { ...known, ...windows };
 }
 
 /** The header's usage chip: what the session draws from, with the plan's limits only if it's a plan. */

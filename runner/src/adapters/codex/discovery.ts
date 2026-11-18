@@ -374,9 +374,9 @@ export async function codexStoredBilling(nativeId: string): Promise<Billing> {
 const PLAN_MS = 60_000;
 let planRead: { at: number; p: Promise<PlanUsage | undefined> } | undefined;
 
-/** The account's plan limits, from the daemon (no model turn). Undefined: an account without them. */
+/** The account's plan limits, from the daemon (no model turn): all it has, so a window gone is cleared. Undefined: an account without them. */
 export function codexPlan(): Promise<PlanUsage | undefined> {
-  if (!planRead || Date.now() - planRead.at > PLAN_MS) planRead = { at: Date.now(), p: call("account/rateLimits/read", { excludeResetCreditDetails: true }).then((r: any) => { const plan = reportedPlan(r?.rateLimits); return plan && reportedAt(plan); }, () => undefined) };
+  if (!planRead || Date.now() - planRead.at > PLAN_MS) planRead = { at: Date.now(), p: call("account/rateLimits/read", { excludeResetCreditDetails: true }).then((r: any) => { const plan = reportedPlan(r?.rateLimits); return plan && reportedAt({ ...plan, complete: true }); }, () => undefined) };
   return planRead.p;
 }
 

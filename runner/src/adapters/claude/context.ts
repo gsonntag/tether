@@ -7,7 +7,7 @@
 import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { reportedAt } from "../../../../shared/labels";
+import { mergePlan, reportedAt } from "../../../../shared/labels";
 import { UNKNOWN_BILLING, type Billing, type ContextUse, type PlanUsage, type PlanWindow } from "../../../../shared/transcript";
 import { CONFIG_DIR } from "../../config";
 import type { Entry } from "./jsonl";
@@ -79,9 +79,10 @@ export function noteWindows(modelUsage: unknown, sessionId: string, model: strin
 
 /**
  * A rate_limit_event's plan limits. Each may name one window (rateLimitType) and, on newer CLIs, all
- * it knows (unifiedWindows): utilization 0 to 1, resets in seconds. Windows it doesn't name are
- * left out: most reports here have only the week. A rejected one marks its window exhausted.
- * Undefined: no number in it.
+ * it knows (unifiedWindows): utilization 0 to 1, resets in seconds. With unifiedWindows the report
+ * is complete: a window it doesn't list, the plan no longer has (some plans have only the week).
+ * Without, windows it doesn't name are left as they were. A rejected one marks its window
+ * exhausted. Undefined: no number in it.
  */
 export function planOf(info: any): PlanUsage | undefined {
   const window = (w: any): PlanWindow | undefined =>
@@ -91,7 +92,8 @@ export function planOf(info: any): PlanUsage | undefined {
     info?.status !== "rejected" || info?.rateLimitType !== type ? w : { percent: 100, ...(typeof info.resetsAt === "number" ? { resetsAt: info.resetsAt * 1000 } : {}), ...w, exhausted: true };
   const pick = (type: string) => out(type, window(info?.unifiedWindows?.[type]) ?? (info?.rateLimitType === type ? window(info) : undefined));
   const [fiveHour, week] = [pick("five_hour"), pick("seven_day")];
-  return fiveHour || week ? { ...(fiveHour ? { fiveHour } : {}), ...(week ? { week } : {}) } : undefined;
+  const complete = typeof info?.unifiedWindows === "object" && info.unifiedWindows !== null;
+  return fiveHour || week ? { ...(fiveHour ? { fiveHour } : {}), ...(week ? { week } : {}), ...(complete ? { complete } : {}) } : undefined;
 }
 
 const PROVIDERS: Record<string, string> = {
@@ -142,7 +144,7 @@ export function keptStart(sessionId: string): (Billing & { at: number }) | undef
 /** The latest report, kept for stored sessions after a restart. */
 export function keepPlan(report: PlanUsage) {
   const w = load();
-  w.plan = { ...w.plan, ...reportedAt(report) };
+  w.plan = mergePlan(w.plan, reportedAt(report));
   save();
 }
 export const keptPlan = () => load().plan;

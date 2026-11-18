@@ -15,6 +15,7 @@ import type { SessionPrefs, WorktreeRecord } from "../config";
 import { partChunk, type PartChunk } from "../../../shared/limits";
 import type { FolderCheck, RunnerToServer } from "../../../shared/protocol";
 import { parseSessionId, sessionId } from "../../../shared/ids";
+import { mergePlan } from "../../../shared/labels";
 import type { HarnessId, LiveState, Msg, PlanUsage, ProjectInfo, Request, SessionEvent, SessionSnapshot, SessionSummary } from "../../../shared/transcript";
 import { AGENT_NAMES, HARNESS_LABELS, TRANSCRIPT_PAGE, UNKNOWN_BILLING } from "../../../shared/transcript";
 import type { Adapter, StartOpts } from "./adapter";
@@ -470,7 +471,7 @@ export class SessionCore {
 
   /** The account's plan limits, the latest report, on all its sessions. */
   notePlan(harness: HarnessId, report: PlanUsage) {
-    const plan = { ...this.plans.get(harness), ...report };
+    const plan = mergePlan(this.plans.get(harness), report);
     this.plans.set(harness, plan);
     for (const s of this.sessions.values()) if (s.summary.harness === harness && !s.summary.parentSessionId) s.setState({ plan });
   }

@@ -180,9 +180,9 @@ test("stored: sidechain messages don't count", async () => {
 const WEEK_ONLY = { status: "allowed_warning", resetsAt: 1793901600, rateLimitType: "seven_day", utilization: 0.62, unifiedWindows: { seven_day: { utilization: 0.62, resetsAt: 1793901600, status: "allowed" } } };
 const BOTH = { status: "allowed", resetsAt: 1793266800, rateLimitType: "five_hour", unifiedWindows: { five_hour: { utilization: 0.05, resetsAt: 1793266800, status: "allowed" }, seven_day: { utilization: 0.36, resetsAt: 1793296800, status: "allowed" } } };
 
-test("plan limits: what the event says, windows it doesn't name left out", () => {
-  expect(planOf(WEEK_ONLY)).toEqual({ week: { percent: 62, resetsAt: 1793901600_000 } });
-  expect(planOf(BOTH)).toEqual({ fiveHour: { percent: 5, resetsAt: 1793266800_000 }, week: { percent: 36, resetsAt: 1793296800_000 } });
+test("plan limits: what the event says; with unifiedWindows it's all the plan has", () => {
+  expect(planOf(WEEK_ONLY)).toEqual({ week: { percent: 62, resetsAt: 1793901600_000 }, complete: true });
+  expect(planOf(BOTH)).toEqual({ fiveHour: { percent: 5, resetsAt: 1793266800_000 }, week: { percent: 36, resetsAt: 1793296800_000 }, complete: true });
   // An older CLI: the one window, at the top level.
   expect(planOf({ status: "allowed", rateLimitType: "five_hour", utilization: 0.5 })).toEqual({ fiveHour: { percent: 50 } });
   // A status with no number is no number.
@@ -191,14 +191,18 @@ test("plan limits: what the event says, windows it doesn't name left out", () =>
   expect(planOf({ status: "rejected", rateLimitType: "seven_day", utilization: 0.97 })).toEqual({ week: { percent: 97, exhausted: true } });
 });
 
-test("a rate_limit_event reports to the sink and is kept for stored sessions, merged", () => {
+test("a rate_limit_event reports to the sink and is kept for stored sessions", () => {
   const seen: any[] = [];
   const s = new ClaudeStream({ plan: (p: any) => seen.push(p), state() {} } as any, { nativeId: "n" });
   s.handle({ type: "rate_limit_event", rate_limit_info: BOTH });
-  s.handle({ type: "rate_limit_event", rate_limit_info: WEEK_ONLY });
+  // An older CLI's one-window report: the other window stands.
+  s.handle({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitType: "seven_day", utilization: 0.4 } });
   s.handle({ type: "rate_limit_event", rate_limit_info: { status: "allowed" } });
   expect(seen.length).toBe(2);
-  expect(keptPlan()).toEqual({ fiveHour: { percent: 5, resetsAt: 1793266800_000, at: expect.any(Number) }, week: { percent: 62, resetsAt: 1793901600_000, at: expect.any(Number) } });
+  expect(keptPlan()).toEqual({ fiveHour: { percent: 5, resetsAt: 1793266800_000, at: expect.any(Number) }, week: { percent: 40, at: expect.any(Number) } });
+  // The plan switched to one with no 5-hour window: the full list leaves it out, so it's gone.
+  s.handle({ type: "rate_limit_event", rate_limit_info: WEEK_ONLY });
+  expect(keptPlan()).toEqual({ week: { percent: 62, resetsAt: 1793901600_000, at: expect.any(Number) } });
 });
 
 // accountInfo as Claude Code 2.1.314 really reports it, in each environment.
