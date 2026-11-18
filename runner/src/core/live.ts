@@ -38,6 +38,7 @@ export const IDLE_CLOSE_MS = 5 * 60_000;
 /** What the quiet wait after a restart shows (SPEC §4). */
 const WAITING_TEXT = "Waiting for Claude Code from before the restart to finish…";
 const SETUP_TEXT = "The worktree's setup is still running.";
+const SETUP_FAILED_TEXT = "The worktree's setup failed.";
 const notice = (text: string, level: Msg["level"] = "info"): Msg => ({ id: `n-${randomUUID()}`, role: "notice", level, ts: Date.now(), parts: [{ type: "text", text }] });
 
 /**
@@ -233,8 +234,8 @@ export class LiveControl {
   }
 
   /**
-   * The setup ended. Done: what waited goes now. Failed: it stays held (you send something, or
-   * Resume as Send anyway), and Home shows the session failed.
+   * The setup ended. Done: what waited goes now. Failed: what waits, and what you send next, stays
+   * held until Resume (Send anyway), and Home shows the session failed.
    */
   setupEnded(s: Session, ok: boolean, why = "The worktree's setup failed.") {
     if (s.state.setup !== "running") return;
@@ -242,8 +243,7 @@ export class LiveControl {
     if (ok) {
       if (s.state.queueHeldBy === "setup") this.queue.release(s);
       this.queue.later(s.id);
-    } else if (s.state.queue.length) this.read.set(s.id, { failure: `${why} Your message waits: fix it, or send it anyway.` });
-    else this.read.set(s.id, { failure: why });
+    } else this.read.set(s.id, { failure: `${why} Your messages wait: fix it, or send them anyway.` });
     this.core.touch(s);
   }
 
@@ -318,9 +318,10 @@ export class LiveControl {
       if (o.queued) throw new Error(WAITING_TEXT);
       return void (await this.queue.add(id, text, attachments));
     }
-    // A new worktree's setup runs (SPEC §4): nothing goes before it's done; what you send waits, held.
-    if (!o.continued && s.state.setup === "running") {
-      if (o.queued) throw new Error(SETUP_TEXT);
+    // A new worktree's setup runs, or failed (SPEC §4): nothing goes before it's done, or you say
+    // Send anyway (Resume); what you send waits, held.
+    if (!o.continued && s.state.setup) {
+      if (o.queued) throw new Error(s.state.setup === "running" ? SETUP_TEXT : SETUP_FAILED_TEXT);
       return void (await this.queue.add(id, text, attachments));
     }
     if (o.stop && (s.state.status !== "idle" || s.sending)) {
@@ -1258,6 +1259,8 @@ export class LiveControl {
     s.starting ??= this.startDriver(s, observe).finally(() => {
       s.starting = undefined;
       this.core.scheduleEvict(s);
+      // A queue let go while it started (a worktree's setup ended, Resume) couldn't drain then.
+      if (s.state.queue.length && !s.state.queueHeld) this.queue.later(s.id);
     });
     return s.starting;
   }

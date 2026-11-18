@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { folderForBranch, randomSlug, slugOf } from "../../../../shared/worktree";
 import { saveConfig } from "../../config";
-import { FakeAdapter, say } from "../../core/fakeAdapter";
+import { FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
 import { Worktrees } from ".";
 import { addWorktree, defaultBase, findSetup, freeBranch, removeWorktree, repoOf, runGit } from "./git";
@@ -188,7 +188,7 @@ function runnerFor() {
   const prefsFile = join(dir, "runner.json");
   saveConfig({ runnerId: "t" }, prefsFile);
   const adapter = new FakeAdapter();
-  adapter.script = (text) => [say(`a-${text.slice(0, 10)}`, "ok")];
+  adapter.script = (text) => [say(`a-${text.slice(0, 10)}`, "ok"), idle];
   const runner = createRunner({ url: "http://x", token: "t", runnerId: "t", name: "t", version: "0", detectHarnesses: async () => [], adapters: [adapter], prefsFile, noticesFile: join(dir, "notices.json"), core: { evictMs: 60_000 } });
   cleanups.push(() => (void runner.shellRuns.stopAll(0), runner.core.stop()));
   const logs: string[] = [];
@@ -312,8 +312,27 @@ describe("New worktree", () => {
     const row = t.runner.core.sessions.get(id)!.summary;
     expect(row.queuePaused).toBe(true);
     expect(t.runner.core.o.prefs.get(id).failure).toContain("setup failed");
+    // Sent after it failed: held too, behind the first.
+    await t.runner.live.send(id, "and this");
+    expect(t.state(id).queue.map((m) => m.text)).toEqual(["do the thing", "and this"]);
+    // Send anyway: they go, and later sends go as usual.
     await t.runner.live.queue.resume(id);
     await until(() => t.adapter.drivers.at(-1)?.sent.includes("do the thing") ?? false);
+    expect(t.state(id).setup).toBeUndefined();
+    await until(() => t.adapter.drivers.at(-1)?.sent.includes("and this") ?? false);
+  });
+
+  test("a setup that ends while the harness is still starting: what waited goes once it has started", async () => {
+    const t = runnerFor();
+    let open!: () => void;
+    t.adapter.startGate = new Promise((r) => (open = r));
+    const r = withSetup("#!/bin/sh\nexit 0\n");
+    const made = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/slow" });
+    await t.runner.live.send(made.sessionId, "first");
+    await until(() => t.state(made.sessionId).setup === undefined);
+    expect(t.state(made.sessionId).queue.map((m) => m.text)).toEqual(["first"]);
+    open();
+    await until(() => t.adapter.drivers.at(-1)?.sent.includes("first") ?? false);
   });
 
   test("setup from .tether/config.json runs through the shell", async () => {

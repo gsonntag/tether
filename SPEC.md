@@ -115,8 +115,8 @@ claim any id not starting with `runner-` (`CLOSE_RUNNER_ID` otherwise; server/sr
   `TETHER_BRANCH` as a `!` card (§9) marked `setup`, whose output never goes to the agent (state
   `done`). While it runs (`LiveState.setup: "running"`) every send, the Home agent's too, queues held
   (`queueHeldBy: "setup"`, not shown as needing you) and Resume refuses; success releases the queue;
-  failure (`setup: "failed"`) keeps it held, Home shows the session failed, and Resume ("Send
-  anyway") or sending something lets it go. A restart mid-setup cuts the card off and leaves the hold
+  after a failure (`setup: "failed"`) what waits and what you send next stay held, Home shows the
+  session failed, and Resume ("Send anyway") lets them go and ends the gate. A restart mid-setup cuts the card off and leaves the hold
   for Resume. The Home agent's `start_session` takes `worktree: true`. Archive done (§10) removes it.
 - **Session:** `harness` + `nativeId` (the harness's own id) + `projectPath`. Tether's id is
   `${harness}:${nativeId}`. A session is in exactly one **mode** at a time:

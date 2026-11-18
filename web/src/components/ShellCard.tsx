@@ -65,7 +65,7 @@ export function ShellCard({ msg }: { msg: Msg }) {
     ? running
       ? "Setting up the new worktree · your first message waits for it"
       : failed
-        ? "Setup failed · your message waits: send it anyway, or send something new"
+        ? "Setup failed · what you send waits until you choose Send anyway"
         : "Setup done"
     : run.state === "running"
       ? `Running · the output goes to ${agent} when it finishes`

@@ -99,7 +99,7 @@ export class MessageQueue {
     this.roomFor(all, text, o.shell ? jsonBytes(o.shell.command) : 0);
     const m: QueuedMessage = { id: randomUUID(), text, ...(attachments.length ? { attachments } : {}), ...(o.shell ? { shell: o.shell } : {}), queuedAt: this.core.now() };
     // Queued while the TUI drives: it waits for Back to Tether. During the quiet wait: for its end.
-    const by = s.state.queueHeld ? undefined : s.state.mode === "terminal" ? "terminal" : this.host.waiting(s.id) ? "restart" : this.host.settingUp?.(s.id) ? "setup" : undefined;
+    const by = s.state.queueHeld ? undefined : s.state.mode === "terminal" ? "terminal" : this.host.waiting(s.id) ? "restart" : s.state.setup ? "setup" : undefined;
     this.save(s, [...s.state.queue, m], by);
     this.later(s.id);
     return { id: m.id };
@@ -147,6 +147,8 @@ export class MessageQueue {
     if (this.host.waiting(s.id)) throw new Error("Claude Code from before the restart may still be working. What waits goes on once it's finished.");
     if (s.retry) throw new Error("A rate limit retry is waiting. Cancel it or wait for it to finish.");
     if (this.host.settingUp?.(s.id)) throw new Error("The worktree's setup is still running. What waits goes once it's done.");
+    // After a failed setup this is Send anyway: from now on sends go as usual.
+    if (s.state.setup === "failed") s.setState({ setup: undefined });
     this.release(s);
     this.later(s.id);
   }

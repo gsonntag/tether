@@ -263,7 +263,7 @@ export function NewSessionDialog() {
                   <span className="t-field-label">Branch</span>
                   <input className="t-search" placeholder={ws.branch} value={branch} autoComplete="off" spellCheck={false} onChange={(e) => setBranch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void create()} />
                 </label>
-                <span className="t-inline-status t-ws-note">
+                <span className="t-ws-note">
                   A new folder beside the repo, from {ws.base}
                   {ws.setup ? (
                     <>
