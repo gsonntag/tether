@@ -33,6 +33,7 @@ export class Prefs {
   private open: SavedRequest[];
   private closed: ClosedRequest[];
   private runnerSettings: RunnerSettings;
+  private alive?: number;
 
   constructor(
     private file = CONFIG_FILE,
@@ -43,6 +44,20 @@ export class Prefs {
     this.open = Array.isArray(cfg.requests) ? cfg.requests : [];
     this.closed = Array.isArray(cfg.closedRequests) ? cfg.closedRequests : [];
     this.runnerSettings = cfg.settings && typeof cfg.settings === "object" ? { ...cfg.settings } : {};
+    this.alive = typeof cfg.aliveAt === "number" && Number.isFinite(cfg.aliveAt) ? cfg.aliveAt : undefined;
+  }
+
+  /** When the runner was last seen running (as saved: from before this start, until set). */
+  aliveAt(): number | undefined {
+    return this.alive;
+  }
+
+  /** The runner is running now (saved with the next write). */
+  setAliveAt(t: number) {
+    this.alive = t;
+    this.dirty = true;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.flush(), this.delayMs);
   }
 
   /** The runner-wide settings. */
@@ -133,18 +148,20 @@ export class Prefs {
     if (!this.dirty) return;
     this.dirty = false;
     const cutoff = Date.now() - MAX_AGE_MS;
+    // A message scheduled far ahead (SPEC §9) keeps its session's entry however old it is.
+    const timed = (p: SessionPrefs) => Array.isArray(p.queue) && p.queue.some((m) => typeof m?.at === "number");
     const kept = Object.entries(this.map)
       // A replaced thread stays out of the lists for good: this is the only thing that says so.
-      .filter(([, p]) => p.carried || p.archived || (p.at ?? 0) >= cutoff)
-      .sort((a, b) => Number(!!b[1].carried) - Number(!!a[1].carried) || (b[1].at ?? 0) - (a[1].at ?? 0))
+      .filter(([, p]) => p.carried || p.archived || timed(p) || (p.at ?? 0) >= cutoff)
+      .sort((a, b) => Number(!!b[1].carried) - Number(!!a[1].carried) || Number(timed(b[1])) - Number(timed(a[1])) || (b[1].at ?? 0) - (a[1].at ?? 0))
       .slice(0, MAX_ENTRIES);
     this.map = Object.fromEntries(kept);
     // Reread, so a name edited by hand meanwhile isn't overwritten.
     const cfg = read(this.file);
     if (!cfg.runnerId) return; // not a runner's file: never invent one here
-    const { requests: _, closedRequests: __, settings: ___, ...rest } = cfg;
+    const { requests: _, closedRequests: __, settings: ___, aliveAt: ____, ...rest } = cfg;
     saveConfig(
-      { ...rest, runnerId: cfg.runnerId, ...(Object.keys(this.runnerSettings).length ? { settings: this.runnerSettings } : {}), sessions: this.map, ...(this.open.length ? { requests: this.open } : {}), ...(this.closed.length ? { closedRequests: this.closed } : {}) },
+      { ...rest, runnerId: cfg.runnerId, ...(this.alive !== undefined ? { aliveAt: this.alive } : {}), ...(Object.keys(this.runnerSettings).length ? { settings: this.runnerSettings } : {}), sessions: this.map, ...(this.open.length ? { requests: this.open } : {}), ...(this.closed.length ? { closedRequests: this.closed } : {}) },
       this.file,
     );
   }

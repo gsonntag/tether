@@ -255,11 +255,11 @@ export interface Ops {
   queue: { args: { sessionId: string; text: string; attachments?: Attachment[]; at?: number }; result: { id: string } };
   /**
    * A waiting message's time: `at` (ms, UTC) schedules it (or gives a scheduled one a new time);
-   * null sends it now (as soon as the session is free, ahead of the rest of the queue).
+   * null sends it now (as soon as the session is free, ahead of the rest of the queue; `asap`).
    */
   scheduleQueued: { args: { sessionId: string; id: string; at: number | null }; result: null };
-  /** Changes a waiting message's text (its attachments stay). */
-  editQueued: { args: { sessionId: string; id: string; text: string }; result: null };
+  /** Changes a waiting message's text (its attachments stay); `at`: a scheduled message's new time with it, in one change. */
+  editQueued: { args: { sessionId: string; id: string; text: string; at?: number }; result: null };
   cancelQueued: { args: { sessionId: string; id: string }; result: null };
   /** Moves a waiting message to position `to` among the unscheduled ones (0 goes next). */
   moveQueued: { args: { sessionId: string; id: string; to: number }; result: null };

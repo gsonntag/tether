@@ -10,10 +10,11 @@
 // A transient rate limit recovery blocks draining until the original message recovers or fails.
 //
 // Scheduled messages (`at`, SPEC §9 Scheduled sends) wait in the same queue for their time, apart
-// from the rest: holds are about the unscheduled messages, and a due one goes next whatever holds
-// those (it's a message you sent for then), but never while the TUI drives, during the quiet wait
-// after a restart, behind a rate limit retry or the running turn. One that came due more than a day
-// ago (the runner was off), or whose send failed, waits for you instead (`held`).
+// from the rest: holds are about the unscheduled messages, and one coming due goes next whatever
+// holds those (it's a message you sent for then), but never while the TUI drives, during the quiet
+// wait after a restart, behind a rate limit retry or the running turn. A Stop or a failed turn holds
+// the ones due at that moment; one the runner was off for more than a day after, or whose send
+// failed, waits for you too (`held`).
 
 import { randomUUID } from "node:crypto";
 import type { Attachment } from "../../../shared/attachments";
@@ -24,7 +25,7 @@ import { jsonBytes, MESSAGE_TEXT_MAX, QUEUE_BYTES_MAX, QUEUE_MAX, queuedBytes, s
 export const queueBytes = (q: QueuedMessage[]) => q.reduce((n, m) => n + queuedBytes(m), 0);
 import type { LiveState, Msg, QueuedMessage } from "../../../shared/transcript";
 import { badScheduleTime, isScheduled, nextScheduled, SCHEDULE_LATE_MAX_MS, SCHEDULE_LATE_NOTE_MS, scheduled, unscheduled } from "../../../shared/schedule";
-import { Scheduler } from "./scheduler";
+import { Scheduler, Uptime } from "./scheduler";
 import type { Session } from "./session";
 import type { SessionCore } from "./sessions";
 
@@ -55,6 +56,8 @@ export class MessageQueue {
   private cutOff: Set<string>;
   /** the one timer for every scheduled message */
   readonly scheduler: Scheduler;
+  /** when the runner was off (a message more than a day late for that waits for you) */
+  private uptime: Uptime;
 
   constructor(
     private core: SessionCore,
@@ -62,12 +65,13 @@ export class MessageQueue {
   ) {
     this.cutOff = new Set(core.o.prefs.running());
     this.scheduler = new Scheduler({ now: () => core.now(), next: () => this.nextDue(), fire: () => this.due() });
+    this.uptime = new Uptime(() => core.now(), { get: () => core.o.prefs.aliveAt(), set: (t) => core.o.prefs.setAliveAt(t) });
     const bus = core.o.bus;
     bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => {
       const s = core.sessions.get(sessionId);
       if (!s || s.summary.parentSessionId || !s.state.queue.length || recovering) return;
-      // A failed turn holds what waits: the next message would most likely fail the same way.
-      // (A scheduled message due meanwhile still goes: holds are about the rest.)
+      // A failed turn holds what waits (scheduled ones due now too): the next message would most
+      // likely fail the same way.
       if (error && !stopped) this.hold(s, "failed");
       this.later(sessionId);
     });
@@ -113,6 +117,7 @@ export class MessageQueue {
     if (all.length >= QUEUE_MAX) throw new Error(`At most ${QUEUE_MAX} messages can wait. Send or cancel some first.`);
     this.roomFor(all, text, o.shell ? jsonBytes(o.shell.command) : 0);
     const m: QueuedMessage = { id: randomUUID(), text, ...(attachments.length ? { attachments } : {}), ...(o.shell ? { shell: o.shell } : {}), queuedAt: this.core.now(), ...(later ? { at: Math.round(o.at!) } : {}) };
+    if (later) this.uptime.seen(true);
     // Queued while the TUI drives: it waits for Back to Tether. During the quiet wait: for its end.
     // (A scheduled message holds nothing: it waits for its time.)
     const by = s.state.queueHeld || later ? undefined : s.state.mode === "terminal" ? "terminal" : this.host.waiting(s.id) ? "restart" : undefined;
@@ -121,15 +126,22 @@ export class MessageQueue {
     return { id: m.id };
   }
 
-  async edit(id: string, msgId: string, text: string) {
+  /** A waiting message's text, and (`at`) a scheduled one's time with it, in one change. */
+  async edit(id: string, msgId: string, text: string, at?: number) {
     const s = await this.root(id);
     text = stripControls(text);
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     const m = this.find(s, msgId);
     if (m.shell) throw new Error("A command's output can't be edited. Cancel it instead.");
     if (!text.trim() && !m.attachments?.length) return this.cancel(id, msgId);
+    if (at !== undefined) {
+      const bad = badScheduleTime(at, this.core.now());
+      if (bad) throw new Error(bad);
+    }
     this.roomFor(this.withGoing(s).filter((x) => x.id !== msgId), text);
-    this.save(s, s.state.queue.map((x) => (x.id === msgId ? { ...x, text } : x)));
+    const next = at === undefined ? { ...m, text } : this.timed({ ...m, text }, Math.round(at));
+    this.save(s, s.state.queue.map((x) => (x.id === msgId ? next : x)));
+    if (at !== undefined) this.later(s.id);
   }
 
   async cancel(id: string, msgId: string) {
@@ -170,10 +182,33 @@ export class MessageQueue {
       const bad = badScheduleTime(at, now);
       if (bad) throw new Error(bad);
     }
-    const { held: _, ...rest } = m;
-    const next: QueuedMessage = { ...rest, at: at === null ? now : Math.round(at) };
+    const next = at === null ? { ...this.timed(m, now), asap: true as const } : this.timed(m, Math.round(at));
     this.save(s, s.state.queue.map((x) => (x.id === msgId ? next : x)));
     this.later(s.id);
+  }
+
+  /** A message with a (new) time: whatever held it, or made it Send now, no longer does. */
+  private timed(m: QueuedMessage, at: number): QueuedMessage {
+    const { held: _, asap: __, ...rest } = m;
+    this.uptime.seen(true);
+    return { ...rest, at };
+  }
+
+  /**
+   * Moves what waits to the session that takes this one's place (a source change, a move): the
+   * messages, scheduled ones too, and the queue's hold.
+   */
+  async handOver(fromId: string, toId: string) {
+    const from = await this.root(fromId);
+    const to = await this.root(toId);
+    const going = this.going.get(from.id);
+    const moving = from.state.queue;
+    if (!moving.length) return;
+    this.save(to, [...to.state.queue, ...moving], to.state.queueHeld ? undefined : (from.state.queueHeldBy ?? undefined));
+    this.save(from, [], null);
+    // The message going out still goes from here (to the new session, live.ts send follows movedTo).
+    if (going) this.persist(from);
+    this.later(to.id);
   }
 
   /** Resume: the queue goes on (now, when the session is idle). */
@@ -190,6 +225,9 @@ export class MessageQueue {
 
   /** The queue waits (Stop, a handoff, a failed turn, a restart). */
   hold(s: Session, by: HeldBy, o: { over?: boolean } = {}) {
+    // Stop, or a failed turn: the scheduled messages due right now wait for you too (ones coming due
+    // later still go at their time).
+    if (by === "stopped" || by === "failed") this.holdDue(s, by);
     if (!unscheduled(s.state.queue).length || (s.state.queueHeld && s.state.queueHeldBy === by)) return;
     // A queue you paused stays paused through a terminal round trip (Back to Tether releases only
     // what the terminal held); `over`: the hold being replaced is the handoff's own Stop.
@@ -243,23 +281,37 @@ export class MessageQueue {
     return next;
   }
 
-  /** The scheduler's tick: what's due goes (each session in turn); what's long past waits for you. */
+  /** The scheduler's tick: what's due goes (each session in turn); what the runner was off for long waits for you. */
   private due() {
+    this.uptime.seen();
     const now = this.core.now();
     for (const s of this.core.sessions.values()) {
       if (!s.state.queue.some((m) => isScheduled(m) && !m.held && m.at! <= now)) continue;
-      const late = (m: QueuedMessage) => isScheduled(m) && !m.held && now - m.at! > SCHEDULE_LATE_MAX_MS && this.going.get(s.id)?.id !== m.id;
-      if (s.state.queue.some(late)) {
-        this.save(s, s.state.queue.map((m) => (late(m) ? { ...m, held: "late" as const } : m)));
-        this.core.log(`${s.id}: a scheduled message is more than a day late; it waits for the person`);
-      }
+      this.holdLate(s);
       this.later(s.id);
     }
+  }
+
+  /** Due scheduled messages wait for you (`held`), but not the one going out. */
+  private holdDue(s: Session, why: NonNullable<QueuedMessage["held"]>, which: (m: QueuedMessage) => boolean = () => true) {
+    const now = this.core.now();
+    const going = this.going.get(s.id)?.id;
+    const due = (m: QueuedMessage) => isScheduled(m) && !m.held && m.at! <= now && m.id !== going && which(m);
+    if (!s.state.queue.some(due)) return false;
+    this.save(s, s.state.queue.map((m) => (due(m) ? { ...m, held: why } : m)));
+    return true;
+  }
+
+  /** The runner was off for more than a day after its time: it waits for you instead of going now. */
+  private holdLate(s: Session) {
+    if (this.holdDue(s, "late", (m) => !m.asap && this.uptime.offSince(m.at!) > SCHEDULE_LATE_MAX_MS)) this.core.log(`${s.id}: the runner was off for more than a day after a scheduled message's time; it waits for the person`);
   }
 
   /** What goes next: a scheduled message that's due (whatever holds the rest), else the queue's next. */
   private next(s: Session): QueuedMessage | undefined {
     const now = this.core.now();
+    // Checked here too: something may send before the first tick after a start.
+    this.holdLate(s);
     const due = scheduled(s.state.queue).find((m) => !m.held && m.at! <= now);
     if (due) return due;
     return s.state.queueHeld ? undefined : unscheduled(s.state.queue)[0];
@@ -300,7 +352,7 @@ export class MessageQueue {
       this.persist(s);
       // Sent late (the runner was off, or the session busy, at its time): the chat says when it was for.
       const now = this.core.now();
-      if (timed && now - next.at! >= SCHEDULE_LATE_NOTE_MS)
+      if (timed && !next.asap && now - next.at! >= SCHEDULE_LATE_NOTE_MS)
         s.apply({ type: "msg", msg: { id: `n-late-${next.id}`, role: "notice", level: "info", ts: now, scheduledFor: next.at!, parts: [{ type: "text", text: "Scheduled message sent late." }] } satisfies Msg });
       this.left(s, next!, "sent");
     } catch (e: any) {

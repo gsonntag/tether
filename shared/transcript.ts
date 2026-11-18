@@ -255,10 +255,13 @@ export interface QueuedMessage {
    */
   at?: number;
   /**
-   * A scheduled message that came due but waits for you (Send now, a new time, or cancel): its time
-   * passed more than a day ago (the runner was off), its send failed, or Stop cut it off.
+   * A scheduled message that came due but waits for you (Send now, a new time, or cancel): the runner
+   * was off for more than a day after its time, its send failed, or a Stop (or a failed turn) came
+   * while it was due.
    */
   held?: "late" | "failed" | "stopped";
+  /** Send now (`scheduleQueued` with null): due at once, never marked or held late */
+  asap?: true;
 }
 
 export interface TerminalState {

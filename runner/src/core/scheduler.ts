@@ -67,3 +67,43 @@ export class Scheduler {
     this.at = undefined;
   }
 }
+
+/** A gap this long between two looks at the clock was time the runner was off (or asleep). */
+export const DOWN_GAP_MS = 5 * 60_000;
+
+/**
+ * When the runner was off (SPEC §9 Scheduled sends: a message is held for you only when the runner
+ * was off for more than a day after its time, not when it waited behind a turn or the terminal).
+ * The last time it was seen running is saved (runner.json `aliveAt`) while scheduled messages wait;
+ * the time from then to this start, and any long gap between two looks (a machine asleep), was off.
+ */
+export class Uptime {
+  private last: number;
+  private saved?: number;
+  private down: { from: number; to: number }[] = [];
+
+  constructor(
+    private now: () => number,
+    private store: { get(): number | undefined; set(t: number): void },
+  ) {
+    const was = store.get();
+    this.last = now();
+    if (was !== undefined && this.last - was > DOWN_GAP_MS) this.down.push({ from: was, to: this.last });
+  }
+
+  /** The runner is running now. `save`: written now (a message was just scheduled), else every few minutes. */
+  seen(save = false) {
+    const t = this.now();
+    if (t - this.last > DOWN_GAP_MS) this.down = [...this.down, { from: this.last, to: t }].slice(-20);
+    this.last = Math.max(this.last, t);
+    if (save || this.saved === undefined || t - this.saved >= DOWN_GAP_MS) {
+      this.saved = t;
+      this.store.set(t);
+    }
+  }
+
+  /** How long the runner was off after `at`. */
+  offSince(at: number): number {
+    return this.down.reduce((n, d) => n + Math.max(0, d.to - Math.max(d.from, at)), 0);
+  }
+}

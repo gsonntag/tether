@@ -5,6 +5,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SCHEDULE_LATE_MAX_MS } from "../../../shared/schedule";
+import { sourceSwitchBlocker } from "../../../shared/sourceSwitch";
+import type { LiveState } from "../../../shared/transcript";
+import { readFileSync } from "node:fs";
 import type { RunnerToServer } from "../../../shared/protocol";
 import { saveConfig } from "../config";
 import { RequestBroker } from "./broker";
@@ -29,10 +32,16 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 const T0 = Date.UTC(2026, 10, 18, 12, 0);
 
-function setup(o: { prefsFile?: string; dir?: string; clock?: { t: number } } = {}) {
+function setup(o: { prefsFile?: string; dir?: string; clock?: { t: number }; slow?: string } = {}) {
   const clock = o.clock ?? { t: T0 };
   const adapter = new FakeAdapter();
-  adapter.script = (text) => (text.startsWith("boom") ? [() => Promise.reject(new Error("The source needs a key."))] : [say(`a-${text}`, `echo ${text}`)]);
+  // "boom…" fails to send; "hang…" runs until the test ends it.
+  adapter.script = (text) => (text.startsWith("boom") ? [() => Promise.reject(new Error("The source needs a key."))] : text.startsWith("hang") ? [] : [say(`a-${text}`, `echo ${text}`)]);
+  if (o.slow) {
+    // One session opens slowly (a big store): others' queues get going meanwhile.
+    const info = adapter.sessionInfo.bind(adapter);
+    adapter.sessionInfo = async (n: string) => (n === o.slow ? (await Bun.sleep(200), info(n)) : info(n));
+  }
   const bus = new EventBus<CoreEvents>();
   const frames: RunnerToServer[] = [];
   const dir = o.dir ?? mkdtempSync(join(tmpdir(), "tether-sched-"));
@@ -310,3 +319,157 @@ describe("scheduled messages", () => {
     await until(() => sent().length === 1);
   });
 });
+
+describe("scheduled messages, review", () => {
+  test("Stop holds the ones due behind the turn; ones coming due later still go", async () => {
+    const { adapter, core, live, sent, end, advance } = setup();
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "hang on");
+    await live.queue.add("claude:s1", "due", [], { at: T0 + MIN });
+    await live.queue.add("claude:s1", "later", [], { at: T0 + HOUR });
+    advance(2 * MIN);
+    await Bun.sleep(80);
+    await live.interrupt("claude:s1");
+    await Bun.sleep(150);
+    expect(sent()).toEqual(["hang on"]);
+    const s = await core.open("claude:s1");
+    expect(s.state.queue.find((m) => m.text === "due")?.held).toBe("stopped");
+    expect(s.summary.queuePaused).toBe(true);
+    advance(HOUR);
+    await until(() => sent().length === 2);
+    expect(sent().at(-1)).toBe("later");
+    end();
+  });
+
+  test("a failed turn holds the ones due behind it", async () => {
+    const { adapter, core, live, sent, advance } = setup();
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "hang on");
+    await live.queue.add("claude:s1", "due", [], { at: T0 + MIN });
+    advance(2 * MIN);
+    const d = adapter.drivers.at(-1)!;
+    d.sink.event({ type: "msg", msg: { id: "err", role: "assistant", ts: 1, parts: [], error: "overloaded" } });
+    d.sink.state({ status: "idle" });
+    await Bun.sleep(150);
+    expect(sent()).toEqual(["hang on"]);
+    expect((await core.open("claude:s1")).state.queue[0]?.held).toBe("failed");
+  });
+
+  test("on start, a message the runner was off for more than a day after is held even when another session opens slowly", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-sched-"));
+    const file = join(dir, "runner.json");
+    // As a runner that stopped at T0 left it: the stale one restored first, a slow one after it (so
+    // the first could go before the first tick).
+    const q = (id: string, text: string, at: number) => ({ projectPath: dir, at: Date.now(), queue: [{ id, text, queuedAt: T0, at }] });
+    saveConfig({ runnerId: "test", aliveAt: T0, sessions: { "claude:s1": q("a", "stale", T0 + HOUR), "claude:s2": q("b", "next week", T0 + 7 * 24 * HOUR) } }, file);
+    const clock = { t: T0 + HOUR + SCHEDULE_LATE_MAX_MS + 3 * HOUR };
+    const b = setup({ dir, prefsFile: file, clock, slow: "s2" });
+    expect(b.prefs.queued()).toEqual(["claude:s1", "claude:s2"]);
+    b.adapter.addStored("s1", []);
+    b.adapter.addStored("s2", []);
+    await b.live.queue.restore();
+    await Bun.sleep(150);
+    expect(b.sent()).toEqual([]);
+    expect((await b.core.open("claude:s1")).state.queue[0]?.held).toBe("late");
+  });
+
+  test("due behind the terminal for more than a day while the runner ran: still goes (only time off counts)", async () => {
+    const { adapter, core, live, sent, advance } = setup();
+    adapter.addStored("s1", []);
+    await live.queue.add("claude:s1", "timed", [], { at: T0 + MIN });
+    const s = await core.open("claude:s1");
+    live.setMode(s, "terminal");
+    // The runner keeps looking (one tick a minute) all the while.
+    for (let i = 0; i < 26 * 60; i++) advance(MIN);
+    expect(s.state.queue[0]?.held).toBeUndefined();
+    live.setMode(s, "live");
+    await until(() => sent().length === 1);
+  });
+
+  test("a machine asleep for more than a day after its time: held on waking", async () => {
+    const { adapter, core, live, sent, advance } = setup();
+    adapter.addStored("s1", []);
+    await live.queue.add("claude:s1", "timed", [], { at: T0 + MIN });
+    advance(30_000);
+    advance(SCHEDULE_LATE_MAX_MS + HOUR);
+    await Bun.sleep(100);
+    expect(sent()).toEqual([]);
+    expect((await core.open("claude:s1")).state.queue[0]?.held).toBe("late");
+  });
+
+  test("Send now: no late notice behind a running turn, never held late", async () => {
+    const { adapter, core, live, sent, end, advance } = setup();
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "hang on");
+    const m = await live.queue.add("claude:s1", "plain", []);
+    await live.queue.schedule("claude:s1", m.id, null);
+    const s = await core.open("claude:s1");
+    expect(s.state.queue[0]?.asap).toBe(true);
+    advance(SCHEDULE_LATE_MAX_MS + HOUR); // asleep, even
+    end();
+    await until(() => sent().length === 2);
+    expect(sent().at(-1)).toBe("plain");
+    expect(s.transcript!.messages.some((x) => x.scheduledFor)).toBe(false);
+  });
+
+  test("edit text and time in one change: the new text goes", async () => {
+    const { adapter, live, sent } = setup();
+    adapter.addStored("s1", []);
+    const m = await live.queue.add("claude:s1", "old text", [], { at: T0 + HOUR });
+    await live.queue.edit("claude:s1", m.id, "new text", T0);
+    await until(() => sent().length === 1);
+    expect(sent()).toEqual(["new text"]);
+    await expect(live.queue.edit("claude:s1", "nope", "x", T0)).rejects.toThrow(/isn't waiting/);
+  });
+
+  test("editing a held message's text keeps it held at its time", async () => {
+    const { adapter, core, live, sent, advance } = setup();
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "hang on");
+    const m = await live.queue.add("claude:s1", "due", [], { at: T0 + MIN });
+    advance(2 * MIN);
+    await live.interrupt("claude:s1");
+    await live.queue.edit("claude:s1", m.id, "due, edited");
+    await Bun.sleep(100);
+    const q = (await core.open("claude:s1")).state.queue[0]!;
+    expect(q).toMatchObject({ text: "due, edited", held: "stopped", at: T0 + MIN });
+    expect(sent()).toEqual(["hang on"]);
+  });
+
+  test("runner.json keeps a session whose message is scheduled far ahead, however old its entry", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-sched-"));
+    const f = join(dir, "runner.json");
+    const old = Date.now() - 91 * 24 * HOUR;
+    saveConfig({ runnerId: "t", sessions: { "claude:s1": { projectPath: "/x", at: old, queue: [{ id: "q", text: "far", queuedAt: old, at: Date.now() + 9 * 24 * HOUR }] }, "claude:s2": { projectPath: "/x", at: old } } }, f);
+    const p = new Prefs(f, 0);
+    p.set("claude:other", { title: "x" });
+    p.flush();
+    const saved = JSON.parse(readFileSync(f, "utf8")).sessions;
+    expect(saved["claude:s1"]).toBeDefined();
+    expect(saved["claude:s2"]).toBeUndefined();
+  });
+
+  test("a message scheduled for later doesn't block a source change; one due does", () => {
+    const st = (queue: LiveState["queue"]) => ({ mode: "live", status: "idle", requests: [], queue }) as LiveState;
+    expect(sourceSwitchBlocker(st([{ id: "q", text: "x", queuedAt: 0, at: Date.now() + HOUR }]))).toBeUndefined();
+    expect(sourceSwitchBlocker(st([{ id: "q", text: "x", queuedAt: 0, at: Date.now() - 1000 }]))).toBe("queue");
+    expect(sourceSwitchBlocker(st([{ id: "q", text: "x", queuedAt: 0, at: Date.now() - 1000, held: "late" }]))).toBeUndefined();
+  });
+
+  test("handed over to the session that takes this one's place, with the hold", async () => {
+    const { adapter, core, live } = setup();
+    adapter.addStored("s1", []);
+    adapter.addStored("s2", []);
+    await live.send("claude:s1", "hang on");
+    await live.queue.add("claude:s1", "plain", []);
+    await live.queue.add("claude:s1", "timed", [], { at: T0 + HOUR });
+    await live.interrupt("claude:s1");
+    await live.queue.handOver("claude:s1", "claude:s2");
+    const [a, b] = [await core.open("claude:s1"), await core.open("claude:s2")];
+    expect(a.state.queue).toEqual([]);
+    expect(b.state.queue.map((m) => m.text)).toEqual(["plain", "timed"]);
+    expect(b.state.queueHeldBy).toBe("stopped");
+    expect(b.summary.scheduledAt).toBe(T0 + HOUR);
+  });
+});
+

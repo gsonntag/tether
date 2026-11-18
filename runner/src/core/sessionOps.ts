@@ -82,7 +82,7 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
     live.attachments.markUsed(list);
     return r;
   });
-  ops.register("editQueued", async (a) => (await live.queue.edit(str(a.sessionId, "sessionId"), str(a.id, "id"), typed(a.text)), null));
+  ops.register("editQueued", async (a) => (await live.queue.edit(str(a.sessionId, "sessionId"), str(a.id, "id"), typed(a.text), a.at === undefined || a.at === null ? undefined : (a.at as number)), null));
   ops.register("cancelQueued", async (a) => (await live.queue.cancel(str(a.sessionId, "sessionId"), str(a.id, "id")), null));
   ops.register("scheduleQueued", async (a) => (await live.queue.schedule(str(a.sessionId, "sessionId"), str(a.id, "id"), a.at === null ? null : (a.at as number)), null));
   ops.register("moveQueued", async (a) => (await live.queue.move(str(a.sessionId, "sessionId"), str(a.id, "id"), optNum(a.to) ?? 0), null));

@@ -1,10 +1,10 @@
 // Scheduled sends (SPEC §9): a queued message with a time (`QueuedMessage.at`). It sits in the same
 // queue (runner.json, every device sees and changes it), but apart from the rest: it goes at its
-// time whether or not the other messages are held, and it never holds them.
+// time whether or not the other messages are held, and it never holds them (SPEC §9).
 
 import type { QueuedMessage } from "./transcript";
 
-/** Sent on start up to this late (the runner was off at its time); later than that it waits for you. */
+/** The runner was off this long after a message's time: it waits for you instead of going late. */
 export const SCHEDULE_LATE_MAX_MS = 24 * 60 * 60 * 1000;
 /** Sent at least this late: a notice says when it was scheduled for. */
 export const SCHEDULE_LATE_NOTE_MS = 2 * 60 * 1000;
