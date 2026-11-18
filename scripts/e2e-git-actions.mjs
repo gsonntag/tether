@@ -18,6 +18,27 @@ const RUNNER = process.env.RUNNER ?? "tether-f5";
 const SHOTS = process.env.SHOTS ?? "/tmp/tether-git-actions-shots";
 const GH = process.env.FAKE_GH ?? "/tmp/tether-f5-gh";
 mkdirSync(SHOTS, { recursive: true });
+// The fake gh, first on the runner's PATH (start the runner with PATH=$FAKE_GH:$PATH). It answers from
+// files beside it and logs every call; it never reaches GitHub.
+mkdirSync(GH, { recursive: true });
+writeFileSync(
+  join(GH, "gh"),
+  `#!/bin/sh
+D="${GH}"
+printf '%s\\n' "$*" >> "$D/calls"
+case "$1 $2" in
+  "repo view") printf '{"nameWithOwner":"example/demo","url":"https://github.com/example/demo"}'; exit 0;;
+  "auth status") echo "github.com: Logged in (fake)"; exit 0;;
+  "pr view") [ -e "$D/pr.json" ] && { cat "$D/pr.json"; exit 0; }; echo "no pull requests found for branch \\"$3\\"" >&2; exit 1;;
+  "pr create")
+    printf '{"number":42,"url":"https://github.com/example/demo/pull/42","title":"from fake gh","state":"OPEN","isDraft":false,"headRefName":"feature","statusCheckRollup":[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""}]}' > "$D/pr.json"
+    echo "https://github.com/example/demo/pull/42"; exit 0;;
+esac
+echo "fake gh: unsupported: $*" >&2
+exit 2
+`,
+);
+chmodSync(join(GH, "gh"), 0o755);
 for (const f of ["calls", "pr.json"]) rmSync(join(GH, f), { force: true });
 const ghCalls = () => (existsSync(join(GH, "calls")) ? readFileSync(join(GH, "calls"), "utf8").trim().split("\n") : []);
 
@@ -35,8 +56,8 @@ git(REPO, "commit", "-qm", "Add greet");
 git(REPO, "remote", "add", "origin", ORIGIN);
 git(REPO, "push", "-q", "-u", "origin", "main");
 git(REPO, "remote", "set-head", "origin", "main");
-// origin reads as a GitHub repo (gh is named it with --repo); pushes go to the bare one
-git(REPO, "remote", "set-url", "origin", "git@github.com:example/demo.git");
+// origin through an ssh host alias (gh resolves it, not Tether); pushes go to the bare one
+git(REPO, "remote", "set-url", "origin", "git@github-work:example/demo.git");
 git(REPO, "config", "remote.origin.pushurl", ORIGIN);
 
 const browser = await chromium.launch();
@@ -181,7 +202,8 @@ try {
   await until(async () => (await bar(p).locator(".t-gitbar-done").textContent())?.includes("Opened #42"), "Opened #42");
   if (git(ORIGIN, "rev-parse", "feature") !== git(REPO, "rev-parse", "HEAD")) fail("Open PR didn't push first");
   const create = ghCalls().find((c) => c.startsWith("pr create"));
-  if (!create?.startsWith("pr create --repo example/demo --base main --head feature --title ") || !create.includes("(edited)")) fail(`gh pr create args: ${create}`);
+  if (!create?.startsWith("pr create --base main --head feature --title ") || !create.includes("(edited)")) fail(`gh pr create args: ${create}`);
+  if (!ghCalls().some((c) => c.startsWith("pr view example:feature ") && c.endsWith("--repo example/demo"))) fail("lookup by owner:branch in gh's repo");
   if (!ghCalls().includes("auth status --hostname github.com")) fail("gh auth status wasn't asked of origin's host");
   ok(`fake gh: ${create.slice(0, 90)}…`);
   const chip = p.locator("a.t-chip-pr");

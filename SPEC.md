@@ -1221,20 +1221,23 @@ default branch the box has **Commit to main anyway**, unticked; the runner refus
 Refused, in the bar and by the runner: detached `HEAD`; this session working, waiting on you, or
 running anything (`!` commands, subagents, background work, a terminal); any other live session
 whose folder is in the repo or holds it doing the same (real paths, as restores decide); a restore
-holding the repo. It runs with the checkpoints' repo lock (no snapshot or restore beside it) and
-checks again once it has it. The repo's hooks and signing run as git runs them; a refusal shows "The
+holding the repo. It runs with the checkpoints' repo lock (no snapshot or restore beside it), checks
+again once it has it, and holds the repo's sessions while it runs (`holdFolder`, "Committing…", as a
+restore does): what's sent meanwhile waits in its queue, so no turn starts, or snapshots, mid-commit. The repo's hooks and signing run as git runs them; a refusal shows "The
 commit failed" (or "Signing the commit failed") and the hook's output, and leaves the changes
 staged. **Push** is `git push -u origin <branch>` (pre-push hooks run), never forced; on the default
 branch only with **Push to main anyway** ticked (shown beside the bar there). A rejected push, a
 refused sign-in or an unreachable origin is said in a line, with git's output.
 
 **Open PR** opens a box with a title and description from `gitDraft { kind: "pr" }`, editable.
-`gitOpenPr { title, body }` refuses on the default branch, detached, with no origin, or with no `gh`;
-names the repo from origin's URL (https, ssh or `host:owner/repo`; `--repo`); checks `gh auth
-status --hostname <origin's host>` (cached 5 minutes) and says "gh isn't signed in to github.com on
-this computer" if not; pushes first when the branch has no upstream or is ahead; then `gh pr create
---repo … --base <default> --head <branch> --title --body` (no `--base` when the default isn't known:
-the repo's own). A PR that already exists for the branch (gh's "already exists:" and its URL on the
+`gitOpenPr { title, body }` refuses on the default branch, detached, with no origin, or with no `gh`.
+Which repo is gh's own answer in the folder (`gh repo view --json nameWithOwner,url`, cached 10
+minutes), never Tether's reading of origin's URL, so ssh host aliases and the like resolve as gh
+resolves them. It checks `gh auth status --hostname <that repo's host>` (cached 5 minutes) and says
+"gh isn't signed in to github.com on this computer" if not; pushes first when the branch has no
+upstream or is ahead; then `gh pr create --base <default> --head <branch> --title --body`, with no
+`--repo`: gh picks the base repo as it does by default (a fork clone's PR goes to the parent). No
+`--base` when the default isn't known: the repo's own. A PR that already exists for the branch (gh's "already exists:" and its URL on the
 next line) is recorded as the session's and named.
 
 **Generated text** is a one-shot side query on the session's own harness and source
@@ -1256,7 +1259,7 @@ never waits on it.
 
 **The session's PR.** `gitPr { sessionId, fresh? }`: the PR recorded for the session (by Open PR or
 an earlier lookup; `prs.json` in the module's folder) first, by number, then, on another branch
-than its PR's (not the default), that branch's own (`gh pr view owner:branch --repo …`), which is
+than its PR's (not the default), that branch's own (`gh pr view owner:branch --repo <gh's repo>`), which is
 recorded then. Fields: `number,url,title,state,isDraft,statusCheckRollup,headRefName`. With no
 origin, or on the default branch with nothing recorded, gh isn't run. Cached per session for a
 minute (`fresh`: unless under 10 s old), one call in flight shared. Records not looked at for 30
@@ -1268,8 +1271,10 @@ signed out, or an origin gh doesn't know is said once in the bar.
 
 git and gh run as argvs in the session's folder, each in its own process group, with time limits
 (commit 120 s, push 90 s, ls-remote 10 s, gh 20 s, `pr create` 60 s): past one the group is killed
-(a hook's children, ssh, a pinentry) and pipes they still hold aren't waited on, nor are they past
-2 s after git exits; a commit stopped so has the `index.lock` it left removed. git has run.ts's
+(a hook's children, ssh, a pinentry) and pipes they still hold aren't waited on. When git exits by
+itself, pipes a hook's background job still holds are read for 2 s more and then let go; the job is
+left running. An `add -A` stopped at its limit has the `index.lock` it left removed; a stopped
+commit's lock (its hooks' children may still use the index) is named in the error instead. git has run.ts's
 hardening, and for hooks the person's own locale and fetching; talking to origin, nothing may
 prompt: `credential.interactive=false`, `GCM_INTERACTIVE=never`, and ssh in batch mode unless the
 person set their own ssh command (`GIT_SSH_COMMAND`, `GIT_SSH`, `core.sshCommand`). gh: no
