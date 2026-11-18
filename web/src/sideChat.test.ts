@@ -48,7 +48,7 @@ test("the panel opens at once, read only, while the fork is made", async () => {
   const { renderToStaticMarkup } = await import("react-dom/server");
   const { createElement } = await import("react");
   const { SideChatPanel, SideChatChips } = await import("./components/SideChatPanel");
-  const html = renderToStaticMarkup(createElement(SideChatPanel, { runnerId: "r", side: { opening: true, question: "q" }, cover: false, onBringBack: () => {}, onClose: () => {} }));
+  const html = renderToStaticMarkup(createElement(SideChatPanel, { runnerId: "r", side: { opening: true, question: "q" }, onBringBack: () => {}, onClose: () => {} }));
   expect(html).toContain("Read only");
   expect(html).toContain("Opening a read-only fork to ask it");
   expect(html).toContain('aria-label="Close side chat"');

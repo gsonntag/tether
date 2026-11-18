@@ -24,6 +24,7 @@ export function SessionHeader({
   models,
   children,
   extra,
+  sideChats,
   capabilities,
 }: {
   runnerId: string;
@@ -32,6 +33,8 @@ export function SessionHeader({
   models?: ModelList;
   children: Row[];
   extra?: React.ReactNode;
+  /** its side chats' chip (SPEC §16a), beside its subagents' */
+  sideChats?: React.ReactNode;
   capabilities?: HarnessCapabilities;
 }) {
   const [error, setError] = useState<string>();
@@ -140,6 +143,7 @@ export function SessionHeader({
           </>
         )}
         <SubagentChips runnerId={runnerId} children={children} />
+        {sideChats}
         {/* Last in the row: where chips scroll sideways, these go out of view first. */}
         {!isChild && state.context && (
           <span className="t-chip t-chip-info t-context-chip" title={contextDetail(state.context)}>

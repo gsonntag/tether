@@ -75,14 +75,11 @@ export function SideChatChips({ chats, onOpen }: { chats: Row[]; onOpen: (id: st
 export function SideChatPanel({
   runnerId,
   side,
-  cover,
   onBringBack,
   onClose,
 }: {
   runnerId: string;
   side: SideState;
-  /** full screen over the session (a phone, or no room beside it) */
-  cover: boolean;
   /** the summary, for the session's box */
   onBringBack: (text: string) => void;
   onClose: (id: string | undefined) => void;
@@ -91,7 +88,7 @@ export function SideChatPanel({
   return (
     <aside className="t-side-chat" aria-label="Side chat">
       {id ? (
-        <SideChat key={id} runnerId={runnerId} sessionId={id} cover={cover} onBringBack={onBringBack} onClose={() => onClose(id)} />
+        <SideChat key={id} runnerId={runnerId} sessionId={id} onBringBack={onBringBack} onClose={() => onClose(id)} />
       ) : (
         <>
           <div className="t-side-head">
@@ -110,7 +107,7 @@ export function SideChatPanel({
   );
 }
 
-function SideChat({ runnerId, sessionId, cover, onBringBack, onClose }: { runnerId: string; sessionId: string; cover: boolean; onBringBack: (text: string) => void; onClose: () => void }) {
+function SideChat({ runnerId, sessionId, onBringBack, onClose }: { runnerId: string; sessionId: string; onBringBack: (text: string) => void; onClose: () => void }) {
   const k = viewKey(runnerId, sessionId);
   useEffect(() => openView(runnerId, sessionId), [runnerId, sessionId]);
   useEffect(() => () => dropRows(runnerId, sessionId), [runnerId, sessionId]);
@@ -158,7 +155,7 @@ function SideChat({ runnerId, sessionId, cover, onBringBack, onClose }: { runner
             onClick={() => void bringBack()}
             tooltip="Ask it for a short summary and put that in the session's message box"
           />
-          <IconButton label={cover ? "Back to the session" : "Close side chat"} tooltip="Close (archives it; Side chats opens it again)" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={onClose} />
+          <IconButton label="Close side chat" tooltip="Close (archives it; Side chats opens it again)" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={onClose} />
         </div>
       </div>
       {error && <div className="t-inline-status error t-side-error">{error}</div>}

@@ -295,7 +295,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     <SessionCtx.Provider value={ctx}>
       <div className={`t-session-split${panel ? " with-terminal" : side ? " with-side" : ""}${cover || (side && noRoom) ? " t-term-cover" : ""}`} ref={rootRef}>
       <div className="t-session">
-        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move} canFork={canFork(summary, view.capabilities, state)} onSideChat={sides ? () => void openSide("") : undefined} />}<SideChatChips chats={sideChats} onOpen={reopenSide} />{terminalChip}</>} capabilities={view.capabilities} />
+        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move} canFork={canFork(summary, view.capabilities, state)} onSideChat={sides ? () => void openSide("") : undefined} />}{terminalChip}</>} sideChats={<SideChatChips chats={sideChats} onOpen={reopenSide} />} capabilities={view.capabilities} />
         {ask && !panelShown && (
           <div className="t-term-ask" role="group" aria-label="Open the terminal">
             <span>{ask.text}</span>
@@ -399,7 +399,6 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
         <SideChatPanel
           runnerId={runnerId}
           side={side}
-          cover={noRoom}
           onClose={closeSide}
           onBringBack={(text) => {
             putDraft(k, text);
