@@ -5,6 +5,7 @@
 // approvals and questions go to the broker through the sink, and close as resolved elsewhere when
 // another client (the TUI) answers first (serverRequest/resolved).
 
+import { forkError } from "./forkGone";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { parseCommand, type HarnessCommand } from "../../../../shared/commands";
@@ -29,6 +30,7 @@ import type { CodexRpc } from "./rpc";
 import { CodexStream } from "./stream";
 import { confirmSubscriptionProvider } from "./billing";
 import { codexResumeExtras, codexStartExtras, codexToolCall } from "./setup";
+import { assertNoMcp, readOnlyLoad } from "./readOnly";
 import { ToolServerSlot } from "../toolServer";
 import { rateLimitHit } from "../../rateLimit";
 
@@ -101,7 +103,9 @@ export async function createThread(projectPath: string, opts: StartOpts): Promis
   assertCredentialCurrent(opts.credential);
   const { rpc, source } = await newConnection(projectPath, opts.credential);
   try {
-    const started = await rpc.call("thread/start", { cwd: projectPath, ...startSettings(opts), ...(source ? { modelProvider: sourceProvider(source.source) } : {}), ...withTools(codexStartExtras(projectPath), projectPath) });
+    // A side chat's thread (a copy, SPEC §16a) is made the way a read-only one is loaded.
+    const load = opts.readOnly ? await readOnlyLoad((m, p) => rpc.call(m, p), projectPath) : withTools(codexStartExtras(projectPath), projectPath);
+    const started = await rpc.call("thread/start", { cwd: projectPath, ...startSettings(opts), ...(source ? { modelProvider: sourceProvider(source.source) } : {}), ...load });
     const id: string = started.thread.id;
     // Until its first turn writes them to its rollout, they can't be read back (discovery.ts).
     if (source) rememberSource(id, source);
@@ -172,6 +176,8 @@ export class CodexDriver implements Driver {
   /** A new thread (made by createThread) or an existing one, joined. */
   static async open(nativeId: string, projectPath: string, opts: StartOpts, sink: Sink, resume: boolean): Promise<CodexDriver> {
     if (!existsSync(projectPath)) throw new Error(`The session's folder ${projectPath} doesn't exist any more.`);
+    // A read-only thread is always joined with its own load (readOnly.ts), never one made otherwise.
+    if (opts.readOnly) dropPending(nativeId);
     const p = pending.get(nativeId);
     if (p) {
       pending.delete(nativeId);
@@ -194,11 +200,13 @@ export class CodexDriver implements Driver {
     try {
       // Joined as it is: the daemon ignores settings passed here when another client has the thread
       // loaded (Codex's TUI), so changes are applied after, and checked (started).
-      const r = await rpc.call("thread/resume", { threadId: nativeId, excludeTurns: true, ...withTools(codexResumeExtras(projectPath), projectPath) }).catch((e: any) => {
+      const load = opts.readOnly ? await readOnlyLoad((m, x) => rpc.call(m, x), projectPath) : withTools(codexResumeExtras(projectPath), projectPath);
+      const r = await rpc.call("thread/resume", { threadId: nativeId, excludeTurns: true, ...load }).catch((e: any) => {
         if (NO_ROLLOUT.test(String(e?.message))) throw new Error("This Codex session never got a message, so there's nothing to reopen. Start a new one.");
-        throw e;
+        throw forkError(e);
       });
       d.threadPath = r.thread?.path;
+      if (opts.readOnly) await assertNoMcp((m, x) => rpc.call(m, x), nativeId);
       await d.started(r, opts);
       // Mid-turn (Codex's TUI, or a turn that went on while the runner was away): carry on from it.
       if (r.thread?.status?.type === "active") {

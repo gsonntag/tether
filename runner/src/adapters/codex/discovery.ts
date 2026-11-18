@@ -2,6 +2,7 @@
 // Codex's TUI, by `codex exec`, by Tether or any other client all show up, with their history.
 // Read-only: listing and reading never loads a thread.
 
+import { forkError } from "./forkGone";
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { basename } from "node:path";
@@ -207,7 +208,7 @@ export async function threadTurns(nativeId: string): Promise<any[]> {
     // Never got a message (another client's): no turns to list.
     if (/not materialized/i.test(String(e?.message))) return [];
     // An older daemon without paging: the whole thread at once.
-    if (!/method|unknown|not found/i.test(String(e?.message)) || turns.length) throw e;
+    if (!/method|unknown|not found/i.test(String(e?.message)) || turns.length) throw forkError(e);
     const r: any = await threadCall(nativeId, "thread/read", { threadId: nativeId, includeTurns: true });
     return r?.thread?.turns ?? [];
   }

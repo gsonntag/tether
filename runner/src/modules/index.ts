@@ -6,21 +6,29 @@ import type { EventBus } from "../core/bus";
 import type { CoreEvents } from "../core/events";
 import type { OpRegistry } from "../core/ops";
 import type { Adapter, StartOpts } from "../core/adapter";
-import type { BillingSource, SourceChoices } from "../../../shared/credentials";
+import type { BillingSource, CredentialSource, SourceChoices } from "../../../shared/credentials";
 import type { HomeChatUpdate } from "../../../shared/protocol";
+import type { ForkedFrom } from "../../../shared/fork";
 import type { Attachment } from "../../../shared/attachments";
+import type { SessionCost } from "../../../shared/costs";
 import type { HarnessId, LiveState, Msg, ProjectInfo, RequestAnswer, RunStatus, SessionSummary } from "../../../shared/transcript";
 import { filesModule } from "./files";
 import { gitModule } from "./git";
 import { homeAgentModule } from "./homeAgent";
 import type { HomeLine } from "./homeLine";
+import type { WorktreeRecord } from "../config";
+import type { SetupRun } from "../core/shellRuns";
 import { linksModule } from "./links";
 import type { ShortLinks } from "./links/store";
+import { forkModule } from "./fork";
 import { moveModule } from "./move";
 import { peersModule } from "./peers";
 import { pushModule } from "./push";
+import { sideChatsModule } from "./sideChats";
 import { textingModule } from "./texting";
 import { updatesModule } from "./updates";
+import { worktreesModule } from "./worktrees";
+import { usageModule } from "./usage";
 
 /** What a module may know about a session (read-only). */
 export interface SessionLook {
@@ -36,15 +44,42 @@ export interface SessionLook {
   background: boolean;
 }
 
+/** More about a session being adopted. `stored`: it isn't started, its first send does that (a fork). */
+export interface AdoptExtra {
+  stored?: boolean;
+  forkedFrom?: ForkedFrom;
+  /** a side chat (SPEC §16a): the session it's beside */
+  sideOf?: string;
+  /** a fork's: the original's key preferences (the switch itself is ticked per session, so it isn't carried) */
+  keys?: { lastKey?: BillingSource; fallbackKeys?: CredentialSource[] };
+}
+
+/** How to fork: the reply its conversation ends at (shared/fork.ts forkPoints); absent, all of it (the last finished turn while one runs). */
+export interface ForkOptions {
+  messageId?: string;
+  /** the fork's permission mode instead of the original's (a side chat's read-only one) */
+  permissionMode?: string;
+  /** its title instead of "<title> (fork)" */
+  title?: string;
+  /** a side chat (SPEC §16a): beside the original, left out of the lists */
+  sideOf?: string;
+}
+
 /** What a module may do with sessions, through the core's own paths (SPEC §2.1). */
 export interface SessionActions {
   adapters(): Adapter[];
   /** a session, brought into memory if it's stored; throws when there's none */
   open(id: string): Promise<SessionLook>;
   /** a session whose store exists (a harness took a history): its settings, and it starts now, so its source is confirmed and shown before anything is typed. `from`: it's for that session's source change, unlisted, and a failed start throws */
-  adopt(harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string): Promise<string>;
+  adopt(harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string, extra?: AdoptExtra): Promise<string>;
   /** what makes the thread a session's source change goes to (Mover.carry) */
   carrier(make: (id: string, source: BillingSource) => Promise<string>): void;
+  /** a fork of a session (SPEC §16): a new stored session with its conversation, through `messageId` when given. Its id */
+  fork(id: string, o?: ForkOptions): Promise<string>;
+  /** a session went on under another id (a Move): its side chats (SPEC §16a) are beside that one now */
+  moveSides?(from: string, to: string): void;
+  /** what makes forks (the fork module) */
+  forker(make: (id: string, o: ForkOptions) => Promise<string>): void;
   /** a new session; its first send starts it */
   create(args: { harness: HarnessId; projectPath: string; source: BillingSource } & StartOpts): Promise<string>;
   /** a new native id, on that source */
@@ -65,7 +100,7 @@ export interface SessionActions {
   notice(id: string, msg: Msg, where?: { first?: boolean; after?: string }): Promise<void>;
   /** the folders with sessions (the lists' projects), newest activity first */
   projects(): Promise<ProjectInfo[]>;
-  /** the sessions the lists show (recent ones and every live one, core/summaries.ts), newest activity first */
+  /** the sessions the lists show (recent ones and every live one, core/summaries.ts), newest activity first; not old ones listed only because they're pinned */
   list(): SessionSummary[];
   /** the archived sessions (which the lists leave out), newest activity first */
   archived(): Promise<SessionSummary[]>;
@@ -73,6 +108,8 @@ export interface SessionActions {
   folder(path: string): string;
   /** a message through the session's queue: now when it's idle, else after its turn (its id: the queueGone event says when it leaves) */
   queue(id: string, text: string, attachments?: Attachment[]): Promise<{ id: string }>;
+  /** moves what waits in one session's queue (scheduled messages too) to another (a moved session's successor) */
+  handOverQueue(from: string, to: string): Promise<void>;
   /** the newest `limit` messages of its transcript */
   recent(id: string, limit: number): Promise<Msg[]>;
   rename(id: string, title: string): Promise<void>;
@@ -86,6 +123,15 @@ export interface SessionActions {
   holdFolder?(folder: string, why: string): () => void;
   /** why a session is held (a restore in its repo), when it is */
   heldWhy?(id: string): string | undefined;
+  /** records the worktree Tether made for a session as its own (runner.json; the summary's worktreeOf) */
+  setWorktree?(id: string, worktree: WorktreeRecord): Promise<void>;
+  /** the worktree Tether made for a session, if it did */
+  worktree?(id: string): WorktreeRecord | undefined;
+  /**
+   * Runs a new worktree's setup in the session's folder as a card (core/shellRuns.ts): until it
+   * ends, sends wait held; a failure keeps them held. Answers once it has started.
+   */
+  setup?(id: string, command: string, run?: Omit<SetupRun, "done"> & { beforeRelease?: () => void | Promise<void> }): Promise<{ done: Promise<{ ok: boolean; why: string }> }>;
 }
 
 export interface ModuleContext {
@@ -109,6 +155,10 @@ export interface ModuleContext {
   attachmentsDir?: string;
   /** the Home agent's folder (RunnerOptions.homeFolder); its sessions are left out of the lists */
   homeFolder?: string;
+  /** what Tether's API cost ledger holds for a session (undefined: no entry) */
+  apiCost?(sessionId: string): SessionCost | undefined;
+  /** a folder the lists hide (TETHER_HIDE_PROJECTS, the Home agent's) */
+  hiddenFolder?(path: string): boolean;
   /** tells every browser the Home agent's current chat changed (dropped while disconnected: browsers ask again on reconnect) */
   announceHomeChat?: (u: HomeChatUpdate) => void;
   /** texting ↔ the Home agent (homeLine.ts): one for the whole runner */
@@ -124,7 +174,7 @@ export interface Module {
 }
 
 /** The modules this runner loads, in order. */
-export const MODULES: Module[] = [pushModule, textingModule, moveModule, homeAgentModule, peersModule, updatesModule, linksModule, gitModule, filesModule];
+export const MODULES: Module[] = [pushModule, textingModule, moveModule, forkModule, sideChatsModule, worktreesModule, homeAgentModule, peersModule, updatesModule, linksModule, usageModule, gitModule, filesModule];
 
 export async function startModules(modules: Module[], ctx: (m: Module) => ModuleContext): Promise<() => void> {
   const stops: (() => void)[] = [];

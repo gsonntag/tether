@@ -1,4 +1,5 @@
 import type { Billing, LiveState } from "./transcript";
+import { isScheduled } from "./schedule";
 
 export type SourceSwitchBlocker = "terminal" | "turn" | "background" | "restart" | "queue";
 
@@ -9,7 +10,8 @@ export function sourceSwitchBlocker(state: LiveState): SourceSwitchBlocker | und
   const backgroundCommands = state.turnSettings?.who === "background" ? state.turnSettings.count ?? 1 : 0;
   if ((state.backgroundSubagents ?? 0) > 0 || (state.shellsRunning ?? 0) > 0 || backgroundCommands > 0) return "background";
   if (state.restartWait) return "restart";
-  if (state.queue.length > 0 && !state.queueHeld) return "queue";
+  // Messages about to go (not ones scheduled for later, which follow the session to the new source).
+  if (state.queue.some((m) => (isScheduled(m) ? !m.held && m.at! <= Date.now() : !state.queueHeld))) return "queue";
   return undefined;
 }
 

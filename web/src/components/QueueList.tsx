@@ -6,18 +6,25 @@
 // queue before the edit is saved, the edit stays: the message went out (its text is now in the
 // transcript), or was removed on another device; and if the message comes back (stopped before it
 // got there) the edit attaches to it again, so nothing is ever sent twice.
+//
+// Scheduled messages (SPEC §9 Scheduled sends) are a group of their own below, soonest first, each
+// with its time: edit (text and time), send now, or cancel. They neither wait for the rest nor
+// hold it, so the head's count and pause are about the others.
 
 import { FROM_TETHER, parseSessionMessage, tetherPurpose, undefang } from "../../../shared/fromTether";
 import { homeReport } from "../../../shared/homeReport";
 import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
-import { ArrowUpIcon, PencilIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { ArrowUpIcon, PaperAirplaneIcon, PencilIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import type { LiveState, Msg, QueuedMessage } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { viewKey } from "../store";
 import { putDraft } from "./Composer";
 import { useSessionCtx } from "./sessionContext";
 import { lostEdit, UNKNOWN_MS } from "../queueEdit";
+import { scheduled, unscheduled } from "../../../shared/schedule";
+import { fromLocalInput, toLocalInput, whenLabel } from "../schedule";
+import { useNow } from "./useNow";
 
 const coarse = () => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
 
@@ -29,14 +36,27 @@ const HELD: Record<NonNullable<LiveState["queueHeldBy"]>, string> = {
   stopped: "Paused after Stop. Send something, or resume.",
   failed: "Paused after a failed turn.",
   restart: "Paused: the runner restarted mid-turn.",
+  setup: "Held: the worktree's setup failed. Fix it, or send it anyway.",
 };
 
-/** An edit in progress: the message it's for, its text before, and the edited text. */
+/** An edit in progress: the message it's for, its text before, and the edited text (and time). */
 interface Edit {
   id: string;
   original: string;
   draft: string;
+  /** a scheduled message: its time as the date/time field has it */
+  when?: string;
+  whenOriginal?: string;
 }
+
+/** Why a scheduled message that came due waits for you. */
+const STUCK: Record<NonNullable<QueuedMessage["held"]>, string> = {
+  late: "Not sent: the runner was off for more than a day after its time.",
+  failed: "Not sent: the send failed or the turn before it failed.",
+  stopped: "Not sent: you pressed Stop while it was due.",
+  restart: "Not sent: the runner restarted mid-turn and didn't continue that turn.",
+  retry: "Not sent: the rate limit retry it waited behind was cancelled.",
+};
 
 /**
  * Edits by session, kept across navigation and reload (this browser's storage: an edit is yours on
@@ -118,6 +138,7 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
     return () => clearTimeout(t);
   }, [out, ready]);
   const short = useShort();
+  const now = useNow(30_000);
   const [open, setOpen] = useState(false);
   const pausedHint = state.queueHeld ? " It'll wait with the paused queue." : state.queue.length ? " It'll go after the messages waiting." : "";
   const lostPanel = edit && gone && (
@@ -170,13 +191,19 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
         {lostPanel}
       </div>
     ) : null;
+  const editable = (m: QueuedMessage) => !m.truncated && !m.shell && !peerOf(m.text);
   const save = (m: QueuedMessage) =>
     call(async () => {
       const text = edit?.draft ?? m.text;
       // Saving it empty cancels it: that's what you asked for, not an edit to keep.
       if (!text.trim()) setEdit(undefined);
       try {
-        await rpc(runnerId, "editQueued", { sessionId, id: m.id, text });
+        // Text and a new time in one change (a time refused keeps the edit open, nothing changed).
+        // An unchanged time stays as it was (a held message stays held).
+        const newTime = edit?.when !== undefined && edit.when !== edit.whenOriginal && !!text.trim();
+        const at = newTime ? fromLocalInput(edit!.when!) : undefined;
+        if (newTime && at === undefined) throw new Error("Pick a date and time.");
+        if (newTime || (editable(m) && (text !== m.text || !text.trim()))) await rpc(runnerId, "editQueued", { sessionId, id: m.id, text: editable(m) ? text : m.text, ...(at !== undefined ? { at } : {}) });
         setEdit(undefined);
       } catch (e) {
         // It left the queue just now: the panel above keeps the edit.
@@ -184,89 +211,165 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
       }
     });
   // The quiet wait after a restart (SPEC §4): nothing can release it, so no Resume.
-  const held = state.restartWait ? "Waiting for Claude Code from before the restart." : state.queueHeld && state.queueHeldBy ? HELD[state.queueHeldBy] : state.queueHeld ? "Paused." : undefined;
+  // A new worktree's setup runs (SPEC §4): what waits goes when it's done, so no Resume yet.
+  const settingUp = state.setup === "running";
+  const held = state.restartWait ? "Waiting for Claude Code from before the restart." : settingUp ? "Waiting for the worktree's setup to finish." : state.queueHeld && state.queueHeldBy ? HELD[state.queueHeldBy] : state.queueHeld ? "Paused." : undefined;
+  const plain = unscheduled(state.queue);
+  const timed = scheduled(state.queue);
+  const body = (m: QueuedMessage) => (
+    <span className="t-queued-text">
+      {m.shell ? (
+        <>
+          Output of <code className="t-queued-cmd">$ {m.shell.command}</code>
+        </>
+      ) : tetherPurpose(m.text) === "checkIn" ? (
+        <span className="t-queued-from">↳ Home agent check-in</span>
+      ) : home && m.text.startsWith(FROM_TETHER) ? (
+        <span className="t-queued-from">↳ {homeReport(m.text)?.summary}</span>
+      ) : peerOf(m.text) ? (
+        <>
+          <span className="t-queued-from">From “{peerOf(m.text)!.title}”{peerOf(m.text)!.all ? " · to all" : ""}:</span> {peerOf(m.text)!.text}
+        </>
+      ) : (
+        undefang(m.text) || <em>No text</em>
+      )}
+      {m.truncated && !m.shell ? "…" : null}
+      {m.attachments?.length ? <span className="t-queued-files"> · {m.attachments.length === 1 ? m.attachments[0]!.name : `${m.attachments.length} files`}</span> : null}
+    </span>
+  );
+  const editor = (m: QueuedMessage) =>
+    edit && (
+      <div className="t-queued-edit">
+        {!editable(m) ? body(m) : <textarea
+          className="t-input"
+          value={edit.draft}
+          aria-label="Edit the queued message"
+          autoFocus
+          onChange={(e) => setEdit({ ...edit, draft: e.target.value })}
+          onKeyDown={(e) => {
+            // As in the composer: on a phone Enter is a newline and Save saves.
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && !coarse()) {
+              e.preventDefault();
+              void save(m);
+            } else if (e.key === "Escape") setEdit(undefined);
+          }}
+        />}
+        {edit.when !== undefined && (
+          <input
+            type="datetime-local"
+            className="t-input t-send-later-input"
+            aria-label="Send at"
+            value={edit.when}
+            onChange={(e) => setEdit({ ...edit, when: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void save(m);
+              } else if (e.key === "Escape") setEdit(undefined);
+            }}
+          />
+        )}
+        <span className="t-edit-actions">
+          <Button label="Save" size="sm" variant="primary" onClick={() => void save(m)} />
+          <Button label="Cancel" size="sm" variant="ghost" onClick={() => setEdit(undefined)} />
+        </span>
+      </div>
+    );
+  const cancelBtn = (m: QueuedMessage) => (
+    <button type="button" className="t-icon-btn" aria-label="Cancel this message" title="Cancel" onClick={() => void call(() => rpc(runnerId, "cancelQueued", { sessionId, id: m.id }))}>
+      <XMarkIcon aria-hidden />
+    </button>
+  );
+  const folded = short && !open && !edit;
   return (
     <div className="t-queue" aria-label="Queued messages">
-      <div className="t-queue-head">
-        <span>{state.queue.length === 1 ? "1 message waits" : `${state.queue.length} messages wait`}{held ? ` · ${held}` : " for this turn to end."}</span>
-        {held && state.queueHeldBy !== "terminal" && !state.restartWait && <Button label="Resume" size="sm" variant="secondary" onClick={() => void call(() => rpc(runnerId, "resumeQueue", { sessionId }))} />}
-      </div>
+      {plain.length > 0 && (
+        <div className="t-queue-head">
+          <span>{plain.length === 1 ? "1 message waits" : `${plain.length} messages wait`}{held ? ` · ${held}` : " for this turn to end."}</span>
+          {held && state.queueHeldBy !== "terminal" && !state.restartWait && !settingUp && <Button label={state.queueHeldBy === "setup" ? "Send anyway" : "Resume"} size="sm" variant="secondary" onClick={() => void call(() => rpc(runnerId, "resumeQueue", { sessionId }))} />}
+        </div>
+      )}
       {error && <div className="t-inline-status error">{error}</div>}
       {lostPanel}
-      {short && !open && !edit ? (
+      {folded ? (
         <button type="button" className="t-queue-fold" aria-expanded={false} onClick={() => setOpen(true)}>
-          Show the {state.queue.length === 1 ? "message" : `${state.queue.length} messages`} ⌄
+          Show the {state.queue.length === 1 ? "message" : `${state.queue.length} messages`}{timed.length ? ` (${timed.length} scheduled)` : ""} ⌄
         </button>
       ) : (
-      <ol className="t-queue-list">
-        {state.queue.map((m, i) => (
-          <li key={m.id} className="t-queued">
-            {edit?.id === m.id ? (
-              <div className="t-queued-edit">
-                <textarea
-                  className="t-input"
-                  value={edit.draft}
-                  aria-label="Edit the queued message"
-                  autoFocus
-                  onChange={(e) => setEdit({ ...edit, draft: e.target.value })}
-                  onKeyDown={(e) => {
-                    // As in the composer: on a phone Enter is a newline and Save saves.
-                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && !coarse()) {
-                      e.preventDefault();
-                      void save(m);
-                    } else if (e.key === "Escape") setEdit(undefined);
-                  }}
-                />
-                <span className="t-edit-actions">
-                  <Button label="Save" size="sm" variant="primary" onClick={() => void save(m)} />
-                  <Button label="Cancel" size="sm" variant="ghost" onClick={() => setEdit(undefined)} />
-                </span>
-              </div>
-            ) : (
-              <>
-                <span className="t-queued-text">
-                  {m.shell ? (
-                    <>
-                      Output of <code className="t-queued-cmd">$ {m.shell.command}</code>
-                    </>
-                  ) : tetherPurpose(m.text) === "checkIn" ? (
-                    <span className="t-queued-from">↳ Home agent check-in</span>
-                  ) : home && m.text.startsWith(FROM_TETHER) ? (
-                    <span className="t-queued-from">↳ {homeReport(m.text)?.summary}</span>
-                  ) : peerOf(m.text) ? (
-                    <>
-                      <span className="t-queued-from">From “{peerOf(m.text)!.title}”{peerOf(m.text)!.all ? " · to all" : ""}:</span> {peerOf(m.text)!.text}
-                    </>
+        <>
+          {plain.length > 0 && (
+            <ol className="t-queue-list">
+              {plain.map((m, i) => (
+                <li key={m.id} className="t-queued">
+                  {edit?.id === m.id ? (
+                    editor(m)
                   ) : (
-                    undefang(m.text) || <em>No text</em>
+                    <>
+                      {body(m)}
+                      <span className="t-queued-tools">
+                        {i > 0 && (
+                          <button type="button" className="t-icon-btn" aria-label="Move up" title="Move up" onClick={() => void call(() => rpc(runnerId, "moveQueued", { sessionId, id: m.id, to: i - 1 }))}>
+                            <ArrowUpIcon aria-hidden />
+                          </button>
+                        )}
+                        {editable(m) && (
+                          <button type="button" className="t-icon-btn" aria-label="Edit" title="Edit" onClick={() => setEdit({ id: m.id, original: m.text, draft: m.text })}>
+                            <PencilIcon aria-hidden />
+                          </button>
+                        )}
+                        {cancelBtn(m)}
+                      </span>
+                    </>
                   )}
-                  {m.truncated && !m.shell ? "…" : null}
-                  {m.attachments?.length ? <span className="t-queued-files"> · {m.attachments.length === 1 ? m.attachments[0]!.name : `${m.attachments.length} files`}</span> : null}
-                </span>
-                <span className="t-queued-tools">
-                  {i > 0 && (
-                    <button type="button" className="t-icon-btn" aria-label="Move up" title="Move up" onClick={() => void call(() => rpc(runnerId, "moveQueued", { sessionId, id: m.id, to: i - 1 }))}>
-                      <ArrowUpIcon aria-hidden />
-                    </button>
-                  )}
-                  {!m.truncated && !m.shell && !peerOf(m.text) && <button
-                    type="button"
-                    className="t-icon-btn"
-                    aria-label="Edit"
-                    title="Edit"
-                    onClick={() => setEdit({ id: m.id, original: m.text, draft: m.text })}
-                  >
-                    <PencilIcon aria-hidden />
-                  </button>}
-                  <button type="button" className="t-icon-btn" aria-label="Cancel this message" title="Cancel" onClick={() => void call(() => rpc(runnerId, "cancelQueued", { sessionId, id: m.id }))}>
-                    <XMarkIcon aria-hidden />
-                  </button>
-                </span>
-              </>
-            )}
-          </li>
-        ))}
-      </ol>
+                </li>
+              ))}
+            </ol>
+          )}
+          {timed.length > 0 && (
+            <>
+              <div className="t-queue-head">
+                <span>Scheduled</span>
+              </div>
+              <ol className="t-queue-list" aria-label="Scheduled messages">
+                {timed.map((m) => (
+                  <li key={m.id} className={`t-queued t-scheduled${m.held ? " stuck" : ""}`}>
+                    {edit?.id === m.id ? (
+                      editor(m)
+                    ) : (
+                      <>
+                        <span className="t-scheduled-main">
+                          <span className="t-scheduled-when">
+                            {m.held ? `${STUCK[m.held]} It was for ${whenLabel(m.at!, now)}.` : m.asap ? "Sending now: goes when the session is free." : m.at! <= now ? `Due ${whenLabel(m.at!, now)}: goes when the session is free.` : `Sends ${whenLabel(m.at!, now)}`}
+                          </span>
+                          {body(m)}
+                        </span>
+                        <span className="t-queued-tools">
+                          <button type="button" className="t-icon-btn" aria-label="Send now" title="Send now" onClick={() => void call(() => rpc(runnerId, "scheduleQueued", { sessionId, id: m.id, at: null }))}>
+                            <PaperAirplaneIcon aria-hidden />
+                          </button>
+                          <button
+                            type="button"
+                            className="t-icon-btn"
+                            aria-label="Edit"
+                            title={editable(m) ? "Edit the message or its time" : "Change its time"}
+                            onClick={() => {
+                              // The field starts at its time: saved unchanged, the time stays (a held one stays held).
+                              const when = toLocalInput(m.at!);
+                              setEdit({ id: m.id, original: m.text, draft: m.text, when, whenOriginal: when });
+                            }}
+                          >
+                            <PencilIcon aria-hidden />
+                          </button>
+                          {cancelBtn(m)}
+                        </span>
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </>
+          )}
+        </>
       )}
     </div>
   );

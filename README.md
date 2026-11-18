@@ -21,8 +21,8 @@ browser ──wss──► server (Foliation app: UI + relay) ◄──wss──
 
 **Sessions.** The runner finds your existing Claude Code (`~/.claude/projects`) and Codex sessions
 and shows them all in one transcript format. Nothing starts until you send. The sidebar has Recent
-(the last 3 days plus every live session) and per-project lists, and search finds the rest. You can
-rename and archive sessions from the sidebar. A session goes live when you send and goes back to
+(the last 3 days plus every live session, grouped by project) and per-project lists, and search finds the rest. You can
+rename, pin and archive sessions from the sidebar (or a session's ⋯ menu); pinned ones stay at the top on every device. A session goes live when you send and goes back to
 stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–§6a.
 
 - **Composer** (SPEC §9): Enter sends, or steers a running turn. Tab queues the message and
@@ -30,6 +30,9 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
   harness's own commands and skills. Text starting with `!` runs a shell command in the session's
   folder right away, and its card has a Stop button. You can attach images and files by pasting,
   dropping, the file picker or the camera.
+- **Send later** (SPEC §9): schedule a message from the send menu (in 1 hour, tonight, tomorrow
+  morning or any time). It waits in the queue with its time, survives runner restarts (sent late on
+  start, or held for you if the runner was off for over a day after its time), and can be edited, sent now or cancelled.
 - **Requests** (SPEC §7): permission prompts, questions and plans go to every device watching the
   session, and the first answer wins. A plan opens in a review view where you can comment on it.
 - **Stop a running command:** while the agent waits on a shell command, a Stop button on the
@@ -51,8 +54,22 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
   its upstream, with **Commit** (a generated message you can edit; the default branch needs a
   tick), **Push** (never forced) and **Open PR** through `gh`. The session's PR shows as a chip in
   its header, with its state and checks.
+- **A worktree per session** (SPEC §4): in a git repo, New session can make a new worktree beside
+  it (`<repo>-worktrees/<slug>`, on a new branch `tether/<slug>` from the default branch) and run
+  the session there. The repo's `.tether/setup` (an executable) or `.tether/config.json`
+  `"setup"` command runs in it first, as a card in the session; your first message waits until it
+  succeeds, and if it fails you can re-run it or send anyway. Archive done removes the worktree and its branch once
+  the work is merged. The Home agent can start sessions in a worktree too.
 - **Change session harness** (SPEC §15): continues a session on the other harness, or on the same
   harness with another billing source. The old session stays as it was.
+- **Fork** (SPEC §16): the session menu's Fork makes a new session with the same conversation, folder,
+  harness, source and settings; **Fork from here** on a reply that ends a turn makes one whose
+  conversation ends there. The original is never changed, and nothing runs until you send.
+- **Side chats** (SPEC §16a): `/btw <question>` (or Side chat in the session menu) asks a read-only
+  fork of the session in a panel beside it (a sheet on a phone) while the session keeps working.
+  **Bring back** puts the side chat's summary in the session's box to edit and send; closing it
+  stops and archives it, and the header's Side chats reopens it. Side chats stay out of the lists; on
+  Claude Code they have no shell, MCP tools or subagents, on Codex a read-only sandbox with MCP off.
 
 **Home.** Home has an inbox of sessions that need you, failed, finished or are working. It also has
 the runners and the **Home agent**, a chat that starts sessions in your projects and sees them
@@ -71,7 +88,7 @@ through (SPEC §10):
   turn, fails or starts waiting for you.
 - **Archive done sessions** (also something you can ask the agent for): the agent asks each idle
   session whether its work is done and merged, and tells finished sessions to remove the worktrees
-  they made. It checks each answer against git, then archives the finished sessions and reports on
+  they made (a worktree Tether made for a session, Tether removes itself). It checks each answer against git, then archives the finished sessions and reports on
   the rest. Busy sessions are skipped, never interrupted.
 
 **Sessions talking to each other** (SPEC §9a): every live session gets a `tether` MCP server with
@@ -89,6 +106,13 @@ when the session is made:
 You add keys under **Settings → Credentials** and **Settings → Azure**, and they're stored on the
 runner. New sessions start on the subscription. The header's billing chip shows the source and
 switches it, and API sessions show what they've cost in dollars.
+
+**Usage** (SPEC §10, *Usage*): **Settings → Usage** shows a runner's last 7 or 30 days of tokens
+(input, output, cache reads and writes) by day, by harness and model, and by project, read from
+Claude Code's and Codex's own logs, so CLI sessions count too. Dollars are estimates at published API
+prices, split into plan usage and API keys, next to what Tether's own ledgers billed to API keys and
+what caching saved. The plan's 5-hour and weekly limits are at the top. The logs are first read when
+you open the page, which can take a few seconds; after that only what's new is read.
 
 **Texting** (iMessage through [Photon Spectrum](https://photon.codes), or a Discord bot): the runner can text you when
 a session has a request, needs you in the terminal, fails, or ends its turn with a question. Nothing
@@ -142,9 +166,9 @@ dial out, so your machines need no inbound port. SPEC §3 has the details.
 
 | Dir | What |
 |---|---|
-| `shared/` | The wire protocol (`protocol.ts`), transcript model (`transcript.ts`), and helpers used by all three: credentials, costs, move, commands, plan, sync |
+| `shared/` | The wire protocol (`protocol.ts`), transcript model (`transcript.ts`), and helpers used by all three: credentials, costs, move, fork, side chats, commands, plan, sync |
 | `server/` | Bun relay on Foliation: identity, RPC forwarding, session subscriptions, summary broadcast, terminal routing (`relay.ts`), Web Push keys (`push.ts`) |
-| `runner/` | Bun runner. `src/core/`: connection, event bus, ops and the session core (`sessions.ts`, `live.ts`, `queue.ts`, `requests.ts`, `transcript.ts`). `src/adapters/claude/` (Agent SDK) and `src/adapters/codex/` (app-server daemon, private hosts for API sources). `src/terminal/`: PTY and tmux. `src/modules/`: `homeAgent`, `peers`, `texting` (its connectors: `imessage.ts`, `discord.ts`), `push`, `move` |
+| `runner/` | Bun runner. `src/core/`: connection, event bus, ops and the session core (`sessions.ts`, `live.ts`, `queue.ts`, `requests.ts`, `transcript.ts`). `src/adapters/claude/` (Agent SDK) and `src/adapters/codex/` (app-server daemon, private hosts for API sources). `src/terminal/`: PTY and tmux. `src/modules/`: `homeAgent`, `peers`, `texting` (its connectors: `imessage.ts`, `discord.ts`), `push`, `move`, `fork`, `sideChats` |
 | `web/` | React + Vite + Astryx UI |
 | `scripts/` | End-to-end checks, a fake runner, probes |
 | `docs/` | `acceptance/` manual checks per phase and feature, `notes/`, [`ISSUES.md`](docs/ISSUES.md) backlog |

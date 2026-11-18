@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { mkdirSync, realpathSync, rmSync } from "node:fs";
 import { CHECKPOINT_TTL_MS, CHECKPOINTS_MAX, type CheckpointInfo, type CheckpointList, type OtherSession, type RestoreResult } from "../../../../shared/checkpoints";
 import type { GitDiff } from "../../../../shared/gitDiff";
+import { waitingNow } from "../../../../shared/schedule";
 import type { Msg, SessionSummary } from "../../../../shared/transcript";
 import type { ModuleContext, SessionLook } from "..";
 import { currentBranch, diffRange, repoRoot } from "../git/diff";
@@ -98,7 +99,8 @@ export function blockedWhy(look: SessionLook, others: { s: OtherSession; look?: 
   if (why === "working") return "The session is working. Wait for its turn to finish, or stop it.";
   if (why === "waiting on you") return "The session is waiting on you. Answer it or stop it first.";
   if (why) return `The session is ${why}. Wait for that first.`;
-  if (look.state.queue?.length) return "The session has messages waiting to go. Send or cancel them first.";
+  // Scheduled messages not due yet don't count (SPEC §9): they wait out the restore's hold anyway.
+  if (waitingNow(look.state.queue ?? [], Date.now())) return "The session has messages waiting to go. Send or cancel them first.";
   for (const o of others) {
     const w = o.look ? busyWhy(o.look) : o.s.status === "running" ? "working" : o.s.status === "waiting" ? "waiting on you" : undefined;
     if (w) return `“${o.s.title || "Another session"}” in this repository is ${w}. Wait for it first.`;

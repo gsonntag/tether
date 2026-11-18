@@ -2,7 +2,7 @@
 // session it started is reported back to its chat, and a session the person steps into is theirs.
 
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FROM_DISCORD, FROM_IMESSAGE, FROM_TETHER, FROM_TETHER_CHECKIN, tetherOrigin, titleText } from "../../../../shared/fromTether";
@@ -16,6 +16,7 @@ import type { Msg, SessionSummary } from "../../../../shared/transcript";
 import { ADVERSARIAL_BRIEF, ago, END_GOALS, HomeAgent, homeAgentModule, inProject, INSTRUCTIONS, lastPrompt, lastRawReply, lastReply, MAX_REPORTS, REPLY_MAX, SESSION_MODE, settingsOf, stateOf, TEXTED, TEXTS_TITLE } from ".";
 import { ANSWER_TAG } from "./checkIn";
 import { claudeMove } from "../../adapters/claude/move";
+import { worktreesModule } from "../worktrees";
 
 import { unfence, WATCH } from "./index";
 import { CONCISE_RULE, TEXTING_RULE } from "../peers/instructions";
@@ -802,6 +803,83 @@ test("a session with its worktree left isn't archived, and it's told to spare ot
   expect(runner.core.sessions.get(mine)!.summary.archived).toBeUndefined();
 });
 
+const gitIn = async (cwd: string, ...args: string[]) => {
+  const p = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+  if ((await p.exited) !== 0) throw new Error(await new Response(p.stderr).text());
+  return (await new Response(p.stdout).text()).trim();
+};
+
+/** The Home agent with the worktrees module beside it, and its project a git repo. */
+async function withWorktrees() {
+  const t = await setup();
+  await worktreesModule.start({ bus: t.runner.bus, ops: t.runner.ops, dataDir: t.dataDir, log: () => {}, runnerId: "t", appUrl: "http://x", ...t.runner.look } as any);
+  await gitIn(t.project, "init", "-q", "-b", "main");
+  await gitIn(t.project, "commit", "-q", "--allow-empty", "-m", "init");
+  return t;
+}
+
+test("start_session with worktree: true starts it in a new worktree of the project, its own", async () => {
+  const { runner, chat, tools, driverOf, project } = await withWorktrees();
+  const said = await tools(chat).start_session!({ project_path: project, prompt: "Fix the login bug.", title: "Login bug", worktree: true });
+  const child = /session (\S+) in/.exec(said)![1]!;
+  const path = join(project, "..", "project-worktrees", "login-bug");
+  expect(said).toContain(`new worktree ${path} on branch tether/login-bug (from main`);
+  const s = runner.core.sessions.get(child)!;
+  expect(s.summary.projectPath).toBe(path);
+  expect(s.summary.worktreeOf).toBe(project);
+  expect(runner.look.sessions.worktree!(child)).toEqual({ path, branch: "tether/login-bug", repo: project });
+  await until(() => !!driverOf(child)?.sent.length);
+  expect(driverOf(child)!.sent[0]).toBe(`${FROM_TETHER}Fix the login bug.`);
+  const link = runner.core.sessions.get(chat)!.transcript!.messages.find((m) => m.link?.sessionId === child);
+  expect(link?.parts[0]).toEqual({ type: "text", text: "Started “Login bug” in login-bug." });
+  // Not a repo: refused, nothing started.
+  const plain = join(project, "..", "plain");
+  mkdirSync(plain);
+  await expect(tools(chat).start_session!({ project_path: plain, prompt: "x", worktree: true })).rejects.toThrow("isn't in a git repository");
+});
+
+test("check-in: Tether removes the worktree it made for a finished, merged session, with its branch, then archives it", async () => {
+  const { runner, fake, op, chat, tools, driverOf, project } = await withWorktrees();
+  fake.script = (text) => [say(`a-${text.length}`, text.includes(ANSWER_TAG) ? `${ANSWER_TAG} {"done": true, "merged": true, "cleaned_up": true, "branch": null}` : "ok"), idle];
+  const start = async (name: string) => {
+    const made = await op("newWorktreeSession", { harness: "claude", projectPath: project, name });
+    await op("send", { sessionId: made.sessionId, text: name });
+    await until(() => !!driverOf(made.sessionId)?.sent.length && runner.core.sessions.get(made.sessionId)?.state.status === "idle");
+    return made as { sessionId: string; path: string; branch: string };
+  };
+  // Merged: a commit in the worktree, fast-forwarded into main.
+  const done = await start("done work");
+  writeFileSync(join(done.path, "f.txt"), "x");
+  await gitIn(done.path, "add", ".");
+  await gitIn(done.path, "commit", "-qm", "work");
+  await gitIn(project, "merge", "-q", "--ff-only", done.branch);
+  // Not merged: a commit only on its branch.
+  const open = await start("open work");
+  writeFileSync(join(open.path, "g.txt"), "x");
+  await gitIn(open.path, "add", ".");
+  await gitIn(open.path, "commit", "-qm", "wip");
+  // Merged, but another session works in its worktree: archived, the worktree stays.
+  const shared = await start("shared work");
+  const guest = (await op("newSession", { harness: "claude", projectPath: shared.path })).sessionId as string;
+  await op("send", { sessionId: guest, text: "guest" });
+  await until(() => !!driverOf(guest)?.sent.length && runner.core.sessions.get(guest)?.state.status === "idle");
+  await tools(chat).check_in_sessions!({ session_ids: [done.sessionId, open.sessionId, shared.sessionId] });
+  // It's told that Tether removes its worktree, not to do it itself.
+  await until(() => driverOf(done.sessionId)!.sent.length === 2);
+  expect(driverOf(done.sessionId)!.sent[1]).toContain(`Your folder is a worktree Tether made for this session, on ${done.branch}`);
+  await until(() => driverOf(chat)?.sent.length === 1);
+  const report = driverOf(chat)!.sent[0]!;
+  expect(report).toContain(`${done.sessionId} "New session" (${done.path}): done, merged and cleaned up; removed its worktree and branch ${done.branch}`);
+  expect(existsSync(done.path)).toBe(false);
+  expect(await gitIn(project, "branch", "--list", done.branch)).toBe("");
+  expect(runner.core.sessions.get(done.sessionId)!.summary.archived).toBe(true);
+  expect(report).toContain(`${open.sessionId} "New session" (${open.path}): says it's done and merged, but git disagrees`);
+  expect(existsSync(open.path)).toBe(true);
+  expect(report).toContain(`its worktree stays: another session works in ${shared.path}`);
+  expect(existsSync(shared.path)).toBe(true);
+  expect(runner.core.sessions.get(shared.sessionId)!.summary.archived).toBe(true);
+});
+
 test("Archive done sessions (homeAgentCheckIn) runs the check-in without a chat and keeps its result for Home", async () => {
   const { runner, fake, op, chat, driverOf, project, dataDir } = await setup();
   // Nothing to check: the result says so at once.
@@ -1383,4 +1461,19 @@ test("unfence can't leave or rebuild a run of three < or >", () => {
     expect(unfence(x)).not.toMatch(/<<<|>>>/);
   }
   expect(unfence("a < b >> c")).toBe("a < b >> c");
+});
+
+test("scheduled messages (SPEC §9): one for later doesn't hold a message from the agent; one waiting for the person refuses it, saying why", async () => {
+  const { chat, tools, done, runner, driverOf } = await others();
+  const at = Date.now() + 60 * 60 * 1000;
+  await runner.live.queue.add(done, "Later on, deploy.", [], { at });
+  const st: string = await tools(chat).session_status!({ session_id: done });
+  expect(st).toContain("The person scheduled a message for");
+  expect(st).not.toContain("queued.");
+  expect(await tools(chat).send_to_session!({ session_id: done, message: "Add a test for it." })).toContain("Sent.");
+  await until(() => driverOf(done)!.sent.length === 2);
+  driverOf(done)!.sink.state({ status: "idle" });
+  const s = await runner.core.open(done);
+  s.setState({ queue: s.state.queue.map((m) => ({ ...m, at: Date.now() - 1000, held: "late" as const })) });
+  await expect(tools(chat).send_to_session!({ session_id: done, message: "more" })).rejects.toThrow("scheduled message waiting for the person (the runner was off for more than a day after its time)");
 });

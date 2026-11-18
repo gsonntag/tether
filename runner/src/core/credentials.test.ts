@@ -237,7 +237,7 @@ describe("credential process boundaries", () => {
       t.adapter.script = () => [answers];
       await t.live.send("claude:one", "plan");
       const s = await t.core.open("claude:one"), first = t.adapter.drivers.at(-1)!;
-      t.prefs.set(s.id, { title: "Mine" });
+      t.prefs.set(s.id, { title: "Mine", pinned: 7, forkedFrom: { sessionId: "claude:orig", title: "Orig" } });
       await t.live.setSource(s.id, "anthropic");
       expect(s.state.nextBilling?.label).toBe("Anthropic API key");
       expect(t.prefs.get(s.id).source).toBe("subscription");
@@ -255,6 +255,14 @@ describe("credential process boundaries", () => {
       expect(rows(t)).toContain("claude:carried-1");
       expect(rows(t)).not.toContain(s.id);
       expect((await t.core.open("claude:carried-1")).summary.title).toBe("Mine");
+      // A fork stays one across a source change (SPEC §16).
+      expect(t.prefs.get("claude:carried-1").forkedFrom).toEqual({ sessionId: "claude:orig", title: "Orig" });
+      expect((await t.core.open("claude:carried-1")).summary.forkedFrom?.sessionId).toBe("claude:orig");
+      expect("forkedFrom" in (await t.core.open("claude:carried-1")).state).toBe(false);
+      // The pin goes with the conversation: the new thread takes the old one's place.
+      expect((await t.core.open("claude:carried-1")).summary.pinned).toBe(7);
+      expect(t.prefs.get(s.id).pinned).toBeUndefined();
+      expect(t.prefs.pinned()).toEqual(["claude:carried-1"]);
 
       // An old tab's message follows too.
       await t.live.send(s.id, "from an old tab");

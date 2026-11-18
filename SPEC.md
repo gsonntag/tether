@@ -99,6 +99,44 @@ claim any id not starting with `runner-` (`CLOSE_RUNNER_ID` otherwise; server/sr
   New session can make a folder: the dialog asks the runner (`checkFolder`), warns when it doesn't
   exist yet, and only a confirmed `createFolder` on `newSession` makes it, parents too. Only a path
   starting with `/` or `~/` is made.
+- **A worktree per session** (`modules/worktrees`). For a folder in git with a commit
+  (`workspaceInfo`), New session offers **Workspace**: *This folder* (default) or *New worktree*,
+  with a branch (shown, and sent, as `tether/<slug>`: a slug of the Home agent's title or brief, a
+  hash of text with no usable words, else `wt-<random>`). Creates in one repo run one at a time.
+  `newWorktreeSession` resolves the base, `origin/HEAD`, else `origin/main|master`, else local
+  `main|master`, else `HEAD`; for `origin/<x>` it first runs `git fetch origin <x>` (best effort: 15 s,
+  no prompts: `credential.interactive=false`, `GCM_INTERACTIVE=never`, ssh in batch mode unless
+  the repo or environment sets its own ssh command; failed: as last fetched; the dialog says when). Then
+  `git worktree add --no-track -b <branch> <repo>-worktrees/<slug> <sha>` from the main checkout. A
+  name git doesn't take as typed (`@`, `@{…}`, …), or a branch (local or on a remote) or folder that
+  exists, is refused. A failed add undoes only what it made: never a path or branch git refused as
+  existing; the worktree only when git lists it on this branch, the branch only while still at the
+  base commit (`update-ref -d`), an empty `<repo>-worktrees` it made. git runs as argv, in its own
+  process group, with time limits and no prompts; `worktree add` runs the repo's post-checkout hook,
+  as a person's would (the agent gets the same access there anyway), in the C locale (its error
+  text is matched). Then `newSession` in it (a
+  failed start undoes it the same way), and runner.json records `worktree: {path, branch, repo,
+  known}` on the session: its own (`known`: each ignored file, with its size, time and, up to 1 MB, a
+  content hash, there once it
+  was made, plus what each setup run made or changed, taken when it ends before anything waiting goes
+  to the agent, against a snapshot at its start; files made by hand before a Re-run setup aren't). The
+  summary carries `worktreeOf` (the main checkout) for grouping. **Setup:** `.tether/setup`
+  (executable, run directly) or `.tether/config.json`'s `"setup"` (via `$SHELL -c`), the worktree's
+  own (the base's, which the dialog reads from git and shows, marked when cut short; the dialog
+sends back its `setupId`: the script's blob id, or a hash of the whole command; a create whose
+fetched base has another setup is refused with the new one named, nothing made. It's a "what you
+saw is what runs" check, not a trust boundary: the repo's code runs either way. The Home agent's
+runs whatever the base has) before the main checkout's, runs in
+  the worktree with `TETHER_WORKTREE`, `TETHER_REPO` and `TETHER_BRANCH` as a `!` card (§9) marked
+  `setup`, whose output never goes to the agent (state `done`), for at most 30 minutes (then
+  stopped, failed). A terminal start in a repo with a setup is refused (its TUI wouldn't wait).
+  While it runs (`LiveState.setup: "running"`, also in runner.json) every send, the Home agent's
+  too, queues held (`queueHeldBy: "setup"`, not shown as needing you), Resume and `!` commands
+  refuse; success
+  releases the queue. After a failure (`setup: "failed"`), or a restart that cut it off, what waits
+  and what you send next stay held, even with nothing queued; Home shows the session failed, and
+  the card offers **Re-run setup** (`rerunSetup`) and **Send anyway** (Resume, which ends the gate).
+  The Home agent's `start_session` takes `worktree: true`. Archive done (§10) removes it.
 - **Session:** `harness` + `nativeId` (the harness's own id) + `projectPath`. Tether's id is
   `${harness}:${nativeId}`. A session is in exactly one **mode** at a time:
 
@@ -226,11 +264,12 @@ is dropped, so `plan` is always the plan's.
 
 `listProjects`, `listSessions`, `subscribe`, `unsubscribe`, `newSession`, `checkFolder`, `send`, `steer`,
 `queue`, `editQueued`, `cancelQueued`, `interrupt`, `answerRequest`, `setModel`, `setEffort`,
-`setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `setSessionArchived`, `openTerminal`, `closeTerminal`,
+`setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `setSessionArchived`, `pinSession`, `openTerminal`, `closeTerminal`,
 `terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands). The move module
-adds `moveOptions` and `moveSession` (§15), the git module `gitDiff` (§10 Changes), `checkpoints`
-and `restoreCheckpoint` (§10 Checkpoints), the files module `listDir`, `readFile` and `findFiles`
-(§10 Files).
+adds `moveOptions` and `moveSession` (§15), the usage module `usage` (§10 Usage), the worktrees
+module `workspaceInfo` and `newWorktreeSession` and `rerunSetup` (§4), the fork module `forkSession` (§16),
+the git module `gitDiff` (§10 Changes), `checkpoints` and `restoreCheckpoint` (§10 Checkpoints), the
+files module `listDir`, `readFile` and `findFiles` (§10 Files).
 
 ## 6. Adapters
 
@@ -622,7 +661,43 @@ Later, a Claude `PreToolUse` hook can route terminal approvals through the same 
   Background work doesn't hold it: "this turn" is the main agent's (§6a).
 - A steer can't be taken back once the harness has it.
 - Desktop keys: Enter send or steer, Tab queue (when the box has text), ⌘/Ctrl+Enter stop and send now,
-  Shift+Enter newline, Esc stop (empty box). On phones Enter is a newline and buttons send.
+  Alt+Enter send later, Shift+Enter newline, Esc stop (empty box). On phones Enter is a newline and buttons send.
+- **Scheduled sends.** **Send later…** in the send menu (the phone's + menu; Alt+Enter) opens a picker
+  above the box: in 1 hour, tonight 9 PM, tomorrow 9 AM (this morning before 5 AM), or a custom
+  date/time, in the browser's time zone (presets computed when tapped), sent as an absolute time
+  (`queue` with `at`, at most a year ahead, not in the past). The message waits in the queue
+  (`QueuedMessage.at`, runner.json) as a **Scheduled** group, soonest first, with its time; any
+  device can edit its text and time in one change (`editQueued` with `at`), send it now or cancel
+  it (`scheduleQueued`: a new time, or null for now, which marks it `asap`).
+  - *Apart from the queue:* holds are about the unscheduled messages, and a scheduled message neither
+    holds nor releases them; one coming due goes next even while they're paused. It waits for a
+    running turn or request, the terminal (Back to Tether), the quiet wait after a restart, a new
+    worktree's setup (running, or failed until Send anyway, §4) and a rate limit retry. A Stop, a failed turn, a cancelled rate limit retry or a restart that cut the
+    turn off without continuing it holds the scheduled messages due at that moment (`held:
+    "stopped" | "failed" | "retry" | "restart"`, each shown with why); ones coming due later still
+    go at their time. A message going out when its queue moves to a new session (below) comes back
+    there if it fails.
+  - *Billing:* it goes through the normal send path (the session's source and checks). A send that
+    fails says why in the chat and keeps the message, held (`failed`), never retried by itself.
+  - *Timer and restarts:* one timer serves all, armed for the next time and never longer than a
+    minute, so long waits and clock jumps are safe. While messages are scheduled the runner saves
+    when it was last seen running (`aliveAt`, removed once nothing is); the time from then to a
+    start, or a gap of 5+ minutes between two looks while something is scheduled (a machine
+    asleep), was off. Time with nothing scheduled is never counted. A message whose time passed while the runner was
+    off sends on start; one the runner was off for more than 24 hours after waits for you instead
+    (`held: "late"`, checked before anything can send it). Time spent waiting behind a turn or the
+    terminal never makes one late. Sent 2+ minutes after its time (not Send now), a notice says
+    so: "It was for 9:00 PM; sent at 9:14 PM". An entry with a scheduled message is never pruned
+    from runner.json.
+  - *Elsewhere:* Home lists a session with one scheduled last, as Scheduled with its time (not
+    archived ones: a scheduled message firing into an archived session doesn't unarchive it, as no
+    send does; it shows on Home as working). A held one is a paused queue (Needs you). A
+    message for later doesn't block a source change, a move, an automatic update or a Home agent
+    check-in, and doesn't count as queued for the Home agent; a source change or a move takes the
+    queue with it to the new session. The Home agent can't archive a session with one scheduled
+    and is told why it can't message a session whose scheduled message waits for the person. A
+    scheduled message is the person's: one firing in a session the agent follows makes it the
+    person's, as any message they send does (no report of that turn to the agent).
 - **Shell commands** (P5b): text starting with `!` is a shell command (below).
 - **Attachments** (images and files, by paste, drop, picker or camera) are in the core because phone
   screenshots are a main use. Chunks go over RPC and are stored under
@@ -853,9 +928,11 @@ event (with the message's text) and the queued message's id from `SessionActions
 
 ## 10. UI
 
-- **Sidebar:** a flat list of recent sessions across projects (title, harness glyph, project, how long
-  ago, status dot), with projects below. Search. New session (pick a project, harness, model). Archive
-  (Archiving below).
+- **Sidebar:** recent sessions grouped by project (title, harness glyph, how long ago, status dot,
+  under the project's folder name, which opens that project's list; groups ordered by their newest
+  session; same-named folders show parent folders until they differ; paging counts sessions, and older
+  sessions from "Show more" join their groups), with projects below; pinned sessions flat above it. Search results and a project's list stay flat. New session (pick a project,
+  harness, model). Archive and pin (Archiving, Pinning below).
 - **Session view:** the transcript (markdown, thinking folded, tool cards rendered by `kind` with
   diffs and shell output), the requests dock, the queue, the composer, and a header with model, effort,
   permission mode, the context chip ("Context 42%", tooltip "84k of 200k context"), the usage chip (what it
@@ -907,7 +984,7 @@ next (`LiveState.nextBilling`). Picking the session's own again calls it off. A 
 refuses it: the items are disabled with the reason as their description, and the op refuses too. When
 one of the harness's keys isn't set, the menu has **Add API key…**, which opens Credentials. A session
 on a key that was unset still shows that source, marked. A subagent's chip and a chip on a runner with
-no `billingSources` answer are plain text. There is one way in: the ⋯ menu has only Change session harness.
+no `billingSources` answer are plain text. There is one way in: of the ⋯ menu's items, only Change session harness touches the source.
 
 The menu opens with the **plan's usage**, whether the session is on the plan or a key, so you see it
 before switching: under the plan's name, each window the harness reported, "Week 64% · resets Nov 5,
@@ -1194,7 +1271,7 @@ nested repositories and anything in them, a folder where a file goes, a path und
 real index, `HEAD` and branches aren't touched, so commits and staged changes stay. No confirm (§2):
 the undo is the safety net. Refused while the session runs, waits on you, runs a command, subagent
 or background task, waits on its harness after a restart or on a rate-limit retry, is driven from
-its terminal, or has messages queued, and while any other live session in the same repo or in a folder
+its terminal, or has messages queued (a scheduled one only once it's due, §9), and while any other live session in the same repo or in a folder
 holding it (folders compared as real paths) is in any of those states but the queue; checked again once the undo is
 saved, right before files change. The text under the button names the other live sessions in the
 repo.
@@ -1356,6 +1433,23 @@ The flag is saved in the runner's prefs (`setSessionArchived`), so it survives r
 90-day pruning, and shows on every connected device. A failure shows once: in the chat from ⋯, under
 the row from the Sidebar until the next click or key or a few seconds.
 
+### Pinning
+
+Each main session row in the Sidebar has a pin button beside archive (filled while pinned; on touch
+screens only a pinned row shows it, to unpin), and the session's ⋯ menu has Pin/Unpin. Pinned sessions
+sit in a Pinned group above Recent, oldest pin first, across runners (each runner's clock), on every
+device; a search or a folder lists them as usual. The runner keeps when it was pinned in its prefs
+(`pinSession`, carried on the row as `pinned`), past the 90-day pruning, and says so in its hello
+(`RunnerInfo.pinning`: no pin buttons for a runner from before it). A pinned session is listed however
+old: discovery looks up the old ones in parallel with a short timeout and keeps them (read again when
+the store changes or after a minute); a failed lookup keeps the row. The pin keeps the row as last
+seen (`pinnedRow`): a session the harness can't find is listed from it, dimmed, "Not found on this
+computer" (`missing`), and stays pinned until the person unpins it. The pin follows a conversation to
+its new thread (a source change, a renewed id). Modules see the lists without old sessions listed only
+because they're pinned, or missing ones; a recent pinned session is still asked at a check-in and may
+be archived (which unpins it). Archiving unpins; an archived session, a subagent, a side chat (§16a), a Home agent chat or
+a session in a hidden folder can't be pinned. No reordering.
+
 ### The Home agent's model and source
 
 The Home agent (`runner/src/modules/homeAgent`) is a long-lived chat, so unlike a session its
@@ -1400,6 +1494,17 @@ answer against git: a named branch, or the session's own separate worktree, must
 main (by ancestry or as equal patches, after one `git fetch origin` per repo), and no worktree it
 used may be left. The main checkout's uncommitted changes count as applied. Only a session that is
 done, merged and cleaned up is archived, as the archive button does it (`SessionCore.setArchived`).
+A worktree Tether made for the session (§4, runner.json's `worktree`) the session is told to leave;
+once the answer passes, Tether removes it itself and then archives. Its HEAD must be in main (by
+ancestry or as equal patches: a rebase merge counts, a squash of several commits may not). Ignored
+files it would delete, file by file, must be in regenerable folders (`node_modules`, `dist`, `build`,
+`target`, `.venv`, `venv`, `__pycache__`, `.next`, `.turbo`, `coverage`, `.cache`) or `known` and
+unchanged (same size, time and hash); anything else (a `.env`, a local database, a file added or edited
+since, more than 20,000 to check) keeps it, named in the reason. Then `git worktree remove` without
+`--force` (a clean worktree only), and its branch by `update-ref -d` at the commit checked to be in
+main, so it can't have moved in between; a branch with work not in main stays. A worktree folder
+already gone (moved or deleted) is said so, and git's record pruned. One git won't remove keeps the
+session, with why; one another listed session works in stays, and the session is archived.
 
 The answer isn't one of a started session's reports. When all have answered, or after 10 minutes,
 the chat gets one report of what was archived, what wasn't and why, and what wasn't asked. A
@@ -1472,6 +1577,62 @@ The usage-limit error's retry timestamp is interpreted as runner UTC and display
 browser's local timezone, including the date and timezone label. When the provider gives only a time (the retry is
 within a day), it means the next such UTC time after the message. Native error text stays unchanged
 in the store. Ordinary transcript dates and user messages are not rewritten.
+
+### Usage
+
+**Settings → Usage** (`#/settings/usage`), per runner: the last 7 or 30 days. At the top, each
+harness's latest plan limits (`planLines`). Tiles: tokens; the API price of it all (est.); that
+price by source, plan, API keys and unknown, and how many requests went to providers; **Billed to API
+keys**, the ledger's (`costs.json`) whole-session totals for the sessions with usage in the range, so
+it can include earlier days; cache savings, cache reads at the full input price less what they cost.
+Then a bar chart by day (tokens stacked by input, output, cache write and cache read, or API price),
+its numbers behind a visible **Show the numbers** button, and tables by harness and model and by
+project (the top 8, the rest as one row, and TETHER_HIDE_PROJECTS folders and the Home agent's as one
+unnamed row). A table's first column stays put while a phone scrolls it sideways.
+
+A sum that leaves out requests with no price ends in **+** (a tile says how many), a source with
+nothing priced says **no price**, one with no requests **—**, and a dollar bar for such a day has a +
+over it: a partial subtotal is never shown as whole. When some logs couldn't be read (`scan.errors`),
+every dollar tile is a lower bound too: **+** and a note. No price: a model the tables don't list, a tier
+other than standard (Claude's `service_tier`, Codex's `thread_settings_applied`), a provider
+(Bedrock, Vertex, Foundry, a gateway or an auth token, Azure: they set their own prices), Codex over
+272K input, Sonnet 4.5 over 200K (its long-context beta's premium isn't listed: no price rather than
+a low one). Hosted
+tool fees (web search) aren't tokens and aren't counted. Prices: Anthropic's published first-party
+table (`shared/anthropicRates.ts`: 5-minute and 1-hour writes, Haiku 5.5's long-prompt rates, fast
+mode, US-only inference, the published dated ids of the 4.5 models) and OpenAI's Standard table
+(writes at the 30-minute default).
+
+Sources. Codex, per request from its rollout: a key's provider (`tether_openai`) or a private home is
+a key, any other provider is a provider, OpenAI's own whose token count after it carried plan limits
+(`rate_limits.plan_type`) is the plan, else unknown. Claude, as of Tether's last start of the session
+(`Adapter.latestStart`: its source and time; an "Anthropic auth token" start is a provider): that
+source from then on; before it unknown, since it may have been another. A Codex token count of rate
+limits only (no usage) marks only the record just before it.
+
+The `usage` module reads the harness stores, not Tether's records: each adapter's
+`usageStores()` (Claude's `projects/`, subagents included; Codex's `sessions/`, `archived_sessions/`
+and the private homes of Tether's key threads, `codex-keys/`). The ledger and the hidden folders come
+through `ModuleContext` (`apiCost`, `hiddenFolder`). A request is one record. Claude: one per message
+id and request id, at the largest counts its streamed entries carry; a compaction's own request isn't
+in the store. Codex: `token_usage_record` by response id; before a file's first one, each
+`token_count` whose running total moved (`last_token_usage`; a fork's inherited total isn't
+counted). Copies of a request in several files merge to their largest counts and belong to the file
+of the session the entry names.
+
+Nothing is read until the page first asks; then the scan runs in the background, again when the op is
+called over a minute after the last (or Refresh). Folders are walked by hand (an entry of unknown type is
+`lstat`ed): symlinks aren't followed, and a folder or file that can't be read is counted in `scan.errors`, which the page shows,
+without stopping the rest. One file at a time, in 4 MB chunks, yielding between them. Only a line
+whose first 2 KB has a parser's marker is decoded and parsed; a line over 64 MB is skipped (counted)
+without failing its file. Each file's records are cached in the module's data dir with its size,
+mtime, read offset (the end of its last whole line) and a hash of its first bytes: an unchanged file
+isn't opened, a grown one is read from the offset, a shrunk or replaced one from the start. Files and
+records older than 32 days are dropped. The cache is written only when something changed, and never
+after the runner stops. The op answers at once with what's read and `scan.running`, and the page
+polls while it runs. Days are calendar days in the browser's IANA zone (`timeZone`), so DST and
+quarter-hour zones bucket correctly. It reveals every project's activity: a drive op, and with
+shared runners it belongs in `MANAGE_OPS` (shared/access.ts), never to view-only access.
 
 ## 11. Phases
 
@@ -1903,3 +2064,108 @@ it works in plan mode too.
 (`SessionActions`, `core/runner.ts`), which is thin wrappers over what's already there, and
 `SessionLook` says a bit more. Beyond those: `Adapter.move`, `capabilities.move`,
 `OverlayNotice.first`, and `core/moved.ts` for the folder's path. No session lifecycle code changed.
+
+## 16. Forking a session
+
+**Fork** in the session's ⋯ menu makes a new session with the same conversation, in the same folder,
+on the same harness and source, with the same model, effort and mode. **Fork from here** under a
+reply makes one whose conversation ends at that reply. The original is never changed, and the fork
+opens ("Forking…" in the chat meanwhile). It is a module (`runner/src/modules/fork/`, op
+`forkSession { sessionId, messageId? }`); other modules fork through `SessionActions.fork` (side
+chats, §16a, build on it).
+
+**Fork points** (`shared/fork.ts`, the UI and runner alike): the assistant reply that ends a turn,
+that is a reply with no error, ending on text (one ending on a tool call is mid-turn), followed by
+your next message or by nothing. A stopped turn's reply counts: its turn ended. User messages,
+notices and errors aren't fork points, nor is history the harness can't fork at (`Msg.noFork`:
+Codex's imported messages and a source change's earlier thread, which aren't in its own turns).
+Desktop shows Fork from here on hover (hidden, it takes no clicks but stays in the tab order);
+touch, always.
+
+**While a turn may run** the running turn is never forked: its replies aren't fork points, and Fork
+takes the conversation through the last finished turn ("No turn has finished yet" when none has).
+That's a turn in Tether, one another Codex client runs, and anything while a handoff harness's TUI
+has the session (Claude's: Tether doesn't follow its turns). And Fork of a whole session whose store
+doesn't end on a fork point (a turn in the CLI, outside Tether, ending on your message or mid-reply;
+a failed turn) takes it through the last fork point too. A whole fork that stops short says so in
+its notice: "Forked through the last finished turn; the failed (unfinished, running) turn after it
+isn't included."
+
+**Not forked:** a subagent (fork its main session; the fork's tool cards don't link the original's
+subagents); a session whose source change isn't confirmed yet (`nextBilling`: send first); a harness
+without `capabilities.fork`.
+
+| Harness | How |
+|---|---|
+| Claude Code | The Agent SDK's `forkSession` (a file operation: fresh entry ids, `forkedFrom` on each entry), `upToMessageId` the last entry of the reply's API message (a moved-in `<moved>` reply too; only `<synthetic>` ones aren't replies). Replies keep their message ids, so the fork must read back ending on that id (a whole fork: as many messages), else it's deleted. Across a compaction, as recorded, too |
+| Codex | `thread/fork` with `lastTurnId`, the reply's turn (inclusive), so nothing is rolled back: later turns are never copied. A reply followed by a message steered into its turn isn't a fork point here. Checked on daemon 0.169.1: no turn starts, turn ids are kept, and the fork's rollout holds only its own lines, its `session_meta` pointing at the original's (`forked_from_id`, `forked_from_ordinal_exclusive`). The fork is read back (its last turn) and named, else archived. So a fork reads its history from the original's rollout: archiving the original is safe, Codex refuses to delete an original a fork refers to, and removing its file by hand breaks the fork, whose opening (or history) then says "This fork's original history is gone (its Codex rollout was removed)." (the daemon's `missing source rollout`) |
+| Codex, copied | Copied instead (`Adapter.fork.copyInstead`) with §15's native import of the history through that reply, into a new thread on the same source: a thread on a key's private app-server, which serves one thread; and a thread with history brought in (a move's import, a source change), as its fork wouldn't show that history (Tether reads it from the thread's own rollout head: checked, a fork reads none back). So Fork right after a source change copies it whole. Tool calls travel as text and Tether's opening reads as a move's |
+
+A fork that can't be adopted once made (its settings, its notice) is removed from the store
+(`Adapter.fork.discard`: Claude's file, Codex's thread archived) and its row archived.
+
+**Billing.** A fork starts nothing and bills nothing: both harnesses fork in their stores. It's
+saved as the original's source (`SessionPrefs.source`) and settings, stored, and its first send
+starts it as any stored session, confirming the source first. Its chip meanwhile shows what the
+original's latest start confirmed (copied in `claude-windows.json`, `codex-threads.json`): the one
+exception to "the label changes only after harness confirmation". It's safe because the fork has
+exactly that source saved (a pending change refuses the fork), the label says what the harness
+confirmed for that source, so the API colour shows before anything is typed, and nothing is sent
+until the fork's own start confirms it again; a mismatch refuses the send as for any session. A
+key's copy starts that key's private app-server to make its thread, but no turn. The original's key
+preferences (`lastKey`, `fallbackKeys`) come along; its **When the plan runs out** switch doesn't,
+as it's ticked per session.
+
+**Links.** `SessionSummary.forkedFrom { sessionId, messageId?, title }` (`SessionPrefs.forkedFrom`,
+kept across a source change like the session's other settings): the header says "Forked from
+“<title>”", by the original's title now, and opens it. A notice under what the fork took says the
+same, with Open it. The original gets nothing.
+
+## 16a. Side chats
+
+`/btw <question>` in a session's box, or **Side chat** in its ⋯ menu, opens a panel beside the
+transcript (where the terminal panel goes; when there's no room, as on a phone, a full-screen sheet
+over the session: a modal dialog that keeps focus, Escape tucks it away) holding a **side chat**: a
+fork (§16) through the last finished turn, read-only, asked the question. The session keeps working
+undisturbed: a running turn is allowed and never forked. It is a module
+(`runner/src/modules/sideChats/`, ops `openSideChat { sessionId, question? } → { sessionId }`,
+`bringBack { sessionId } → { text }`, `closeSideChat { sessionId }`).
+
+- **`/btw` is Tether's.** It's first in the `/` menu of a session that can have side chats
+  (`canSideChat`: it forks, its harness has `capabilities.readOnlyMode`, it isn't a side chat, a
+  subagent or one of the Home agent's chats; the runner refuses the same). The page intercepts it
+  whatever the session is doing (send, steer, queue); it never reaches the harness. With files
+  attached it's refused with a note under the box, which keeps them. Where side chats aren't
+  offered it goes as typed.
+- **A side chat** is a session with `SessionSummary.sideOf` (`SessionPrefs.sideOf`, indexed in
+  prefs), titled "Side chat: <question>". It's left out of every list: Recent, projects, search,
+  archived, Home's inbox and waiting line, and what modules list or reach (peers, the Home agent's
+  lists, watch, check-in and send). Nothing of it is pushed. The session's header shows **Side chats
+  N**, closed ones too (`listSessions { sideOf }`, from the prefs index); picking one opens it in the
+  panel (a closed one is unarchived). When the session goes on under a new id (a source change's new
+  thread, a renewed id, a Move) its side chats follow (`moveSides`); a side chat's own successor stays one.
+  Opened on its own, its header says "Read-only side chat of “<title>”", with a Read only chip for
+  the Mode and no Terminal, Change session harness, Fork or source switch.
+- **Read-only, by the harness.** Started with `StartOpts.readOnly`. In the core, both harnesses: its
+  mode can't change ("A side chat stays read-only."), its approvals (a plan's included) are refused
+  without asking anyone, questions still come to you; it can't change source or the plan-runs-out
+  switch, move, be forked, run `!` commands or open a terminal, and takes no `/` command (sent,
+  steered or queued: a custom command's text can run shell lines before the model sees it).
+
+| Harness | Mode | Enforced by |
+|---|---|---|
+| Claude Code | `default` (Ask first) | A PreToolUse hook (`adapters/claude/readOnly.ts`) denying every tool but a fixed list that only reads: Read, Grep, Glob, LS, NotebookRead, WebSearch, TodoWrite, ToolSearch, AskUserQuestion. No WebFetch (it would send what was read anywhere), no shell at all (a list of "reading" commands doesn't survive quoting and options), no MCP tool (Tether's included), no subagents. It fails closed: anything it can't read is denied. A hook's deny stands over modes, allow rules and the auto classifier. The person's own hooks (settings, plugins: a Stop or PostToolUse hook could write) are off (`disableAllHooks`); the SDK's gate still runs (checked on 2.1.327). A read outside the folder asks, and the core refuses it. Plan mode isn't used: on 2.1.327 it let `echo hello > f` run without asking (the person's default being auto), and ran its turns on Sonnet instead of the session's model. The system prompt says it's a read-only side chat |
+| Codex | `never+read-only` | Codex's read-only sandbox, with no approvals to escape it. MCP servers, apps, plugins and hooks run outside the sandbox, so the thread is made (a fork, or a copy's `thread/start`) and resumed (`adapters/codex/readOnly.ts`) with every server in the person's config turned off by name (`config/read`; a config it can't read fails the start), `features.apps`, `plugins`, `multi_agent` and `hooks` off, and without Tether's own server. After each resume the daemon must say, on every page of `mcpServerStatus/list` for the thread, that each server it knows is `disabled`, `failed` or `cancelled` with no tools (not started or unknown counts as on): a thread another client loaded keeps that client's config, so anything else fails the start. `config/read` takes no thread, so the features turned off at load can't be read back (apps would show as their own server). Checked with a stdio MCP server in a temporary CODEX_HOME: the session starts it, the side chat doesn't and can't call it |
+
+  WebSearch stays (Claude): a query can carry some of what it read. Read-only holds only inside
+  Tether: the side chat's id resumed in the harness's own terminal (`claude --resume`, `codex
+  resume`) runs ungated, in whatever mode that terminal picks.
+- **Bring back** runs a turn in the side chat, Tether's ("[From Tether] Bring back: summarize …
+  in at most 5 short lines"), waits for the end of the turn that message started (100 s at most),
+  and returns "From a side chat:\n\n<its reply after that message>", which the page puts in the
+  session's box as a draft to edit and send (`putDraft`; on a phone the sheet tucks away so the box
+  shows). It's never queued or sent by itself: the person decides what goes into a working session.
+  Refused while the side chat is answering; its box is off meanwhile.
+- **Close** (×) stops a turn it runs, then archives it. Closed while it's still being made, the
+  fork is closed when it arrives. Side chats opens it again.
+- **Billing** is the fork's: the session's source, model and effort; its turns are real turns.

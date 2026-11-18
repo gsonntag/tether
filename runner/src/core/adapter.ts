@@ -21,6 +21,11 @@ export interface StartOpts {
   model?: string;
   effort?: string;
   permissionMode?: string;
+  /**
+   * A side chat (SPEC §16a): the harness refuses anything but reading, whatever its mode and the
+   * person's own settings allow. A harness whose read-only mode is enforced by itself needs nothing more.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -187,6 +192,29 @@ export interface AdapterMove {
   busy?(nativeId: string): Promise<boolean>;
 }
 
+/** One fork (SPEC §16): `upTo` is a transcript message id, a fork point (shared/fork.ts); absent, all of it. */
+export interface ForkRequest {
+  nativeId: string;
+  projectPath: string;
+  upTo?: string;
+  title: string;
+  /** a side chat's fork (SPEC §16a): made the way a read-only session is loaded (StartOpts.readOnly) */
+  readOnly?: boolean;
+}
+
+/** Forking sessions (SPEC §16); with `capabilities.fork`. */
+export interface AdapterFork {
+  /**
+   * A new session in the harness's store with this one's conversation, the original untouched.
+   * Starts no turn and bills nothing. Throws, leaving nothing, when it can't. Returns its native id.
+   */
+  fork(r: ForkRequest): Promise<string>;
+  /** The harness can't fork this one itself (Codex: a thread on a key's private app-server, or with history brought in): its history is copied (§15's import) instead. */
+  copyInstead?(nativeId: string): boolean;
+  /** Removes a fork the module couldn't finish making (adopting it failed). */
+  discard?(nativeId: string, projectPath: string): Promise<void>;
+}
+
 /** The billing sources a harness can run on (SPEC "Credentials and billing safety"). */
 export interface AdapterBilling {
   /** the keys it can use */
@@ -284,6 +312,10 @@ export interface Adapter {
   storedBilling?(nativeId: string, projectPath: string): Promise<Billing>;
   /** The account's plan limits, as far as they're known without a turn (SPEC §5). Starts nothing. */
   planUsage?(): Promise<PlanUsage | undefined>;
+  /** Where the harness keeps its session logs, for Settings → Usage (`private`: a home only Tether's API-key threads use). Read-only. */
+  usageStores?(): { dir: string; private?: boolean }[];
+  /** What a stored session drew from on its latest start and when (ms), as Tether recorded it; undefined if it didn't. */
+  latestStart?(nativeId: string): { kind: Billing["kind"]; label?: string; at: number } | undefined;
   /** calls onChange with the whole transcript whenever the store changes; returns the stop function */
   watchHistory(nativeId: string, projectPath: string, onChange: (msgs: Msg[]) => void): () => void;
   /**
@@ -337,6 +369,8 @@ export interface Adapter {
   prepareTerminal?(nativeId: string, projectPath: string, opts: TerminalOpts): Promise<Billing>;
   /** moving sessions to and from this harness (SPEC §15); with `capabilities.move` */
   move?: AdapterMove;
+  /** forking sessions (SPEC §16); with `capabilities.fork` */
+  fork?: AdapterFork;
 }
 
 export interface TerminalOpts extends StartOpts {

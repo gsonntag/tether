@@ -1,6 +1,7 @@
 // One transcript message: a user prompt, an assistant reply (markdown, thinking, tool cards), or a
 // quiet notice. Parts cut short to travel get "Show all", which loads them whole (fullPart).
 
+import { clock, whenLabel } from "../schedule";
 import { memo, useMemo } from "react";
 import { imageSize } from "../imageSize";
 import { Icon } from "@astryxdesign/core/Icon";
@@ -18,6 +19,7 @@ import { useFullParts, useRowState, useSessionCtx } from "./sessionContext";
 import { ShellCard, ShellSent } from "./ShellCard";
 import { ToolCard } from "./ToolCard";
 import { openSession } from "../route";
+import { useForking } from "../fork";
 import { resetTime } from "../../../shared/labels";
 import { localizeUsageLimitRetry } from "../usageLimitTime";
 
@@ -134,8 +136,19 @@ function isCheckIn(msg: Msg) {
   return tetherPurpose(text) === "checkIn" || (msg.origin?.kind === "tether" && tetherPurpose(FROM_TETHER + text) === "checkIn");
 }
 
-export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed?: boolean }) {
-  const { projectPath, runnerId, home } = useSessionCtx();
+/** Fork from here (SPEC §16), "Forking…" while the session is being forked. */
+function ForkHere({ onFork }: { onFork: () => void }) {
+  const { sessionId } = useSessionCtx();
+  const busy = useForking(sessionId);
+  return (
+    <button type="button" className="t-link t-fork-here" title="A new session with the conversation up to here" disabled={busy} onClick={onFork}>
+      {busy ? "Forking…" : "Fork from here"}
+    </button>
+  );
+}
+
+export const Message = memo(function Message({ msg, failed, forkable }: { msg: Msg; failed?: boolean; forkable?: boolean }) {
+  const { projectPath, runnerId, home, fork } = useSessionCtx();
   const { full, loading, error, load } = useFullParts(msg.id, msg.parts);
   if (msg.role === "notice") {
     const text = msg.parts.map((p) => (p.type === "text" ? (msg.level === "error" ? localizeUsageLimitRetry(p.text, undefined, msg.ts) : p.text) : "")).join("\n");
@@ -152,6 +165,7 @@ export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed
             text
           )}
           {msg.resetsAt && ` Plan resets ${resetTime(msg.resetsAt)}.`}
+          {msg.scheduledFor && ` It was for ${whenLabel(msg.scheduledFor, msg.ts).replace(/^at /, "")}; sent at ${clock(msg.ts)}.`}
           {msg.link && (
             <>
               {" "}
@@ -306,6 +320,10 @@ export const Message = memo(function Message({ msg, failed }: { msg: Msg; failed
         {checkIn !== null && <div className={`t-checkin-status${settled ? " settled" : ""}`}>{checkInStatus(checkIn)}</div>}
         {missing.length > 0 && <CutNote loading={missing.some((i) => loading.includes(i))} error={error} onLoad={() => load(missing)} />}
         {msg.error && <div className="t-msg-error">{localizeUsageLimitRetry(msg.error, undefined, msg.ts)}</div>}
+        {forkable && fork && (
+          // A new session whose conversation ends here (SPEC §16); this one stays as it is.
+          <ForkHere onFork={() => fork.from(msg.id)} />
+        )}
       </div>
     </div>
   );

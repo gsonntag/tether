@@ -12,7 +12,7 @@ import { EventBus } from "../../core/bus";
 import { OpRegistry } from "../../core/ops";
 import type { SessionLook } from "..";
 import { gitModule } from "../git";
-import { Checkpoints } from ".";
+import { blockedWhy, Checkpoints } from ".";
 import { snapshot, writeAll } from "./snap";
 import { gitDiff } from "../git/diff";
 import { refSafe } from "./store";
@@ -716,4 +716,12 @@ test("streaming writes all of each chunk, however short the writes", async () =>
   await writeAll(fh, Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
   expect(got).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   await expect(writeAll({ write: async () => ({ bytesWritten: 0 }) }, Uint8Array.from([1]))).rejects.toThrow();
+});
+
+test("a restore isn't refused for a scheduled message not due yet, only for ones waiting now (SPEC §9)", () => {
+  const look = (queue: object[]): SessionLook => ({ summary: { id: "claude:q", projectPath: "/p", title: "Q", mode: "live", status: "idle" } as never, status: "idle", requests: [], state: { queue } as never, busy: false, background: false });
+  const now = Date.now();
+  expect(blockedWhy(look([{ id: "a", text: "later", queuedAt: now, at: now + 3_600_000 }]))).toBeUndefined();
+  expect(blockedWhy(look([{ id: "a", text: "due", queuedAt: now, at: now - 1000 }]))).toContain("messages waiting");
+  expect(blockedWhy(look([{ id: "a", text: "plain", queuedAt: now }]))).toContain("messages waiting");
 });

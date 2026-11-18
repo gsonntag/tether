@@ -2,16 +2,18 @@
 // old one left as it is, each pointing at the other. Knows no harness: sources export and targets
 // import through shared/move.ts, and capabilities say which route a target has.
 
+import { unscheduled } from "../../../../shared/schedule";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { parseSessionId } from "../../../../shared/ids";
 import { archiveMarkdown, budgetFor, contextNote, contextOpening, imageName, mapMode, movedFrom, movedTo, PORTABLE_VERSION, planImport, type MoveOptions, type MoveTarget, type PortableSession, type PortableSubagent } from "../../../../shared/move";
 import type { BillingSource } from "../../../../shared/credentials";
 import { HARNESS_LABELS, type HarnessId, type Msg } from "../../../../shared/transcript";
+import { SIDE_KEEPS } from "../../../../shared/sideChat";
 import type { Adapter, StartOpts } from "../../core/adapter";
 import { movedDir } from "../../core/moved";
 import { levelOf } from "../../core/permissionLevel";
-import type { Module, ModuleContext, SessionLook } from "..";
+import type { AdoptExtra, Module, ModuleContext, SessionLook } from "..";
 
 const labelOf = (h: HarnessId) => HARNESS_LABELS[h] ?? h;
 
@@ -21,10 +23,12 @@ const STORE_QUIET_MS = 3_000;
 /** Why a session can't move now. */
 export function refusal(s: SessionLook): string | undefined {
   if (s.summary.parentSessionId) return "A subagent moves with its main session.";
+  if (s.summary.sideOf) return SIDE_KEEPS.move;
   if (s.state.mode === "terminal" || s.state.terminal) return "Close the terminal first.";
   if (s.state.requests.length || s.requests.length) return "Answer the open request first.";
   if (s.status !== "idle") return "Wait for the turn to end, or stop it.";
-  if (s.state.queue.length) return "Send or cancel the waiting messages first.";
+  // Scheduled messages move with it (Mover.move); the others must go first.
+  if (unscheduled(s.state.queue).length) return "Send or cancel the waiting messages first.";
   if (s.busy) return "Wait for what's running in this session to finish.";
   return undefined;
 }
@@ -219,6 +223,10 @@ export class Mover {
       const stayed = background ? " Background work stayed there." : "";
       await this.ctx.sessions.notice(moved.sessionId, notice(`n-moved-from-${id}`, `${movedFrom(name(from, own))}${note ? ` ${note}` : ""}${stayed}`, id), moved.after ? { after: moved.after } : { first: true });
       await this.ctx.sessions.notice(id, notice(`n-moved-to-${moved.sessionId}`, movedTo(name(target, source)), moved.sessionId));
+      // Its side chats (SPEC §16a) go under the session it went on in (on their own harness, as they were).
+      this.ctx.sessions.moveSides?.(id, moved.sessionId);
+      // Messages scheduled here go on from the new session (SPEC §9).
+      await this.ctx.sessions.handOverQueue(id, moved.sessionId).catch((e) => this.ctx.log(`${id}: its scheduled messages stayed: ${(e as Error).message}`));
       this.ctx.log(`moved ${id} to ${moved.sessionId}: ${moved.kept} of ${moved.total} messages in context`);
       return { sessionId: moved.sessionId };
     } finally {
@@ -253,13 +261,37 @@ export class Mover {
     }
   }
 
+  /**
+   * A fork its harness can't make itself (SPEC §16, Adapter.fork.copyInstead): the history through
+   * `upTo` (all of it when absent), imported into a new session on the same harness, source and
+   * settings, stored: nothing starts until its first send.
+   */
+  async copy(id: string, upTo: string | undefined, title: string, extra: AdoptExtra, mode?: string): Promise<string> {
+    const { look, adapter } = await this.source(id);
+    if (!adapter.move?.importHistory) throw new Error(`${labelOf(adapter.id)} can't copy a session.`);
+    const portable = await exportSession(adapter, look);
+    if (upTo) {
+      const end = portable.messages.findIndex((m) => m.id === upTo);
+      if (end < 0) throw new Error("That message isn't in the session any more.");
+      portable.messages = portable.messages.slice(0, end + 1);
+    }
+    portable.from.title = title;
+    const { model, effort } = look.state;
+    const permissionMode = mode ?? look.state.permissionMode;
+    // A side chat's copy (SPEC §16a) is made read-only from its thread's first load.
+    const opts: StartOpts = { ...(model && model !== "default" ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}), ...(extra.sideOf ? { readOnly: true } : {}) };
+    const made = await this.native(adapter, portable, opts, false, await this.ctx.sessions.sourceOf(id), undefined, { ...extra, stored: true });
+    this.ctx.log(`copied ${id} to ${made.sessionId} as a fork: ${made.kept} of ${made.total} messages in context`);
+    return made.sessionId;
+  }
+
   /** The history file of the move that made this session, when one did. */
   private earlier(s: PortableSession) {
     return join(movedDir(s.from.sessionId, this.ctx.dataDir), "history.md");
   }
 
   /** The harness takes the history itself. Throws, leaving no session, when it doesn't take. */
-  private async native(t: Adapter, s: PortableSession, opts: StartOpts, background: boolean, source: BillingSource, carriedFrom?: string) {
+  private async native(t: Adapter, s: PortableSession, opts: StartOpts, background: boolean, source: BillingSource, carriedFrom?: string, extra?: AdoptExtra) {
     const { projectPath, title } = s.from;
     const nativeId = await this.ctx.sessions.newId(t.id, projectPath, opts, source);
     const dir = movedDir(`${t.id}:${nativeId}`, this.ctx.dataDir);
@@ -271,7 +303,7 @@ export class Mover {
       await t.move!.importHistory!(request);
       if (t.move!.imported && !(await t.move!.imported(request))) throw new Error("the history didn't read back");
       if (carriedFrom) t.move!.carried?.(nativeId, parseSessionId(carriedFrom)!.nativeId);
-      const sessionId = await this.ctx.sessions.adopt(t.id, nativeId, projectPath, opts, source, carriedFrom);
+      const sessionId = await this.ctx.sessions.adopt(t.id, nativeId, projectPath, opts, source, carriedFrom, extra);
       // Where a person opening the session looks: under what came across, above what's new.
       const after = (await t.readHistory(nativeId, projectPath).catch(() => [])).at(-1)?.id;
       return { sessionId, kept: plan.kept, total: plan.total, after };

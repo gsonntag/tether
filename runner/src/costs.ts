@@ -139,7 +139,7 @@ function validReport(value: any): value is SessionCost {
  * Long context, other service tiers, non-token tool fees and contract prices are not guessed.
  * No dated snapshot of these models is published, so none prices here.
  */
-const STANDARD_OPENAI: Record<string, TokenRates> = {
+export const STANDARD_OPENAI: Record<string, TokenRates> = {
   "gpt-6-luna": { input: 0.10, output: 0.50, cached: 0.01 },
   "gpt-6.1-sol": { input: 2, output: 10, cached: 0.10 },
   "gpt-6.1-terra": { input: 1, output: 5, cached: 0.05 },

@@ -59,6 +59,29 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.t-group-head {
+  all: unset;
+  box-sizing: border-box;
+  display: block;
+  padding: 8px 8px 2px;
+  font-size: 12px;
+  color: var(--t-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  border-radius: var(--radius-element, 6px);
+}
+.t-group-head:hover {
+  color: var(--color-text-primary);
+}
+.t-group-head:focus-visible {
+  outline: 2px solid var(--color-accent);
+}
+/* touch: a finger-sized target, the text as small as on desktop */
+@media (hover: none), (pointer: coarse) {
+  .t-group-head { padding-top: 16px; min-height: 32px; } /* 16 + 12px text + 2 + line gap */
+}
 .t-rows {
   display: flex;
   flex-direction: column;
@@ -127,13 +150,19 @@
 .t-row-archive:focus-visible {
   outline: 2px solid var(--color-accent);
 }
-.t-row-archive:disabled {
-  cursor: default;
-  opacity: 0.5;
-}
 .t-row-archive svg {
   width: 16px;
   height: 16px;
+}
+.t-row-pin {
+  right: 26px; /* a 4px gap from archive's target */
+}
+.t-row-pin.on {
+  color: var(--color-text-primary);
+}
+/* Touch: only a pinned row shows its pin (tap to unpin); ⋯ in the session header pins. */
+@media (hover: none), (pointer: coarse) {
+  .t-row-pin:not(.on) { display: none; }
 }
 .t-archived {
   font-size: 11px;
@@ -146,7 +175,14 @@
 }
 @media (hover: hover) and (pointer: fine) {
   .t-row-archive { opacity: 0; pointer-events: none; }
-  .t-row:hover .t-row-archive, .t-row:focus-within .t-row-archive { opacity: 1; pointer-events: auto; }
+  .t-row:hover .t-row-archive, .t-row:focus-within .t-row-archive, .t-row-pin.on { opacity: 1; pointer-events: auto; }
+  /* the pin shows on hover: room for it always, so titles don't shift as the pointer moves */
+  .t-row.t-pinnable .t-row-title { padding-right: 58px; }
+}
+/* busy: after the reveal rules, so they don't override it */
+.t-row .t-row-archive:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 .t-row-title {
   display: block;
@@ -158,6 +194,16 @@
 }
 .t-row:not(.t-child) .t-row-title {
   padding-right: 28px;
+}
+.t-row.t-pinned .t-row-title {
+  padding-right: 58px;
+}
+/* a pinned session its runner can't find now: dimmed, not openable, still unpinnable */
+.t-row.t-missing, .t-row.t-missing .t-row-open {
+  cursor: default;
+}
+.t-row.t-missing .t-row-title-text, .t-row.t-missing .t-row-meta {
+  opacity: 0.55;
 }
 .t-row-title-editor {
   display: flex;
@@ -1410,6 +1456,27 @@
   gap: 4px 16px;
   align-items: center;
 }
+/* New session's Workspace: this folder, or a new worktree (SPEC §4). */
+.t-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.t-ws-setup summary {
+  font-size: 13px;
+  color: var(--t-muted);
+  cursor: pointer;
+}
+.t-ws-setup pre {
+  max-height: 160px;
+  overflow: auto;
+  margin-top: 6px;
+}
+.t-ws-note {
+  font-size: 13px;
+  color: var(--t-muted);
+  overflow-wrap: anywhere;
+}
 /* A setting that can't be changed here now (a handoff TUI drives). */
 .t-chip-off {
   opacity: 0.6;
@@ -1701,6 +1768,46 @@
 .t-queued-edit .t-input {
   flex: 1 1 200px;
 }
+/* Scheduled messages (SPEC §9 Scheduled sends): their time above the text. */
+.t-scheduled-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.t-scheduled-when {
+  font-size: 12px;
+  color: var(--t-muted);
+}
+.t-scheduled.stuck .t-scheduled-when {
+  color: var(--color-text-red, var(--color-error));
+}
+.t-queued-edit .t-send-later-input,
+.t-send-later-input {
+  flex: 0 1 auto;
+  min-width: 0;
+  width: auto;
+  font-size: 14px;
+}
+/* Send later: the picker above the message box. */
+.t-send-later {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 6px 2px;
+  font-size: 13px;
+}
+.t-send-later-title {
+  color: var(--t-muted);
+}
+.t-send-later-presets,
+.t-send-later-custom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
 
 .t-row.unread .t-row-title {
   font-weight: var(--font-weight-semibold, 600);
@@ -1971,6 +2078,11 @@
   padding: 6px 10px;
   font-size: 12px;
   color: var(--t-muted);
+}
+.t-shellcard-actions {
+  display: flex;
+  gap: 8px;
+  padding: 0 12px 10px;
 }
 .t-shellcard-where {
   display: flex;
@@ -3112,3 +3224,149 @@
 .t-updates-warning { color: var(--color-text-yellow, var(--color-warning)); font-weight: 600; }
 /* The computer's name on Home: tap to rename; keeps the list's own type size */
 .t-title-button.t-runner-name { font-size: inherit; font-weight: inherit; max-width: 100%; }
+
+/* Fork (SPEC §16): a fork's link back, and Fork from here under a reply that ends a turn. Quiet:
+   shown on hover where there is one, always on touch. */
+.t-header-fork {
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.t-header-fork .t-link {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+}
+.t-fork-here {
+  margin-top: 4px;
+  color: var(--t-muted);
+}
+@media (hover: hover) and (pointer: fine) {
+  /* Hidden, it takes no clicks, but stays in the tab order: focused, it shows. */
+  .t-fork-here {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .t-msg.assistant:hover .t-fork-here,
+  .t-fork-here:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+.t-fork-here:disabled {
+  cursor: default;
+}
+@media (max-width: 767px), (pointer: coarse) {
+  /* Under the chips, a line of its own, out of the way of the title. */
+  .t-header > .t-header-fork { order: 3; flex: 1 1 100%; }
+}
+
+/* ---------- side chats (SPEC §16a) ---------- */
+
+.t-session-split.with-side > .t-session {
+  flex: 1 1 0;
+  min-width: 300px;
+}
+.t-side-chat {
+  flex: 0 1 460px;
+  min-width: 340px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--t-border);
+  background: var(--color-background-body, inherit);
+  container-type: size;
+}
+.t-side-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--t-border);
+  min-width: 0;
+}
+.t-side-title {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.t-side-ro {
+  flex: none;
+}
+.t-side-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.t-side-opening {
+  padding: 16px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.t-side-error {
+  padding: 6px 12px;
+}
+/* No room beside the transcript (a phone): a sheet over the session. */
+.t-term-cover > .t-side-chat {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  min-width: 0;
+  border-left: none;
+}
+/* Settings → Usage (UsageSettings.tsx). */
+.t-credentials-wide { max-width: none; }
+.t-usage { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.t-usage-bar, .t-usage-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.t-usage-bar > .t-credential-status { margin-left: 0; flex: 1; min-width: 0; }
+.t-usage-head > :first-child { flex: 1; }
+.t-usage-range { display: inline-flex; border: 1px solid var(--t-border); border-radius: 8px; overflow: hidden; }
+.t-usage-range button { border: 0; background: none; color: var(--color-text-primary); font: inherit; font-size: 13px; padding: 6px 12px; min-height: 32px; cursor: pointer; }
+.t-usage-range button + button { border-left: 1px solid var(--t-border); }
+.t-usage-range button[aria-pressed="true"] { background: var(--color-overlay-pressed, var(--color-overlay-hover)); font-weight: 600; }
+.t-usage-range button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.t-usage-plans { display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+.t-usage-plans > div { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.t-usage-plans span { color: var(--t-muted); font-variant-numeric: tabular-nums; }
+.t-usage-summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin: 0; }
+.t-usage-summary > div { border: 1px solid var(--t-border); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.t-usage-summary dt { font-size: 12px; color: var(--t-muted); }
+.t-usage-summary dd { margin: 0; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.t-usage-summary dd.t-usage-tile-note { font-size: 12px; font-weight: 400; color: var(--t-muted); }
+.t-usage-section { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.t-usage-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; padding: 0; list-style: none; font-size: 12px; color: var(--t-muted); }
+.t-usage-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; background: currentColor; }
+.t-usage-chart { position: relative; padding: 18px 0 22px; }
+.t-usage-chart svg { display: block; width: 100%; height: 160px; overflow: visible; }
+.t-usage-axis-top { position: absolute; top: 0; left: 0; font-size: 11px; color: var(--t-muted); font-variant-numeric: tabular-nums; }
+.t-usage-xlabels { position: absolute; left: 0; right: 0; bottom: 0; height: 16px; font-size: 11px; color: var(--t-muted); }
+.t-usage-xlabels span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.t-usage-baseline { stroke: var(--t-border); stroke-width: 1; }
+.t-usage-hit { fill: transparent; }
+.t-usage-chart g:hover .t-usage-hit { fill: var(--color-overlay-hover, rgba(127, 127, 127, 0.08)); }
+.t-usage-input { fill: light-dark(#2563eb, #60a5fa); color: light-dark(#2563eb, #60a5fa); }
+.t-usage-output { fill: light-dark(#c2410c, #fb923c); color: light-dark(#c2410c, #fb923c); }
+.t-usage-cacheWrite { fill: light-dark(#0f766e, #2dd4bf); color: light-dark(#0f766e, #2dd4bf); }
+.t-usage-cacheRead { fill: light-dark(#94a3b8, #64748b); color: light-dark(#94a3b8, #64748b); }
+.t-usage-usd { fill: var(--color-accent); }
+.t-usage-toggle { align-self: flex-start; border: 0; background: none; padding: 4px 0; font: inherit; font-size: 13px; color: var(--color-accent); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.t-usage-toggle:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.t-usage-marks { position: absolute; left: 0; right: 0; top: 18px; height: 160px; pointer-events: none; }
+.t-usage-marks span { position: absolute; transform: translate(-50%, -100%); font-size: 12px; font-weight: 700; line-height: 1; color: var(--t-muted); }
+.t-usage-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.t-usage-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.t-usage-table th, .t-usage-table td { padding: 7px 8px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--t-border); }
+.t-usage-table thead th { font-weight: 500; font-size: 12px; color: var(--t-muted); }
+.t-usage-table th[scope="row"], .t-usage-table thead th:first-child { text-align: left; font-weight: 500; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+/* The row's name stays in view while a phone scrolls the numbers sideways. */
+.t-usage-table th[scope="row"], .t-usage-table thead th:first-child { position: sticky; left: 0; z-index: 1; background: var(--color-background-surface); }
+.t-usage-unpriced { color: var(--t-muted); }
+.t-usage-note { margin: 0; font-size: 12px; color: var(--t-muted); }

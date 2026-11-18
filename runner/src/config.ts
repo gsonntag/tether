@@ -7,6 +7,7 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "n
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import type { BillingSource, CredentialSource } from "../../shared/credentials";
+import type { ForkedFrom } from "../../shared/fork";
 import type { RunnerSettings } from "../../shared/protocol";
 import type { Billing, HarnessId, QueuedMessage } from "../../shared/transcript";
 import type { ClosedRequest, SavedRequest } from "./core/broker";
@@ -31,6 +32,20 @@ export interface RunnerConfig {
   requests?: SavedRequest[];
   /** recently closed request ids, so an answer arriving after a restart is still told "Already answered." */
   closedRequests?: ClosedRequest[];
+  /**
+   * The runner was last seen running then (ms; kept while scheduled messages wait, SPEC §9): on
+   * start, the time since is when it was off.
+   */
+  aliveAt?: number;
+}
+
+/** A worktree Tether made for a session: its folder (the session's), its branch, and the repo's main checkout. */
+export interface WorktreeRecord {
+  path: string;
+  branch: string;
+  repo: string;
+  /** ignored files there once it was made and set up, with size, time and (up to 1 MB) a content hash: Archive done may delete these while unchanged */
+  known?: Record<string, [number, number, string?]>;
 }
 
 /** What Tether keeps for a session: the settings picked for it, applied when it (re)starts. */
@@ -40,9 +55,17 @@ export interface SessionPrefs {
   title?: string;
   /** Kept out of Recent while remaining available through explicit search. */
   archived?: boolean;
+  /** When it was pinned (ms): the Sidebar's Pinned group, oldest pin first. Archiving unpins. */
+  pinned?: number;
+  /** A pinned session's row as last seen (from its pin on): listed from this when its harness can't find it. */
+  pinnedRow?: { title: string; projectPath: string; updatedAt: number };
   projectPath?: string;
   /** a new session that hasn't had a message: opening its id brings it back as new (sessions.ts make) */
   blank?: boolean;
+  /** a fork (SPEC §16): where it was made from */
+  forkedFrom?: ForkedFrom;
+  /** a side chat (SPEC §16a): the session it's beside. It stays in its read-only mode */
+  sideOf?: string;
   /** a blank session that went on under another id (Adapter.renew) */
   movedTo?: string;
   model?: string;
@@ -89,7 +112,11 @@ export interface SessionPrefs {
   /** messages waiting to go out after the running turn (SPEC §9) */
   queue?: QueuedMessage[];
   /** the queue waits until released, and why (LiveState.queueHeldBy) */
-  queueHeldBy?: "terminal" | "stopped" | "restart" | "failed";
+  queueHeldBy?: "terminal" | "stopped" | "restart" | "failed" | "setup";
+  /** the worktree Tether made for this session (New worktree, SPEC §4): Archive done removes it once merged */
+  worktree?: WorktreeRecord;
+  /** its worktree's setup runs, or failed (LiveState.setup): still "running" at start means a restart cut it off */
+  setup?: "running" | "failed";
   /** its TUI was started and hasn't been seen gone; `entries`: the mode entries its store had then (only later ones are that TUI's) */
   tui?: { entries?: number };
   /** a turn ended and nobody has looked since (Home's inbox) */

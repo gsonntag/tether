@@ -16,6 +16,7 @@ import { addSideCost, type CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
 import { FROM_TETHER } from "../../../shared/fromTether";
+import { SIDE_KEEPS, SIDE_STAYS, sideCommandRefusal } from "../../../shared/sideChat";
 import { modelIdProblem, reportedAt } from "../../../shared/labels";
 import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
 import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
@@ -38,6 +39,8 @@ export const IDLE_CLOSE_MS = 5 * 60_000;
 
 /** What the quiet wait after a restart shows (SPEC §4). */
 const WAITING_TEXT = "Waiting for Claude Code from before the restart to finish…";
+const SETUP_TEXT = "The worktree's setup is still running.";
+const SETUP_FAILED_TEXT = "The worktree's setup failed.";
 const notice = (text: string, level: Msg["level"] = "info"): Msg => ({ id: `n-${randomUUID()}`, role: "notice", level, ts: Date.now(), parts: [{ type: "text", text }] });
 
 /**
@@ -138,7 +141,12 @@ export class LiveControl {
       tell: (id, text) => this.tell(id, text),
       beforePlan: (id) => core.o.prefs.get(id).beforePlan,
     });
-    this.queue = new MessageQueue(core, { send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }), waiting: (id) => this.restartWaits.has(id), paused: (id) => !!this.heldWhy(id) });
+    this.queue = new MessageQueue(core, {
+      send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }),
+      waiting: (id) => this.restartWaits.has(id),
+      paused: (id) => !!this.heldWhy(id),
+      settingUp: (id) => core.sessions.get(id)?.state.setup === "running",
+    });
     this.read = new ReadState(core);
     this.commands = new Commands({ core, models: (s) => this.listModels(s.summary.harness, s.id), setModel: (id, m) => this.setModel(id, m), setEffort: (id, e) => this.setEffort(id, e), status: (s, st) => this.status(s, st) });
     this.attachments = new AttachmentStore(opts.attachmentsDir ?? "/nonexistent-tether-attachments");
@@ -173,12 +181,13 @@ export class LiveControl {
    * which listeners (peers, Home agent, texting) skipped: its real end is now, as a stop. A Tether
    * send that replaces the chain neither holds the queue nor ends the turn: its own turn's end does.
    */
-  private cancelRetrySession(s: Session, o: { tether?: boolean } = {}) {
+  private cancelRetrySession(s: Session, o: { tether?: boolean; due?: "stopped" } = {}) {
     const waiting = (s.retry ?? this.core.o.prefs.get(s.id).retry)?.phase === "waiting";
     s.retrySuppressed = true;
     this.retries.clear(s);
     if (o.tether) return;
-    this.queue.hold(s, "stopped");
+    // Scheduled messages due behind the retry wait for you: you stopped it, or it was cancelled.
+    this.queue.hold(s, "stopped", { due: o.due ?? "retry" });
     if (waiting) this.core.o.bus.emit("turnEnded", { sessionId: s.id, stopped: true });
   }
 
@@ -265,6 +274,7 @@ export class LiveControl {
   async send(id: string, text: string, attachments: Attachment[] = [], o: { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string; clientId?: string } = {}) {
     if (!text?.trim() && !attachments.length) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
+    this.sideCommand(id, text);
     const s = await this.core.open(id);
     if (o.retryId && (s.retry?.id !== o.retryId || s.retry.phase !== "sending")) throw new SendCancelled();
     if (!o.retryId && (s.retry || this.core.o.prefs.get(id).retry)) {
@@ -302,6 +312,12 @@ export class LiveControl {
     const held = this.heldWhy(id);
     if (held) {
       if (o.queued) throw new Error(held);
+      return void (await this.queue.add(id, text, attachments));
+    }
+    // A new worktree's setup runs, or failed (SPEC §4): nothing goes before it's done, or you say
+    // Send anyway (Resume); what you send waits, held.
+    if (!o.continued && s.state.setup) {
+      if (o.queued) throw new Error(s.state.setup === "running" ? SETUP_TEXT : SETUP_FAILED_TEXT);
       return void (await this.queue.add(id, text, attachments));
     }
     if (o.stop && (s.state.status !== "idle" || s.sending)) {
@@ -491,17 +507,22 @@ export class LiveControl {
 
   private async replaceWith(s: Session, n: Session) {
     const prefs = this.core.o.prefs;
-    const { title } = prefs.get(s.id);
+    const { title, pinned, pinnedRow } = prefs.get(s.id);
     const kept = this.keptPrefs(s);
-    prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...kept });
-    n.setState(kept);
-    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
+    // The pin goes with the conversation: the new thread takes the old one's place in Pinned.
+    prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
+    const { forkedFrom, ...state } = kept;
+    n.setState(state);
+    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
+    this.core.moveSides(s.id, n.id);
     prefs.flush();
     s.movedTo = n.id;
     this.core.book.remove([s.id]);
-    this.core.touch(n, { title: title ?? s.summary.title });
+    this.core.touch(n, { title: title ?? s.summary.title, ...(forkedFrom ? { forkedFrom } : {}) });
     this.core.book.upsert([n.summary]);
     this.carryCost(s, n);
+    // What waits (scheduled messages too) goes on in the new thread, where the views go.
+    await this.queue.handOver(s.id, n.id).catch((e) => this.core.log(`${s.id}: its queue stayed: ${e?.message ?? e}`));
     await this.close(s, true);
     s.setState({ continuedIn: n.id, carried: true, nextBilling: undefined, sourceSwitchFailed: undefined });
   }
@@ -537,9 +558,11 @@ export class LiveControl {
       const { nativeId, opts } = await a.renew!(folder, { ...(credential ? { credential } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) });
       const n = this.core.create(s.summary.harness, nativeId, folder, opts);
       const kept = this.keptPrefs(s);
-      this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...kept });
-      n.setState(kept);
-      this.core.touch(n);
+      const { pinned, pinnedRow } = this.core.o.prefs.get(s.id);
+      this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
+      const { forkedFrom, ...state } = kept;
+      n.setState(state);
+      this.core.touch(n, forkedFrom ? { forkedFrom } : {});
       try {
         await this.ensureDriver(n);
       } catch (e) {
@@ -548,7 +571,8 @@ export class LiveControl {
         throw e;
       }
       s.movedTo = n.id;
-      this.core.o.prefs.set(s.id, { blank: undefined, movedTo: n.id });
+      this.core.o.prefs.set(s.id, { blank: undefined, movedTo: n.id, pinned: undefined, pinnedRow: undefined });
+      this.core.moveSides(s.id, n.id);
       return n;
     } finally {
       this.core.unpin(s);
@@ -565,6 +589,12 @@ export class LiveControl {
     return this.send(id, text, attachments);
   }
 
+  /** A side chat (SPEC §16a) refuses `/` commands, whoever sends them. */
+  sideCommand(id: string, text: string) {
+    const why = this.core.o.prefs.get(id).sideOf ? sideCommandRefusal(text) : undefined;
+    if (why) throw new Error(why);
+  }
+
   /** Going into plan mode: the mode it leaves is kept, so approving a plan goes back to it. */
   private notePlanEntry(s: Session, mode: string | undefined) {
     const was = s.state.permissionMode;
@@ -578,6 +608,7 @@ export class LiveControl {
   async steer(id: string, text: string, attachments: Attachment[] = []) {
     if (!text?.trim() && !attachments.length) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
+    this.sideCommand(id, text);
     const s = await this.core.open(id);
     const parentId = s.summary.parentSessionId;
     if (parentId) {
@@ -742,7 +773,7 @@ export class LiveControl {
 
   async interrupt(id: string) {
     const s = await this.core.open(id);
-    if (s.retry) this.cancelRetrySession(s);
+    if (s.retry) this.cancelRetrySession(s, { due: "stopped" });
     const parentId = s.summary.parentSessionId;
     if (parentId) {
       // A subagent: stop just it (SPEC §6a). Its main session's process runs it, however deep it is nested.
@@ -804,6 +835,11 @@ export class LiveControl {
   }
 
   async setPermissionMode(id: string, mode: string) {
+    // A side chat (SPEC §16a) stays in its harness's read-only mode.
+    if (this.core.o.prefs.get(id).sideOf) {
+      const s = await this.core.open(id);
+      if (mode !== s.capabilities.readOnlyMode) throw new Error(SIDE_STAYS);
+    }
     await this.setting(id, { permissionMode: mode }, (d) => d.setPermissionMode(mode));
   }
 
@@ -911,7 +947,7 @@ export class LiveControl {
       if (!quiet) {
         this.read.set(id, { failure: "Couldn't tell whether Claude Code from before the restart was still working." });
         s.apply({ type: "msg", msg: notice("Couldn't tell whether Claude Code from before the restart was still working. Send a message to carry on.", "warning") });
-        this.queue.hold(s, "restart");
+        this.queue.hold(s, "restart", { due: "restart" });
         return this.endWait(s);
       }
       await this.terminal?.settled(s);
@@ -966,7 +1002,7 @@ export class LiveControl {
     if (s) {
       // One notice: a failed start already said why in the transcript.
       if (!s.state.error) s.apply({ type: "msg", msg: notice(`Couldn't continue after the restart: ${why}. Send a message to continue.`, "warning") });
-      this.queue.hold(s, "restart");
+      this.queue.hold(s, "restart", { due: "restart" });
       this.core.touch(s);
     }
   }
@@ -1042,6 +1078,7 @@ export class LiveControl {
     // What's open now is asked again after the restart: it stays saved.
     this.stopping = true;
     this.retries.stop();
+    this.queue.stop();
     this.desk.broker.freeze();
     await Promise.all([...this.core.sessions.values()].filter((s) => s.driver).map((s) => this.close(s)));
   }
@@ -1286,6 +1323,9 @@ export class LiveControl {
     s.starting ??= this.startDriver(s, observe).finally(() => {
       s.starting = undefined;
       this.core.scheduleEvict(s);
+      // A queue let go while it started (a worktree's setup ended, Resume), or a scheduled message
+      // that came due meanwhile, couldn't drain then (drain decides what may go).
+      if (s.state.queue.length) this.queue.later(s.id);
     });
     return s.starting;
   }
@@ -1296,7 +1336,8 @@ export class LiveControl {
    */
   chosen(s: Session, observe = false): StartOpts {
     const credential = observe ? undefined : this.credentialFor(s.summary.harness, this.sourceOf(s), this.deploymentOf(s));
-    return { ...chosenOf(this.core.adapter(s.summary.harness), this.core.o.prefs.get(s.id)), ...(credential ? { credential } : {}) };
+    const prefs = this.core.o.prefs.get(s.id);
+    return { ...chosenOf(this.core.adapter(s.summary.harness), prefs), ...(prefs.sideOf ? { readOnly: true } : {}), ...(credential ? { credential } : {}) };
   }
 
   /**
@@ -1424,6 +1465,7 @@ export class LiveControl {
     if (s.retry) this.cancelRetrySession(s);
     const harness = s.summary.harness;
     if (s.summary.parentSessionId) throw new Error("A subagent uses its main session's source.");
+    if (s.summary.sideOf) throw new Error(SIDE_KEEPS.source);
     if (!s.capabilities.sourceSwitch) throw new Error("Use Move to change this session's source.");
     if (!isBillingSource(asked)) throw new Error("That isn't a source.");
     if (s.state.mode === "terminal" || s.state.terminal || this.terminal?.blocked(s)) throw new Error(sourceSwitchBlockMessage("terminal"));
@@ -1534,6 +1576,7 @@ export class LiveControl {
   async setAutoKey(id: string, on: boolean | undefined, fallbackKeys?: CredentialSource[]) {
     const s = await this.core.open(id);
     if (s.summary.parentSessionId) throw new Error("A subagent uses its main session's source.");
+    if (s.summary.sideOf) throw new Error(SIDE_KEEPS.source);
     if (!s.capabilities.sourceSwitch) throw new Error("This session can't switch sources.");
     if (on === undefined && fallbackKeys === undefined) throw new Error("Nothing to change.");
     const supported = this.core.adapter(s.summary.harness).billing?.keys ?? [];
@@ -1545,10 +1588,11 @@ export class LiveControl {
     s.setState(patch);
   }
 
-  /** What a session's successor on another id keeps. */
+  /** What a session's successor on another id keeps (a fork's link back too, SPEC §16). */
   keptPrefs(s: Session) {
-    const { autoKey, lastKey, fallbackKeys } = this.core.o.prefs.get(s.id);
-    return { ...(autoKey ? { autoKey } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}) };
+    const { autoKey, lastKey, fallbackKeys, forkedFrom, sideOf } = this.core.o.prefs.get(s.id);
+    // A side chat's successor is one too, read-only (SPEC §16a): failing closed.
+    return { ...(autoKey ? { autoKey } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}) };
   }
 
   /**
@@ -1560,7 +1604,7 @@ export class LiveControl {
   private async planOut(s: Session, hit: { resetsAt?: number }, sent: Session["lastSend"], acted: boolean) {
     const prefs = this.core.o.prefs.get(s.id);
     const harness = s.summary.harness;
-    if (!prefs.autoKey || prefs.nextSource || s.summary.parentSessionId || s.state.billing?.kind !== "plan" || this.sourceOf(s) !== "subscription") return;
+    if (!prefs.autoKey || prefs.nextSource || s.summary.parentSessionId || prefs.sideOf || s.state.billing?.kind !== "plan" || this.sourceOf(s) !== "subscription") return;
     this.core.pin(s);
     try {
       // A turn can end before its send has returned.

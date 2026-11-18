@@ -33,9 +33,20 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
     await core.setArchived(s, a.archived);
     return null;
   });
+  ops.register("pinSession", async (a) => {
+    if (typeof a.pinned !== "boolean") throw new Error("pinned must be true or false.");
+    const id = str(a.sessionId, "sessionId");
+    // A pinned session that's gone from its harness can still be unpinned.
+    const s = await core.open(id).catch((e) => {
+      if (a.pinned || !core.o.prefs.get(id).pinned) throw e;
+    });
+    if (s) core.setPinned(s, a.pinned);
+    else core.dropPin(id);
+    return null;
+  });
   ops.register("listProjects", async () => ({ projects: await core.listProjects() }));
   ops.register("listSessions", (a) =>
-    core.listSessions({ projectPath: optStr(a.projectPath), parentSessionId: optStr(a.parentSessionId), query: optStr(a.query), limit: optNum(a.limit) }),
+    core.listSessions({ projectPath: optStr(a.projectPath), parentSessionId: optStr(a.parentSessionId), sideOf: optStr(a.sideOf), query: optStr(a.query), limit: optNum(a.limit) }),
   );
   ops.register("subscribe", (a) => core.subscribe(str(a.sessionId, "sessionId"), optNum(a.limit)));
   ops.register("history", async (a) => core.history(await core.open(str(a.sessionId, "sessionId")), str(a.before, "before"), optNum(a.limit)));
@@ -78,12 +89,13 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
   ops.register("queue", async (a) => {
     const id = str(a.sessionId, "sessionId");
     const list = await files(id, a.attachments);
-    const r = await live.queue.add(id, typed(a.text), list);
+    const r = await live.queue.add(id, typed(a.text), list, a.at === undefined || a.at === null ? {} : { at: a.at as number });
     live.attachments.markUsed(list);
     return r;
   });
-  ops.register("editQueued", async (a) => (await live.queue.edit(str(a.sessionId, "sessionId"), str(a.id, "id"), typed(a.text)), null));
+  ops.register("editQueued", async (a) => (await live.queue.edit(str(a.sessionId, "sessionId"), str(a.id, "id"), typed(a.text), a.at === undefined || a.at === null ? undefined : (a.at as number)), null));
   ops.register("cancelQueued", async (a) => (await live.queue.cancel(str(a.sessionId, "sessionId"), str(a.id, "id")), null));
+  ops.register("scheduleQueued", async (a) => (await live.queue.schedule(str(a.sessionId, "sessionId"), str(a.id, "id"), a.at === null ? null : (a.at as number)), null));
   ops.register("moveQueued", async (a) => (await live.queue.move(str(a.sessionId, "sessionId"), str(a.id, "id"), optNum(a.to) ?? 0), null));
   ops.register("resumeQueue", async (a) => (await live.queue.resume(str(a.sessionId, "sessionId")), null));
   ops.register("uploadAttachment", async (a) => {

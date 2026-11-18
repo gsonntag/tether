@@ -7,9 +7,10 @@
 // | terminal (TUI drives)      | queue (held for Back to Tether, SPEC §8) | queue |  |
 // | shell (the text starts with !) | run the command now, whatever the agent does | — | run |      |
 // Shift+Enter is a newline everywhere; on phones Enter is a newline and buttons send.
+// Alt+Enter (text, not a command) opens Send later (SPEC §9 Scheduled sends), in any state.
 
 export type ComposerMode = "idle" | "steer" | "queue" | "terminal" | "shell";
-export type ComposerAction = "send" | "steer" | "queue" | "stopSend" | "stop" | "shell" | null;
+export type ComposerAction = "send" | "steer" | "queue" | "stopSend" | "stop" | "shell" | "later" | null;
 
 /** Text that is a `!` command (SPEC §9 Shell commands): it starts with "!". */
 export const isShellText = (text: string) => text.trimStart().startsWith("!");
@@ -26,13 +27,14 @@ export function composerMode(o: { running: boolean; canSteer: boolean; inTermina
 }
 
 /** What Enter (the main button) does in a mode. */
-export const primaryAction = (mode: ComposerMode): Exclude<ComposerAction, "stop" | "stopSend" | null> => (mode === "shell" ? "shell" : mode === "steer" ? "steer" : mode === "queue" || mode === "terminal" ? "queue" : "send");
+export const primaryAction = (mode: ComposerMode): Exclude<ComposerAction, "stop" | "stopSend" | "later" | null> => (mode === "shell" ? "shell" : mode === "steer" ? "steer" : mode === "queue" || mode === "terminal" ? "queue" : "send");
 
 export function keyAction(e: { key: string; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; altKey?: boolean }, mode: ComposerMode, o: { hasText: boolean; phone: boolean }): ComposerAction {
   const busy = mode === "steer" || mode === "queue";
   // A command runs now (Enter or ⌘/Ctrl+Enter); Tab and Esc do nothing special.
   if (mode === "shell") return e.key === "Enter" && !e.shiftKey && o.hasText && (!o.phone || e.metaKey || e.ctrlKey) ? "shell" : null;
   if (e.key === "Enter" && !e.shiftKey) {
+    if (e.altKey && !e.metaKey && !e.ctrlKey) return o.hasText ? "later" : null;
     if (e.metaKey || e.ctrlKey) return !o.hasText ? null : busy ? "stopSend" : mode === "terminal" ? "queue" : "send";
     if (o.phone) return null;
     return o.hasText ? primaryAction(mode) : null;
@@ -47,6 +49,7 @@ const HELD_HINT: Record<string, string> = {
   stopped: "paused after Stop",
   failed: "paused after a failed turn",
   restart: "paused after a restart",
+  setup: "held after the worktree's setup failed",
 };
 
 /**
@@ -55,6 +58,8 @@ const HELD_HINT: Record<string, string> = {
  */
 export function shellWhen(agent: string, o: { running: boolean; inTerminal: boolean; heldBy?: string }): string {
   if (o.heldBy === "restartWait") return "the output waits in the queue until Claude Code from before the restart finishes";
+  if (o.heldBy === "setupRunning") return "the output waits in the queue until the worktree's setup finishes";
+  if (o.heldBy === "setup") return "the output waits in the queue, held after the worktree's setup failed (Send anyway lets it go)";
   // A queue paused (after Stop, …) stays paused through a terminal round trip: that comes first.
   if (o.heldBy && o.heldBy !== "terminal") return `the output waits in the queue, ${HELD_HINT[o.heldBy] ?? "paused"} (Resume or send something to let it go)`;
   if (o.inTerminal || o.heldBy === "terminal") return `the output goes to ${agent} when you go Back to Tether`;

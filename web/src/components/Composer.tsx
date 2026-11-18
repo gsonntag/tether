@@ -4,6 +4,9 @@
 // menu beside the button has Queue and Stop and send now. Files attach by paste, drop, the paperclip
 // or (phones) the camera; they upload to the runner first and go with the message.
 //
+// Send later (SPEC §9 Scheduled sends): in the send menu (and Alt+Enter), a time picker above the
+// box; the message waits in the queue for its time.
+//
 // Text starting with ! is a shell command (SPEC §9 Shell commands): the box turns into a shell
 // prompt, and Enter (or Run) runs it now on the runner, even mid-turn; its output then goes to the
 // agent through the queue. The ❯ toggle adds or removes the ! (the way in on a phone).
@@ -23,6 +26,7 @@ import { CommandMenu } from "./CommandMenu";
 import { composerMode, isShellText, shellWhen, keyAction, primaryAction, shellCommand, toggleShell, type ComposerAction } from "../composerKeys";
 import { prepare, upload } from "../upload";
 import { withMention } from "../files";
+import { SendLater } from "./SendLater";
 
 export interface ComposerHandle {
   focus(): void;
@@ -62,7 +66,7 @@ export function putMention(key: string, mention: string, focus: boolean) {
 export const draftOf = (key: string) => drafts.get(key) ?? "";
 const draftFiles = new Map<string, Pending[]>();
 
-export type SendKind = "send" | "steer" | "queue" | "stopSend" | "shell";
+export type SendKind = "send" | "steer" | "queue" | "stopSend" | "shell" | "later";
 
 export const Composer = forwardRef<
   ComposerHandle,
@@ -89,7 +93,11 @@ export const Composer = forwardRef<
     shell?: { folder: string; heldBy?: string };
     /** the session's commands and skills (none: no menu) */
     loadCommands?: () => Promise<HarnessCommand[]>;
-    onSend: (kind: SendKind, text: string, attachments: Attachment[]) => Promise<void>;
+    /** why this can't go as it is (said under the box, which keeps it), else undefined */
+    refuse?: (text: string, files: number) => string | undefined;
+    onSend: (kind: Exclude<SendKind, "later">, text: string, attachments: Attachment[]) => Promise<void>;
+    /** Send later: queues the message for `at` (ms). None: no Send later. */
+    onSchedule?: (at: number, text: string, attachments: Attachment[]) => Promise<void>;
     /**
      * Send and Stop and send now, optimistically: the box clears at once and the message shows in
      * the chat as pending (store.ts sendPending), which handles a failure itself. None: onSend, the
@@ -100,13 +108,15 @@ export const Composer = forwardRef<
     /** a send or Stop failed: the chat shows it */
     onFailed: (message: string) => void;
   }
->(function Composer({ draftKey, billing, running, waiting, disabled, placeholder, mainFree = false, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, loadCommands, onSend, sendNow, onStop, onFailed }, ref) {
+>(function Composer({ draftKey, billing, running, waiting, disabled, placeholder, mainFree = false, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, loadCommands, refuse, onSend, onSchedule, sendNow, onStop, onFailed }, ref) {
   const [text, setText] = useState(() => drafts.get(draftKey) ?? "");
   const [files, setFilesState] = useState<Pending[]>(() => draftFiles.get(draftKey) ?? []);
   const [busy, setBusy] = useState(false);
   /** a note about what's in the box, not a failure (those go to the chat): shown under it */
   const [hint, setHint] = useState<string>();
   const [drag, setDrag] = useState(false);
+  /** the Send later picker is open */
+  const [later, setLater] = useState(false);
   const box = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
   const camera = useRef<HTMLInputElement>(null);
@@ -131,6 +141,7 @@ export const Composer = forwardRef<
     setText(drafts.get(draftKey) ?? "");
     setFilesState(draftFiles.get(draftKey) ?? []);
     setHint(undefined);
+    setLater(false);
   }
 
   /** Files belong to the draft they were attached in, even if the view moved on meanwhile. */
@@ -265,11 +276,14 @@ export const Composer = forwardRef<
     box.current?.focus();
   };
 
-  const go = async (kind: SendKind) => {
+  const go = async (kind: SendKind, at?: number) => {
     if (kind === "shell") return run();
     const t = text.trim();
     if ((!t && !ready.length) || busy || disabled) return;
     if (uploading) return setHint("Wait for the files to finish uploading.");
+    if (kind === "later" && (at === undefined || !onSchedule)) return setLater(true);
+    const refused = refuse?.(t, ready.length);
+    if (refused) return setHint(refused);
     if (steerOnly && kind !== "steer") kind = "steer";
     setBusy(true);
     setHint(undefined);
@@ -300,8 +314,10 @@ export const Composer = forwardRef<
       return sendNow(kind, t, ready);
     }
     try {
-      await onSend(kind, t, ready);
+      if (kind === "later") await onSchedule!(at!, t, ready);
+      else await onSend(kind, t, ready);
       clear();
+      if (kind === "later") setLater(false);
     } catch (e) {
       onFailed((e as Error).message);
     } finally {
@@ -320,6 +336,7 @@ export const Composer = forwardRef<
 
   const act = (a: ComposerAction) => {
     if (a === "stop") return void stop();
+    if (a === "later") return void (canLater && setLater(true));
     if (a) void go(a);
   };
 
@@ -357,6 +374,8 @@ export const Composer = forwardRef<
   const busyTurn0 = mode === "steer" || mode === "queue";
   /** while a turn runs and the box has something: Queue, Stop and send now, Stop */
   const sendMenu = busyTurn0 && hasContent && !steerOnly && !shellOn;
+  /** Send later is offered: the box has something to send, and it isn't a `!` command */
+  const canLater = !!onSchedule && hasContent && !steerOnly && !shellOn;
   const busyTurn = mode === "steer" || mode === "queue";
   const label = primary === "shell" ? "Run" : primary === "steer" ? "Steer" : primary === "queue" ? "Queue" : "Send";
   const tip = primary === "shell" ? "Run it now (Enter)" : primary === "steer" ? "Send into the running turn (Enter)" : primary === "queue" ? (inTerminal ? "Send when you're back from the terminal (Enter)" : "Send after this turn (Enter)") : "Send (Enter)";
@@ -401,6 +420,7 @@ export const Composer = forwardRef<
             </span>
           </div>
         )}
+        {later && canLater && <SendLater busy={busy || uploading || !!disabled} onPick={(at) => void go("later", at)} onClose={() => (setLater(false), box.current?.focus())} />}
         {hint && <div className="t-inline-status">{hint}</div>}
         {files.length > 0 && (
           <div className="t-files" aria-label="Attachments">
@@ -423,12 +443,12 @@ export const Composer = forwardRef<
               <input ref={camera} type="file" accept="image/*" capture="environment" hidden aria-label="Take a photo" onChange={(e) => (addFiles([...(e.target.files ?? [])]), (e.target.value = ""))} />
             </>
           )}
-          {phone && !shellOn && (uploadTo || (shell && !steerOnly) || sendMenu) ? (
+          {phone && !shellOn && (uploadTo || (shell && !steerOnly) || sendMenu || canLater) ? (
             // A phone keeps its width for the words: attaching, the shell prompt and the other ways to
             // send (while a turn runs) are one menu before the box.
             <DropdownMenu
               renderTrigger={(p) => (
-                <button type="button" className="t-plus" aria-label={sendMenu ? "More ways to send" : "Attach or run a command"} disabled={!!disabled} {...p}>
+                <button type="button" className="t-plus" aria-label={sendMenu || canLater ? "More ways to send" : "Attach or run a command"} disabled={!!disabled} {...p}>
                   <PlusIcon aria-hidden />
                 </button>
               )}
@@ -436,6 +456,7 @@ export const Composer = forwardRef<
               {sendMenu && primary !== "queue" && <DropdownMenuItem label="Queue for after this turn" onClick={() => void go("queue")} />}
               {sendMenu && <DropdownMenuItem label="Stop and send now" onClick={() => void go("stopSend")} />}
               {sendMenu && <DropdownMenuItem label="Stop" onClick={() => void stop()} />}
+              {canLater && <DropdownMenuItem label="Send later…" onClick={() => setLater(true)} />}
               {uploadTo && <DropdownMenuItem label="Attach files" onClick={() => picker.current?.click()} />}
               {uploadTo && <DropdownMenuItem label="Take a photo" onClick={() => camera.current?.click()} />}
               {shell && !steerOnly && <DropdownMenuItem label="Run a shell command" description="Starts the message with !" onClick={toggle} />}
@@ -477,7 +498,7 @@ export const Composer = forwardRef<
           ) : (
             <IconButton label={label} tooltip={tip} variant="primary" icon={<Icon icon={primary === "shell" ? CommandLineIcon : primary === "queue" ? ClockIcon : ArrowUpIcon} />} isDisabled={shellOn ? busy || !!disabled : !hasContent || busy || !!disabled || uploading} onClick={() => void go(primary)} />
           )}
-          {sendMenu && !phone && (
+          {(sendMenu || canLater) && !phone && (
             <DropdownMenu
               renderTrigger={(p) => (
                 <button type="button" className="t-more-send" aria-label="More ways to send" {...p}>
@@ -485,9 +506,10 @@ export const Composer = forwardRef<
                 </button>
               )}
             >
-              {primary !== "queue" && <DropdownMenuItem label="Queue for after this turn" description="Tab" onClick={() => void go("queue")} />}
-              <DropdownMenuItem label="Stop and send now" description="⌘/Ctrl+Enter" onClick={() => void go("stopSend")} />
-              <DropdownMenuItem label="Stop" description="Esc on an empty box" onClick={() => void stop()} />
+              {sendMenu && primary !== "queue" && <DropdownMenuItem label="Queue for after this turn" description="Tab" onClick={() => void go("queue")} />}
+              {sendMenu && <DropdownMenuItem label="Stop and send now" description="⌘/Ctrl+Enter" onClick={() => void go("stopSend")} />}
+              {sendMenu && <DropdownMenuItem label="Stop" description="Esc on an empty box" onClick={() => void stop()} />}
+              {canLater && <DropdownMenuItem label="Send later…" description="Alt+Enter" onClick={() => setLater(true)} />}
             </DropdownMenu>
           )}
         </div>

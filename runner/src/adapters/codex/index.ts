@@ -2,18 +2,21 @@
 // through the shared app-server daemon, subagents as child threads (§6a), and a shared terminal:
 // Codex's own TUI joins the live thread beside Tether (§8).
 
+import { join } from "node:path";
+import { DATA_DIR } from "../../credentials";
 import { HARNESS_KEYS } from "../../../../shared/credentials";
 import type { Msg } from "../../../../shared/transcript";
 import type { Adapter, QuitStep, StartOpts } from "../../core/adapter";
 import { HARNESS_BINS } from "../detect";
 import { codexAsk } from "./ask";
 import { call } from "./daemon";
-import { DAEMON_SOCKET } from "./rpc";
+import { CODEX_HOME, DAEMON_SOCKET } from "./rpc";
 import { codexBackgroundRuns, codexHistory, codexNoStore, codexPlan, codexProjects, codexSessionInfo, codexSessions, codexStoredBilling, codexStoredContext, codexSubagents, threadSettings, watchThread } from "./discovery";
 import { codexCommandRoute, commandList, enabledSkills } from "./commands";
 import { CodexDriver, codexTools, createThread } from "./driver";
 import { setCodexSetup } from "./setup";
 import { codexMove, importedMsgs } from "./move";
+import { codexFork } from "./fork";
 import { knownMode, modeOf, modelList, UNKNOWN_MODE, type CodexModel } from "./modes";
 import { remembered } from "./remember";
 import { assertThreadSource, privateBearerFile, sourceBilling, sourceHome, sourceProvider, sourceSocket } from "./sources";
@@ -47,14 +50,17 @@ const toml = (v: string) => JSON.stringify(v);
 const fullHistory = async (nativeId: string, projectPath: string): Promise<Msg[]> => {
   // A thread that took a session's place shows that session's own transcript, not its import.
   const before = remembered(nativeId)?.carriedFrom;
-  return [...(before ? await fullHistory(before, projectPath) : await importedMsgs(nativeId)), ...(await codexHistory(nativeId, projectPath))];
+  // Neither is in this thread's own turns: thread/fork can't end at one (SPEC §16).
+  const brought = (before ? await fullHistory(before, projectPath) : await importedMsgs(nativeId)).map((m): Msg => ({ ...m, noFork: true }));
+  return [...brought, ...(await codexHistory(nativeId, projectPath))];
 };
 
 export const codexAdapter: Adapter = {
   id: "codex",
   agentSetup: setCodexSetup,
-  capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "via-parent" }, persistent: true, settingsApply: "nextTurn", sourceSwitch: true, sourceCarry: true, commands: true, move: { import: "native" } },
+  capabilities: { canSteer: true, terminal: "shared", subagents: { view: true, stop: true, steer: "via-parent" }, persistent: true, settingsApply: "nextTurn", sourceSwitch: true, sourceCarry: true, commands: true, move: { import: "native" }, fork: true, readOnlyMode: "never+read-only" },
   move: codexMove,
+  fork: codexFork,
   toolServer: (server) => codexTools.set(server),
   billing: {
     keys: HARNESS_KEYS.codex,
@@ -78,6 +84,7 @@ export const codexAdapter: Adapter = {
   readHistory: fullHistory,
   storedContext: (nativeId) => codexStoredContext(nativeId),
   planUsage: codexPlan,
+  usageStores: () => [{ dir: join(CODEX_HOME, "sessions") }, { dir: join(CODEX_HOME, "archived_sessions") }, { dir: join(DATA_DIR, "codex-keys"), private: true }],
   storedBilling: (nativeId) => codexStoredBilling(nativeId),
   watchHistory: (nativeId, projectPath, onChange) => watchThread(nativeId, projectPath, onChange, fullHistory),
 
