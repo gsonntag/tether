@@ -175,7 +175,10 @@
 .t-row.t-pinned .t-row-title {
   padding-right: 58px;
 }
-/* a pinned session its runner can't find now: dimmed, still unpinnable */
+/* a pinned session its runner can't find now: dimmed, not openable, still unpinnable */
+.t-row.t-missing, .t-row.t-missing .t-row-open {
+  cursor: default;
+}
 .t-row.t-missing .t-row-title-text, .t-row.t-missing .t-row-meta {
   opacity: 0.55;
 }

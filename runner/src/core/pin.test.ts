@@ -14,7 +14,7 @@ import { OpRegistry } from "./ops";
 import { Prefs } from "./prefs";
 import { registerSessionOps } from "./sessionOps";
 import { SessionCore } from "./sessions";
-import { PIN_LOOKUP_MS, PIN_REREAD_MS, PinnedRows } from "./pinnedRows";
+import { PIN_LOOKUP_MS, PIN_REREAD_MS, PIN_SNAPSHOT_MS, PinnedRows } from "./pinnedRows";
 import { RECENT_MAX, RECENT_MS, SummaryBook } from "./summaries";
 
 const cleanups: (() => void)[] = [];
@@ -208,6 +208,20 @@ describe("pinned rows past discovery's window", () => {
     adapter.stored.get("old")!.summary.title = "Renamed elsewhere";
     await core.discover();
     expect(prefs.get("claude:old").pinnedRow?.title).toBe("Renamed elsewhere");
+  });
+
+  test("the snapshot takes new activity at most hourly: runner.json isn't rewritten for every turn", async () => {
+    const { ops, core, adapter, prefs, advance } = setup();
+    await pin(ops, "claude:one", true);
+    const was = prefs.get("claude:one").pinnedRow!.updatedAt;
+    const row = adapter.stored.get("one")!.summary;
+    row.updatedAt = was + 60_000;
+    await core.discover();
+    expect(prefs.get("claude:one").pinnedRow?.updatedAt).toBe(was);
+    row.updatedAt = was + PIN_SNAPSHOT_MS;
+    advance(PIN_SNAPSHOT_MS);
+    await core.discover();
+    expect(prefs.get("claude:one").pinnedRow?.updatedAt).toBe(was + PIN_SNAPSHOT_MS);
   });
 
   test("a pinned session gone from its harness can still be unpinned", async () => {

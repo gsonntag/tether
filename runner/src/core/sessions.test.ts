@@ -492,11 +492,14 @@ describe("a new session nobody sent to", () => {
       const v = new Viewer(await t.core.subscribe(id));
       expect(v.state).toMatchObject({ mode: "stored", model: "haiku" });
       const prefs = t.core.o.prefs;
-      prefs.set(id, { pinned: 7 });
+      const saved = { title: "Saved", projectPath: tmpdir(), updatedAt: 3 };
+      prefs.set(id, { pinned: 7, pinnedRow: saved });
       await t.live.send(id, "hello");
-      // The pin goes to the new id, and the old one is no longer pinned.
+      // The pin goes to the new id with its saved row, and the old one is no longer pinned.
       expect(prefs.get("claude:new-2").pinned).toBe(7);
+      expect(prefs.get("claude:new-2").pinnedRow).toEqual(saved);
       expect(prefs.get(id).pinned).toBeUndefined();
+      expect(prefs.get(id).pinnedRow).toBeUndefined();
       expect(prefs.pinned()).toEqual(["claude:new-2"]);
       expect(t.adapter.newIds.at(-1)).toMatchObject({ projectPath: tmpdir(), opts: { model: "haiku", effort: "low", permissionMode: "plan" } });
       expect(t.adapter.drivers.at(-1)).toMatchObject({ nativeId: "new-2", sent: ["hello"], opts: { model: "haiku", effort: "low", permissionMode: "plan" } });

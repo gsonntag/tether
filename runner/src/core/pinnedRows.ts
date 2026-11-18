@@ -10,6 +10,8 @@ import type { Adapter } from "./adapter";
 
 /** Read again after this long even when the store says nothing changed. */
 export const PIN_REREAD_MS = 60_000;
+/** A pinned session's saved row takes new activity at most this often (a running one changes all the time). */
+export const PIN_SNAPSHOT_MS = 60 * 60 * 1000;
 /** A lookup slower than this keeps the row it had. */
 export const PIN_LOOKUP_MS = 5_000;
 

@@ -22,7 +22,7 @@ import type { Prefs } from "./prefs";
 import { NoticeStore, pruneOverlay, settleStopped, withOverlay } from "./notices";
 import { MessageQueue } from "./queue";
 import { Session } from "./session";
-import { PinnedRows } from "./pinnedRows";
+import { PIN_SNAPSHOT_MS, PinnedRows } from "./pinnedRows";
 import { RECENT_MS, SummaryBook } from "./summaries";
 import { diffTranscripts, Transcript } from "./transcript";
 
@@ -169,8 +169,10 @@ export class SessionCore {
         for (const f of found) {
           const p = this.o.prefs.get(f.id);
           if (!p.pinned || f.missing) continue;
-          const snap = { title: f.title, projectPath: f.projectPath, updatedAt: f.updatedAt };
-          if (JSON.stringify(p.pinnedRow) !== JSON.stringify(snap)) this.o.prefs.set(f.id, { pinnedRow: snap });
+          // runner.json is written for a new title or folder, but for activity at most hourly.
+          const r = p.pinnedRow;
+          if (!r || r.title !== f.title || r.projectPath !== f.projectPath || Math.abs(f.updatedAt - r.updatedAt) >= PIN_SNAPSHOT_MS)
+            this.o.prefs.set(f.id, { pinnedRow: { title: f.title, projectPath: f.projectPath, updatedAt: f.updatedAt } });
         }
         for (const f of found) {
           const s = this.sessions.get(f.id);

@@ -93,7 +93,8 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin }: {
     }
   };
   const beginRename = () => {
-    if (child || editing.current || titleBusy) return;
+    // A missing row is only what was saved: nothing to rename or open.
+    if (child || row.missing || editing.current || titleBusy) return;
     setRenameError(undefined);
     editing.current = true;
     setEditingTitle(true);
@@ -140,6 +141,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin }: {
         className="t-row-open"
         aria-label={`Open session: ${row.title || "Untitled"}`}
         aria-current={selected ? "page" : undefined}
+        disabled={row.missing}
         onKeyDown={(e) => {
           if (e.key === "F2" && !child) {
             e.preventDefault();
@@ -147,6 +149,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin }: {
           }
         }}
         onClick={() => {
+          if (row.missing) return;
           openSession(row.runnerId, row.id);
           close();
         }}

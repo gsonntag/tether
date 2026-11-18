@@ -72,3 +72,8 @@ test("the session menu's pin item: only for a main, listed session on a runner t
   expect(pinMenuLabel("a", s("x", 1, { projectPath: "/home/agent" }), true)).toBeUndefined();
   setHomeFolders([]);
 });
+
+test("a pinned session its runner can't find never shows on Home", () => {
+  const sums = { a: { epoch: "e", seq: 1, sessions: { x: s("x", 1, { pinned: 1, missing: true, unread: "finished" }), y: s("y", 2, { unread: "finished" }) } } };
+  expect(inbox(sums).map((r) => r.id)).toEqual(["y"]);
+});

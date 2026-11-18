@@ -125,7 +125,8 @@ export interface InboxRow extends Row {
 export function inbox(summaries: Record<string, SummaryState>): InboxRow[] {
   const out: InboxRow[] = [];
   for (const r of rows(summaries)) {
-    if (r.parentSessionId) continue;
+    // A pinned session its runner can't find is only a saved row: never on Home.
+    if (r.parentSessionId || r.missing) continue;
     const kind: InboxKind | undefined =
       (r.requests ?? 0) > 0 || r.status === "waiting" || (r.queuePaused && r.status === "idle") ? "needs" : r.unread === "failed" ? "failed" : r.unread === "finished" && !r.backgroundSubagents ? "finished" : r.status === "running" ? "working" : undefined;
     if (kind) out.push({ ...r, inbox: kind });

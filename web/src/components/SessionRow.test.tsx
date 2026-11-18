@@ -35,5 +35,7 @@ test("a pinned session its runner can't find: dimmed, marked, no archive, still 
   expect(html).toContain("t-missing");
   expect(html).toContain("Not found on this computer");
   expect(html).not.toContain("Archive session");
+  // nothing to open
+  expect(html).toMatch(/class="t-row-open"[^>]*disabled=""/);
   expect(html).toContain('aria-pressed="true"');
 });
