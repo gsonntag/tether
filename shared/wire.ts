@@ -53,7 +53,7 @@ function parseRunnerInfo(v: unknown): Omit<RunnerInfo, "connectedAt"> | null {
   const harnesses = v.harnesses.map(parseHarness).filter((h): h is HarnessInfo => !!h);
   const name = typeof v.name === "string" && v.name.trim() ? v.name : v.hostname || v.id;
   const homeFolder = typeof v.homeFolder === "string" && v.homeFolder.startsWith("/") && v.homeFolder.length <= 4096 ? v.homeFolder : undefined;
-  return { id: v.id, name, hostname: v.hostname, version: v.version, protocol: v.protocol, harnesses, ...(homeFolder ? { homeFolder } : {}), ...(v.git === true ? { git: true } : {}) };
+  return { id: v.id, name, hostname: v.hostname, version: v.version, protocol: v.protocol, harnesses, ...(homeFolder ? { homeFolder } : {}), ...(v.git === true ? { git: true } : {}), ...(v.gitActions === true ? { gitActions: true } : {}), ...(v.files === true ? { files: true } : {}) };
 }
 
 /** A runner frame, or null when it isn't one the server understands. Rebuilt like browser frames. */

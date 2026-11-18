@@ -10,6 +10,7 @@ import type { BillingSource, SourceChoices } from "../../../shared/credentials";
 import type { HomeChatUpdate } from "../../../shared/protocol";
 import type { Attachment } from "../../../shared/attachments";
 import type { HarnessId, LiveState, Msg, ProjectInfo, RequestAnswer, RunStatus, SessionSummary } from "../../../shared/transcript";
+import { filesModule } from "./files";
 import { gitModule } from "./git";
 import { homeAgentModule } from "./homeAgent";
 import type { HomeLine } from "./homeLine";
@@ -79,8 +80,12 @@ export interface SessionActions {
   interrupt(id: string): Promise<void>;
   /** keeps a session out of Recent (or puts it back), as the archive button does */
   setArchived(id: string, archived: boolean): Promise<void>;
+  /** a one-shot side query on the session's harness and source (Adapter.ask): never a turn, nothing in its transcript. Rejects when its harness can't, or its source can't be confirmed */
+  ask?(id: string, prompt: string, opts: { system: string; timeoutMs: number }): Promise<string>;
   /** holds every main session whose folder is in `folder` (stored ones, and any made there meanwhile, too), as `hold` */
   holdFolder?(folder: string, why: string): () => void;
+  /** why a session is held (a restore in its repo), when it is */
+  heldWhy?(id: string): string | undefined;
 }
 
 export interface ModuleContext {
@@ -119,7 +124,7 @@ export interface Module {
 }
 
 /** The modules this runner loads, in order. */
-export const MODULES: Module[] = [pushModule, textingModule, moveModule, homeAgentModule, peersModule, updatesModule, linksModule, gitModule];
+export const MODULES: Module[] = [pushModule, textingModule, moveModule, homeAgentModule, peersModule, updatesModule, linksModule, gitModule, filesModule];
 
 export async function startModules(modules: Module[], ctx: (m: Module) => ModuleContext): Promise<() => void> {
   const stops: (() => void)[] = [];

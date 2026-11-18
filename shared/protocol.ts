@@ -24,8 +24,10 @@
 // subscribe again for a fresh snapshot.
 
 import type { HarnessCommand } from "./commands";
+import type { DirList, FileRead, FindResult } from "./files";
 import type { DiffScope, GitDiff } from "./gitDiff";
 import type { CheckpointList, RestoreResult } from "./checkpoints";
+import type { GitActionResult, GitDraft, GitStatus, PrLookup } from "./gitActions";
 import type { MoveOptions } from "./move";
 import type { Attachment } from "./attachments";
 import type { AzureDeployment, BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
@@ -77,6 +79,10 @@ export interface RunnerInfo {
   homeFolder?: string;
   /** it has the git module (gitDiff, the Changes pane). Absent: an older runner */
   git?: boolean;
+  /** it has git actions (gitStatus, Commit, Push, Open PR, the PR chip). Absent: an older runner */
+  gitActions?: boolean;
+  /** it has the files module (listDir, readFile, findFiles: the Changes pane's Files tab). Absent: an older runner */
+  files?: boolean;
 }
 
 /** Runner-wide settings (the Settings page), kept in runner.json. */
@@ -209,6 +215,24 @@ export interface Ops {
   checkpoints: { args: { sessionId: string }; result: CheckpointList };
   /** puts the folder's files back to before a checkpoint, after checkpointing them as they are (so it can be undone). Refused while the session works */
   restoreCheckpoint: { args: { sessionId: string; checkpointId: string }; result: RestoreResult };
+  /** the folder's branch, its upstream and ahead/behind, the default branch, git's identity (SPEC §10 Git actions). Local git only */
+  gitStatus: { args: { sessionId: string }; result: GitStatus };
+  /** the session's PR (recorded, else by branch) through gh, cached; `fresh` asks again unless it was asked moments ago */
+  gitPr: { args: { sessionId: string; fresh?: boolean }; result: PrLookup };
+  /** a generated commit message, or PR title and body: a one-shot side query on the session's own harness and source, never a turn */
+  gitDraft: { args: { sessionId: string; kind: "commit" | "pr" }; result: GitDraft };
+  /** `git add -A` and commit with `message`; on the default branch only with `onDefault`. Refused while a session in the repo is busy or a restore holds it */
+  gitCommit: { args: { sessionId: string; message: string; onDefault?: boolean }; result: GitActionResult };
+  /** `git push -u origin <branch>`, never forced; the default branch only with `onDefault` */
+  gitPush: { args: { sessionId: string; onDefault?: boolean }; result: GitActionResult };
+  /** pushes if it needs to, then `gh pr create` against the default branch; the PR is recorded as the session's */
+  gitOpenPr: { args: { sessionId: string; title: string; body: string }; result: GitActionResult };
+  /** a folder in the session's folder (`path` relative; "" is the folder), for the Files tab (SPEC §10 Files). Without `hidden`, no dot files or ignored ones. Read-only, only inside */
+  listDir: { args: { sessionId: string; path: string; hidden?: boolean }; result: DirList };
+  /** a file in the session's folder: text, an image (base64) or "binary"; over 1 MB `tooBig` unless `head` (a text file's first 1 MB). Read-only, only inside */
+  readFile: { args: { sessionId: string; path: string; maxBytes?: number; head?: boolean }; result: FileRead };
+  /** files in the session's folder whose path matches `query` (the Files tab's filter), best first. gitignored ones never. The folder's list is kept 5 s; `fresh` lists it again */
+  findFiles: { args: { sessionId: string; query: string; hidden?: boolean; fresh?: boolean }; result: FindResult };
   /** moves a session to another harness: a new session there; the old one stays as it is */
   moveSession: { args: { sessionId: string; harness: string; model?: string; effort?: string; source?: BillingSource }; result: { sessionId: string } };
 

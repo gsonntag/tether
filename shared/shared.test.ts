@@ -59,6 +59,10 @@ describe("wire", () => {
     // The git module's flag is kept; anything but true is dropped.
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, git: true } })) as any).runner.git).toBe(true);
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, git: "yes" } })) as any).runner.git).toBeUndefined();
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, gitActions: true } })) as any).runner.gitActions).toBe(true);
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, gitActions: 1 } })) as any).runner.gitActions).toBeUndefined();
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, files: true } })) as any).runner.files).toBe(true);
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, files: "yes" } })) as any).runner.files).toBeUndefined();
     for (const bad of [{ id: "x" }, { ...runner, harnesses: "no" }, { ...runner, protocol: "1" }, { ...runner, hostname: 3 }, { ...runner, id: "" }, null])
       expect(parseRunnerMessage(JSON.stringify({ t: "hello", runner: bad }))).toBeNull();
   });

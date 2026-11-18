@@ -229,7 +229,8 @@ is dropped, so `plan` is always the plan's.
 `setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `setSessionArchived`, `openTerminal`, `closeTerminal`,
 `terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands). The move module
 adds `moveOptions` and `moveSession` (§15), the git module `gitDiff` (§10 Changes), `checkpoints`
-and `restoreCheckpoint` (§10 Checkpoints).
+and `restoreCheckpoint` (§10 Checkpoints), the files module `listDir`, `readFile` and `findFiles`
+(§10 Files).
 
 ## 6. Adapters
 
@@ -1000,7 +1001,8 @@ set/unset status and optional last four characters, plus Azure's endpoint and de
 browser clears the password field when submitting. Keys never belong in session prefs, summaries,
 transcripts, notifications, logs or argv. Subprocesses receive them by private file or environment.
 The relay forwards credential RPCs without recording their arguments. Error paths redact submitted
-and retired keys; terminal output is redacted before it is encoded for transport.
+and retired keys; terminal output is redacted before it is encoded for transport. The runner's own
+token (`TETHER_TOKEN`) is registered as a secret too, so no op answer or terminal output carries it.
 
 A change to a session's key or source applies at the next process start. A running turn finishes
 using its original source and label. Before an idle live session's next send, Tether closes the old
@@ -1136,8 +1138,7 @@ lines say "removed; lines in HEAD" or the branch's base) over its lines in a dif
 can be edited before it's sent; on a phone the sheet closes to show it. The comments stay, marked
 as in the message box, until a message quoting their place is sent (the runner took it). **Take
 back**, editing a comment, or a box that no longer quotes it (a reload empties the box) puts it back
-in the tray. Later git views join this
-pane: git actions in its header, a Files tab.
+in the tray. Git actions (below) sit under its header; Files (below) is a tab beside Changes.
 
 ### Checkpoints
 
@@ -1201,6 +1202,144 @@ repo.
 Kept 14 days and at most 200 per session (pruned as checkpoints are taken and at start). The list
 (times, prompts, commit ids, what was left out) is a JSON file per session in the module's folder; the
 snapshots are ordinary git objects, kept by the refs.
+
+### Git actions
+
+Under the Changes pane's header (runners whose hello says `gitActions: true`): the branch, its
+upstream and ahead/behind as of the last fetch or push ("feature → origin/feature · 2 ahead",
+"feature · not pushed", "detached at abc1234"), and **Commit**, **Push**, **Open PR**. Each is
+disabled with its reason as a tooltip when it can't apply. `gitStatus { sessionId }` reads it with
+each load of the pane. The default branch is origin's HEAD, else what `git ls-remote --symref origin
+HEAD` says (cached 10 minutes per repo, a 10 s limit), else `main` or `master`.
+
+**Commit** opens a box under the bar, prefilled by `gitDraft { kind: "commit" }` (what's typed
+before it arrives wins; a box emptied by hand takes it again), and says what it takes and as whom:
+"3 files, everything in Uncommitted, as Name <email>". `gitCommit { message, onDefault? }` runs `git
+add -A` (tracked changes, staged or not, and untracked files that aren't ignored: what Uncommitted
+shows), then `git commit --cleanup=whitespace --file=-` (the message as written, `#` lines kept) with
+git's own identity (`user.useConfigOnly`): none configured, it says so and commits nothing. On the
+default branch the box has **Commit to main anyway**, unticked; the runner refuses without it too.
+Refused, in the bar and by the runner: detached `HEAD`; this session working, waiting on you, or
+running anything (`!` commands, subagents, background work, a terminal); any other live session
+whose folder is in the repo or holds it doing the same (real paths, as restores decide); a restore
+holding the repo. It runs with the checkpoints' repo lock (no snapshot or restore beside it), checks
+again once it has it, and holds the repo's sessions while it runs (`holdFolder`, "Committing…", as a
+restore does): what's sent meanwhile waits in its queue, so no turn starts, or snapshots, mid-commit. The repo's hooks and signing run as git runs them; a refusal shows "The
+commit failed" (or "Signing the commit failed") and the hook's output, and leaves the changes
+staged. **Push** is `git push -u origin <branch>` (pre-push hooks run), never forced; on the default
+branch only with **Push to main anyway** ticked (shown beside the bar there). A rejected push, a
+refused sign-in or an unreachable origin is said in a line, with git's output.
+
+**Open PR** opens a box with a title and description from `gitDraft { kind: "pr" }`, editable.
+`gitOpenPr { title, body }` refuses on the default branch, detached, with no origin, or with no `gh`.
+Which repo is gh's own answer in the folder (`gh repo view --json nameWithOwner,url`, cached 10
+minutes), never Tether's reading of origin's URL, so ssh host aliases and the like resolve as gh
+resolves them. It checks `gh auth status --hostname <that repo's host>` (cached 5 minutes) and says
+"gh isn't signed in to github.com on this computer" if not; pushes first when the branch has no
+upstream or is ahead; then `gh pr create --base <default> --head <branch> --title --body`, with no
+`--repo`: gh picks the base repo as it does by default (a fork clone's PR goes to the parent). No
+`--base` when the default isn't known: the repo's own. A PR that already exists for the branch (gh's "already exists:" and its URL on the
+next line) is recorded as the session's and named.
+
+**Generated text** is a one-shot side query on the session's own harness and source
+(`Adapter.ask`), never a turn, nothing in any transcript, 45 s in all. The model sees the tracked
+diff against `HEAD` (12,000 characters at most), untracked files by name only, and the last 15
+subjects for style; a PR, its commits, stat and diff since the merge base. Claude: Haiku, no tools,
+no MCP servers (`strictMcpConfig`, none), no setting sources (none of the person's hooks or
+CLAUDE.md), a short system prompt, one turn, `persistSession: false`, and on the Anthropic key a
+$0.05 budget; the source is confirmed as at a session's start before the prompt goes out, a key
+through its private helper. On a key, what it cost (the result's `total_cost_usd`) goes in the
+session's API ledger, one running `side-queries` report beside its turns' (§10 API session
+dollars); an answer that never said leaves the total partial. Codex: only on the ChatGPT plan, an
+ephemeral thread on the shared daemon (no rollout), read-only, never asking, its tools and every MCP
+server off, no AGENTS.md (`project_doc_max_bytes` 0), the account's smallest model at low effort,
+the subscription's path confirmed first; a turn cut off by the deadline is interrupted. A Codex key
+session gets a note instead (a private app-server for one answer is too much). A missing key, an
+unconfirmed source, a timeout or an empty answer leaves the box empty with a short note; committing
+never waits on it.
+
+**The session's PR.** `gitPr { sessionId, fresh? }`: the PR recorded for the session (by Open PR or
+an earlier lookup; `prs.json` in the module's folder) first, by number, then, on another branch
+than its PR's (not the default), that branch's own (`gh pr view owner:branch --repo <gh's repo>`), which is
+recorded then. Fields: `number,url,title,state,isDraft,statusCheckRollup,headRefName`. With no
+origin, or on the default branch with nothing recorded, gh isn't run. Cached per session for a
+minute (`fresh`: unless under 10 s old), one call in flight shared. Records not looked at for 30
+days (sessions gone or archived) are dropped, 500 at most. The header's chip shows "#42 · Open · ✓"
+(✗ failing, ● running; Draft, Merged, Closed), coloured by checks while open, read out in words
+("Pull request 42, open, checks failing"), linking to the PR. It's asked when the session opens,
+fresh when a turn ends, and every 2 minutes while the pane is open; nothing else polls. No gh, gh
+signed out, or an origin gh doesn't know is said once in the bar.
+
+git and gh run as argvs in the session's folder, each in its own process group, with time limits
+(commit 120 s, push 90 s, ls-remote 10 s, gh 20 s, `pr create` 60 s): past one the group is killed
+(a hook's children, ssh, a pinentry) and pipes they still hold aren't waited on. When git exits by
+itself, pipes a hook's background job still holds are read for 2 s more and then let go; the job is
+left running. An `add -A` stopped at its limit has the `index.lock` it left removed; a stopped
+commit's lock (its hooks' children may still use the index) is named in the error instead. git has run.ts's
+hardening, and for hooks the person's own locale and fetching; talking to origin, nothing may
+prompt: `credential.interactive=false`, `GCM_INTERACTIVE=never`, and ssh in batch mode unless the
+person set their own ssh command (`GIT_SSH_COMMAND`, `GIT_SSH`, `core.sshCommand`). gh: no
+prompts, color, pager or update check, no inherited `GH_REPO` or git location variables. One action
+at a time per repo (its top folder, whichever of its folders asks). The relay waits 6 minutes for
+`gitCommit`, `gitPush` and `gitOpenPr` (`LONG_OPS`), longer than the runner's limits add up to, so
+the runner's answer, failure included, always arrives. All of these ops need drive access (they read
+the folder and write to it and its remote): none may be view-only (`VIEW_OPS` in shared/access.ts,
+on branches that have it). Out of scope: replying to review comments, GitLab and Bitbucket.
+
+### Files
+
+Runners whose hello says `files: true` give the Changes pane a **Changes | Files** tab row in place
+of its title (kept per device; Files, once opened, stays mounted, so switching tabs keeps its place).
+Files is the session folder as a tree, a folder at a time (`listDir { sessionId, path, hidden? }`:
+folders first, then by name; 2,000 entries, the rest counted), a filter by name, and a viewer. The
+eye toggle (per device) shows dot files and, in a repo, what git ignores (`check-ignore`), dimmed;
+outside a repo heavy folders (`node_modules`, `.venv`, `dist`, …) count as ignored. `.git` is never
+listed. `findFiles { sessionId, query, hidden?, fresh? }` ranks paths by name (exact, prefix,
+substring, then the path, words, letters in order), 200 best: in a repo from `ls-files --cached
+--others --exclude-standard` (ignored files never match; nested repos and gitlinks aren't files),
+outside one a walk that follows no links and skips heavy folders (50,000 files or 3 s, then
+`partial`); a folder's list is kept 5 s, and Refresh asks `fresh`. `readFile { sessionId, path,
+maxBytes?, head? }` answers text (UTF-8, no NUL in the first 8 KB, under 3 MB of JSON), an image
+(png, jpg, gif, webp, svg, avif, bmp, ico, checked by its bytes; base64) or "binary"; only as many
+bytes as the file says it has are read. Over 1 MB it's the size only; a text file's first 1 MB on
+asking (`head`), shown even if it isn't all UTF-8 or is mostly control characters (decoded with
+U+FFFD, cut to fit, `lossy`, said above it). The viewer: text in a `<pre>` with line numbers, a
+note when it holds bidirectional or control characters; Markdown preview (Markdown.tsx, remote
+images not loaded) or Raw, where a relative link opens that file in the viewer or that folder in
+the tree, `#heading` scrolls the preview (only it), and a link out of the folder is said above the
+preview, which stays (only links with a scheme leave; nothing navigates the app); images as an `<img>` from a
+`data:` URL (SVG too, so its scripts never run). **Mention** (in the viewer, `@` on a row: on hover,
+always on touch, the `@` key on a focused row) adds `@path` (`@"path"` when it has spaces and no `"`;
+a folder `path/`) to the message box's last line; on a phone the box isn't focused, so no keyboard
+comes up. The tree is an ARIA tree: one tab stop, arrows move, Right and Left open and close,
+Enter or Space opens. Opened folders (four at a time) and the open file load again on Refresh and
+when a turn ends; while the tab is hidden, when it's next shown.
+
+Only inside the folder. A path must be relative, without `..`, `.` or empty names, NUL, `~` or a
+drive, under 4,096 characters, and its real path (every link resolved) must be inside the folder's
+real path; that gives the plain refusals. What's guaranteed rests on the open handle, not the path:
+a file opens `O_NOFOLLOW | O_NONBLOCK` (a FIFO never blocks; it must be a regular file), a folder
+`O_DIRECTORY | O_NOFOLLOW`, and on Linux the kernel's path for the handle (`/proc/self/fd/N`) must
+be inside the folder; a folder is then listed, and its entries' sizes and links looked at, through
+that handle (`git check-ignore` too: it runs in `/proc/<pid>/fd/N`), and the filter's walk opens
+each folder the same way. Linux without `/proc` refuses every read and list rather than reading
+unchecked. So on Linux a link swapped in
+anywhere on the path at any moment yields a refusal, never a byte or a name from outside (a test
+races a swapper against all three ops). Elsewhere (macOS has no `/proc`, and `F_GETPATH` needs a
+variadic `fcntl` bun:ffi can't call) it is best effort: after opening, the path is resolved again
+and must be inside and the same file (device and inode), which narrows the window but can't close
+it. Links are listed as links: to a file or folder inside (opened as that), else `outside` (never
+read through or listed into, and whether its target exists isn't said); `broken` only for a target
+inside by its text (missing, a loop). Names that aren't UTF-8 are listed, marked, and can't be
+opened. Hard links aren't links: a hard link inside to a file outside reads as inside. Each open,
+stat, realpath and readlink is waited on 5 s at most (the call itself may go on; a handle that opens
+after that is closed); reading an open file and git's own limits (run.ts) aren't part of that. Nothing is written or run but `git rev-parse`,
+`check-ignore` and `ls-files` (run.ts's hardening). A `.env` and the like aren't blocked or hidden
+from a reader: it's the person's machine, behind the eye toggle. (Op answers pass the runner's
+redaction of its own secrets, its token and stored keys, which keeps those from leaving through a
+view of `/proc/self/environ` or a file holding one; it protects nothing else in a file.) All three
+ops read the folder, secrets included, so they need drive access and are never view-only
+(`VIEW_OPS`).
 
 ### Session names
 
@@ -1288,7 +1427,9 @@ are at the documented 30-minute default; if the request chose a lifetime, or the
 add up, or there's no write count, they're at the cheaper rate, a lower bound and not whole. Dated
 model ids aren't priced, because OpenAI publishes none. Over 272K input, other tiers and tool fees
 stay unpriced. A thread that takes a session's place (a source change) starts from what the session
-had spent, and plan turns add nothing to it. Subscription sessions show no dollars.
+had spent, and plan turns add nothing to it. Subscription sessions show no dollars. Side queries on the
+session's key (git actions' generated text, §10 Git actions) add to one `side-queries` report of
+its own, estimated; one whose cost wasn't reported leaves it partial (`no-usage`).
 
 **Where a session's API cost starts.** The first time a session's source is a key, its cost is whole
 when Tether knows what it spent on an API before; otherwise it's partial, `earlier-usage`, and stays

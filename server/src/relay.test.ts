@@ -33,8 +33,8 @@ function hi(relay: Relay, s: Socket, runner: Omit<RunnerInfo, "connectedAt">, to
   relay.onRunnerMessage(s, { t: "hello", runner });
 }
 
-function setup(opts: { rpcTimeoutMs?: number } = {}) {
-  const relay = new Relay({ rpcTimeoutMs: opts.rpcTimeoutMs ?? 1000, now: () => 1000 });
+function setup(opts: { rpcTimeoutMs?: number; longOps?: Record<string, number> } = {}) {
+  const relay = new Relay({ rpcTimeoutMs: opts.rpcTimeoutMs ?? 1000, now: () => 1000, ...(opts.longOps ? { longOps: opts.longOps } : {}) });
   const browser = (name: string) => {
     const s = new FakeSocket(name);
     relay.addBrowser(s, { name, email: `${name}@x` }, 1);
@@ -147,6 +147,18 @@ describe("rpc", () => {
     fromRunner(r, { t: "result", id: f.id, ok: true });
     expect(b.take("result")).toEqual([]);
     expect(relay.stats().pending).toBe(0);
+  });
+
+  test("a long op (a git action) waits longer than the usual limit", async () => {
+    const { browser, runner, rpc, fromRunner } = setup({ rpcTimeoutMs: 20, longOps: { gitPush: 200 } });
+    const b = browser("a");
+    const r = runner("box");
+    rpc(b, "1", "box", "gitPush", { sessionId: "s" });
+    const [f] = r.take("rpc");
+    await Bun.sleep(60);
+    expect(b.take("result")).toEqual([]);
+    fromRunner(r, { t: "result", id: f.id, ok: true, data: "pushed" });
+    expect(b.take("result")[0]).toMatchObject({ id: "1", ok: true });
   });
 
   test("a result from another runner can't settle someone else's rpc", () => {

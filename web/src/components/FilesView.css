@@ -1,0 +1,232 @@
+/* The Files tab (FilesView.tsx): the tree, the filter and the viewer, in the Changes pane. */
+
+.t-filesview {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.t-filesview[hidden] {
+  display: none;
+}
+.t-files-bar,
+.t-files-viewbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--t-border);
+}
+.t-files-viewbar {
+  padding-left: 4px;
+  flex-wrap: wrap;
+}
+.t-files-filter {
+  flex: 1;
+  min-width: 0;
+}
+.t-files-path {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.t-files-size {
+  flex: none;
+  font-size: 12px;
+  color: var(--t-muted);
+  font-variant-numeric: tabular-nums;
+}
+.t-files-body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+/* ---------- the tree ---------- */
+
+.t-files-tree {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+}
+.t-files-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.t-files-row.dim .t-files-name {
+  color: var(--t-muted);
+}
+.t-files-item {
+  all: unset;
+  box-sizing: border-box;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 2px 40px 2px 8px;
+  font-size: 13px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.t-files-item:hover,
+.t-files-row:hover .t-files-item {
+  background: var(--color-overlay-hover);
+}
+.t-files-row[role="treeitem"] {
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.t-files-row.off,
+.t-files-row.off .t-files-item {
+  cursor: default;
+  color: var(--t-muted);
+}
+.t-files-item:focus-visible,
+.t-files-row[role="treeitem"]:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+.t-files-row[role="treeitem"]:focus-visible .t-files-at {
+  opacity: 1;
+}
+.t-files-item:disabled {
+  cursor: default;
+  color: var(--t-muted);
+}
+.t-files-item svg {
+  flex: none;
+  color: var(--t-muted);
+}
+.t-files-chev {
+  flex: none;
+  width: 16px;
+  display: inline-flex;
+}
+.t-files-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.t-files-note-inline {
+  flex: none;
+  font-size: 12px;
+  color: var(--t-muted);
+  font-style: italic;
+}
+.t-files-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  font-size: 13px;
+  color: var(--t-muted);
+}
+.t-files-note.error {
+  color: var(--color-text-red, var(--color-error));
+}
+/* Mention: on hover or focus with a mouse; always there on a touch screen. */
+.t-files-at {
+  all: unset;
+  box-sizing: border-box;
+  position: absolute;
+  right: 6px;
+  width: 26px;
+  height: 24px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--t-muted);
+  cursor: pointer;
+  opacity: 0;
+}
+.t-files-row:hover .t-files-at {
+  opacity: 1;
+}
+.t-files-at:hover {
+  background: var(--t-soft);
+  color: var(--color-text-primary);
+}
+@media (pointer: coarse) {
+  .t-files-at {
+    opacity: 1;
+    width: 34px;
+    height: 32px;
+  }
+  .t-files-item {
+    min-height: 36px;
+  }
+}
+
+/* ---------- the viewer ---------- */
+
+.t-files-code {
+  display: flex;
+  align-items: flex-start;
+  min-width: max-content;
+  font-family: var(--t-mono);
+  font-size: 12px;
+  line-height: 18px;
+}
+.t-files-code pre {
+  margin: 0;
+  padding: 8px 0;
+  font: inherit;
+  white-space: pre;
+}
+.t-files-gutter {
+  position: sticky;
+  left: 0;
+  flex: none;
+  padding: 8px 10px 8px 12px !important;
+  text-align: right;
+  color: var(--t-muted);
+  user-select: none;
+  background: var(--t-card);
+  border-right: 1px solid var(--t-border);
+}
+.t-files-text {
+  padding: 8px 16px 8px 12px !important;
+  tab-size: 4;
+}
+.t-files-md {
+  padding: 12px 16px;
+  max-width: 860px;
+}
+.t-files-image {
+  padding: 16px;
+  display: flex;
+  justify-content: center;
+}
+.t-files-image img {
+  max-width: 100%;
+  height: auto;
+  /* A checkerboard, so transparent parts show as transparent. */
+  background: repeating-conic-gradient(var(--t-soft) 0% 25%, transparent 0% 50%) 50% / 16px 16px;
+  border: 1px solid var(--t-border);
+}
+.t-files-big {
+  flex-wrap: wrap;
+}
+.t-files-viewbar .t-changes-scope[aria-pressed="true"] {
+  background: var(--t-card);
+  color: var(--color-text-primary);
+  box-shadow: 0 0 0 1px var(--t-border);
+}
+.t-files-odd {
+  color: var(--color-text-yellow, var(--color-warning));
+  padding: 8px 12px;
+}

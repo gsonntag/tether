@@ -6,8 +6,9 @@
 // session; Send to agent puts them in the composer as one message, to edit and send, and they stay
 // until a message carrying them is sent (reviewStore.ts).
 //
-// The pane is the place later git views join: git actions (commit, push, a PR) go in the header's
-// actions, and Files a tab beside Changes.
+// Git actions (GitBar.tsx: the branch, Commit, Push, Open PR) sit under the header. The Files tab
+// (FilesView.tsx, runners with the files module) is the folder's tree and a viewer; once opened it
+// stays mounted, so switching tabs keeps its place.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
@@ -16,6 +17,7 @@ import { Icon } from "@astryxdesign/core/Icon";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { ArrowPathIcon, XMarkIcon } from "@heroicons/react/24/solid";
 import type { CheckpointList } from "../../../shared/checkpoints";
+import type { PrLookup } from "../../../shared/gitActions";
 import { DIFF_SCOPES, isDiffScope, numberLines, type DiffScope, type GitDiff } from "../../../shared/gitDiff";
 import type { RunStatus } from "../../../shared/transcript";
 import { rpc } from "../connection";
@@ -24,6 +26,8 @@ import { updateComments, useComments, useUnsaved } from "../reviewStore";
 import { useStore, viewKey } from "../store";
 import { draftOf, putDraft } from "./Composer";
 import { CommentCard, Counts, DiffFileView, fileKey, type Sel } from "./DiffFile";
+import { FilesView } from "./FilesView";
+import { GitBar } from "./GitBar";
 import { TurnBar } from "./TurnBar";
 import { useFitViewport } from "./useFitViewport";
 import "./ChangesPane.css";
@@ -31,6 +35,15 @@ import "./ChangesPane.css";
 // ---------- the scope, per device ----------
 
 const SCOPE_KEY = "tether.changes.scope";
+const TAB_KEY = "tether.changes.tab";
+type Tab = "changes" | "files";
+function storedTab(): Tab {
+  try {
+    return localStorage.getItem(TAB_KEY) === "files" ? "files" : "changes";
+  } catch {
+    return "changes";
+  }
+}
 function storedScope(): DiffScope {
   try {
     const v = localStorage.getItem(SCOPE_KEY);
@@ -53,6 +66,8 @@ export function ChangesPane({
   sessionId,
   status,
   cover,
+  git,
+  filesTab,
   onClose,
   onSent,
 }: {
@@ -62,11 +77,28 @@ export function ChangesPane({
   status: RunStatus;
   /** over the chat (a phone) rather than beside it */
   cover: boolean;
+  /** the runner has git actions: the session's PR, and how to update it (SessionView's usePr) */
+  git?: { pr?: PrLookup; update: (fresh: boolean, l?: PrLookup) => void };
+  /** the runner has the files module: the Files tab */
+  filesTab?: boolean;
   onClose: () => void;
   /** Send to agent put the comments in the composer */
   onSent: () => void;
 }) {
   const [scope, setScope] = useState<DiffScope>(storedScope);
+  const [tabPicked, setTab] = useState<Tab>(storedTab);
+  const tab: Tab = filesTab ? tabPicked : "changes";
+  /** the Files tab was opened: it stays mounted */
+  const [filesSeen, setFilesSeen] = useState(tab === "files");
+  const [filesReload, setFilesReload] = useState(0);
+  const [filesLoading, setFilesLoading] = useState(false);
+  const pickTab = (t: Tab) => {
+    setTab(t);
+    if (t === "files") setFilesSeen(true);
+    try {
+      localStorage.setItem(TAB_KEY, t);
+    } catch {}
+  };
   const [diff, setDiff] = useState<GitDiff>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
@@ -91,10 +123,13 @@ export function ChangesPane({
   const [restoring, setRestoring] = useState(false);
 
   const seq = useRef(0);
+  /** loads so far: the git bar reads the branch again with each */
+  const [tick, setTick] = useState(0);
   const load = useCallback(
     async (s: DiffScope) => {
       const n = ++seq.current;
       setLoading(true);
+      setTick((t) => t + 1);
       try {
         let checkpoint: string | undefined;
         if (s === "turn") {
@@ -131,11 +166,11 @@ export function ChangesPane({
   writing.current = !!sel;
   const loaded = useRef<DiffScope>(undefined);
   useEffect(() => {
-    if (!linkOpen) return;
+    if (!linkOpen || tab !== "changes") return;
     if (writing.current && loaded.current === scope) return setOwed(true);
     loaded.current = scope;
     void load(scope);
-  }, [load, scope, linkOpen]);
+  }, [load, scope, linkOpen, tab]);
   // A turn ended: what it changed shows; in the Turn scope a new turn shows as it starts. While a
   // comment is being written that waits for it.
   const busy = status !== "idle";
@@ -145,10 +180,10 @@ export function ChangesPane({
     wasBusy.current = busy;
   }, [busy]);
   useEffect(() => {
-    if (!owed || sel) return;
+    if (!owed || sel || tab !== "changes") return;
     setOwed(false);
     void load(scope);
-  }, [owed, sel]);
+  }, [owed, sel, tab]);
 
   const pickTurn = (id: string) => {
     picked.current = { id, newest: id === cps?.checkpoints[0]?.id };
@@ -262,86 +297,118 @@ export function ChangesPane({
   return (
     <aside className="t-changes" aria-label="Changes" ref={root}>
       <div className="t-changes-head">
-        <span className="t-changes-title">Changes</span>
-        <div className="t-changes-scopes" role="tablist" aria-label="Scope">
-          {DIFF_SCOPES.map((s) => (
-            <button key={s.id} type="button" role="tab" className="t-changes-scope" aria-selected={s.id === scope} onClick={() => pickScope(s.id)}>
-              {s.label}
-            </button>
-          ))}
-        </div>
+        {filesTab ? (
+          <div className="t-changes-tabs" role="tablist" aria-label="View">
+            {(["changes", "files"] as const).map((t) => (
+              <button key={t} type="button" role="tab" id={`t-changes-tab-${t}`} aria-controls={`t-changes-panel-${t}`} className="t-changes-tab" aria-selected={t === tab} onClick={() => pickTab(t)}>
+                {t === "changes" ? "Changes" : "Files"}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <span className="t-changes-title">Changes</span>
+        )}
+        {tab === "changes" && (
+          <div className="t-changes-scopes" role="tablist" aria-label="Scope">
+            {DIFF_SCOPES.map((s) => (
+              <button key={s.id} type="button" role="tab" className="t-changes-scope" aria-selected={s.id === scope} onClick={() => pickScope(s.id)}>
+                {s.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="t-changes-actions">
-          {loading && shown ? <Spinner size="sm" label="Refreshing" /> : <IconButton label="Refresh" tooltip="Refresh" size="sm" variant="ghost" icon={<Icon icon={ArrowPathIcon} />} onClick={() => (setOwed(false), void load(scope))} />}
+          {tab === "files" ? (
+            filesLoading ? (
+              <Spinner size="sm" label="Refreshing" />
+            ) : (
+              <IconButton label="Refresh" tooltip="Refresh" size="sm" variant="ghost" icon={<Icon icon={ArrowPathIcon} />} onClick={() => setFilesReload((n) => n + 1)} />
+            )
+          ) : loading && shown ? (
+            <Spinner size="sm" label="Refreshing" />
+          ) : (
+            <IconButton label="Refresh" tooltip="Refresh" size="sm" variant="ghost" icon={<Icon icon={ArrowPathIcon} />} onClick={() => (setOwed(false), void load(scope))} />
+          )}
           <IconButton label="Close changes" tooltip="Close" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={onClose} />
         </div>
       </div>
-      {scope === "turn" && cps && <TurnBar list={cps} picked={cps.checkpoints.find((c) => c.id === cp)} onPick={pickTurn} onRestore={(id) => void restore(id)} restoring={restoring} />}
-      {shown?.state === "ok" && (
-        <div className="t-changes-sub">
-          <span>
-            {files.length} file{files.length === 1 ? "" : "s"}
-            {shown.more ? ` (and ${shown.more} more not listed)` : ""}
-          </span>
-          <Counts added={shown.added} removed={shown.removed} />
-          <span className="t-changes-base" title={shown.root}>
-            {scope === "turn" ? shown.base : (shown.branch ?? "detached HEAD")}
-            {scope === "branch" && shown.base ? ` vs ${shown.base}` : ""}
-          </span>
+      {git && <GitBar runnerId={runnerId} sessionId={sessionId} status={status} tick={tick} pr={git.pr} onPr={git.update} onChanged={() => (setOwed(false), void load(scope))} />}
+      {filesTab && filesSeen && (
+        <div className="t-files-slot" role="tabpanel" id="t-changes-panel-files" aria-labelledby="t-changes-tab-files" hidden={tab !== "files"}>
+          <FilesView runnerId={runnerId} sessionId={sessionId} status={status} cover={cover} shown={tab === "files"} reload={filesReload} onLoading={setFilesLoading} />
         </div>
       )}
-      {owed && (
-        <div className="t-changes-note t-changes-owed">
-          New changes.
-          <Button
-            label="Show them"
-            size="sm"
-            variant="secondary"
-            onClick={() => {
-              setOwed(false);
-              void load(scope);
-            }}
-          />
-        </div>
-      )}
-      {shown?.timedOut && <div className="t-changes-note">git took too long: some files show their counts only.</div>}
-      {error && shown && <div className="t-changes-note error">{error}</div>}
-      <div className="t-changes-body">
-        {note}
-        {files.map((f) => (
-          <DiffFileView
-            key={fileKey(f)}
-            file={f}
-            open={isOpen(fileKey(f))}
-            onToggle={toggle}
-            sel={sel?.file === fileKey(f) ? sel : undefined}
-            onSelect={setSel}
-            touch={touch}
-            comments={byFile.get(f.path) ?? NONE}
-            onComment={add}
-            onEdit={edit}
-            onRemove={remove}
-          />
-        ))}
-      </div>
-      {comments.length > 0 && (
-        <div className={`t-review-tray${cover ? " cover" : ""}`}>
-          {unsaved && <div className="t-changes-note error">Couldn't keep the comments in this browser: they're lost if the page reloads.</div>}
-          {trayOpen && (
-            <div className="t-review-list">
-              {comments.map((c) => (
-                <CommentCard key={c.id} c={c} showPlace onPlace={c.scope === scope && inDiff.has(c.path) ? () => show(c) : undefined} onEdit={(t) => edit(c.id, t)} onRemove={() => remove(c.id)} />
-              ))}
+      {tab === "changes" && (
+        <div className="t-changes-panel" role="tabpanel" id="t-changes-panel-changes" {...(filesTab ? { "aria-labelledby": "t-changes-tab-changes" } : { "aria-label": "Changes" })}>
+          {scope === "turn" && cps && <TurnBar list={cps} picked={cps.checkpoints.find((c) => c.id === cp)} onPick={pickTurn} onRestore={(id) => void restore(id)} restoring={restoring} />}
+          {shown?.state === "ok" && (
+            <div className="t-changes-sub">
+              <span>
+                {files.length} file{files.length === 1 ? "" : "s"}
+                {shown.more ? ` (and ${shown.more} more not listed)` : ""}
+              </span>
+              <Counts added={shown.added} removed={shown.removed} />
+              <span className="t-changes-base" title={shown.root}>
+                {scope === "turn" ? shown.base : (shown.branch ?? "detached HEAD")}
+                {scope === "branch" && shown.base ? ` vs ${shown.base}` : ""}
+              </span>
             </div>
           )}
-          <div className="t-review-bar">
-            <button type="button" className="t-review-count" aria-expanded={trayOpen} onClick={() => setTrayOpen((o) => !o)}>
-              {pending.length ? `${pending.length} comment${pending.length === 1 ? "" : "s"}` : ""}
-              {pending.length > 0 && handed > 0 ? " · " : ""}
-              {handed ? `${handed} in the message box` : ""}
-            </button>
-            {handed > 0 && <Button label="Take back" size="sm" variant="ghost" onClick={takeBack} />}
-            {pending.length > 0 && <Button label="Send to agent" size="sm" variant="primary" onClick={send} />}
+          {owed && (
+            <div className="t-changes-note t-changes-owed">
+              New changes.
+              <Button
+                label="Show them"
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  setOwed(false);
+                  void load(scope);
+                }}
+              />
+            </div>
+          )}
+          {shown?.timedOut && <div className="t-changes-note">git took too long: some files show their counts only.</div>}
+          {error && shown && <div className="t-changes-note error">{error}</div>}
+          <div className="t-changes-body">
+            {note}
+            {files.map((f) => (
+              <DiffFileView
+                key={fileKey(f)}
+                file={f}
+                open={isOpen(fileKey(f))}
+                onToggle={toggle}
+                sel={sel?.file === fileKey(f) ? sel : undefined}
+                onSelect={setSel}
+                touch={touch}
+                comments={byFile.get(f.path) ?? NONE}
+                onComment={add}
+                onEdit={edit}
+                onRemove={remove}
+              />
+            ))}
           </div>
+          {comments.length > 0 && (
+            <div className={`t-review-tray${cover ? " cover" : ""}`}>
+              {unsaved && <div className="t-changes-note error">Couldn't keep the comments in this browser: they're lost if the page reloads.</div>}
+              {trayOpen && (
+                <div className="t-review-list">
+                  {comments.map((c) => (
+                    <CommentCard key={c.id} c={c} showPlace onPlace={c.scope === scope && inDiff.has(c.path) ? () => show(c) : undefined} onEdit={(t) => edit(c.id, t)} onRemove={() => remove(c.id)} />
+                  ))}
+                </div>
+              )}
+              <div className="t-review-bar">
+                <button type="button" className="t-review-count" aria-expanded={trayOpen} onClick={() => setTrayOpen((o) => !o)}>
+                  {pending.length ? `${pending.length} comment${pending.length === 1 ? "" : "s"}` : ""}
+                  {pending.length > 0 && handed > 0 ? " · " : ""}
+                  {handed ? `${handed} in the message box` : ""}
+                </button>
+                {handed > 0 && <Button label="Take back" size="sm" variant="ghost" onClick={takeBack} />}
+                {pending.length > 0 && <Button label="Send to agent" size="sm" variant="primary" onClick={send} />}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </aside>

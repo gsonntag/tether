@@ -8,7 +8,7 @@ import { claudeAdapter } from "./adapters/claude";
 import { codexAdapter } from "./adapters/codex";
 import { detectHarnesses } from "./adapters/detect";
 import { CONFIG_DIR, displayName, loadConfig } from "./config";
-import { CredentialStore, DATA_DIR } from "./credentials";
+import { CredentialStore, DATA_DIR, registerSecret } from "./credentials";
 import { createRunner } from "./core/runner";
 import { MODULES, startModules } from "./modules";
 import { HomeLine } from "./modules/homeLine";
@@ -23,6 +23,8 @@ if (!url || !token) {
   console.error(`Set ${[!url && "TETHER_URL", !token && "TETHER_TOKEN"].filter(Boolean).join(" and ")} (the app's URL and a runner service token), or TETHER_DEV=1 for a local dev server.`);
   process.exit(1);
 }
+// The runner's own token never leaves in an answer (a file view of /proc/self/environ, a shell's output).
+registerSecret(token);
 
 const config = loadConfig();
 // Where the Home agent's chats run (modules/homeAgent): made here, so the core can hide it.

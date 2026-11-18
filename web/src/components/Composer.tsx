@@ -22,6 +22,7 @@ import { menuMatches, menuPick, menuQuery, type HarnessCommand } from "../../../
 import { CommandMenu } from "./CommandMenu";
 import { composerMode, isShellText, shellWhen, keyAction, primaryAction, shellCommand, toggleShell, type ComposerAction } from "../composerKeys";
 import { prepare, upload } from "../upload";
+import { withMention } from "../files";
 
 export interface ComposerHandle {
   focus(): void;
@@ -42,14 +43,20 @@ interface Pending {
 }
 
 const drafts = new Map<string, string>();
-const draftListeners = new Set<(key: string, text: string) => void>();
+const draftListeners = new Set<(key: string, text: string, focus: boolean) => void>();
 
 /** Puts text in a session's message box (appended to what's there), e.g. an edit that missed its message. */
 export function putDraft(key: string, text: string) {
   const had = drafts.get(key);
   const next = had?.trim() ? `${had.trimEnd()}\n\n${text}` : text;
   drafts.set(key, next);
-  draftListeners.forEach((f) => f(key, next));
+  draftListeners.forEach((f) => f(key, next, true));
+}
+/** Adds `@path` to a session's message box on its last line (the Files tab's Mention); `focus`: the box takes focus. */
+export function putMention(key: string, mention: string, focus: boolean) {
+  const next = withMention(drafts.get(key) ?? "", mention);
+  drafts.set(key, next);
+  draftListeners.forEach((f) => f(key, next, focus));
 }
 /** What's in a session's message box now (this page). */
 export const draftOf = (key: string) => drafts.get(key) ?? "";
@@ -109,10 +116,10 @@ export const Composer = forwardRef<
   textRef.current = text;
   useImperativeHandle(ref, () => ({ focus: () => box.current?.focus() }));
   useEffect(() => {
-    const f = (key: string, t: string) => {
+    const f = (key: string, t: string, focus: boolean) => {
       if (key !== keyRef.current) return;
       setText(t);
-      box.current?.focus();
+      if (focus) box.current?.focus();
     };
     draftListeners.add(f);
     return () => void draftListeners.delete(f);
