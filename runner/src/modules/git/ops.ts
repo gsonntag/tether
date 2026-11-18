@@ -2,7 +2,8 @@
 // gitOpenPr. Actions in one repo (by its top folder) run one at a time. Commit is refused while this
 // session, or any other live session whose folder is in the repo or holds it, is doing anything (files
 // may be half-written), and while a restore holds the repo; it runs with the checkpoints' repo lock,
-// so no snapshot or restore runs beside it. Generated text (gitDraft) is a one-shot side query on the
+// so no snapshot or restore runs beside it, and holds the repo's sessions (holdFolder, as a restore
+// does), so what's sent meanwhile waits in its queue. Generated text (gitDraft) is a one-shot side query on the
 // session's own harness and source (SessionActions.ask): it never blocks committing, and a failure is
 // a note under an empty box. Open PR pushes first when the branch isn't pushed or is ahead.
 
@@ -13,13 +14,6 @@ import { commit, gitStatus, push } from "./actions";
 import { repoRoot } from "./diff";
 import { COMMIT_SYSTEM, commitPrompt, DRAFT_MS, draftOf, PR_SYSTEM, prPrompt } from "./draft";
 import type { Prs } from "./gh";
-import { git } from "./run";
-
-/** origin's URL, if there's an origin. */
-async function originUrl(root: string): Promise<string | undefined> {
-  const r = await git(root, ["config", "--get", "remote.origin.url"], { ok: [0, 1] });
-  return r.out.trim() || undefined;
-}
 
 export function registerActions(ctx: ModuleContext, prs: Prs, checkpoints: Pick<Checkpoints, "exclusive" | "commitBlocked">) {
   const look = async (sessionId: unknown) => {
@@ -47,8 +41,7 @@ export function registerActions(ctx: ModuleContext, prs: Prs, checkpoints: Pick<
     const s = await look(sessionId);
     const st = await gitStatus(s.summary.projectPath);
     if (st.state !== "ok" || !st.root) return { gh: "noRemote", at: Date.now() };
-    const url = st.origin ? await originUrl(st.root) : undefined;
-    return prs.lookup(s.summary.id, { root: st.root, branch: st.branch, defaultBranch: st.defaultBranch, ...(url ? { originUrl: url } : {}) }, fresh === true);
+    return prs.lookup(s.summary.id, { root: st.root, branch: st.branch, defaultBranch: st.defaultBranch, origin: st.origin }, fresh === true);
   });
 
   ctx.ops.register("gitDraft", async ({ sessionId, kind }) => {
@@ -86,9 +79,21 @@ export function registerActions(ctx: ModuleContext, prs: Prs, checkpoints: Pick<
       return checkpoints.exclusive(root, async () => {
         const again = commitBlocked(s, root);
         if (again) return refuse(again);
-        const r = await commit(folder, message, onDefault === true);
-        if (r.ok) ctx.log(`${s.summary.id}: committed ${r.commit ?? ""} on ${r.status.branch ?? "?"}`);
-        return r;
+        // Checked and held with no await between: what's sent to a session in the repo meanwhile waits
+        // in its queue, so no turn starts (and snapshots) while hooks run.
+        let release: (() => void) | undefined;
+        try {
+          release = ctx.sessions.holdFolder?.(root, "Committing…");
+        } catch (e) {
+          return refuse((e as Error).message);
+        }
+        try {
+          const r = await commit(folder, message, onDefault === true);
+          if (r.ok) ctx.log(`${s.summary.id}: committed ${r.commit ?? ""} on ${r.status.branch ?? "?"}`);
+          return r;
+        } finally {
+          release?.();
+        }
       });
     });
   });
@@ -111,15 +116,14 @@ export function registerActions(ctx: ModuleContext, prs: Prs, checkpoints: Pick<
       if (!title.trim()) return no("Write a title first.");
       if (!st.branch) return no("HEAD is detached: check out a branch to open a PR from.");
       if (st.branch === st.defaultBranch) return no(`This is ${st.branch}, the default branch: a PR needs another branch.`);
-      const url = st.origin ? await originUrl(st.root) : undefined;
-      if (!url) return no("There's no remote called origin.");
+      if (!st.origin) return no("There's no remote called origin.");
       if (!prs.bin()) return no("gh isn't installed on this computer. Install GitHub's gh and run gh auth login there.");
       if (!st.upstream || st.ahead > 0) {
         const p = await push(folder);
         if (!p.ok) return p;
         st = p.status;
       }
-      const r = await prs.create(s.summary.id, st.root!, { originUrl: url, ...(st.defaultBranch ? { base: st.defaultBranch } : {}), head: st.branch!, title: title.trim(), body });
+      const r = await prs.create(s.summary.id, st.root!, { ...(st.defaultBranch ? { base: st.defaultBranch } : {}), head: st.branch!, title: title.trim(), body });
       if (r.pr) ctx.log(`${s.summary.id}: PR #${r.pr.number} ${r.pr.url}`);
       return { ok: !r.error, ...(r.error ? { error: r.error } : {}), ...(r.output ? { output: r.output } : {}), ...(r.pr ? { pr: r.pr } : {}), status: st };
     });

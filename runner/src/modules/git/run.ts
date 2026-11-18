@@ -120,13 +120,11 @@ export async function git(cwd: string, args: string[], opts: GitOpts = {}): Prom
     timedOut = true;
     kill();
   }, timeoutMs);
-  // git is done but something it started (a hook's background child) still holds a pipe: a moment
-  // later its group goes, and what was read is the answer.
+  // git is done but something it started (a hook's background job) still holds a pipe: a moment
+  // later what was read is the answer. The job itself is left alone: only a timeout or a cut kills.
   let finished = false;
   void p.exited.then(() => Bun.sleep(EXIT_GRACE_MS)).then(() => {
-    if (finished) return;
-    killGroup(p);
-    stopNow();
+    if (!finished) stopNow();
   });
   const chunks: Uint8Array[] = [];
   let size = 0;

@@ -11,7 +11,7 @@ import { EventBus } from "../../core/bus";
 import { OpRegistry } from "../../core/ops";
 import { commit, countStatus, gitStatus, NO_IDENTITY, push, pushError } from "./actions";
 import { commitPrompt, prPrompt } from "./draft";
-import { existingPrUrl, parseOrigin, Prs, repoArg } from "./gh";
+import { existingPrUrl, parseRepo, Prs, repoArg } from "./gh";
 import { git, GitError } from "./run";
 import { makeGitModule } from ".";
 
@@ -220,6 +220,7 @@ function fakeGh(): { bin: string; dir: string; calls: () => string[][] } {
 D="${dir}"
 printf '%s\\n' "$*" >> "$D/calls"
 case "$1 $2" in
+  "repo view") [ -e "$D/repo.json" ] && { cat "$D/repo.json"; exit 0; }; printf '{"nameWithOwner":"o/r","url":"https://github.com/o/r"}'; exit 0;;
   "auth status") [ -e "$D/unauthed" ] && { echo "You are not logged into any GitHub hosts. To log in, run: gh auth login" >&2; exit 1; }; echo ok; exit 0;;
   "pr view") [ -e "$D/pr.json" ] && { cat "$D/pr.json"; exit 0; }; echo "no pull requests found for branch \\"$3\\"" >&2; exit 1;;
   "pr create")
@@ -247,7 +248,7 @@ const githubOrigin = (d: string, bare: string) => {
 type Look = { summary: { id: string; projectPath: string; title?: string; status?: string; mode?: string }; status: string; state: Record<string, unknown>; busy: boolean; background: boolean };
 const lookOf = (id: string, projectPath: string, status = "idle"): Look => ({ summary: { id, projectPath, status, mode: "live" }, status, state: {}, busy: false, background: false });
 
-async function module(d: string, o: { gh?: string; ask?: (id: string, prompt: string) => Promise<string>; status?: string; looks?: Look[]; held?: string } = {}) {
+async function module(d: string, o: { gh?: string; ask?: (id: string, prompt: string) => Promise<string>; status?: string; looks?: Look[]; held?: string; holds?: string[]; refuseHold?: string } = {}) {
   const ops = new OpRegistry();
   const looks = new Map<string, Look>([["s1", lookOf("s1", d, o.status)], ...(o.looks ?? []).map((l) => [l.summary.id, l] as [string, Look])]);
   await makeGitModule({ ghBin: () => o.gh }).start({
@@ -261,6 +262,11 @@ async function module(d: string, o: { gh?: string; ask?: (id: string, prompt: st
       list: () => [...looks.values()].map((l) => ({ ...l.summary, status: l.status })),
       ...(o.ask ? { ask: o.ask } : {}),
       ...(o.held ? { heldWhy: () => o.held } : {}),
+      holdFolder: (folder: string, why: string) => {
+        if (o.refuseHold) throw new Error(o.refuseHold);
+        o.holds?.push(`hold ${folder} ${why}`);
+        return () => o.holds?.push(`release ${folder}`);
+      },
     },
   } as never);
   const call = async <T>(op: string, args: Record<string, unknown>, sessionId = "s1") => {
@@ -282,7 +288,8 @@ test("ops: open PR pushes first, records the PR; the lookup is cached, by origin
   // no PR yet: gh is asked by owner:branch in origin's repo
   expect(await call<PrLookup>("gitPr", {})).toMatchObject({ gh: "ok" });
   expect((await call<PrLookup>("gitPr", {})).pr).toBeUndefined();
-  expect(gh.calls().filter((c) => c[1] === "view").map((c) => c.join(" "))).toEqual([`pr view o:feature --json ${PR_FIELDS} --repo o/r`]);
+  // gh's own repo for the folder, asked once and cached
+  expect(gh.calls().map((c) => c.join(" "))).toEqual(["repo view --json nameWithOwner,url", `pr view o:feature --json ${PR_FIELDS} --repo o/r`]);
 
   const r = await call<GitActionResult>("gitOpenPr", { title: "Edit a", body: "Body" });
   expect(r.ok).toBe(true);
@@ -291,14 +298,17 @@ test("ops: open PR pushes first, records the PR; the lookup is cached, by origin
   expect(sh(bare, "rev-parse", "feature")).toBe(sh(d, "rev-parse", "HEAD"));
   expect(gh.calls().find((c) => c[1] === "status")!.join(" ")).toBe("auth status --hostname github.com");
   const create = gh.calls().find((c) => c[1] === "create")!;
-  expect(create.join(" ")).toBe("pr create --repo o/r --base main --head feature --title Edit a --body Body");
+  // no --repo: gh picks the base repo as it does by default
+  expect(create.join(" ")).toBe("pr create --base main --head feature --title Edit a --body Body");
+  expect(gh.calls().filter((c) => c[0] === "repo").length).toBe(1);
 
-  const views = gh.calls().filter((c) => c[1] === "view").length;
+  const isView = (c: string[]) => c[0] === "pr" && c[1] === "view";
+  const views = gh.calls().filter(isView).length;
   const l = await call<PrLookup>("gitPr", {});
   expect(l.pr).toMatchObject({ number: 42, url: "https://github.com/o/r/pull/42" });
   await call<PrLookup>("gitPr", {});
   await call<PrLookup>("gitPr", { fresh: true });
-  expect(gh.calls().filter((c) => c[1] === "view").length).toBe(views + 1);
+  expect(gh.calls().filter(isView).length).toBe(views + 1);
   // the recorded PR is asked first, by number
   expect(gh.calls().at(-1)!.slice(0, 3)).toEqual(["pr", "view", "42"]);
 
@@ -409,16 +419,50 @@ test("git: a hook that hangs (and its children) is stopped at the time limit", {
   expect(e.message).toBe("git took too long.");
   expect(e.stderr).toContain("checking");
   rmSync(join(d, ".git", "index.lock"), { force: true });
-  // through commit: said plainly, and the lock git left behind is gone, so the next commit works
+  // through commit: said plainly; the lock a stopped commit left is reported, not removed (its
+  // hooks' children may still be using the index)
   const c = await commit(d, "x", false, 1500);
-  expect(c.error).toContain("took too long");
+  expect(c.error).toContain("git commit took too long");
+  // (a plain commit takes the lock only after pre-commit: none left here, none named)
   expect(existsSync(join(d, ".git", "index.lock"))).toBe(false);
-  // a hook that leaves a child holding stderr: git's answer doesn't wait for it
-  writeFileSync(hook, "#!/bin/sh\n(sleep 30 >&2 &)\nexit 0\n");
+  expect(c.error).not.toContain("index.lock");
+  // a hook's background job holding stderr: git's answer doesn't wait for it, and the job lives on
+  const mark = join(d, ".git", "job-done");
+  writeFileSync(hook, `#!/bin/sh\n(sleep 3 >&2; touch "${mark}") &\nexit 0\n`);
   const t2 = Date.now();
   await git(d, ["commit", "-qam", "y"], { hooks: true, timeoutMs: 20_000 });
-  expect(Date.now() - t2).toBeLessThan(6000);
+  expect(Date.now() - t2).toBeLessThan(3000);
   expect(sh(d, "log", "-1", "--format=%s")).toBe("y");
+  await Bun.sleep(3500);
+  expect(existsSync(mark)).toBe(true);
+});
+
+test("commit: an add -A stopped at the limit (a slow clean filter) has its own lock removed", { timeout: 40_000 }, async () => {
+  const { d } = repo();
+  sh(d, "checkout", "-qb", "feature");
+  // slow enough for add's 1.5 s, quick enough for status's own limit
+  sh(d, "config", "filter.slow.clean", "sleep 2; cat");
+  writeFileSync(join(d, ".gitattributes"), "*.txt filter=slow\n");
+  writeFileSync(join(d, "a.txt"), "two\n");
+  const t = Date.now();
+  const c = await commit(d, "x", false, 1000);
+  expect(Date.now() - t).toBeLessThan(30_000);
+  expect(c.error).toBe("git add took too long and was stopped. Nothing was committed.");
+  expect(existsSync(join(d, ".git", "index.lock"))).toBe(false);
+});
+
+test("ops: a commit holds the repo's sessions while it runs (sends queue), and is refused when it can't", async () => {
+  const { d } = repo();
+  sh(d, "checkout", "-qb", "feature");
+  writeFileSync(join(d, "a.txt"), "two\n");
+  const holds: string[] = [];
+  const m = await module(d, { holds });
+  expect((await m.call<GitActionResult>("gitCommit", { message: "x" })).ok).toBe(true);
+  expect(holds).toEqual([`hold ${d} Committing…`, `release ${d}`]);
+  writeFileSync(join(d, "a.txt"), "three\n");
+  const refused = await module(d, { refuseHold: "“Other” is working." });
+  expect((await refused.call<GitActionResult>("gitCommit", { message: "x" })).error).toBe("“Other” is working.");
+  expect(sh(d, "rev-list", "--count", "HEAD")).toBe("2");
 });
 
 test("ops: drafts from the session's side query, a failure a note", async () => {
@@ -436,12 +480,12 @@ test("ops: drafts from the session's side query, a failure a note", async () => 
   expect((await call<GitStatus>("gitStatus", {})).branch).toBe("feature");
 });
 
-test("gh: origin URLs read as repos; the existing-PR text; prs.json pruned", async () => {
-  expect(parseOrigin("git@github.com:o/r.git")).toEqual({ host: "github.com", owner: "o", repo: "r" });
-  expect(parseOrigin("https://user:tok@github.com/o/r")).toEqual({ host: "github.com", owner: "o", repo: "r" });
-  expect(parseOrigin("ssh://git@ghe.example.com/team/app.git/")).toEqual({ host: "ghe.example.com", owner: "team", repo: "app" });
-  expect(parseOrigin("/tmp/bare")).toBeUndefined();
-  expect(repoArg({ host: "ghe.example.com", owner: "t", repo: "a" })).toBe("ghe.example.com/t/a");
+test("gh: its repo answer read; the existing-PR text; prs.json pruned", async () => {
+  expect(parseRepo('{"nameWithOwner":"o/r","url":"https://github.com/o/r"}')).toEqual({ nameWithOwner: "o/r", host: "github.com" });
+  expect(parseRepo('{"nameWithOwner":"team/app","url":"https://GHE.example.com/team/app"}')).toEqual({ nameWithOwner: "team/app", host: "ghe.example.com" });
+  expect(parseRepo("nope")).toBeUndefined();
+  expect(repoArg({ host: "ghe.example.com", nameWithOwner: "t/a" })).toBe("ghe.example.com/t/a");
+  expect(repoArg({ host: "github.com", nameWithOwner: "t/a" })).toBe("t/a");
   expect(existingPrUrl('a pull request for branch "x" into branch "main" already exists:\nhttps://github.com/o/r/pull/7')).toBe("https://github.com/o/r/pull/7");
   const dir = temp();
   const day = 24 * 60 * 60_000;

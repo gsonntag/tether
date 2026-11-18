@@ -136,17 +136,23 @@ export async function commit(cwd: string, message: string, onDefault = false, ti
   if (!status.identity) return fail(status, NO_IDENTITY);
   const root = status.root;
   const started = Date.now();
+  let stage: "add" | "commit" = "add";
   try {
     await git(root, ["add", "-A"], { timeoutMs });
+    stage = "commit";
     await git(root, [...OWN_IDENTITY, "commit", "-q", "--cleanup=whitespace", "--file=-"], { input: message.trim() + "\n", hooks: true, timeoutMs, env: { GIT_EDITOR: ":" } });
   } catch (e) {
-    // Stopped at the time limit, git left its index lock: ours (made since we started), so it goes.
-    if (e instanceof GitError && /too long/.test(e.message)) await dropOwnLock(root, started);
+    const timedOut = e instanceof GitError && /too long/.test(e.message);
+    // `add -A` stopped at the time limit left its index lock: ours (no hook runs there), so it goes.
+    // A commit's is reported, not removed: something its hooks started may still be using the index.
+    let lockLeft = "";
+    if (timedOut && stage === "add") await dropOwnLock(root, started);
+    else if (timedOut) lockLeft = (await lockPath(root, started)) ? ` git left ${relativeLock} behind: once nothing is running git there, delete it.` : "";
     const after = await gitStatus(cwd).catch(() => status);
     if (!(e instanceof GitError)) return fail(after, (e as Error).message);
     const out = outputTail(e.stderr);
     const why = /too long/.test(e.message)
-      ? "git commit took too long and was stopped: a hook, or signing waiting for a passphrase. Nothing was committed."
+      ? `git ${stage} took too long and was stopped${stage === "commit" ? ": a hook, or signing waiting for a passphrase" : ""}. Nothing was committed.${lockLeft}`
       : /identity|tell me who you are/i.test(e.stderr)
         ? NO_IDENTITY
         : /gpg|failed to sign|signing failed|ssh-keygen/i.test(e.stderr)
@@ -158,12 +164,22 @@ export async function commit(cwd: string, message: string, onDefault = false, ti
   return { ok: true, ...(after.head ? { commit: after.head } : {}), status: after };
 }
 
-/** Removes index.lock if it was made at or after `since` (a git this module stopped). */
-async function dropOwnLock(root: string, since: number) {
+const relativeLock = ".git/index.lock";
+
+/** The index lock's path when there's one made at or after `since` (by a git this module stopped). */
+async function lockPath(root: string, since: number): Promise<string | undefined> {
   try {
     const p = (await git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index.lock"])).out.trim();
-    if (p && (await stat(p)).mtimeMs >= since - 1000) await rm(p, { force: true });
-  } catch {}
+    return p && (await stat(p)).mtimeMs >= since - 1000 ? p : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Removes the index lock a stopped `add -A` left. */
+async function dropOwnLock(root: string, since: number) {
+  const p = await lockPath(root, since);
+  if (p) await rm(p, { force: true }).catch(() => {});
 }
 
 /** What a failed push says, in a line. */

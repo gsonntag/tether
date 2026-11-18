@@ -1,12 +1,15 @@
 // GitHub through `gh` (SPEC §10 Git actions): a session's PR and Open PR. gh as an argv in the repo,
 // never prompting, no color, no pager, no update check, in its own process group with a time limit
 // (the group is killed, and its pipes not waited on, past it); GH_REPO and git's location variables
-// aren't inherited, and the repo is named from origin's URL (`--repo`), so nothing else decides it.
+// aren't inherited. Which repo is gh's own choice in the folder (`gh repo view`, cached), so ssh host
+// aliases and the like resolve as gh resolves them; lookups name it (`--repo`), and its host is the
+// one `auth status` asks about. `pr create` gets no `--repo`: gh picks as it does by default (a fork
+// clone's PR goes to the parent).
 // gh is asked as little as possible: a lookup is cached per session for a minute (`fresh`: unless it's
 // under 10 s old), one in flight is shared, and a folder with no origin, or on its default branch with
 // no PR recorded, asks nothing. Which PR is the session's: the one recorded (Open PR made it, or an
 // earlier lookup found it; prs.json beside the module's other files), unless the session is on
-// another branch that has a PR of its own (`owner:branch` in origin's repo), which is recorded then.
+// another branch that has a PR of its own (`owner:branch` in gh's repo), which is recorded then.
 // Records not looked at for 30 days (sessions gone or archived) are dropped, and at most 500 kept.
 
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -23,6 +26,7 @@ const AUTH_MS = 5 * 60_000;
 const KEEP_MS = 30 * 24 * 60 * 60_000;
 const KEEP_MAX = 500;
 const TOUCH_MS = 24 * 60 * 60_000;
+const REPO_MS = 10 * 60_000;
 
 export interface GhOut {
   code: number;
@@ -81,34 +85,25 @@ export function ghTrouble(err: string): Pick<PrLookup, "gh" | "error"> | "none" 
   return { gh: "error", error: outputTail(err.trim().split("\n")[0] || "gh failed.", 300) };
 }
 
-export interface Origin {
+/** The repo gh works on in a folder: OWNER/REPO and its host. */
+export interface GhRepo {
+  nameWithOwner: string;
   host: string;
-  owner: string;
-  repo: string;
-}
-
-/** origin's URL as a GitHub-style repo (https, ssh or scp-like); undefined when it isn't one. Credentials in it are never kept. */
-export function parseOrigin(url: string): Origin | undefined {
-  const u = url.trim();
-  let host: string | undefined;
-  let path: string | undefined;
-  const scp = !u.includes("://") && u.match(/^(?:[^@/]+@)?([^:/]+):(.+)$/);
-  if (scp) [host, path] = [scp[1], scp[2]];
-  else {
-    try {
-      const x = new URL(u);
-      if (!/^(https?|ssh|git):$/.test(x.protocol)) return undefined;
-      [host, path] = [x.hostname, x.pathname];
-    } catch {
-      return undefined;
-    }
-  }
-  const m = path?.replace(/^\/+|\/+$/g, "").match(/^([^/]+)\/([^/]+?)(?:\.git)?$/);
-  return host && m ? { host: host.toLowerCase(), owner: m[1]!, repo: m[2]! } : undefined;
 }
 
 /** `--repo` for gh: OWNER/REPO on github.com, HOST/OWNER/REPO elsewhere. */
-export const repoArg = (o: Origin) => (o.host === "github.com" ? `${o.owner}/${o.repo}` : `${o.host}/${o.owner}/${o.repo}`);
+export const repoArg = (r: GhRepo) => (r.host === "github.com" ? r.nameWithOwner : `${r.host}/${r.nameWithOwner}`);
+
+/** `gh repo view --json nameWithOwner,url`'s answer, read. */
+export function parseRepo(out: string): GhRepo | undefined {
+  try {
+    const j = JSON.parse(out);
+    const host = new URL(String(j?.url)).hostname.toLowerCase();
+    return typeof j?.nameWithOwner === "string" && /^[^/\s]+\/[^/\s]+$/.test(j.nameWithOwner) && host ? { nameWithOwner: j.nameWithOwner, host } : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** gh's text when a PR for the branch is there already: the URL is on the line after. */
 export const existingPrUrl = (err: string) => err.match(/already exists[\s\S]*?(https?:\/\/\S+\/pull\/\d+)/i)?.[1];
@@ -132,14 +127,15 @@ export interface Where {
   root: string;
   branch?: string;
   defaultBranch?: string;
-  /** origin's URL; none: no origin */
-  originUrl?: string;
+  /** there's a remote called origin */
+  origin: boolean;
 }
 
 export class Prs {
   private recorded: Record<string, Recorded> = {};
   private cache = new Map<string, { at: number; sig: string; v: Promise<PrLookup> }>();
   private auth = new Map<string, { at: number; ok: Promise<boolean> }>();
+  private repos = new Map<string, { at: number; v: Promise<{ repo?: GhRepo; trouble?: Pick<PrLookup, "gh" | "error"> }> }>();
   private file: string;
   private now: () => number;
   readonly bin: () => string | undefined;
@@ -195,7 +191,7 @@ export class Prs {
   /** The session's PR (see the top). Cached. */
   lookup(sessionId: string, w: Where, fresh = false): Promise<PrLookup> {
     // Another folder or branch than the cached answer's is asked again.
-    const sig = `${w.root}\0${w.branch ?? ""}\0${w.originUrl ?? ""}`;
+    const sig = `${w.root}\0${w.branch ?? ""}\0${w.origin}`;
     const c = this.cache.get(sessionId);
     const age = c && c.sig === sig ? this.now() - c.at : Infinity;
     if (c && age < (fresh ? FRESH_MS : CACHE_MS)) return c.v;
@@ -206,7 +202,22 @@ export class Prs {
     return v;
   }
 
-  private async view(bin: string, root: string, target: string, origin: Origin | undefined): Promise<{ pr?: PrInfo; trouble?: Pick<PrLookup, "gh" | "error"> }> {
+  /** The repo gh works on in `root` (cached a few minutes; a failure isn't). */
+  repo(bin: string, root: string): Promise<{ repo?: GhRepo; trouble?: Pick<PrLookup, "gh" | "error"> }> {
+    const c = this.repos.get(root);
+    if (c && this.now() - c.at < REPO_MS) return c.v;
+    const v = gh(bin, root, ["repo", "view", "--json", "nameWithOwner,url"]).then((r) => {
+      const repo = r.code === 0 ? parseRepo(r.out) : undefined;
+      if (repo) return { repo };
+      this.repos.delete(root);
+      const why = r.code === 0 ? "none" : ghTrouble(r.err);
+      return { trouble: why === "none" ? { gh: "error" as const, error: "gh couldn't tell which repository this is." } : why };
+    });
+    this.repos.set(root, { at: this.now(), v });
+    return v;
+  }
+
+  private async view(bin: string, root: string, target: string, origin: GhRepo | undefined): Promise<{ pr?: PrInfo; trouble?: Pick<PrLookup, "gh" | "error"> }> {
     const r = await gh(bin, root, ["pr", "view", target, "--json", PR_FIELDS, ...(origin ? ["--repo", repoArg(origin)] : [])]);
     if (r.code === 0) {
       try {
@@ -223,9 +234,13 @@ export class Prs {
     const at = this.now();
     const bin = this.bin();
     if (!bin) return { gh: "missing", at };
-    if (!w.originUrl) return { gh: "noRemote", at };
-    const origin = parseOrigin(w.originUrl);
+    if (!w.origin) return { gh: "noRemote", at };
     const rec = this.recorded[sessionId]?.root === w.root ? this.recorded[sessionId] : undefined;
+    // Nothing to look up: gh isn't asked at all.
+    if (!rec && !(w.branch && w.branch !== w.defaultBranch)) return { gh: "ok", at };
+    const g = await this.repo(bin, w.root);
+    if (!g.repo) return { ...g.trouble!, at };
+    const origin = g.repo;
     let found: PrInfo | undefined;
     if (rec) {
       const r = await this.view(bin, w.root, String(rec.number), origin);
@@ -234,7 +249,7 @@ export class Prs {
     }
     // On another branch than the recorded PR's (not the default one): that branch's own PR, if it has one.
     if (w.branch && w.branch !== w.defaultBranch && found?.branch !== w.branch) {
-      const r = await this.view(bin, w.root, origin ? `${origin.owner}:${w.branch}` : w.branch, origin);
+      const r = await this.view(bin, w.root, `${origin.nameWithOwner.split("/")[0]}:${w.branch}`, origin);
       if (r.trouble && !found) return { ...r.trouble, at };
       if (r.pr) found = r.pr;
     }
@@ -252,19 +267,19 @@ export class Prs {
     return ok;
   }
 
-  /** `gh pr create` (no `--base`: the repo's own default), then the PR as gh shows it, recorded as the session's. An existing PR for the branch is recorded and named. */
-  async create(sessionId: string, root: string, a: { originUrl: string; base?: string; head: string; title: string; body: string }): Promise<{ pr?: PrInfo; error?: string; output?: string }> {
+  /** `gh pr create` (no `--base` when the default isn't known: the repo's own), then the PR as gh shows it, recorded as the session's. An existing PR for the branch is recorded and named. */
+  async create(sessionId: string, root: string, a: { base?: string; head: string; title: string; body: string }): Promise<{ pr?: PrInfo; error?: string; output?: string }> {
     const bin = this.bin();
     if (!bin) return { error: "gh isn't installed on this computer. Install GitHub's gh and run gh auth login there." };
-    const origin = parseOrigin(a.originUrl);
-    if (!origin) return { error: "origin isn't a GitHub repository gh can open a PR on." };
-    if (!(await this.signedIn(bin, root, origin.host))) {
-      this.auth.delete(`${bin}\0${origin.host}`);
-      return { error: `gh isn't signed in to ${origin.host} on this computer. Run gh auth login there.` };
+    const g = await this.repo(bin, root);
+    if (!g.repo) return { error: g.trouble?.gh === "unauthed" ? "gh isn't signed in on this computer. Run gh auth login there." : g.trouble?.gh === "notGithub" ? "gh doesn't know this repository: origin isn't on GitHub." : `gh: ${g.trouble?.error ?? "couldn't tell which repository this is."}` };
+    if (!(await this.signedIn(bin, root, g.repo.host))) {
+      this.auth.delete(`${bin}\0${g.repo.host}`);
+      return { error: `gh isn't signed in to ${g.repo.host} on this computer. Run gh auth login there.` };
     }
     this.forget(sessionId);
-    const repo = ["--repo", repoArg(origin)];
-    const r = await gh(bin, root, ["pr", "create", ...repo, ...(a.base ? ["--base", a.base] : []), "--head", a.head, "--title", a.title, "--body", a.body], CREATE_MS);
+    // No --repo: gh's own choice of base repo, as `gh pr create` makes it by default.
+    const r = await gh(bin, root, ["pr", "create", ...(a.base ? ["--base", a.base] : []), "--head", a.head, "--title", a.title, "--body", a.body], CREATE_MS);
     const url = r.code === 0 ? r.out.trim().split("\n").reverse().find((l) => /^https?:\/\//.test(l.trim()))?.trim() : undefined;
     const exists = r.code !== 0 ? existingPrUrl(r.err) : undefined;
     const target = url ?? exists;
