@@ -426,3 +426,30 @@
     font-size: 12.5px;
   }
 }
+
+/* ---------- the Turn scope (TurnBar.tsx) ---------- */
+
+.t-turnbar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--t-border);
+}
+.t-turnbar-pick {
+  width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+.t-turnbar-restore {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+.t-turnbar-note {
+  flex: 1 1 220px;
+  font-size: 12px;
+  color: var(--t-muted);
+}

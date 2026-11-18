@@ -1,11 +1,12 @@
 // The Changes pane (SPEC §10 Changes): the session folder's git changes beside the transcript (over
-// it on a phone), from the runner's git module. Scopes: Uncommitted and Branch. It loads on opening,
-// on a scope change, when a turn ends, and on Refresh. Lines take comments (DiffFile.tsx), which
+// it on a phone), from the runner's git module. Scopes: Uncommitted, Branch and Turn (a turn's
+// checkpoints, with Restore: TurnBar.tsx). It loads on opening, on a scope change, when a turn ends
+// (and, in the Turn scope, starts), and on Refresh. Lines take comments (DiffFile.tsx), which
 // collect in the tray at the bottom and stay in this browser per session; Send to agent puts them in
 // the composer as one message, to edit and send.
 //
-// The pane is the place later git views join: a Turn scope (checkpoints) is one more scope, git
-// actions (commit, push, a PR) go in the header's actions, and Files a tab beside Changes.
+// The pane is the place later git views join: git actions (commit, push, a PR) go in the header's
+// actions, and Files a tab beside Changes.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
@@ -14,6 +15,7 @@ import { IconButton } from "@astryxdesign/core/IconButton";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { ArrowPathIcon, XMarkIcon } from "@heroicons/react/24/solid";
+import type { CheckpointList } from "../../../shared/checkpoints";
 import { DIFF_SCOPES, isDiffScope, type DiffScope, type GitDiff, type NumberedLine } from "../../../shared/gitDiff";
 import type { RunStatus } from "../../../shared/transcript";
 import { rpc } from "../connection";
@@ -21,6 +23,7 @@ import { readComments, reviewKey, reviewMessage, selectionOf, writeComments, typ
 import { useStore, viewKey } from "../store";
 import { putDraft } from "./Composer";
 import { CommentCard, Counts, DiffFileView, type Sel } from "./DiffFile";
+import { TurnBar } from "./TurnBar";
 import { useFitViewport } from "./useFitViewport";
 import "./ChangesPane.css";
 
@@ -55,7 +58,7 @@ const OPEN_LINES_MAX = 2000;
 
 const touchScreen = () => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
 
-const EMPTY: Record<DiffScope, string> = { uncommitted: "No uncommitted changes.", branch: "No changes on this branch." };
+const EMPTY: Record<DiffScope, string> = { uncommitted: "No uncommitted changes.", branch: "No changes on this branch.", turn: "No file changes in this turn." };
 
 export function ChangesPane({
   runnerId,
@@ -90,13 +93,34 @@ export function ChangesPane({
   const key = reviewKey(runnerId, sessionId);
   const comments = useComments(key);
 
+  // The Turn scope: the session's checkpoints and the one picked (the newest unless you pick another).
+  const [cps, setCps] = useState<CheckpointList>();
+  const [cp, setCp] = useState<string>();
+  const picked = useRef<{ id?: string; newest: boolean }>({ newest: true });
+  const [restoring, setRestoring] = useState(false);
+
   const seq = useRef(0);
   const load = useCallback(
     async (s: DiffScope) => {
       const n = ++seq.current;
       setLoading(true);
       try {
-        const d = await rpc(runnerId, "gitDiff", { sessionId, scope: s });
+        let checkpoint: string | undefined;
+        if (s === "turn") {
+          const l = await rpc(runnerId, "checkpoints", { sessionId });
+          if (n !== seq.current) return;
+          const want = picked.current.newest ? undefined : l.checkpoints.find((c) => c.id === picked.current.id)?.id;
+          checkpoint = want ?? l.checkpoints[0]?.id;
+          picked.current = { id: checkpoint, newest: !want || checkpoint === l.checkpoints[0]?.id };
+          setCps(l);
+          setCp(checkpoint);
+          if (!checkpoint) {
+            setDiff({ scope: s, state: l.state === "notRepo" ? "notRepo" : "noBase", files: [], added: 0, removed: 0 });
+            setError(undefined);
+            return;
+          }
+        }
+        const d = await rpc(runnerId, "gitDiff", { sessionId, scope: s, ...(checkpoint ? { checkpoint } : {}) });
         if (n !== seq.current) return;
         setDiff(d);
         setError(undefined);
@@ -111,13 +135,35 @@ export function ChangesPane({
   useEffect(() => {
     if (linkOpen) void load(scope);
   }, [load, scope, linkOpen]);
-  // A turn ended: what it changed shows.
+  // A turn ended: what it changed shows. In the Turn scope a new turn shows as it starts.
   const busy = status !== "idle";
   const wasBusy = useRef(busy);
   useEffect(() => {
-    if (wasBusy.current && !busy) void load(scope);
+    if ((wasBusy.current && !busy) || (!wasBusy.current && busy && scope === "turn")) void load(scope);
     wasBusy.current = busy;
   }, [busy]);
+
+  const pickTurn = (id: string) => {
+    picked.current = { id, newest: id === cps?.checkpoints[0]?.id };
+    setCp(id);
+    setSel(null);
+    setFlipped(new Set());
+    void load("turn");
+  };
+  const restore = async (id: string) => {
+    setRestoring(true);
+    try {
+      await rpc(runnerId, "restoreCheckpoint", { sessionId, checkpointId: id });
+      // The restore is the newest checkpoint now: it shows, with Undo restore.
+      picked.current = { newest: true };
+      setError(undefined);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRestoring(false);
+    }
+    void load("turn");
+  };
 
   const pickScope = (s: DiffScope) => {
     if (s === scope) return;
@@ -130,7 +176,7 @@ export function ChangesPane({
     } catch {}
   };
 
-  const shown = diff?.scope === scope ? diff : undefined;
+  const shown = diff?.scope === scope && (scope !== "turn" || !diff.checkpoint || diff.checkpoint === cp) ? diff : undefined;
   const files = shown?.files ?? [];
   const lineCount = useMemo(() => files.reduce((n, f) => n + (f.hunks?.reduce((m, h) => m + h.lines.length, 0) ?? 0), 0), [files]);
   const openByDefault = lineCount <= OPEN_LINES_MAX;
@@ -175,7 +221,7 @@ export function ChangesPane({
   ) : shown.state === "notRepo" ? (
     <div className="t-changes-note">This folder isn't in a git repository.</div>
   ) : shown.state === "noBase" ? (
-    <div className="t-changes-note">No main or master branch to compare with.</div>
+    <div className="t-changes-note">{scope === "turn" ? "No turns checkpointed yet. Every turn from now on is, before and after." : "No main or master branch to compare with."}</div>
   ) : !files.length ? (
     <div className="t-changes-note">{EMPTY[scope]}</div>
   ) : null;
@@ -196,6 +242,7 @@ export function ChangesPane({
           <IconButton label="Close changes" tooltip="Close" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={onClose} />
         </div>
       </div>
+      {scope === "turn" && cps && <TurnBar list={cps} picked={cps.checkpoints.find((c) => c.id === cp)} onPick={pickTurn} onRestore={(id) => void restore(id)} restoring={restoring} />}
       {shown?.state === "ok" && (
         <div className="t-changes-sub">
           <span>
@@ -205,7 +252,7 @@ export function ChangesPane({
           <Counts added={shown.added} removed={shown.removed} />
           <span className="t-changes-base" title={shown.root}>
             {shown.branch ?? "detached HEAD"}
-            {scope === "branch" && shown.base ? ` vs ${shown.base}` : ""}
+            {scope !== "uncommitted" && shown.base ? ` vs ${shown.base}` : ""}
           </span>
         </div>
       )}
