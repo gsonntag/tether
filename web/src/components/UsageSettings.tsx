@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Heading } from "@astryxdesign/core/Heading";
 import { dollars } from "../../../shared/costs";
@@ -6,7 +6,7 @@ import { planLines } from "../../../shared/labels";
 import { totalTokens, type UsageReport, type UsageTotals } from "../../../shared/usage";
 import { rpc } from "../connection";
 import { useStore } from "../store";
-import { bars, browserTimeZone, dayLabel, fmtPart, fmtPrice, fmtTokens, modelName, scanLine, SERIES, type Metric } from "../usage";
+import { bars, browserTimeZone, dayLabel, fmtPart, fmtPrice, fmtTokens, modelName, scanLine, SERIES, unpricedNote, type Metric } from "../usage";
 import { useNow } from "./useNow";
 
 const POLL_MS = 1500;
@@ -60,6 +60,8 @@ export function UsageSettings({ runnerId }: { runnerId: string }) {
 
 function Report({ report, now }: { report: UsageReport; now: number }) {
   const t = report.total;
+  const src = t.sources;
+  const providers = src.provider.requests > 0;
   const plans = report.plans.map((p) => ({ ...p, lines: planLines(p.plan, now) })).filter((p) => p.lines.length);
   return <>
     {plans.length > 0 && (
@@ -70,17 +72,18 @@ function Report({ report, now }: { report: UsageReport; now: number }) {
     <dl className="t-usage-summary">
       <Tile label="Tokens" value={fmtTokens(totalTokens(t))} note={`${t.requests.toLocaleString()} requests`} />
       <Tile label="At API prices (est.)" value={fmtPrice(t)} note={t.unpriced ? `${t.unpriced.toLocaleString()} requests have no published price` : "what it would cost on the API"} />
-      <Tile label="Plan usage at API prices" value={dollars(t.plan)} note="estimate; plans don't bill per token" />
-      <Tile label="API keys at API prices" value={dollars(t.key)} note="estimate" />
-      {report.ledger && <Tile label="Billed to API keys" value={dollars(report.ledger.usd)} note={`Tether's ledger, ${report.ledger.sessions} session${report.ledger.sessions === 1 ? "" : "s"}' whole totals${report.ledger.complete ? "" : "; some unknown"}`} />}
-      {t.unknown > 0 && <Tile label="Source unknown" value={dollars(t.unknown)} note="at API prices; no record of what it drew from" />}
+      <Tile label="Plan usage at API prices" value={fmtPart(src.plan)} note={unpricedNote(src.plan, "estimate; plans don't bill per token")} />
+      <Tile label="API keys at API prices" value={fmtPart(src.key)} note={unpricedNote(src.key, "estimate")} />
+      {report.ledger && <Tile label="Billed to API keys" value={`${dollars(report.ledger.usd)}${report.ledger.complete ? "" : "+"}`} note={`Tether's ledger, ${report.ledger.sessions} session${report.ledger.sessions === 1 ? "" : "s"}' whole totals${report.ledger.complete ? "" : "; part isn't known"}`} />}
+      {src.provider.requests > 0 && <Tile label="Providers" value={`${src.provider.requests.toLocaleString()} requests`} note="Bedrock, Vertex, Azure and the like set their own prices: none here" />}
+      {src.unknown.requests > 0 && <Tile label="Source unknown" value={fmtPart(src.unknown)} note={unpricedNote(src.unknown, "at API prices; before Tether's record of the session's latest start, or none")} />}
       <Tile label="Cache savings (est.)" value={dollars(t.savings)} note="cache reads at the full input price, less their cost" />
     </dl>
     <Daily report={report} />
-    <Table title="By model" rows={report.byModel.map((m) => ({ key: `${m.harness}:${m.model}`, name: modelName(m.harness, m.model), title: m.model, t: m }))} />
-    <Table title="By project" rows={report.byProject.map((p) => ({ key: p.path ?? p.name, name: p.name, title: p.path ?? (p.hidden ? "Folders TETHER_HIDE_PROJECTS hides, and the Home agent's" : undefined), t: p }))} />
+    <Table title="By model" providers={providers} rows={report.byModel.map((m) => ({ key: `${m.harness}:${m.model}`, name: modelName(m.harness, m.model), title: m.model, t: m }))} />
+    <Table title="By project" providers={providers} rows={report.byProject.map((p) => ({ key: p.path ?? p.name, name: p.name, title: p.path ?? (p.hidden ? "Folders TETHER_HIDE_PROJECTS hides, and the Home agent's" : undefined), t: p }))} />
     <p className="t-usage-note">
-      Read from Claude Code's and Codex's own session logs on this runner, every session on it. Dollars are estimates at published API prices (Anthropic's and OpenAI's standard rates), not invoices; a model with no published price shows its tokens only. A source is a session's latest start as Tether recorded it, or Codex's own record. Days are in {report.timeZone}.
+      Read from Claude Code's and Codex's own session logs on this runner, every session on it. Dollars are estimates at published API prices (Anthropic's and OpenAI's standard rates), not invoices; a model with no published price shows its tokens only, and a "+" marks a sum that leaves some out. Hosted tool fees (web search) aren't counted. Claude's source is as of Tether's last start of the session (before it, unknown); Codex's is from its own logs. Days are in {report.timeZone}.
     </p>
   </>;
 }
@@ -93,6 +96,8 @@ const H = 160;
 
 function Daily({ report }: { report: UsageReport }) {
   const [metric, setMetric] = useState<Metric>("tokens");
+  const [table, setTable] = useState(false);
+  const tableId = useId();
   const { max, bars: list } = bars(report.byDay, metric, H);
   const n = list.length;
   const step = 100 / n;
@@ -114,11 +119,16 @@ function Daily({ report }: { report: UsageReport }) {
       )}
       <div className="t-usage-chart">
         <span className="t-usage-axis-top">{fmt(max)}</span>
+        {metric === "usd" && (
+          <div className="t-usage-marks" aria-hidden="true">
+            {list.filter((b) => b.unpriced).map((b) => <span key={b.day} style={{ left: `${(list.indexOf(b) + 0.5) * step}%`, top: `${b.top}px` }}>+</span>)}
+          </div>
+        )}
         <svg viewBox={`0 0 100 ${H}`} preserveAspectRatio="none" role="img" aria-label={`${metric === "usd" ? "API price" : "Tokens"} per day, ${dayLabel(report.from)} to ${dayLabel(report.to)}; the table below has the numbers.`}>
           <line x1="0" x2="100" y1={H - 0.5} y2={H - 0.5} className="t-usage-baseline" vectorEffect="non-scaling-stroke" />
           {list.map((b, i) => (
             <g key={b.day}>
-              <title>{`${dayLabel(b.day, { weekday: "short", month: "short", day: "numeric" })}: ${fmt(b.total)}`}</title>
+              <title>{`${dayLabel(b.day, { weekday: "short", month: "short", day: "numeric" })}: ${fmt(b.total)}${metric === "usd" && b.unpriced ? `+ (${b.unpriced} requests with no price)` : ""}`}</title>
               <rect x={i * step} y={0} width={step} height={H} className="t-usage-hit" />
               {b.segments.map((s) => <rect key={s.key} x={i * step + step * 0.15} width={step * 0.7} y={s.y} height={Math.max(s.h, 0.5)} className={`t-usage-${s.key}`} />)}
             </g>
@@ -128,22 +138,21 @@ function Daily({ report }: { report: UsageReport }) {
           {list.map((b, i) => <span key={b.day} style={{ left: `${(i + 0.5) * step}%` }}>{(n - 1 - i) % labelEvery === 0 ? dayLabel(b.day) : ""}</span>)}
         </div>
       </div>
-      <details className="t-usage-details">
-        <summary>Table</summary>
-        <Table rows={[...report.byDay].reverse().filter((d) => d.requests).map((d) => ({ key: d.day, name: dayLabel(d.day, { weekday: "short", month: "short", day: "numeric" }), t: d }))} empty="No usage in this range." />
-      </details>
+      {metric === "usd" && list.some((b) => b.unpriced) && <div className="t-usage-note">A + marks a day with requests that have no published price: its bar leaves them out.</div>}
+      <button type="button" className="t-usage-toggle" aria-expanded={table} aria-controls={tableId} onClick={() => setTable(!table)}>{table ? "Hide the numbers" : "Show the numbers"}</button>
+      {table && <div id={tableId}><Table providers={report.total.sources.provider.requests > 0} rows={[...report.byDay].reverse().filter((d) => d.requests).map((d) => ({ key: d.day, name: dayLabel(d.day, { weekday: "short", month: "short", day: "numeric" }), t: d }))} empty="No usage in this range." /></div>}
     </section>
   );
 }
 
 interface Row { key: string; name: string; title?: string; t: UsageTotals }
 
-function Table({ title, rows, empty = "No usage in this range." }: { title?: string; rows: Row[]; empty?: string }) {
+function Table({ title, rows, providers, empty = "No usage in this range." }: { title?: string; rows: Row[]; providers: boolean; empty?: string }) {
   const table = !rows.length ? <div className="t-inline-status">{empty}</div> : (
     <div className="t-usage-scroll">
       <table className="t-usage-table">
         <thead>
-          <tr><th scope="col">{title ? title.replace(/^By /, "").replace(/^./, (c) => c.toUpperCase()) : "Day"}</th><th scope="col">Input</th><th scope="col">Output</th><th scope="col">Cache read</th><th scope="col">Cache write</th><th scope="col">At API prices</th><th scope="col">Plan</th><th scope="col">API keys</th><th scope="col">Unknown</th></tr>
+          <tr><th scope="col">{title ? title.replace(/^By /, "").replace(/^./, (c) => c.toUpperCase()) : "Day"}</th><th scope="col">Input</th><th scope="col">Output</th><th scope="col">Cache read</th><th scope="col">Cache write</th><th scope="col">At API prices</th><th scope="col">Plan</th><th scope="col">API keys</th>{providers && <th scope="col">Providers</th>}<th scope="col">Unknown</th></tr>
         </thead>
         <tbody>
           {rows.map((r) => (
@@ -154,9 +163,10 @@ function Table({ title, rows, empty = "No usage in this range." }: { title?: str
               <td>{fmtTokens(r.t.cacheRead)}</td>
               <td>{fmtTokens(r.t.cacheWrite)}</td>
               <td className={r.t.unpriced === r.t.requests ? "t-usage-unpriced" : undefined} title={r.t.unpriced ? `${r.t.unpriced.toLocaleString()} of ${r.t.requests.toLocaleString()} requests have no published price` : undefined}>{fmtPrice(r.t)}</td>
-              <td>{fmtPart(r.t.plan, r.t)}</td>
-              <td>{fmtPart(r.t.key, r.t)}</td>
-              <td>{fmtPart(r.t.unknown, r.t)}</td>
+              <td>{fmtPart(r.t.sources.plan)}</td>
+              <td>{fmtPart(r.t.sources.key)}</td>
+              {providers && <td>{fmtPart(r.t.sources.provider)}</td>}
+              <td>{fmtPart(r.t.sources.unknown)}</td>
             </tr>
           ))}
         </tbody>
