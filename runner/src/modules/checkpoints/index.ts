@@ -47,8 +47,8 @@ export interface CheckpointsOpts {
   look(id: string): SessionLook | undefined;
   open(id: string): Promise<SessionLook>;
   list(): SessionSummary[];
-  /** holds a session: what's sent to it waits in its queue until the release */
-  hold?(id: string, why: string): () => void;
+  /** holds every main session in a folder (stored ones and new ones too): what's sent waits in its queue until the release */
+  holdFolder?(folder: string, why: string): () => void;
   log(line: string): void;
   now?: () => number;
 }
@@ -301,12 +301,12 @@ export class Checkpoints {
     return { state: "ok", root, checkpoints: items.map(info).reverse(), others, ...(blocked ? { blocked } : {}) };
   }
 
-  /** Live sessions in the repo besides this one (paths compared as real paths). */
+  /** Live sessions besides this one whose folder is in the repo or holds it (their agents can edit it; real paths). */
   private others(sessionId: string, root: string): OtherSession[] {
     const r = real(root);
     return this.o
       .list()
-      .filter((s) => s.id !== sessionId && !s.parentSessionId && (s.mode !== "stored" || s.status !== "idle") && inside(r, real(s.projectPath)))
+      .filter((s) => s.id !== sessionId && !s.parentSessionId && (s.mode !== "stored" || s.status !== "idle") && (inside(r, real(s.projectPath)) || inside(real(s.projectPath), r)))
       .map((s) => ({ id: s.id, title: s.title, status: s.status }));
   }
 
@@ -339,17 +339,14 @@ export class Checkpoints {
       this.exclusive(root, async () => {
         const again = blocked();
         if (again) throw new Error(again);
-        // Checked and held with no await between: from here what's sent to this session, or to
-        // another live one in the repo, waits in its queue (and `!` commands and the terminal refuse).
-        const releases: (() => void)[] = [];
+        // Checked and held with no await between: from here what's sent to any session in the repo
+        // (stored ones, and ones made meanwhile, too) waits in its queue, and `!` commands and the
+        // terminal refuse.
+        const release = this.o.holdFolder?.(root, "Restoring files…");
         try {
-          for (const sid of [sessionId, ...this.others(sessionId, root).map((o) => o.id)]) {
-            const r = this.o.hold?.(sid, "Restoring files…");
-            if (r) releases.push(r);
-          }
           return await this.restoring(sessionId, root, id, blocked);
         } finally {
-          releases.forEach((r) => r());
+          release?.();
         }
       }),
     );
@@ -407,7 +404,7 @@ export function startCheckpoints(ctx: ModuleContext): { checkpoints: Checkpoints
     look: (id) => ctx.session(id),
     open: (id) => (ctx.session(id) ? Promise.resolve(ctx.session(id)!) : ctx.sessions.open(id)),
     list: () => ctx.sessions.list(),
-    hold: ctx.sessions.hold ? (id, why) => ctx.sessions.hold!(id, why) : undefined,
+    holdFolder: ctx.sessions.holdFolder ? (folder, why) => ctx.sessions.holdFolder!(folder, why) : undefined,
     log: ctx.log,
   });
   const offs = [

@@ -81,8 +81,8 @@ export interface SessionActions {
   setArchived(id: string, archived: boolean): Promise<void>;
   /** a one-shot side query on the session's harness and source (Adapter.ask): never a turn, nothing in its transcript. Rejects when its harness can't, or its source can't be confirmed */
   ask?(id: string, prompt: string, opts: { system: string; timeoutMs: number }): Promise<string>;
-  /** holds an idle, loaded session for a while (a checkpoint restore): what's sent to it waits in its queue, held, until the release */
-  hold?(id: string, why: string): () => void;
+  /** holds every main session whose folder is in `folder` (stored ones, and any made there meanwhile, too), as `hold` */
+  holdFolder?(folder: string, why: string): () => void;
 }
 
 export interface ModuleContext {

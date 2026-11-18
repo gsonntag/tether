@@ -28,6 +28,8 @@ export interface GitOpts {
   input?: string;
   /** the repo's hooks run (Commit's pre-commit, Push's pre-push): only for what the person asked git to do */
   hooks?: boolean;
+  /** stdout goes here as it comes (a big blob), not into `out`; no maxBytes */
+  sink?: (chunk: Uint8Array) => Promise<unknown>;
 }
 
 export const GIT_TIMEOUT_MS = 15_000;
@@ -97,6 +99,10 @@ export async function git(cwd: string, args: string[], opts: GitOpts = {}): Prom
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (opts.sink) {
+        await opts.sink(value);
+        continue;
+      }
       if (size + value.length > maxBytes) {
         chunks.push(value.subarray(0, maxBytes - size));
         size = maxBytes;
