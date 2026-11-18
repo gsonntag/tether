@@ -30,9 +30,14 @@ export const SHELL_AGENT_TAIL = 22 * 1024;
  *
  *   running ──► queued ──► sent
  *        └────────────┴──► notSent (removed from the queue, the queue was full, the runner restarted)
+ *
+ * A new worktree's setup (`setup`, SPEC §4) is a card too, but its output stays with the session:
+ * running ──► done (nothing goes to the agent; it gates the first message instead).
  */
 export interface ShellRun {
-  state: "running" | "queued" | "sent" | "notSent";
+  state: "running" | "queued" | "sent" | "notSent" | "done";
+  /** a new worktree's setup (.tether/setup): kept with the session, never sent to the agent */
+  setup?: boolean;
   /** how it ended: its exit code, or the signal that ended it */
   exitCode?: number;
   signal?: string;

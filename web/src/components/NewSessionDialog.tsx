@@ -4,6 +4,7 @@ import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { findModel, modelLabel, prettyModel } from "../../../shared/labels";
 import type { BillingSource, SourceChoices } from "../../../shared/credentials";
 import type { ActiveClone, FolderCheck } from "../../../shared/protocol";
+import type { WorkspaceInfo } from "../../../shared/worktree";
 import { CLAUDE_UNSET, HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { CHECK_DELAY_MS, folderBlocked } from "../folderCheck";
@@ -12,6 +13,8 @@ import { folderName } from "../sessionList";
 import { loadModels, loadProjects, modelListKey, useStore } from "../store";
 import { AddProject } from "./AddProject";
 import { focusComposerOf, openTerminalOf } from "./SessionView";
+import { radioKeys } from "../radioKeys";
+import { ago } from "../runners";
 import { azureDeployments, DeploymentPicker, SourcePicker } from "./SourcePicker";
 
 const MODE_KEY = "tether.newSessionMode";
@@ -26,6 +29,7 @@ const stored = (key: string) => {
 };
 const lastMode = (h: HarnessId) => stored(modeKey(h)) ?? (h === "codex" ? "untrusted" : "default");
 const NO_PROJECTS: never[] = [];
+const WORKSPACES = ["folder", "worktree"] as const;
 const FALLBACK_MODES: { id: string; label: string; description?: string }[] = [
   { id: "default", label: "Ask first" },
   { id: "acceptEdits", label: "Accept edits" },
@@ -63,7 +67,13 @@ export function NewSessionDialog() {
   const [adding, setAdding] = useState(false);
   /** a clone still running from before the dialog was closed: Add project opens on it */
   const [resume, setResume] = useState<ActiveClone>();
+  /** whether the folder is in git, and what New worktree would make there (SPEC §4); nothing: not offered */
+  const [ws, setWs] = useState<WorkspaceInfo>();
+  const [workspace, setWorkspace] = useState<"folder" | "worktree">("folder");
+  const [branch, setBranch] = useState("");
   const [busy, setBusy] = useState(false);
+  /** a create on its way: a second Enter (in any field) doesn't start another */
+  const creating = useRef(false);
   const [error, setError] = useState<string>();
   /** what's there to bill to. Nothing from an older runner: no picker, and the runner decides */
   const [sources, setSources] = useState<SourceChoices>();
@@ -117,6 +127,22 @@ export function NewSessionDialog() {
     return () => clearTimeout(t);
   }, [open, rid, typed]);
 
+  // An existing folder: is it in git? (A runner too old to say: no Workspace choice.)
+  const existing = check?.state === "exists" ? check.path : undefined;
+  useEffect(() => {
+    setWs(undefined);
+    if (!open || !rid || !existing) return;
+    let gone = false;
+    void rpc(rid, "workspaceInfo", { projectPath: existing })
+      .then((w) => !gone && setWs(w))
+      .catch(() => {});
+    return () => void (gone = true);
+  }, [open, rid, existing]);
+  const inWorktree = workspace === "worktree" && !!ws?.git;
+  // A repo's setup runs before the first message, which its own TUI wouldn't wait for (SPEC §4).
+  const noTerminal = inWorktree && !!ws.setup;
+  const terminal = inTerminal && !noTerminal;
+
   const shown = useMemo(() => {
     const q = path.trim().toLowerCase();
     const list = q ? projects.filter((p) => p.path.toLowerCase().includes(q) || p.name.toLowerCase().includes(q)) : projects;
@@ -125,7 +151,8 @@ export function NewSessionDialog() {
 
   const close = () => useStore.setState({ newSessionOpen: false });
   const create = async () => {
-    if (!rid || !typed || busy) return;
+    if (!rid || !typed || busy || creating.current) return;
+    creating.current = true;
     setBusy(true);
     setError(undefined);
     try {
@@ -133,19 +160,28 @@ export function NewSessionDialog() {
       if (folderBlocked(check ?? (await checkPath(checkId.current)), createFolder)) return;
       // Enter before the sources came back: what's shown first is what starts.
       const billTo = source ?? (await sourcesAsked.current)?.default;
-      const { sessionId } = await rpc(rid, "newSession", { harness, projectPath: typed, ...(billTo ? { source: billTo } : {}), ...(check?.state === "missing" && createFolder ? { createFolder: true } : {}), ...(deployments ? { model: deployment } : modelOk && model !== "default" ? { model } : {}), permissionMode: validMode, ...(inTerminal ? { terminal: true } : {}) });
+      const common = { harness, projectPath: typed, ...(billTo ? { source: billTo } : {}), ...(deployments ? { model: deployment } : modelOk && model !== "default" ? { model } : {}), permissionMode: validMode, ...(terminal ? { terminal: true } : {}) };
+      // The branch shown is the branch made: the placeholder when nothing is typed.
+      const { sessionId } = inWorktree
+        ? await rpc(rid, "newWorktreeSession", { ...common, branch: branch.trim() || ws.branch, ...(ws.setupId !== undefined ? { expectSetup: ws.setupId } : {}) })
+        : await rpc(rid, "newSession", { ...common, ...(check?.state === "missing" && createFolder ? { createFolder: true } : {}) });
       try {
         localStorage.setItem(modeKey(harness), validMode);
         localStorage.setItem(HARNESS_KEY, harness);
       } catch {}
       close();
       setPath("");
-      if (inTerminal) openTerminalOf(rid, sessionId);
+      setBranch("");
+      setWorkspace("folder");
+      if (terminal) openTerminalOf(rid, sessionId);
       else focusComposerOf(rid, sessionId);
       openSession(rid, sessionId);
     } catch (e) {
       setError((e as Error).message);
+      // The setup (or the branch) changed meanwhile: show what's there now.
+      if (inWorktree && rid && existing) void rpc(rid, "workspaceInfo", { projectPath: existing }).then(setWs).catch(() => {});
     } finally {
+      creating.current = false;
       setBusy(false);
     }
   };
@@ -177,12 +213,21 @@ export function NewSessionDialog() {
           </label>
         )}
         {harnesses.length > 1 && (
-          <div className="t-seg" role="radiogroup" aria-label="Agent">
+          <div
+            className="t-seg"
+            role="radiogroup"
+            aria-label="Agent"
+            onKeyDown={radioKeys(harnesses, harness, (h) => {
+              setPicked(h);
+              setModel("default");
+            })}
+          >
             {harnesses.map((h) => (
               <button
                 type="button"
                 role="radio"
                 aria-checked={h === harness}
+                tabIndex={h === harness ? 0 : -1}
                 key={h}
                 className={`t-seg-opt${h === harness ? " on" : ""}`}
                 onClick={() => {
@@ -222,6 +267,47 @@ export function NewSessionDialog() {
           </div>
         )}
         {check?.error && !(check.state === "relative" && shown.length > 0) && <div className="t-form-error">{check.error}</div>}
+        {ws?.git && !adding && (
+          <div className="t-workspace">
+            <span className="t-field-label" id="t-new-ws">
+              Workspace
+            </span>
+            <div className="t-seg" role="radiogroup" aria-labelledby="t-new-ws" onKeyDown={radioKeys(WORKSPACES, workspace, setWorkspace)}>
+              {WORKSPACES.map((w) => (
+                <button type="button" role="radio" aria-checked={workspace === w} tabIndex={workspace === w ? 0 : -1} key={w} className={`t-seg-opt${workspace === w ? " on" : ""}`} onClick={() => setWorkspace(w)}>
+                  {w === "folder" ? "This folder" : "New worktree"}
+                </button>
+              ))}
+            </div>
+            {inWorktree && (
+              <>
+                <label>
+                  <span className="t-field-label">Branch</span>
+                  <input className="t-search" placeholder={ws.branch} value={branch} autoComplete="off" spellCheck={false} onChange={(e) => setBranch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void create()} />
+                </label>
+                <span className="t-ws-note">
+                  A new folder beside the repo, from {ws.base}
+                  {ws.remote ? `, fetched just before it's made (last fetched ${ws.fetchedAt ? ago(ws.fetchedAt) : "never"}; if the fetch fails, as last fetched)` : ""}.
+                  {ws.setup && !ws.setupText && (
+                    <>
+                      {" "}
+                      Runs <code>{ws.setup}</code> there first; your first message waits for it.
+                    </>
+                  )}
+                </span>
+                {ws.setupText && (
+                  <details className="t-ws-setup">
+                    <summary>Runs .tether/setup there first; your first message waits for it</summary>
+                    <pre className="t-pre">
+                      {ws.setupText}
+                      {ws.setupTextCut ? "\n… (cut here: only the start is shown)" : ""}
+                    </pre>
+                  </details>
+                )}
+              </>
+            )}
+          </div>
+        )}
         {adding && rid && (
           <AddProject
             key={resume?.cloneId ?? "new"}
@@ -275,10 +361,11 @@ export function NewSessionDialog() {
         </label>
         {modes.find((m) => m.id === validMode)?.description && <span className="t-inline-status">{modes.find((m) => m.id === validMode)!.description}</span>}
         <label className="t-check">
-          <input type="checkbox" checked={inTerminal} onChange={(e) => setInTerminal(e.target.checked)} />
+          <input type="checkbox" checked={terminal} disabled={noTerminal} onChange={(e) => setInTerminal(e.target.checked)} />
           <span>Start in the terminal ({HARNESS_LABELS[harness]}'s own interface)</span>
         </label>
-        {error && <div className="t-form-error">{error}</div>}
+        {noTerminal && inTerminal && <span className="t-inline-status">Not with this worktree: its setup runs first, and the terminal wouldn't wait for it.</span>}
+        {error && <div className="t-form-error" style={{ whiteSpace: "pre-wrap" }}>{error}</div>}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <Button label="Cancel" variant="secondary" onClick={close} />
           <Button label={busy ? "Starting…" : "Create"} variant="primary" isDisabled={!rid || !typed || busy || folderBlocked(check, createFolder)} onClick={() => void create()} />

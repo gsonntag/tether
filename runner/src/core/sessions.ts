@@ -11,6 +11,7 @@ import { accessSync, constants, existsSync, lstatSync, mkdirSync, statSync } fro
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import type { CostLedger } from "../costs";
+import type { SessionPrefs, WorktreeRecord } from "../config";
 import { partChunk, type PartChunk } from "../../../shared/limits";
 import type { FolderCheck, RunnerToServer } from "../../../shared/protocol";
 import { parseSessionId, sessionId } from "../../../shared/ids";
@@ -179,13 +180,13 @@ export class SessionCore {
           const s = this.sessions.get(f.id);
           if (s && !s.live && !s.childRunning && !f.missing) {
             const prefs = this.o.prefs.get(f.id);
-            s.summary = { ...f, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(prefs.pinned ? { pinned: prefs.pinned } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
+            s.summary = { ...f, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(prefs.pinned ? { pinned: prefs.pinned } : {}), ...worktreeOf(prefs), ...(s.state.billing ? { billing: s.state.billing } : {}), mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
           }
         }
         this.book.refresh(
           found.filter((f) => this.shown(f)).map((f) => {
             const p = this.o.prefs.get(f.id);
-            return { ...f, ...(p.archived ? { archived: true } : {}), ...(p.pinned ? { pinned: p.pinned } : {}) };
+            return { ...f, ...(p.archived ? { archived: true } : {}), ...(p.pinned ? { pinned: p.pinned } : {}), ...worktreeOf(p) };
           }),
           (id) => this.owned(id),
           // Open in a browser, or pinned (a lookup may have failed, pinnedRows.ts): listed still.
@@ -240,7 +241,7 @@ export class SessionCore {
     return list.map((s) => {
       const row = this.owned(s.id) ? this.sessions.get(s.id)!.summary : s;
       const prefs = this.o.prefs.get(row.id);
-      return { ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : { archived: undefined }), pinned: prefs.pinned || undefined };
+      return { ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : { archived: undefined }), pinned: prefs.pinned || undefined, ...worktreeOf(prefs) };
     });
   }
 
@@ -293,11 +294,11 @@ export class SessionCore {
     const row: SessionSummary | undefined = known ?? (blank ? { id, harness: parsed.harness, nativeId: parsed.nativeId, projectPath: prefs.projectPath!, title: "New session", mode: "stored", status: "idle", updatedAt: prefs.at ?? this.now() } : undefined);
     if (!row) throw new Error("That session isn't on this runner any more.");
     const defaults = await a.defaults(row.projectPath, parsed.nativeId).catch(() => ({}) as StartOpts);
-    const state: LiveState = { ...emptyState(), ...(row.billing ? { billing: row.billing } : {}), ...a.unset, ...pick(defaults), ...chosenOf(a, prefs), ...MessageQueue.saved(prefs), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), ...(prefs.carried ? { carried: true } : {}), ...(prefs.nextBilling ? { nextBilling: prefs.nextBilling } : {}), ...(prefs.nextDeployment ? { nextDeployment: prefs.nextDeployment } : {}), ...(prefs.sourceSwitchFailed ? { sourceSwitchFailed: true } : {}), ...(prefs.autoKey ? { autoKey: true } : {}), ...(prefs.lastKey ? { lastKey: prefs.lastKey } : {}), ...(prefs.fallbackKeys !== undefined ? { fallbackKeys: prefs.fallbackKeys } : {}), requests: this.requestsFor(id) };
+    const state: LiveState = { ...emptyState(), ...(row.billing ? { billing: row.billing } : {}), ...a.unset, ...pick(defaults), ...chosenOf(a, prefs), ...MessageQueue.saved(prefs), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), ...(prefs.carried ? { carried: true } : {}), ...(prefs.nextBilling ? { nextBilling: prefs.nextBilling } : {}), ...(prefs.nextDeployment ? { nextDeployment: prefs.nextDeployment } : {}), ...(prefs.sourceSwitchFailed ? { sourceSwitchFailed: true } : {}), ...(prefs.autoKey ? { autoKey: true } : {}), ...(prefs.lastKey ? { lastKey: prefs.lastKey } : {}), ...(prefs.fallbackKeys !== undefined ? { fallbackKeys: prefs.fallbackKeys } : {}), ...(prefs.setup ? { setup: "failed" as const } : {}), requests: this.requestsFor(id) };
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;
-    const s = this.add(new Session({ ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(prefs.pinned ? { pinned: prefs.pinned } : {}), mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
+    const s = this.add(new Session({ ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(prefs.pinned ? { pinned: prefs.pinned } : {}), ...worktreeOf(prefs), mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
     if (blank) {
       // Back as new: the first message starts it (live.ts current). No row until something happens.
       s.transcript = new Transcript(withOverlay([], s.overlay));
@@ -569,6 +570,13 @@ export class SessionCore {
     await this.discover();
   }
 
+  /** Records the worktree Tether made for a session as its own (New worktree, SPEC §4): saved at once. */
+  setWorktree(s: Session, worktree: WorktreeRecord) {
+    this.o.prefs.set(s.id, { projectPath: s.summary.projectPath, worktree });
+    this.o.prefs.flush();
+    this.touch(s);
+  }
+
   /** Puts a main session in the Sidebar's Pinned group, last (or takes it out); it is listed however old. */
   setPinned(s: Session, pinned: boolean) {
     if (!!this.o.prefs.get(s.id).pinned === pinned) return;
@@ -630,10 +638,13 @@ export class SessionCore {
     const at = nextScheduled(s.state.queue);
     const stuck = s.state.queue.some((m) => m.held);
     const title = this.o.prefs.get(s.id).title;
-    s.summary = { ...rest, ...(s.state.retry ? { retry: s.state.retry } : {}), ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...(this.o.prefs.get(s.id).pinned ? { pinned: this.o.prefs.get(s.id).pinned } : {}), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(at !== undefined ? { scheduledAt: at } : {}), ...(stuck || (q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait && !s.retry) ? { queuePaused: true } : {}) };
+    s.summary = { ...rest, ...(s.state.retry ? { retry: s.state.retry } : {}), ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...(this.o.prefs.get(s.id).pinned ? { pinned: this.o.prefs.get(s.id).pinned } : {}), ...worktreeOf(this.o.prefs.get(s.id)), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(at !== undefined ? { scheduledAt: at } : {}), ...(stuck || (q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait && s.state.setup !== "running" && !s.retry) ? { queuePaused: true } : {}) };
     if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
   }
 }
+
+/** A session in a worktree Tether made: the summary names that repo's main checkout. */
+const worktreeOf = (p: SessionPrefs) => (p.worktree?.repo ? { worktreeOf: p.worktree.repo } : {});
 
 /** The settings fields of prefs or defaults, without empty ones. */
 function pick(o: StartOpts): StartOpts {

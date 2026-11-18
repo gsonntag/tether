@@ -38,6 +38,15 @@ export interface RunnerConfig {
   aliveAt?: number;
 }
 
+/** A worktree Tether made for a session: its folder (the session's), its branch, and the repo's main checkout. */
+export interface WorktreeRecord {
+  path: string;
+  branch: string;
+  repo: string;
+  /** ignored files there once it was made and set up, with size, time and (up to 1 MB) a content hash: Archive done may delete these while unchanged */
+  known?: Record<string, [number, number, string?]>;
+}
+
 /** What Tether keeps for a session: the settings picked for it, applied when it (re)starts. */
 export interface SessionPrefs {
   retry?: SavedRetry;
@@ -98,7 +107,11 @@ export interface SessionPrefs {
   /** messages waiting to go out after the running turn (SPEC §9) */
   queue?: QueuedMessage[];
   /** the queue waits until released, and why (LiveState.queueHeldBy) */
-  queueHeldBy?: "terminal" | "stopped" | "restart" | "failed";
+  queueHeldBy?: "terminal" | "stopped" | "restart" | "failed" | "setup";
+  /** the worktree Tether made for this session (New worktree, SPEC §4): Archive done removes it once merged */
+  worktree?: WorktreeRecord;
+  /** its worktree's setup runs, or failed (LiveState.setup): still "running" at start means a restart cut it off */
+  setup?: "running" | "failed";
   /** its TUI was started and hasn't been seen gone; `entries`: the mode entries its store had then (only later ones are that TUI's) */
   tui?: { entries?: number };
   /** a turn ended and nobody has looked since (Home's inbox) */

@@ -41,6 +41,12 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
   TUI is a choice in the same panel. Claude hands the session off to `claude --resume` in tmux and
   takes it back when you click **Back to Tether**. Codex shares the live thread with its TUI.
   Terminals outlive runner restarts.
+- **A worktree per session** (SPEC §4): in a git repo, New session can make a new worktree beside
+  it (`<repo>-worktrees/<slug>`, on a new branch `tether/<slug>` from the default branch) and run
+  the session there. The repo's `.tether/setup` (an executable) or `.tether/config.json`
+  `"setup"` command runs in it first, as a card in the session; your first message waits until it
+  succeeds, and if it fails you can re-run it or send anyway. Archive done removes the worktree and its branch once
+  the work is merged. The Home agent can start sessions in a worktree too.
 - **Change session harness** (SPEC §15): continues a session on the other harness, or on the same
   harness with another billing source. The old session stays as it was.
 
@@ -61,7 +67,7 @@ through (SPEC §10):
   turn, fails or starts waiting for you.
 - **Archive done sessions** (also something you can ask the agent for): the agent asks each idle
   session whether its work is done and merged, and tells finished sessions to remove the worktrees
-  they made. It checks each answer against git, then archives the finished sessions and reports on
+  they made (a worktree Tether made for a session, Tether removes itself). It checks each answer against git, then archives the finished sessions and reports on
   the rest. Busy sessions are skipped, never interrupted.
 
 **Sessions talking to each other** (SPEC §9a): every live session gets a `tether` MCP server with

@@ -21,6 +21,8 @@ import type { SessionSummary } from "../../../../shared/transcript";
 import { waitingNow } from "../../../../shared/schedule";
 import { ANSWER_TAG, parseAnswer, type Answer } from "../../../../shared/checkIn";
 import { childEnv } from "../../childEnv";
+import type { WorktreeRecord } from "../../config";
+import { ignoredFiles, precious, removeWorktree, runGit as runArgv, shaOf, type Git as WorktreeGit } from "../worktrees/git";
 
 // The answer line and its parsing are shared: the transcript and previews hide that line.
 export { ANSWER_TAG, parseAnswer, type Answer };
@@ -34,8 +36,10 @@ export const CHECKIN_MAX = 40;
  * What a session is asked. `keep`: folders it must never remove (other sessions' folders in its
  * repo); its own folder and the main checkout are always named as off limits.
  */
-export function checkInMessage(ownFolder: string, keep: string[] = []): string {
+export function checkInMessage(ownFolder: string, keep: string[] = [], own?: { branch: string }): string {
   const others = keep.filter((f) => resolve(f) !== resolve(ownFolder));
+  // A worktree Tether made for the session: Tether removes it (it can't remove its own folder).
+  const made = own ? `\n   Your folder is a worktree Tether made for this session, on ${own.branch}: leave it and its branch. Once git confirms your work is merged, Tether removes both itself; it doesn't count against cleaned_up.` : "";
   return `Check-in from the Home agent: the person wants to know which sessions are finished, so finished ones can be archived.
 
 Don't start or continue any task work in this turn, and don't stop anything you started that's still running. From what you know and a quick look at git:
@@ -46,7 +50,7 @@ Don't start or continue any task work in this turn, and don't stop anything you 
 4. Only if the task is done and its work is merged or there's nothing to merge: clean up before you answer. Before removing a worktree, check that nothing is running in it (lsof +D <path>, or ls -l /proc/*/cwd 2>/dev/null | grep <path>): if something is, leave the worktree and answer cleaned_up: false. Remove each other git worktree you created for this task (git worktree remove <path>, without --force) and delete its local branch if it's merged (git branch -d <branch>; -D only as above). If a worktree has uncommitted changes or its branch isn't merged (and wasn't discarded), leave it and answer merged: false, nothing_to_merge: false. Never remove or change:
    - the main checkout (the first entry of git worktree list),
    - your own folder (${ownFolder}),
-   - any worktree you didn't create yourself${others.length ? `, including these, which other sessions are using:\n${others.map((f) => `     ${f}`).join("\n")}` : "."}
+   - any worktree you didn't create yourself${others.length ? `, including these, which other sessions are using:\n${others.map((f) => `     ${f}`).join("\n")}` : "."}${made}
    If you're done but don't clean up (for one of those reasons), say why.
 
 Give one or two sentences, then end your reply with exactly one line in this form (valid JSON after the tag, on one line):
@@ -94,7 +98,37 @@ async function mainRefs(git: Git, cwd: string): Promise<string[]> {
   return out;
 }
 
-/** Whether every commit of `ref` is in one of `mains`, by ancestry or as an equal patch (a squash or rebase merge). */
+/**
+ * Removes the worktree Tether made for a session that is done and merged (Archive done), with its
+ * branch: never while another session's folder is in it, and only as git allows (a clean worktree:
+ * `git worktree remove` without --force). Its HEAD must be in main (by ancestry or as equal patches,
+ * which a rebase merge keeps; a squash of several commits may not match). Ignored files it would
+ * delete must be in regenerable folders (node_modules, dist, …) or be unchanged since it was made
+ * and set up; others (a .env, a local database, one added or edited since) keep it. Its branch goes only when that branch, too, is in
+ * main, by `update-ref -d` at the commit checked, so it can't have moved in between. Not removed: why.
+ */
+export async function removeOwnWorktree(own: WorktreeRecord, others: string[], git: Git = runGit(), argv: WorktreeGit = runArgv): Promise<{ removed: boolean; why?: string; branchKept?: string; gone?: boolean }> {
+  const path = resolve(own.path);
+  const user = others.map((f) => resolve(f)).find((f) => f === path || f.startsWith(`${path}/`));
+  if (user) return { removed: false, why: `another session works in ${user}` };
+  const mains = await mainRefs(git, own.repo);
+  const branchSha = await shaOf(argv, own.repo, `refs/heads/${own.branch}`);
+  const branchMerged = !!branchSha && mains.length > 0 && (await inMain(git, own.repo, branchSha, mains));
+  if (existsSync(path)) {
+    const onBranch = (await git(path, "symbolic-ref", "--quiet", "--short", "HEAD")) === own.branch;
+    const headMerged = onBranch ? branchMerged : mains.length > 0 && (await inMain(git, path, "HEAD", mains));
+    if (!headMerged) return { removed: false, why: `its worktree ${path} has commits that aren't in main (it's on ${(await git(path, "rev-parse", "--abbrev-ref", "HEAD")) ?? "an unknown commit"})` };
+    const ignored = await ignoredFiles(path, argv);
+    if (!ignored) return { removed: false, why: `Tether couldn't list the ignored files in its worktree ${path} (or there are too many to check)` };
+    const lost = precious(ignored, own.known && !Array.isArray(own.known) ? own.known : {});
+    if (lost.length) return { removed: false, why: `removing its worktree ${path} would delete ignored files: ${lost.slice(0, 5).join(", ")}${lost.length > 5 ? ` and ${lost.length - 5} more` : ""}` };
+  }
+  const r = await removeWorktree(own.repo, path, own.branch, branchMerged ? { branchAt: branchSha } : {}, argv);
+  if (!r.ok) return { removed: false, why: `Tether couldn't remove its worktree ${path}: ${r.why}` };
+  return { removed: true, ...(r.gone ? { gone: true } : {}), ...(r.branchKept ? { branchKept: `${own.branch} (${r.branchKept})` } : {}) };
+}
+
+/** Whether every commit of `ref` is in one of `mains`, by ancestry or as an equal patch (a rebase merge; a squash of several commits may not match). */
 async function inMain(git: Git, cwd: string, ref: string, mains: string[]): Promise<boolean> {
   for (const m of mains) {
     if ((await git(cwd, "merge-base", "--is-ancestor", ref, m)) !== undefined) return true;

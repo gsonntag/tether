@@ -21,6 +21,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { jsonBytes, stripControls } from "../../../shared/limits";
 import {
+  endedHow,
   OutputBuffer,
   SHELL_AGENT_HEAD,
   SHELL_AGENT_TAIL,
@@ -85,6 +86,22 @@ interface Run {
   paceBytes: number;
   paceAt: number;
   paused?: ReturnType<typeof setTimeout>;
+  /** a new worktree's setup (SPEC §4): its output stays on the card, and this hears how it ended */
+  setup?: SetupRun;
+  /** a setup stopped at its time limit */
+  timedOut?: boolean;
+}
+
+/** A new worktree's setup, run as a card (SPEC §4): never sent to the agent. */
+export interface SetupRun {
+  /** the program and its arguments, run directly (no shell); none: the command through $SHELL -c */
+  argv?: string[];
+  /** added to the environment */
+  env?: Record<string, string>;
+  /** how it ended: ok is exit code 0; why says otherwise */
+  done?: (ok: boolean, why: string) => void;
+  /** it's stopped (as by Stop) after this long, and fails */
+  maxMs?: number;
 }
 
 export const STOPPED_WHY = "The runner stopped while it ran, so it was ended and nothing was sent.";
@@ -138,8 +155,11 @@ export class ShellRuns {
     });
   }
 
-  /** Runs `command` in the session's folder now; its card's message id. */
-  async run(sessionId: string, command: string): Promise<{ id: string }> {
+  /**
+   * Runs `command` in the session's folder now; its card's message id. `setup`: a new worktree's
+   * setup, whose card keeps its output (state "done") instead of queueing it for the agent.
+   */
+  async run(sessionId: string, command: string, setup?: SetupRun): Promise<{ id: string }> {
     // Control characters (but tab and newlines) never run or wait: each would take 6 bytes in a frame.
     command = stripControls(command).trim();
     if (!command) throw new Error("Type a command after the !.");
@@ -152,6 +172,8 @@ export class ShellRuns {
     try {
       s = await this.core.open(sessionId);
       if (s.summary.parentSessionId) throw new Error("Run commands from the main session.");
+      // A new worktree's setup runs in this folder now: a command would race it (SPEC §4).
+      if (!setup && s.state.setup === "running") throw new Error("The worktree's setup is still running. Run commands once it's done.");
       const cwd = s.summary.projectPath;
       if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`The session's folder ${cwd} isn't there any more, so nothing ran.`);
       await this.core.load(s);
@@ -180,6 +202,7 @@ export class ShellRuns {
       done: false,
       paceBytes: 0,
       paceAt: 0,
+      ...(setup ? { setup } : {}),
     };
     this.runs.set(id, run);
     s.shellsRunning++;
@@ -187,20 +210,21 @@ export class ShellRuns {
     const shell = this.o.shell ?? process.env.SHELL ?? "/bin/bash";
     let proc: ChildProcess | undefined;
     let error: string | undefined;
+    const [file, ...args] = setup?.argv?.length ? setup.argv : [shell, "-c", command];
     try {
-      proc = spawn(shell, ["-c", command], {
+      proc = spawn(file!, args, {
         cwd: s.summary.projectPath,
-        env: this.o.env?.() ?? cleanEnv(),
+        env: { ...(this.o.env?.() ?? cleanEnv()), ...setup?.env },
         stdio: ["ignore", "pipe", "pipe"],
         // Its own process group: Stop ends the command and everything it started.
         detached: true,
       });
     } catch (e: any) {
-      error = e?.code === "ENOENT" ? `there's no shell at ${shell}` : (e?.message ?? String(e));
+      error = e?.code === "ENOENT" ? `there's no ${setup?.argv ? file : "shell at " + shell}` : (e?.message ?? String(e));
     }
     const pgid = proc?.pid;
     // Saved with the card: a runner that crashes can end the group when it starts again.
-    const card: Msg = { id, role: "user", ts: now, parts: [tool], shell: { state: "running", startedAt: now, ...(pgid ? { pgid, procStart: procStart(pgid) } : {}) } };
+    const card: Msg = { id, role: "user", ts: now, parts: [tool], shell: { state: "running", ...(setup ? { setup: true } : {}), startedAt: now, ...(pgid ? { pgid, procStart: procStart(pgid) } : {}) } };
     // Saved with the store's next write (within a second), not synchronously for every command.
     s.apply({ type: "msg", msg: card });
     if (!proc || error) {
@@ -208,9 +232,18 @@ export class ShellRuns {
       return { id };
     }
     run.proc = proc;
+    if (setup?.maxMs) {
+      const limit = setTimeout(() => {
+        if (run.done) return;
+        run.timedOut = true;
+        this.stop(sessionId, id);
+      }, setup.maxMs);
+      limit.unref?.();
+      proc.on("close", () => clearTimeout(limit));
+    }
     proc.stdout!.on("data", (b: Buffer) => this.data(run, b, false));
     proc.stderr!.on("data", (b: Buffer) => this.data(run, b, true));
-    proc.on("error", (e: any) => this.failed(run, e?.code === "ENOENT" ? `there's no shell at ${shell}` : e.message));
+    proc.on("error", (e: any) => this.failed(run, e?.code === "ENOENT" ? `there's no ${setup?.argv ? file : "shell at " + shell}` : e.message));
     let closed = false;
     proc.on("close", (code, signal) => {
       closed = true;
@@ -249,7 +282,7 @@ export class ShellRuns {
       this.kill(r, "SIGTERM");
       // The card keeps its group until the SIGKILL is sent: a runner gone before that (a second
       // signal, a crash) leaves the next start to end it.
-      this.end(r, { cutOff: true }, { state: "notSent", why: STOPPED_WHY }, { keepGroup: true });
+      this.end(r, { cutOff: true }, r.setup ? { state: "done" } : { state: "notSent", why: STOPPED_WHY }, { keepGroup: true });
     }
     this.core.notices.flush();
     if (!all.length) return;
@@ -391,12 +424,23 @@ export class ShellRuns {
   private failed(r: Run, error: string) {
     if (r.done) return;
     r.buf.push(`Couldn't run it: ${error}.\n`);
+    if (r.setup) {
+      this.end(r, { exitCode: 127 }, { state: "done" });
+      return r.setup.done?.(false, `The worktree's setup couldn't start: ${error}.`);
+    }
     this.end(r, { exitCode: 127 }, { state: "notSent", why: "It couldn't start." });
   }
 
   private async finish(r: Run, code: number | null, signal: NodeJS.Signals | null) {
     if (r.done) return;
     const how: Partial<ShellRun> = r.stopped ? { stopped: true, ...(signal ? { signal } : {}) } : signal ? { signal } : { exitCode: code ?? 0 };
+    // A setup's output stays on its card; how it ended opens (or keeps shut) the way to the agent.
+    if (r.setup) {
+      if (!this.end(r, how, { state: "done" })) return;
+      const ok = !r.stopped && !signal && (code ?? 0) === 0;
+      const limit = `${Math.round((r.setup.maxMs ?? 0) / 60_000) || "its"} min`;
+      return r.setup.done?.(ok, ok ? "" : `The worktree's setup ${r.timedOut ? `took longer than ${limit} and was stopped` : r.stopped ? "was stopped" : `failed (${endedHow(how)})`}.`);
+    }
     // Waiting in the queue from now: the queue's own send (50 ms on) finds the card already there.
     const card = this.end(r, how, { state: "queued" });
     if (!card) return;
@@ -468,7 +512,7 @@ export class ShellRuns {
     const tool = card.parts[0];
     const small = saved !== undefined && tool?.type === "tool" ? { ...card, parts: [{ ...tool, output: saved }] } : card;
     this.core.notices.update(s.id, small);
-    if (card.shell?.state === "sent" || card.shell?.state === "notSent") {
+    if (card.shell?.state === "sent" || card.shell?.state === "notSent" || card.shell?.state === "done") {
       this.core.notices.flush();
       this.saved.delete(card.id);
     }
@@ -489,7 +533,7 @@ function cutOff(m: Msg, now: number): Msg {
   return {
     ...m,
     parts: tool?.type === "tool" ? [{ ...tool, status: "error" as const }] : m.parts,
-    shell: { ...was, state: "notSent", cutOff: true, why: STOPPED_WHY, endedAt: now },
+    shell: { ...was, ...(was.setup ? { state: "done" } : { state: "notSent", why: STOPPED_WHY }), cutOff: true, endedAt: now },
   };
 }
 

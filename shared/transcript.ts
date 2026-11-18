@@ -368,7 +368,12 @@ export interface LiveState {
    * (released when you send, or with Resume). `queueHeldBy` says why.
    */
   queueHeld?: boolean;
-  queueHeldBy?: "terminal" | "stopped" | "restart" | "failed";
+  queueHeldBy?: "terminal" | "stopped" | "restart" | "failed" | "setup";
+  /**
+   * A new worktree's setup (SPEC §4): while it runs, messages queue held ("setup"); when it fails
+   * they stay held until you send something or Resume (Send anyway). Gone once it succeeds.
+   */
+  setup?: "running" | "failed";
   /**
    * Waiting for Claude Code from before a restart (SPEC §4): messages sent now queue, held, and
    * Resume can't release them until this clears.
@@ -411,6 +416,11 @@ export interface SessionSummary {
   billing?: Billing;
   /** Kept out of Recent; still available from session search. */
   archived?: boolean;
+  /**
+   * The session runs in a worktree Tether made for it (New worktree, SPEC §4): that repo's main
+   * checkout, so a list can group it under its project.
+   */
+  worktreeOf?: string;
   /** When it was pinned (ms): the Sidebar's Pinned group, in this order, listed however old. */
   pinned?: number;
   /** A pinned session its harness can't find (now): listed as it was last seen, until someone unpins it. */

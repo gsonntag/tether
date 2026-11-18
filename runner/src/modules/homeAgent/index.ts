@@ -54,7 +54,7 @@ import type { Module, ModuleContext } from "..";
 import { heicNote, HOME_SENDER, homeLabel, MAX_EXTRA_HOMES, PERSON_TEXT_MAX, type Home, type HomeEnd, type HomeTarget, type TakeVia } from "../homeLine";
 import { failureKind } from "../push";
 import { levelOf } from "../move";
-import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, repoOf, runGit, skipReason, stillRunning, systemProbe, verify, type Git, type Probe } from "./checkIn";
+import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, removeOwnWorktree, repoOf, runGit, skipReason, stillRunning, systemProbe, verify, type Git, type Probe } from "./checkIn";
 import type { CheckInRow, CheckInStatus } from "../../../../shared/protocol";
 
 /** Text going inside a <<< >>> fence, unable to close or open one: any run of 3+ "<" or ">" becomes 2 (can't rebuild a run). */
@@ -222,7 +222,7 @@ export const INSTRUCTIONS = `You are Tether's Home agent. The person talks to yo
 
 How to work:
 - Find the project with list_projects. Use project_overview when you need to know more about one. If more than one project could be meant, ask the person which in one short question. Never guess.
-- Start the work with start_session. The prompt is everything the session knows, so write a complete brief: the goal, the context the person gave you (quote their words where it matters), constraints, and what done means (for example: tests pass, it builds, the change is committed on a branch, a PR is opened, etc. only if they asked for it). Tell it to work autonomously through to completion without stopping to ask for confirmation, to verify its work before finishing, and to end with a short report: what it delivered (the PR link, or the merged commit), and the worktree and branch it made, if any. The session runs in auto mode: routine work goes ahead without asking, but a safety check may block risky actions (destructive or outward-facing ones such as pushing, deploying or deleting), so when the task needs those, say in the brief that the person asked for them.
+- Start the work with start_session. The prompt is everything the session knows, so write a complete brief: the goal, the context the person gave you (quote their words where it matters), constraints, and what done means (for example: tests pass, it builds, the change is committed on a branch, a PR is opened, etc. only if they asked for it). Tell it to work autonomously through to completion without stopping to ask for confirmation, to verify its work before finishing, and to end with a short report: what it delivered (the PR link, or the merged commit), and the worktree and branch it made, if any. Pass worktree: true when the person asks for a separate worktree or branch, or another session is already working in that project, so their changes don't collide (Tether makes the worktree, runs the repo's setup and removes it once merged). The session runs in auto mode: routine work goes ahead without asking, but a safety check may block risky actions (destructive or outward-facing ones such as pushing, deploying or deleting), so when the task needs those, say in the brief that the person asked for them.
 - The end goal: before starting a session that changes code, know what "done" means for it. If the person hasn't said, and it isn't clear from context or from a standing instruction (one earlier in this chat, for example "when any PR comes back, merge it and restart", or a project rule such as "my-site: only the staging branch"), first ask one short question, offering these options on one line: "${END_GOALS}". Then put their answer in the brief. One quick question, never a list of them. Research, questions and other read-only tasks don't need it. If they say it holds from now on ("always do X for jungle"), it's a standing instruction for that project for the rest of this chat: don't ask again there.
 - When the person picks adversarial review, the brief must spell out the workflow, in these words (with the chosen delivery filled in): "${ADVERSARIAL_BRIEF}"
 - Use Claude Code unless the person asks for Codex. Leave the model at its default unless they name one.
@@ -1011,15 +1011,17 @@ export class HomeAgent implements HomeEnd {
           title: z.string().max(80).optional().describe("A short title for the session, as the sidebar shows it."),
           harness: z.enum(["claude", "codex"]).optional().describe("claude (Claude Code, the default) or codex."),
           model: z.string().optional().describe("Only when the person names a model."),
+          worktree: z.boolean().optional().describe("true: the session works in a new git worktree of the project (its own folder beside the repo, on a new branch tether/<slug> from the default branch), so it doesn't touch the main checkout or other sessions' work. Tether makes it, runs the repo's setup there first, and removes it once the work is merged. Only for a git repo."),
         },
-        run: async (a: { project_path: string; prompt: string; title?: string; harness?: HarnessId; model?: string }) => {
+        run: async (a: { project_path: string; prompt: string; title?: string; harness?: HarnessId; model?: string; worktree?: boolean }) => {
           const harness: HarnessId = a.harness === "codex" ? "codex" : "claude";
           if (!s.adapters().some((x) => x.id === harness)) throw new Error(`${HARNESS_LABELS[harness]} isn't available on this runner.`);
           const folder = s.folder(a.project_path);
           if (resolve(folder) === resolve(this.folder)) throw new Error("That's your own folder, not a project.");
           const source = (await s.sources(harness)).default ?? "subscription";
           const mode = harness === "claude" ? await this.modeFor(harness, SESSION_MODE.claude) : SESSION_MODE[harness];
-          const id = await s.create({ harness, projectPath: folder, source, permissionMode: mode, ...(a.model ? { model: a.model } : {}) });
+          const made = a.worktree ? await this.ctx.ops.call("newWorktreeSession", { harness, projectPath: folder, source, permissionMode: mode, ...(a.model ? { model: a.model } : {}), name: a.title || a.prompt }) : undefined;
+          const id = made?.sessionId ?? (await s.create({ harness, projectPath: folder, source, permissionMode: mode, ...(a.model ? { model: a.model } : {}) }));
           this.state.children[id] = { chat, reports: 0 };
           this.save();
           if (this.isTextsChat(chat)) act(this.turnOf(chat), id);
@@ -1027,8 +1029,9 @@ export class HomeAgent implements HomeEnd {
           if (title) await s.rename(id, title).catch(() => {});
           await s.send(id, FROM_TETHER + a.prompt);
           // A way there from the chat.
-          const name = folder.replace(/\/+$/, "").split("/").pop() || folder;
+          const name = (made?.path ?? folder).replace(/\/+$/, "").split("/").pop() || folder;
           await s.notice(chat, { id: `n-started-${id}`, role: "notice", level: "info", ts: Date.now(), parts: [{ type: "text", text: `Started ${title ? `“${title}”` : "a session"} in ${name}.` }], link: { sessionId: id, label: "Open it" } }).catch(() => {});
+          if (made) return `Started session ${id} in a new worktree ${made.path} on branch ${made.branch} (from ${made.base}; ${HARNESS_LABELS[harness]}, ${mode}). ${made.setup ? `The repo's setup (${made.setup}) runs there first; the prompt goes once it succeeds (if it fails, the session shows it and waits for the person).` : "It's working now."} You'll get a report when it finishes a turn.`;
           return `Started session ${id} in ${folder} (${HARNESS_LABELS[harness]}, ${mode}). It's working now. You'll get a report when it finishes a turn.`;
         },
       },
@@ -1349,7 +1352,8 @@ export class HomeAgent implements HomeEnd {
     this.save();
     for (const sid of asked) {
       try {
-        await s.queue(sid, FROM_TETHER_CHECKIN + checkInMessage(entries[sid]!.project, entries[sid]!.keep));
+        const own = s.worktree?.(sid);
+        await s.queue(sid, FROM_TETHER_CHECKIN + checkInMessage(entries[sid]!.project, entries[sid]!.keep, own && resolve(own.path) === resolve(entries[sid]!.project) ? own : undefined));
       } catch (e) {
         entries[sid]!.outcome = "skipped";
         entries[sid]!.reason = `couldn't send to it: ${(e as Error).message}`;
@@ -1401,9 +1405,19 @@ export class HomeAgent implements HomeEnd {
     if (!v.archive) return Object.assign(e, { outcome: "kept", reason: v.reason });
     // A message the person scheduled there is still to come: archiving would hide it.
     if (this.ctx.session(id)?.state.queue.length) return Object.assign(e, { outcome: "kept", reason: "it has a message scheduled" });
+    // The worktree Tether made for it goes first (with its branch): kept, the session is too.
+    let reason = v.reason;
+    const own = this.ctx.sessions.worktree?.(id);
+    if (own && resolve(own.path) === resolve(e.project)) {
+      const others = this.ctx.sessions.list().filter((r) => r.id !== id && !r.archived).map((r) => r.projectPath);
+      const gone = await removeOwnWorktree(own, others, this.git).catch((err) => ({ removed: false, why: (err as Error).message, branchKept: undefined }));
+      if (!gone.removed && !/^another session/.test(gone.why ?? "")) return Object.assign(e, { outcome: "kept", reason: `done and merged, but ${gone.why}` });
+      const what = "gone" in gone && gone.gone ? `its worktree folder ${own.path} was already gone (moved or deleted); git's record of it is pruned` : "removed its worktree";
+      reason += gone.removed ? `; ${what}${gone.branchKept ? ` (its branch stays: ${gone.branchKept})` : ` and branch ${own.branch}`}` : `; its worktree stays: ${gone.why}`;
+    }
     try {
       await this.ctx.sessions.setArchived(id, true);
-      Object.assign(e, { outcome: "archived", reason: v.reason });
+      Object.assign(e, { outcome: "archived", reason });
     } catch (err) {
       Object.assign(e, { outcome: "kept", reason: `finished, but archiving failed: ${(err as Error).message}` });
     }

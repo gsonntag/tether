@@ -49,6 +49,7 @@ const HELD_HINT: Record<string, string> = {
   stopped: "paused after Stop",
   failed: "paused after a failed turn",
   restart: "paused after a restart",
+  setup: "held after the worktree's setup failed",
 };
 
 /**
@@ -57,6 +58,8 @@ const HELD_HINT: Record<string, string> = {
  */
 export function shellWhen(agent: string, o: { running: boolean; inTerminal: boolean; heldBy?: string }): string {
   if (o.heldBy === "restartWait") return "the output waits in the queue until Claude Code from before the restart finishes";
+  if (o.heldBy === "setupRunning") return "the output waits in the queue until the worktree's setup finishes";
+  if (o.heldBy === "setup") return "the output waits in the queue, held after the worktree's setup failed (Send anyway lets it go)";
   // A queue paused (after Stop, …) stays paused through a terminal round trip: that comes first.
   if (o.heldBy && o.heldBy !== "terminal") return `the output waits in the queue, ${HELD_HINT[o.heldBy] ?? "paused"} (Resume or send something to let it go)`;
   if (o.inTerminal || o.heldBy === "terminal") return `the output goes to ${agent} when you go Back to Tether`;

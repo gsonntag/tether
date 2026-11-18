@@ -13,6 +13,8 @@ import type { SessionCost } from "../../../shared/costs";
 import type { HarnessId, LiveState, Msg, ProjectInfo, RequestAnswer, RunStatus, SessionSummary } from "../../../shared/transcript";
 import { homeAgentModule } from "./homeAgent";
 import type { HomeLine } from "./homeLine";
+import type { WorktreeRecord } from "../config";
+import type { SetupRun } from "../core/shellRuns";
 import { linksModule } from "./links";
 import type { ShortLinks } from "./links/store";
 import { moveModule } from "./move";
@@ -20,6 +22,7 @@ import { peersModule } from "./peers";
 import { pushModule } from "./push";
 import { textingModule } from "./texting";
 import { updatesModule } from "./updates";
+import { worktreesModule } from "./worktrees";
 import { usageModule } from "./usage";
 
 /** What a module may know about a session (read-only). */
@@ -82,6 +85,15 @@ export interface SessionActions {
   interrupt(id: string): Promise<void>;
   /** keeps a session out of Recent (or puts it back), as the archive button does */
   setArchived(id: string, archived: boolean): Promise<void>;
+  /** records the worktree Tether made for a session as its own (runner.json; the summary's worktreeOf) */
+  setWorktree?(id: string, worktree: WorktreeRecord): Promise<void>;
+  /** the worktree Tether made for a session, if it did */
+  worktree?(id: string): WorktreeRecord | undefined;
+  /**
+   * Runs a new worktree's setup in the session's folder as a card (core/shellRuns.ts): until it
+   * ends, sends wait held; a failure keeps them held. Answers once it has started.
+   */
+  setup?(id: string, command: string, run?: Omit<SetupRun, "done"> & { beforeRelease?: () => void | Promise<void> }): Promise<{ done: Promise<{ ok: boolean; why: string }> }>;
 }
 
 export interface ModuleContext {
@@ -124,7 +136,7 @@ export interface Module {
 }
 
 /** The modules this runner loads, in order. */
-export const MODULES: Module[] = [pushModule, textingModule, moveModule, homeAgentModule, peersModule, updatesModule, linksModule, usageModule];
+export const MODULES: Module[] = [pushModule, textingModule, moveModule, worktreesModule, homeAgentModule, peersModule, updatesModule, linksModule, usageModule];
 
 export async function startModules(modules: Module[], ctx: (m: Module) => ModuleContext): Promise<() => void> {
   const stops: (() => void)[] = [];

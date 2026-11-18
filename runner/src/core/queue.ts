@@ -3,7 +3,8 @@
 // and changes the same one: edit, reorder, cancel.
 //
 // The queue waits (held) while the harness's TUI drives a handed-off session (released by Back to
-// Tether), after Stop, after a failed turn, and after a turn cut off by a runner restart. Sending a
+// Tether), after Stop, after a failed turn, after a turn cut off by a runner restart, and while a new
+// worktree's setup runs or after it failed (SPEC §4). Sending a
 // message yourself, or Resume, releases it; nothing is ever sent on your behalf while it is held.
 // During the quiet wait after a restart (live.ts autoContinue) it stays held whatever you do: the
 // wait's end releases it.
@@ -12,7 +13,8 @@
 // Scheduled messages (`at`, SPEC §9 Scheduled sends) wait in the same queue for their time, apart
 // from the rest: holds are about the unscheduled messages, and one coming due goes next whatever
 // holds those (it's a message you sent for then), but never while the TUI drives, during the quiet
-// wait after a restart, behind a rate limit retry or the running turn. A Stop or a failed turn holds
+// wait after a restart, while a worktree's setup runs or after it failed (until Send anyway), behind
+// a rate limit retry or the running turn. A Stop or a failed turn holds
 // the ones due at that moment; one the runner was off for more than a day after, or whose send
 // failed, waits for you too (`held`).
 
@@ -36,6 +38,8 @@ export interface QueueHost {
   send(sessionId: string, text: string, attachments: Attachment[]): Promise<void>;
   /** the session is in the quiet wait after a restart: nothing may go out yet */
   waiting(sessionId: string): boolean;
+  /** a new worktree's setup runs (SPEC §4): nothing may go out yet */
+  settingUp?(sessionId: string): boolean;
 }
 
 export class MessageQueue {
@@ -124,7 +128,7 @@ export class MessageQueue {
     if (later) this.uptime.seen(true);
     // Queued while the TUI drives: it waits for Back to Tether. During the quiet wait: for its end.
     // (A scheduled message holds nothing: it waits for its time.)
-    const by = s.state.queueHeld || later ? undefined : s.state.mode === "terminal" ? "terminal" : this.host.waiting(s.id) ? "restart" : undefined;
+    const by = s.state.queueHeld || later ? undefined : s.state.mode === "terminal" ? "terminal" : this.host.waiting(s.id) ? "restart" : s.state.setup ? "setup" : undefined;
     this.save(s, [...s.state.queue, m], by);
     this.later(s.id);
     return { id: m.id };
@@ -223,8 +227,45 @@ export class MessageQueue {
     if (s.state.mode === "terminal") throw new Error("The terminal is driving. Go back to Tether to send what waits.");
     if (this.host.waiting(s.id)) throw new Error("Claude Code from before the restart may still be working. What waits goes on once it's finished.");
     if (s.retry) throw new Error("A rate limit retry is waiting. Cancel it or wait for it to finish.");
+    if (this.host.settingUp?.(s.id)) throw new Error("The worktree's setup is still running. What waits goes once it's done.");
+    // After a failed setup this is Send anyway: from now on sends go as usual.
+    if (s.state.setup === "failed") {
+      s.setState({ setup: undefined });
+      this.core.o.prefs.set(s.id, { setup: undefined });
+    }
     this.release(s);
     this.later(s.id);
+  }
+
+  // ---------------- a new worktree's setup (SPEC §4) ----------------
+
+  /** Its setup started: sends queue held ("setup") until it ends. Saved, so a restart knows it was cut off. */
+  setupStarted(s: Session) {
+    s.setState({ setup: "running" });
+    this.core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, setup: "running" });
+    this.core.o.prefs.flush();
+    this.core.touch(s);
+  }
+
+  /** It ended. Done: what waited goes now. Failed: what waits, and what's sent next, stays held until Resume (Send anyway). */
+  setupEnded(s: Session, ok: boolean) {
+    if (s.state.setup !== "running") return;
+    s.setState({ setup: ok ? undefined : "failed" });
+    this.core.o.prefs.set(s.id, { setup: ok ? undefined : "failed" });
+    this.core.o.prefs.flush();
+    if (ok) {
+      if (s.state.queueHeldBy === "setup") this.release(s);
+      this.later(s.id);
+    }
+    this.core.touch(s);
+  }
+
+  /** Sessions whose setup a restart cut off (still "running" at start): failed now. */
+  setupsCutOff(): string[] {
+    const ids = this.core.o.prefs.ids((p) => p.setup === "running");
+    for (const id of ids) this.core.o.prefs.set(id, { setup: "failed" });
+    if (ids.length) this.core.o.prefs.flush();
+    return ids;
   }
 
   // ---------------- holding ----------------
@@ -355,7 +396,9 @@ export class MessageQueue {
     if (!s || this.draining.has(id) || !s.state.queue.length || s.retry || this.core.o.prefs.get(id).retry) return;
     // Background work doesn't hold it: this waits for the turn, and the main agent's is over.
     const busy = s.state.status !== "idle" && !s.driver?.onlyBackground?.();
-    if (s.state.mode === "terminal" || busy || s.sending || s.starting || this.host.waiting(id)) return;
+    // A worktree's setup gates scheduled messages too: none goes while it runs, nor after it failed
+    // until Send anyway (Resume ends the gate) or a re-run succeeds.
+    if (s.state.mode === "terminal" || busy || s.sending || s.starting || this.host.waiting(id) || this.host.settingUp?.(id) || s.state.setup === "failed") return;
     const next = this.next(s);
     if (!next) return;
     const rest = s.state.queue.filter((m) => m !== next);

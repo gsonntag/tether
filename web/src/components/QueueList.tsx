@@ -36,6 +36,7 @@ const HELD: Record<NonNullable<LiveState["queueHeldBy"]>, string> = {
   stopped: "Paused after Stop. Send something, or resume.",
   failed: "Paused after a failed turn.",
   restart: "Paused: the runner restarted mid-turn.",
+  setup: "Held: the worktree's setup failed. Fix it, or send it anyway.",
 };
 
 /** An edit in progress: the message it's for, its text before, and the edited text (and time). */
@@ -210,7 +211,9 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
       }
     });
   // The quiet wait after a restart (SPEC §4): nothing can release it, so no Resume.
-  const held = state.restartWait ? "Waiting for Claude Code from before the restart." : state.queueHeld && state.queueHeldBy ? HELD[state.queueHeldBy] : state.queueHeld ? "Paused." : undefined;
+  // A new worktree's setup runs (SPEC §4): what waits goes when it's done, so no Resume yet.
+  const settingUp = state.setup === "running";
+  const held = state.restartWait ? "Waiting for Claude Code from before the restart." : settingUp ? "Waiting for the worktree's setup to finish." : state.queueHeld && state.queueHeldBy ? HELD[state.queueHeldBy] : state.queueHeld ? "Paused." : undefined;
   const plain = unscheduled(state.queue);
   const timed = scheduled(state.queue);
   const body = (m: QueuedMessage) => (
@@ -283,7 +286,7 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
       {plain.length > 0 && (
         <div className="t-queue-head">
           <span>{plain.length === 1 ? "1 message waits" : `${plain.length} messages wait`}{held ? ` · ${held}` : " for this turn to end."}</span>
-          {held && state.queueHeldBy !== "terminal" && !state.restartWait && <Button label="Resume" size="sm" variant="secondary" onClick={() => void call(() => rpc(runnerId, "resumeQueue", { sessionId }))} />}
+          {held && state.queueHeldBy !== "terminal" && !state.restartWait && !settingUp && <Button label={state.queueHeldBy === "setup" ? "Send anyway" : "Resume"} size="sm" variant="secondary" onClick={() => void call(() => rpc(runnerId, "resumeQueue", { sessionId }))} />}
         </div>
       )}
       {error && <div className="t-inline-status error">{error}</div>}

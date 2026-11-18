@@ -37,6 +37,8 @@ export const IDLE_CLOSE_MS = 5 * 60_000;
 
 /** What the quiet wait after a restart shows (SPEC §4). */
 const WAITING_TEXT = "Waiting for Claude Code from before the restart to finish…";
+const SETUP_TEXT = "The worktree's setup is still running.";
+const SETUP_FAILED_TEXT = "The worktree's setup failed.";
 const notice = (text: string, level: Msg["level"] = "info"): Msg => ({ id: `n-${randomUUID()}`, role: "notice", level, ts: Date.now(), parts: [{ type: "text", text }] });
 
 /**
@@ -132,7 +134,11 @@ export class LiveControl {
       tell: (id, text) => this.tell(id, text),
       beforePlan: (id) => core.o.prefs.get(id).beforePlan,
     });
-    this.queue = new MessageQueue(core, { send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }), waiting: (id) => this.restartWaits.has(id) });
+    this.queue = new MessageQueue(core, {
+      send: (id, text, attachments) => this.send(id, text, attachments, { queued: true }),
+      waiting: (id) => this.restartWaits.has(id),
+      settingUp: (id) => core.sessions.get(id)?.state.setup === "running",
+    });
     this.read = new ReadState(core);
     this.commands = new Commands({ core, models: (s) => this.listModels(s.summary.harness, s.id), setModel: (id, m) => this.setModel(id, m), setEffort: (id, e) => this.setEffort(id, e), status: (s, st) => this.status(s, st) });
     this.attachments = new AttachmentStore(opts.attachmentsDir ?? "/nonexistent-tether-attachments");
@@ -291,6 +297,12 @@ export class LiveControl {
     // the queue held before; it goes on once the wait ends.
     if (!o.continued && this.restartWaits.has(id)) {
       if (o.queued) throw new Error(WAITING_TEXT);
+      return void (await this.queue.add(id, text, attachments));
+    }
+    // A new worktree's setup runs, or failed (SPEC §4): nothing goes before it's done, or you say
+    // Send anyway (Resume); what you send waits, held.
+    if (!o.continued && s.state.setup) {
+      if (o.queued) throw new Error(s.state.setup === "running" ? SETUP_TEXT : SETUP_FAILED_TEXT);
       return void (await this.queue.add(id, text, attachments));
     }
     if (o.stop && (s.state.status !== "idle" || s.sending)) {
@@ -1233,6 +1245,9 @@ export class LiveControl {
     s.starting ??= this.startDriver(s, observe).finally(() => {
       s.starting = undefined;
       this.core.scheduleEvict(s);
+      // A queue let go while it started (a worktree's setup ended, Resume), or a scheduled message
+      // that came due meanwhile, couldn't drain then (drain decides what may go).
+      if (s.state.queue.length) this.queue.later(s.id);
     });
     return s.starting;
   }

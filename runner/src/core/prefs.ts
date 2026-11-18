@@ -127,6 +127,13 @@ export class Prefs {
     return Object.entries(this.map).flatMap(([id, p]) => (p.tui ? [[id, p.tui] as [string, NonNullable<SessionPrefs["tui"]>]] : []));
   }
 
+  /** Sessions whose prefs pass `f`. */
+  ids(f: (p: SessionPrefs) => boolean): string[] {
+    return Object.entries(this.map)
+      .filter(([, p]) => f(p))
+      .map(([id]) => id);
+  }
+
   /** Sessions with messages waiting in their queue. */
   queued(): string[] {
     return Object.entries(this.map)
