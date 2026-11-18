@@ -1136,8 +1136,8 @@ lines say "removed; lines in HEAD" or the branch's base) over its lines in a dif
 can be edited before it's sent; on a phone the sheet closes to show it. The comments stay, marked
 as in the message box, until a message quoting their place is sent (the runner took it). **Take
 back**, editing a comment, or a box that no longer quotes it (a reload empties the box) puts it back
-in the tray. Later git views join this
-pane: git actions in its header, a Files tab.
+in the tray. Git actions (below) sit under its header; a Files tab
+would be a later git view.
 
 ### Checkpoints
 
@@ -1196,6 +1196,61 @@ repo.
 Kept 14 days and at most 200 per session (pruned as checkpoints are taken and at start). The list
 (times, prompts, commit ids, what was left out) is a JSON file per session in the module's folder; the
 snapshots are ordinary git objects, kept by the refs.
+
+### Git actions
+
+Under the Changes pane's header (runners whose hello says `gitActions: true`): the branch, its
+upstream and ahead/behind as of the last fetch or push ("feature → origin/feature · 2 ahead",
+"feature · not pushed", "detached at abc1234"), and **Commit**, **Push**, **Open PR**. Each is
+disabled with its reason as a tooltip when it can't apply. `gitStatus { sessionId }` is local git
+only; it is read with each load of the pane.
+
+**Commit** opens a box under the bar, prefilled by `gitDraft { kind: "commit" }` (what's typed
+before it arrives wins), and says what it takes and as whom: "3 files, everything in Uncommitted,
+as Name <email>". `gitCommit { message, onDefault? }` runs `git add -A` (tracked changes, staged
+or not, and untracked files that aren't ignored: what Uncommitted shows), then `git commit
+--file=-` with git's own identity (`user.useConfigOnly`): none configured, it says so and commits
+nothing. On the default branch the box has **Commit to main anyway**, unticked; the runner refuses
+without it too. Detached `HEAD` refuses, as does a running turn (its edits would land half-made).
+The repo's hooks run, as git runs them; a refusal shows "The commit failed" and the hook's output,
+and leaves the changes staged. **Push** is `git push -u origin <branch>` (pre-push hooks run),
+never forced; a rejected push, a refused sign-in or an unreachable origin is said in a line, with
+git's output.
+
+**Open PR** opens a box with a title and description from `gitDraft { kind: "pr" }`, editable.
+`gitOpenPr { title, body }` refuses on the default branch, detached, with no origin, or with no
+`gh`; checks `gh auth status` (cached 5 minutes) and says "gh isn't signed in on this computer" if
+not; pushes first when the branch has no upstream or is ahead; then `gh pr create --base <default>
+--head <branch> --title --body`. A PR that already exists for the branch is recorded and named.
+
+**Generated text** is a one-shot side query on the session's own harness and source
+(`Adapter.ask`), never a turn, nothing in any transcript. The model sees the tracked diff against
+`HEAD` (12,000 characters at most), untracked files by name only, and the last 15 subjects for
+style; a PR, its commits, stat and diff since the merge base. Claude: Haiku, no tools, no setting
+sources (none of the person's hooks, MCP servers or CLAUDE.md), a short system prompt, one turn,
+`persistSession: false`, and on the Anthropic key a $0.05 budget; the source is confirmed as at a
+session's start before the prompt goes out, a key through its private helper. Codex: only on the
+ChatGPT plan, an ephemeral thread on the shared daemon (no rollout), read-only, never asking, its
+tools off, the account's smallest model at low effort, the subscription's path confirmed first; a
+Codex key session gets a note instead (a private app-server for one answer is too much). A missing
+key, an unconfirmed source, a timeout (45 s) or an empty answer leaves the box empty with a short
+note; committing never waits on it.
+
+**The session's PR.** `gitPr { sessionId, fresh? }`: the PR recorded for the session (by Open PR or
+an earlier lookup; `prs.json` in the module's folder), else `gh pr view <branch> --json
+number,url,title,state,isDraft,statusCheckRollup,headRefName`; on the default branch with nothing
+recorded, or with no origin, gh isn't run. Cached per session for a minute (`fresh`: unless under
+10 s old), one call in flight shared. The header's chip shows "#42 · Open · ✓" (✗ failing, ●
+running; Draft, Merged, Closed), coloured by checks while open, linking to the PR. It's asked when
+the session opens, fresh when a turn ends, and every 2 minutes while the pane is open; nothing else
+polls. No gh, gh signed out, or an origin gh doesn't know is said once in the bar.
+
+git and gh run as argvs in the session's folder with time limits (commit 120 s, push 90 s, gh 20 s,
+`pr create` 60 s), git with run.ts's hardening, gh with no prompts, color, pager or update check and
+no inherited `GH_REPO` or git location variables. One action at a time per folder. All of these
+ops need drive access (they read the folder and write to it and its remote): none may be view-only
+(`VIEW_OPS` in shared/access.ts, on branches that have it). Out of scope: replying to review
+comments, GitLab and Bitbucket.
 
 ### Session names
 

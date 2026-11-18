@@ -44,6 +44,10 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
 - **Turn checkpoints** (SPEC §10): each turn's files are snapshotted under hidden git refs, so the
   Changes pane's **Turn** scope shows what a turn changed, and **Restore files to before this turn**
   puts them back (undoable). Your index, `HEAD` and stash are never touched.
+- **Git actions** (SPEC §10): the Changes pane shows the branch and how far it is ahead of or behind
+  its upstream, with **Commit** (a generated message you can edit; the default branch needs a
+  tick), **Push** (never forced) and **Open PR** through `gh`. The session's PR shows as a chip in
+  its header, with its state and checks.
 - **Change session harness** (SPEC §15): continues a session on the other harness, or on the same
   harness with another billing source. The old session stays as it was.
 
