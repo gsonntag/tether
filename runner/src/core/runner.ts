@@ -247,7 +247,7 @@ export function createRunner(o: RunnerOptions) {
           live.answerRequest(id, requestId, a.allow ? { ...a, ...(a.notes ? { notes: defang(a.notes) } : {}) } : { allow: false, ...(a.reason ? { reason: defang(a.reason) } : {}) }),
         carrier: (f: (id: string, source: BillingSource) => Promise<string>) => { live.carrier = f; },
         projects: () => core.listProjects(),
-        list: () => core.book.list(),
+        list: () => core.listed(),
         archived: async () => (await core.listSessions({ archived: true, limit: 2000 })).sessions,
         folder: (path: string) => core.folder(path),
         queue: (id: string, text: string, attachments: Attachment[] = []) => (live.attachments.markUsed(attachments), live.queue.add(id, text, attachments)),
