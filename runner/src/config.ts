@@ -2,7 +2,7 @@
 // id, per-session prefs, queued messages, pending retry payloads, read state and open requests.
 // Complete transcripts stay in the harness's own store.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
@@ -114,7 +114,33 @@ export function loadConfig(file = CONFIG_FILE): RunnerConfig {
   return cfg;
 }
 
-export const displayName = (cfg: RunnerConfig) => (typeof cfg.name === "string" && cfg.name.trim()) || hostname();
+/** The name set in runner.json; else the hostname, unless it's a cloud default like `instance-20260403-0633`. */
+export const displayName = (cfg: RunnerConfig, host = hostname()) =>
+  (typeof cfg.name === "string" && cfg.name.trim()) || (isGeneratedHostname(host) ? niceName(cfg.runnerId) : host);
+
+/** Hostnames a provider or container runtime made up, not a person: they say nothing in a list of computers. */
+export function isGeneratedHostname(host: string): boolean {
+  const h = host.trim().toLowerCase().split(".")[0] ?? "";
+  return (
+    !h ||
+    h === "localhost" ||
+    /^instance-\d{8}-\d{4}$/.test(h) || // Oracle Cloud
+    /^instance-\d+$/.test(h) || // Google Cloud
+    /^(ip|domu)-[0-9a-f-]+$/.test(h) || // AWS
+    /^(vm|ubuntu|debian|server|host|node|droplet|vps)-?[0-9a-f-]*\d[0-9a-f-]*$/.test(h) || // vm-1234, ubuntu-s-1vcpu… style
+    /^[0-9a-f]{12}$/.test(h) || // Docker container id
+    /^[0-9a-f-]{32,36}$/.test(h)
+  );
+}
+
+const ADJECTIVES = ["Amber", "Brisk", "Cedar", "Copper", "Crimson", "Dusky", "Ember", "Fable", "Frost", "Golden", "Hazel", "Indigo", "Ivory", "Jade", "Juniper", "Lunar", "Maple", "Misty", "Nimble", "Ochre", "Opal", "Quiet", "Rustic", "Sable", "Saffron", "Silver", "Solar", "Swift", "Teal", "Velvet", "Willow", "Zephyr"];
+const NOUNS = ["Badger", "Comet", "Crane", "Falcon", "Fern", "Finch", "Fox", "Harbor", "Heron", "Lark", "Lynx", "Meadow", "Moose", "Orca", "Otter", "Owl", "Panda", "Pine", "Quail", "Raven", "Ridge", "River", "Robin", "Sparrow", "Summit", "Tiger", "Tundra", "Valley", "Walrus", "Wolf", "Wren", "Yak"];
+
+/** A friendly name that stays the same for a runner id: "Copper Heron". */
+export function niceName(seed: string): string {
+  const d = createHash("sha256").update(seed).digest();
+  return `${ADJECTIVES[d[0]! % ADJECTIVES.length]} ${NOUNS[d[1]! % NOUNS.length]}`;
+}
 
 /** Atomic and private: written to a temp file, then renamed over the old one. */
 export function saveConfig(cfg: RunnerConfig, file = CONFIG_FILE) {
