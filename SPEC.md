@@ -623,19 +623,36 @@ Later, a Claude `PreToolUse` hook can route terminal approvals through the same 
   Alt+Enter send later, Shift+Enter newline, Esc stop (empty box). On phones Enter is a newline and buttons send.
 - **Scheduled sends.** **Send later…** in the send menu (the phone's + menu; Alt+Enter) opens a picker
   above the box: in 1 hour, tonight 9 PM, tomorrow 9 AM (this morning before 5 AM), or a custom
-  date/time, in the browser's time zone, sent as an absolute time (`queue` with `at`, at most a year
-  ahead). The message waits in the queue (`QueuedMessage.at`, runner.json) as a **Scheduled** group,
-  soonest first, with its time; any device can edit its text and time, send it now or cancel it
-  (`scheduleQueued`: a new time, or null for now). It is apart from the rest of the queue: it never
-  holds or releases the other messages, and holds (Stop, a failed turn, a restart) are about them, so
-  when due it goes next even if they're paused. It does wait for a running turn or request, the
-  terminal (Back to Tether), the quiet wait after a restart and a rate limit retry. It goes through
-  the normal send path (same source and checks); a send that fails says why and keeps the message,
-  waiting for you (`held`). One timer serves all, armed for the next time and never longer than a
-  minute, so long waits and clock jumps (sleep, NTP) are safe. Due while the runner was off: sent
-  on start with a notice ("It was for 9:00 PM; sent at 9:14 PM", whenever it goes 2+ minutes late);
-  more than 24 hours late: held for you instead. Home lists a session with one scheduled last, as
-  Scheduled with its time; one held for you is a paused queue (Needs you).
+  date/time, in the browser's time zone (presets computed when tapped), sent as an absolute time
+  (`queue` with `at`, at most a year ahead, not in the past). The message waits in the queue
+  (`QueuedMessage.at`, runner.json) as a **Scheduled** group, soonest first, with its time; any
+  device can edit its text and time in one change (`editQueued` with `at`), send it now or cancel
+  it (`scheduleQueued`: a new time, or null for now, which marks it `asap`).
+  - *Apart from the queue:* holds are about the unscheduled messages, and a scheduled message neither
+    holds nor releases them; one coming due goes next even while they're paused. It waits for a
+    running turn or request, the terminal (Back to Tether), the quiet wait after a restart and a
+    rate limit retry. A Stop or a failed turn holds the scheduled messages due at that moment
+    (`held: "stopped" | "failed"`); ones coming due later still go at their time.
+  - *Billing:* it goes through the normal send path (the session's source and checks). A send that
+    fails says why in the chat and keeps the message, held (`failed`), never retried by itself.
+  - *Timer and restarts:* one timer serves all, armed for the next time and never longer than a
+    minute, so long waits and clock jumps are safe. The runner saves when it was last seen running
+    (`aliveAt`) while messages are scheduled; the time from then to a start, or a gap of 5+ minutes
+    between two looks (a machine asleep), was off. A message whose time passed while the runner was
+    off sends on start; one the runner was off for more than 24 hours after waits for you instead
+    (`held: "late"`, checked before anything can send it). Time spent waiting behind a turn or the
+    terminal never makes one late. Sent 2+ minutes after its time (not Send now), a notice says
+    so: "It was for 9:00 PM; sent at 9:14 PM". An entry with a scheduled message is never pruned
+    from runner.json.
+  - *Elsewhere:* Home lists a session with one scheduled last, as Scheduled with its time (not
+    archived ones: a scheduled message firing into an archived session doesn't unarchive it, as no
+    send does; it shows on Home as working). A held one is a paused queue (Needs you). A
+    message for later doesn't block a source change, a move, an automatic update or a Home agent
+    check-in, and doesn't count as queued for the Home agent; a source change or a move takes the
+    queue with it to the new session. The Home agent can't archive a session with one scheduled
+    and is told why it can't message a session whose scheduled message waits for the person. A
+    scheduled message is the person's: one firing in a session the agent follows makes it the
+    person's, as any message they send does (no report of that turn to the agent).
 - **Shell commands** (P5b): text starting with `!` is a shell command (below).
 - **Attachments** (images and files, by paste, drop, picker or camera) are in the core because phone
   screenshots are a main use. Chunks go over RPC and are stored under
