@@ -76,9 +76,18 @@ test("a read-only thread made new (a side chat's copy) starts with that load, ne
 
 test("after loading, the daemon must say no MCP server runs, else it fails", async () => {
   const say = (data: unknown) => async () => ({ data });
-  await assertNoMcp(say([{ name: "docs", runtimeStatus: "disabled", tools: {} }, { name: "x", runtimeStatus: null }]), "t");
+  await assertNoMcp(say([{ name: "docs", runtimeStatus: "disabled", tools: {} }, { name: "x", runtimeStatus: "failed" }, { name: "y", runtimeStatus: "cancelled" }]), "t");
+  await assertNoMcp(say([]), "t");
+  // Not started or unknown counts as on: only off says off.
+  await expect(assertNoMcp(say([{ name: "docs", runtimeStatus: "notStarted" }]), "t")).rejects.toThrow("(docs)");
+  await expect(assertNoMcp(say([{ name: "x", runtimeStatus: null }, { name: "z" }]), "t")).rejects.toThrow("(x, z)");
+  // Every page is read.
+  const pages: any[] = [];
+  const paged = async (_m: string, p: any) => (pages.push(p.cursor), p.cursor ? { data: [{ name: "late", runtimeStatus: "connected" }] } : { data: [{ name: "a", runtimeStatus: "disabled" }], nextCursor: "c2" });
+  await expect(assertNoMcp(paged, "t")).rejects.toThrow("(late)");
+  expect(pages).toEqual([undefined, "c2"]);
   await expect(assertNoMcp(say([{ name: "docs", runtimeStatus: "connected", tools: {} }]), "t")).rejects.toThrow("MCP servers on (docs)");
-  await expect(assertNoMcp(say([{ name: "docs", runtimeStatus: "notStarted", tools: { write: {} } }]), "t")).rejects.toThrow("docs");
+  await expect(assertNoMcp(say([{ name: "docs", runtimeStatus: "disabled", tools: { write: {} } }]), "t")).rejects.toThrow("docs");
   await expect(assertNoMcp(async () => ({}), "t")).rejects.toThrow("Couldn't check");
   await expect(assertNoMcp(async () => { throw new Error("unknown method"); }, "t")).rejects.toThrow("Couldn't check");
   // A resume whose thread still runs one (another client loaded it) doesn't open.

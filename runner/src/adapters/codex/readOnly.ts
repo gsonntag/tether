@@ -21,22 +21,32 @@ export async function readOnlyLoad(call: (method: string, params: unknown) => Pr
   return { sandbox: "read-only", approvalPolicy: "never", config: { ...OFF, ...mcpOff }, developerInstructions: READ_ONLY_INSTRUCTIONS };
 }
 
-/** MCP connection states in which a server can be called. */
-const LIVE = new Set(["starting", "connected", "authenticationRequired"]);
+/** The MCP connection states in which a server can't be called: anything else (null included) counts as on. */
+const OFF_STATES = new Set(["disabled", "failed", "cancelled"]);
 
 /**
- * After a read-only thread is loaded: the daemon's own word that none of its MCP servers runs (a
- * thread another client had loaded keeps that client's config). Anything else, or no answer, fails.
+ * After a read-only thread is loaded: the daemon's own word, page by page, that every MCP server it
+ * knows for the thread is off (a thread another client had loaded keeps that client's config).
+ * Anything else, or no answer, fails. Only what the daemon reports per thread can be checked:
+ * config/read takes no thread, so the features turned off at load (apps, plugins, hooks) can't be read
+ * back; apps would show here as their own server.
  */
 export async function assertNoMcp(call: (method: string, params: unknown) => Promise<any>, threadId: string): Promise<void> {
-  let r: any;
-  try {
-    r = await call("mcpServerStatus/list", { threadId, detail: "toolsAndAuthOnly" });
-  } catch (e) {
-    throw new Error(`Couldn't check that a read-only side chat has no MCP servers: ${(e as Error)?.message ?? e}`);
+  const on: string[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; ; page++) {
+    if (page >= 50) throw new Error("Couldn't check that a read-only side chat has no MCP servers: too many pages.");
+    let r: any;
+    try {
+      r = await call("mcpServerStatus/list", { threadId, detail: "toolsAndAuthOnly", ...(cursor ? { cursor } : {}) });
+    } catch (e) {
+      throw new Error(`Couldn't check that a read-only side chat has no MCP servers: ${(e as Error)?.message ?? e}`);
+    }
+    if (!Array.isArray(r?.data)) throw new Error("Couldn't check that a read-only side chat has no MCP servers.");
+    for (const s of r.data) if (!OFF_STATES.has(s?.runtimeStatus) || Object.keys(s?.tools ?? {}).length > 0) on.push(String(s?.name));
+    if (typeof r.nextCursor !== "string" || !r.nextCursor) break;
+    cursor = r.nextCursor;
   }
-  if (!Array.isArray(r?.data)) throw new Error("Couldn't check that a read-only side chat has no MCP servers.");
-  const on = r.data.filter((s: any) => LIVE.has(s?.runtimeStatus) || Object.keys(s?.tools ?? {}).length > 0).map((s: any) => String(s?.name));
   if (on.length) throw new Error(`A read-only side chat can't run with MCP servers on (${on.join(", ")}). Close it and open a new one.`);
 }
 

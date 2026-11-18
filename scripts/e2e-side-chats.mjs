@@ -9,7 +9,10 @@
 //           the side chat is in no list; closing archives it; Side chats opens it again
 //   phone   the same session on a phone: Side chat from the menu is a sheet over the session;
 //           Bring back tucks it away with the summary in the box
-//   codex   on a phone: /btw on Codex, which can't write either
+//   codex   on a phone: /btw on Codex, which can't write either. With PROBE_MCP (a runner on a
+//           CODEX_HOME whose config has the stdio server `probe`, logging each start to
+//           $PROBE_MCP/started.log and writing $PROBE_MCP/marker-<name> when called): the session
+//           starts it, the side chat doesn't and can't write the marker
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -180,7 +183,7 @@ const steps = {
     await shot(p, "claude-side-answered");
     ok(`the side chat answered (${answer.trim()}) in its read-only mode (Ask first + the gate); the main turn ${main.state.status === "running" ? "still runs" : "ran undisturbed"}`);
 
-    const refused = await cantWrite(p, side.id, replies(sv).length, `side-${Date.now()}.txt`);
+    const refused = await cantWrite(p, side.id, replies(await viewOf(p, side.id)).length, `side-${Date.now()}.txt`);
     await shot(p, "claude-side-refused");
     ok(`asked to write, it didn't: ${refused.replace(/\s+/g, " ").slice(0, 160)}`);
     const viaShell = await cantWrite(p, side.id, replies(await viewOf(p, side.id)).length, `side-sh-${Date.now()}.txt`, true);
@@ -262,6 +265,10 @@ const steps = {
     const word = token("CHARLIE");
     await send(p, mainBox(p), `Remember the code word ${word}. Reply with exactly: noted. Do not run any commands.`);
     await replyAfter(p, id, 0);
+    const probe = process.env.PROBE_MCP;
+    const probeStarts = () => (probe && existsSync(join(probe, "started.log")) ? readFileSync(join(probe, "started.log"), "utf8").trim().split("\n").filter(Boolean).length : 0);
+    const startsBefore = probeStarts();
+    if (probe && startsBefore < 1) fail("the session didn't start the probe MCP server: nothing to compare with");
     const before = codexPeerServers();
     await send(p, mainBox(p), "/btw What code word did I ask you to remember? Reply with only the word.");
     const side = await panelSide(p, id);
@@ -272,8 +279,16 @@ const steps = {
     if (before < 1) fail("the main Codex thread runs no Tether MCP server (nothing to compare with)");
     if (after !== before) fail(`the Codex side chat got Tether's MCP server (${before} → ${after})`);
     ok(`the Codex side chat runs no MCP server of Tether's (${before} before, ${after} after; its session has one)`);
+    if (probe) {
+      if (probeStarts() !== startsBefore) fail(`the side chat started the probe MCP server (${startsBefore} → ${probeStarts()})`);
+      const marker = `side-${Date.now()}`;
+      await send(p, sideBox(p), `Call the write_marker tool with name "${marker}" now. If you have no such tool, say NO TOOL.`);
+      const said = await replyAfter(p, side.id, replies(await viewOf(p, side.id)).length);
+      if (existsSync(join(probe, `marker-${marker}`))) fail("the side chat called the probe MCP server");
+      ok(`the probe MCP server: started for the session (${startsBefore}), not for the side chat; asked to call it: ${said.replace(/\s+/g, " ").slice(0, 100)}`);
+    }
     if (sv.state.permissionMode !== "never+read-only") fail(`the Codex side chat runs in ${sv.state.permissionMode}`);
-    const refused = await cantWrite(p, side.id, replies(sv).length, `side-codex-${Date.now()}.txt`);
+    const refused = await cantWrite(p, side.id, replies(await viewOf(p, side.id)).length, `side-codex-${Date.now()}.txt`);
     await shot(p, "codex-side-refused");
     ok(`Codex: answered (${answer.trim()}) in never+read-only; asked to write, it didn't: ${refused.replace(/\s+/g, " ").slice(0, 160)}`);
     const viaShell = await cantWrite(p, side.id, replies(await viewOf(p, side.id)).length, `side-codex-sh-${Date.now()}.txt`, true);
