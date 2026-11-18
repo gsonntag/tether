@@ -7,8 +7,10 @@
 // be inside; a folder is then listed, and its entries looked at, through that handle. A link
 // swapped in anywhere on the path meanwhile is refused. Elsewhere (macOS: no /proc, and F_GETPATH
 // needs a variadic fcntl that bun:ffi can't call) it's best effort: the real path is resolved again
-// after opening and must be inside and name the same file. Never writes; runs only `git rev-parse`
-// and `git check-ignore` (run.ts's hardened git). Every filesystem wait has a time limit.
+// after opening and must be inside and name the same file. Linux without /proc is refused outright.
+// Never writes; runs only `git rev-parse` and `git check-ignore` (run.ts's hardened git), in the
+// folder through its handle. Opens, stats, realpaths and readlinks are waited on FS_MS at most (a
+// handle that opens later is closed); reading an open file isn't timed.
 
 import { constants, existsSync } from "node:fs";
 import { lstat, open, opendir, readlink, realpath, stat, type FileHandle } from "node:fs/promises";
@@ -28,14 +30,36 @@ const FS_MS = 5000;
 
 /** Where open handles can be asked where they are. */
 const PROC_FD = process.platform === "linux" && existsSync("/proc/self/fd");
+/** Linux, but /proc isn't there (a container without it): nothing is read, rather than reading unchecked. */
+export const noProc = (platform: string, procFd: boolean) => platform === "linux" && !procFd;
+const NO_PROC = noProc(process.platform, PROC_FD);
+const NO_PROC_ERROR = "Files can't be read here: /proc isn't mounted, so where a file really is can't be checked.";
 
 export const within = (root: string, p: string) => p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
 
-/** `p`, or a rejection once FS_MS pass (the call itself may go on; nothing waits for it). */
-export function timed<T>(p: Promise<T>, ms = FS_MS): Promise<T> {
+/**
+ * `p`, or a rejection once `ms` pass (the call itself may go on; nothing waits for it). `late` gets
+ * what it resolves to after the time ran out (an open handle, to close).
+ */
+export function timed<T>(p: Promise<T>, ms = FS_MS, late?: (v: T) => unknown): Promise<T> {
   let t: ReturnType<typeof setTimeout>;
-  return Promise.race([p, new Promise<never>((_, no) => (t = setTimeout(() => no(new Error("The disk took too long to answer.")), ms)))]).finally(() => clearTimeout(t));
+  let over = false;
+  if (late) void p.then((v) => over && late(v), () => {});
+  return Promise.race([
+    p,
+    new Promise<never>(
+      (_, no) =>
+        (t = setTimeout(() => {
+          over = true;
+          no(new Error("The disk took too long to answer."));
+        }, ms)),
+    ),
+  ]).finally(() => clearTimeout(t));
 }
+/** An open that gives up after FS_MS, closing the handle if it comes later. */
+const openTimed = (p: string, flags: number) => timed(open(p, flags), FS_MS, (fh) => fh.close().catch(() => {}));
+/** An opendir likewise. */
+export const opendirTimed = (p: string) => timed(opendir(p, { bufferSize: 256 }), FS_MS, (d) => d.close().catch(() => {}));
 
 const why = (e: unknown): Error => {
   const code = (e as NodeJS.ErrnoException).code;
@@ -76,6 +100,7 @@ export async function resolveInside(root: string, path: unknown): Promise<string
  * handle. Elsewhere: `real` resolved again, required to be the same file as the handle.
  */
 async function handleInside(root: string, fh: FileHandle, real: string): Promise<string> {
+  if (NO_PROC) throw new Error(NO_PROC_ERROR);
   if (PROC_FD) {
     const at = (await timed(readlink(`/proc/self/fd/${fh.fd}`))).replace(/ \(deleted\)$/, "");
     if (!within(root, at)) throw new Error(OUTSIDE);
@@ -88,18 +113,22 @@ async function handleInside(root: string, fh: FileHandle, real: string): Promise
   return again;
 }
 
-/** A folder opened inside `root`: a path that reaches it through its handle (Linux), and where it is. */
-export async function openDirInside(root: string, real: string): Promise<{ via: string; at: string; close: () => Promise<void> }> {
+/**
+ * A folder opened inside `root`: `via` reaches it through its handle (Linux) in this process, `cwd`
+ * in a child (git), `at` is where it is.
+ */
+export async function openDirInside(root: string, real: string): Promise<{ via: string; cwd: string; at: string; close: () => Promise<void> }> {
+  if (NO_PROC) throw new Error(NO_PROC_ERROR);
   let fh: FileHandle;
   try {
-    fh = await timed(open(real, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK));
+    fh = await openTimed(real, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (e) {
     throw why(e);
   }
   const close = () => fh.close().catch(() => {});
   try {
     const at = await handleInside(root, fh, real);
-    return { via: PROC_FD ? `/proc/self/fd/${fh.fd}` : at, at, close };
+    return { via: PROC_FD ? `/proc/self/fd/${fh.fd}` : at, cwd: PROC_FD ? `/proc/${process.pid}/fd/${fh.fd}` : at, at, close };
   } catch (e) {
     await close();
     throw e;
@@ -123,7 +152,10 @@ async function linkTo(root: string, p: string, at: string): Promise<FileEntry["t
   }
 }
 
-/** Which of `names` (in the folder `dir`) git ignores; undefined outside a repo, empty when git can't say. */
+/**
+ * Which of `names` (in the folder `dir`, a path to it through its handle on Linux) git ignores;
+ * undefined outside a repo, empty when git can't say.
+ */
 async function ignoredIn(dir: string, names: string[]): Promise<Set<string> | undefined> {
   try {
     const top = await git(dir, ["rev-parse", "--show-toplevel"], { timeoutMs: 5000, ok: [0, 128] });
@@ -154,7 +186,7 @@ export async function listDir(root: string, path: unknown, hidden: boolean): Pro
     let uncounted = 0;
     const until = Date.now() + DIR_READ_MS;
     try {
-      const d = await timed(opendir(dir.via, { bufferSize: 256 }));
+      const d = await opendirTimed(dir.via);
       for await (const e of d) {
         if (e.name === ".git") continue;
         if (raw.length >= DIR_READ_MAX) uncounted++;
@@ -164,7 +196,7 @@ export async function listDir(root: string, path: unknown, hidden: boolean): Pro
     } catch (e) {
       throw why(e);
     }
-    const ignored = await ignoredIn(dir.at, raw.filter((r) => !r.name.includes("\ufffd")).map((r) => r.name));
+    const ignored = await ignoredIn(dir.cwd, raw.filter((r) => !r.name.includes("\ufffd")).map((r) => r.name));
     const repo = ignored !== undefined;
     const entries: FileEntry[] = [];
     for (const { name, dirent } of raw) {
@@ -247,7 +279,8 @@ export async function readFile(root: string, path: unknown, opts: { maxBytes?: n
   const max = Math.max(1, Math.min(FILE_VIEW_MAX, typeof opts.maxBytes === "number" && opts.maxBytes > 0 ? Math.floor(opts.maxBytes) : FILE_VIEW_MAX));
   let fh: FileHandle;
   try {
-    fh = await timed(open(real, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK));
+    if (NO_PROC) throw new Error(NO_PROC_ERROR);
+    fh = await openTimed(real, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (e) {
     throw why(e);
   }

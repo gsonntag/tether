@@ -6,11 +6,10 @@
 // handle, as listDir's are (fs.ts openDirInside). A folder's list is kept a few seconds, so typing
 // doesn't list it again for each letter; `fresh` (Refresh) lists it again.
 
-import { opendir } from "node:fs/promises";
 import { join } from "node:path";
 import { FIND_FILES_MAX, FIND_WALK_MS, HEAVY_DIRS, isHidden, rankMatches, type FindResult } from "../../../../shared/files";
 import { git } from "../git/run";
-import { openDirInside, timed } from "./fs";
+import { openDirInside, opendirTimed } from "./fs";
 
 const KEEP_MS = 5000;
 /** Bytes of `ls-files` output read at most. */
@@ -59,7 +58,7 @@ async function walk(root: string, hidden: boolean, cap: number): Promise<Listing
       continue;
     }
     try {
-      for await (const e of await timed(opendir(dir.via, { bufferSize: 256 }))) {
+      for await (const e of await opendirTimed(dir.via)) {
         if (e.name.includes("\ufffd")) continue;
         if (!hidden && isHidden(e.name)) continue;
         const p = rel ? `${rel}/${e.name}` : e.name;

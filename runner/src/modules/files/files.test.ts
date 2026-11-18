@@ -370,3 +370,21 @@ test("find: the walk's cap says partial; nested repos and gitlinks aren't files;
   expect((await f.find(root, "top", true)).paths).toEqual(["top.txt"]);
   expect((await f.find(root, "top", true, true)).paths).toEqual(["top.txt", "top2.txt"]);
 });
+
+test("timeouts: a call that answers late is let go, and a handle it opens then is closed", async () => {
+  const { timed, noProc } = await import("./fs");
+  let closed = false;
+  const slow = new Promise<{ close: () => void }>((r) => setTimeout(() => r({ close: () => (closed = true) }), 30));
+  await expect(timed(slow, 5, (h) => h.close())).rejects.toThrow("too long");
+  await Bun.sleep(40);
+  expect(closed).toBe(true);
+  // In time: nothing closed.
+  let closed2 = false;
+  await timed(Promise.resolve({ close: () => (closed2 = true) }), 50, (h) => h.close());
+  await Bun.sleep(5);
+  expect(closed2).toBe(false);
+  // Linux without /proc fails closed; elsewhere it's best effort.
+  expect(noProc("linux", false)).toBe(true);
+  expect(noProc("linux", true)).toBe(false);
+  expect(noProc("darwin", false)).toBe(false);
+});
