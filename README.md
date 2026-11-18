@@ -81,8 +81,8 @@ switches it, and API sessions show what they've cost in dollars.
 (input, output, cache reads and writes) by day, by harness and model, and by project, read from
 Claude Code's and Codex's own logs, so CLI sessions count too. Dollars are estimates at published API
 prices, split into plan usage and API keys, next to what Tether's own ledgers billed to API keys and
-what caching saved. The plan's 5-hour and weekly limits are at the top. The first read of the logs
-can take a few seconds; after that only what's new is read.
+what caching saved. The plan's 5-hour and weekly limits are at the top. The logs are first read when
+you open the page, which can take a few seconds; after that only what's new is read.
 
 **Texting** (iMessage through [Photon Spectrum](https://photon.codes), or a Discord bot): the runner can text you when
 a session has a request, needs you in the terminal, fails, or ends its turn with a question. Nothing
