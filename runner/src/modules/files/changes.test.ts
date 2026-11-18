@@ -61,7 +61,8 @@ test("modified, staged, untracked, renamed, deleted; ignored never", async () =>
       "top.txt": "modified",
       "sub/deep/c.txt": "modified",
       "new file.txt": "untracked",
-      "newdir/x/y.txt": "untracked",
+      // an untracked folder is one path (git's normal listing)
+      newdir: "untracked",
       "staged-new.txt": "added",
       "sub/new name.txt": "renamed",
       "old name.txt": "deleted",
@@ -69,6 +70,7 @@ test("modified, staged, untracked, renamed, deleted; ignored never", async () =>
       // deleted in the index, still there untracked: shown as untracked
       "sub/unstage.txt": "untracked",
     },
+    folders: ["newdir"],
   });
 });
 
@@ -97,20 +99,78 @@ test("a nested repo is one untracked folder", async () => {
   mkdirSync(n);
   sh(n, "init", "-q");
   write(n, "inner.txt");
-  expect((await fileChanges(await realRoot(d))).files).toEqual({ nested: "untracked" });
+  expect(await fileChanges(await realRoot(d))).toEqual({ repo: true, files: { nested: "untracked" }, folders: ["nested"] });
 });
 
 test("parse: renames and copies, unmerged, spaces, the cap, a cut last record", () => {
   const h = "100644 100644 100644 aaaa bbbb";
-  const out = [`1 .M N... ${h} a b.txt`, `2 R. N... ${h} R100 x/new.txt`, "x/old.txt", `2 C. N... ${h} C90 copy.txt`, "orig.txt", `u UU N... 100644 100644 100644 100644 a b c conflict.txt`, "? dir/", "! ignored.txt", ""].join("\0");
+  const u = "100644 100644 100644 100644 a b c";
+  const out = [
+    `1 .M N... ${h} a b.txt`,
+    `2 R. N... ${h} R100 x/new.txt`,
+    "x/old.txt",
+    `2 C. N... ${h} C90 copy.txt`,
+    "orig.txt",
+    `u UU N... ${u} conflict.txt`,
+    `u DD N... ${u} both-gone.txt`,
+    `1 .M S.M. 160000 160000 160000 a b mod`,
+    "? dir/",
+    "! ignored.txt",
+    "",
+  ].join("\0");
   expect(parseStatus(out, "")).toEqual({
     repo: true,
-    files: { "a b.txt": "modified", "x/new.txt": "renamed", "x/old.txt": "deleted", "copy.txt": "added", "conflict.txt": "modified", dir: "untracked" },
+    files: { "a b.txt": "modified", "x/new.txt": "renamed", "x/old.txt": "deleted", "copy.txt": "added", "conflict.txt": "conflict", "both-gone.txt": "deleted", mod: "modified", dir: "untracked" },
+    folders: ["mod", "dir"],
   });
+  // a worktree rename (after an intent to add) also leaves its old path deleted
+  expect(parseStatus([`2 .R N... ${h} R100 b.txt`, "a.txt", ""].join("\0"), "").files).toEqual({ "b.txt": "renamed", "a.txt": "deleted" });
+  // a folder whose own name isn't UTF-8 keeps its marks; only names under it that aren't are dropped
+  expect(parseStatus("? f\ufffd/x.txt\0? f\ufffd/\ufffd.txt\0", "f\ufffd/").files).toEqual({ "x.txt": "untracked" });
   // under a prefix: only what's in it, without it
   expect(parseStatus(out, "x/").files).toEqual({ "new.txt": "renamed", "old.txt": "deleted" });
   expect(parseStatus(out, "", false, 2)).toEqual({ repo: true, files: { "a b.txt": "modified", "x/new.txt": "renamed" }, cut: true });
   expect(parseStatus("? one.txt\0? two.t", "", true)).toEqual({ repo: true, files: { "one.txt": "untracked" }, cut: true });
+});
+
+test("intent to add, a worktree rename, a conflict", async () => {
+  const d = repo();
+  const commit = (m: string) => sh(d, "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-qam", m);
+  // a conflict: both sides change top.txt
+  sh(d, "checkout", "-q", "-b", "other");
+  write(d, "top.txt", "other\n");
+  commit("other");
+  sh(d, "checkout", "-q", "main");
+  write(d, "top.txt", "main\n");
+  commit("main");
+  Bun.spawnSync(["git", "-c", "user.name=T", "-c", "user.email=t@t", "merge", "-q", "other"], { cwd: d, env, stdout: "pipe", stderr: "pipe" });
+  // an intent to add (.A)
+  write(d, "ita.txt");
+  sh(d, "add", "-N", "ita.txt");
+  // moved by hand, the new name intended to add: a rename in the worktree (.R)
+  sh(d, "mv", "keep.txt", "kept.txt");
+  sh(d, "reset", "-q", "--", "keep.txt", "kept.txt");
+  sh(d, "add", "-N", "kept.txt");
+  expect((await fileChanges(await realRoot(d))).files).toEqual({ "ita.txt": "added", "kept.txt": "renamed", "keep.txt": "deleted", "top.txt": "conflict" });
+});
+
+test("status.showUntrackedFiles=no is honoured; a huge untracked folder is one path", async () => {
+  const d = repo();
+  mkdirSync(join(d, "big"));
+  for (let i = 0; i < 3000; i++) writeFileSync(join(d, "big", `f${i}.txt`), "x");
+  write(d, "top.txt", "changed\n");
+  expect(await fileChanges(await realRoot(d))).toEqual({ repo: true, files: { "top.txt": "modified", big: "untracked" }, folders: ["big"] });
+  sh(d, "config", "status.showUntrackedFiles", "no");
+  expect(await fileChanges(await realRoot(d))).toEqual({ repo: true, files: { "top.txt": "modified" } });
+});
+
+test("git's output past its byte cap: what came before, cut", async () => {
+  const d = repo();
+  for (let i = 0; i < 50; i++) write(d, `n${String(i).padStart(2, "0")}.txt`);
+  const c = await fileChanges(await realRoot(d), { maxBytes: 100 });
+  expect(c.cut).toBe(true);
+  // "? n00.txt\0" is 10 bytes: ten whole records fit, none half
+  expect(Object.keys(c.files)).toEqual(Array.from({ length: 10 }, (_, i) => `n0${i}.txt`));
 });
 
 test("the op answers for the session's folder", async () => {

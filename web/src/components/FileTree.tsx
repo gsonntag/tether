@@ -1,7 +1,7 @@
 // The Files tab's tree (SPEC §10 Files): a WAI-ARIA tree. Each entry is one focusable treeitem
 // (roving tabindex): arrows move, Right and Left open and close folders, Enter or Space opens; `@`
 // mentions it. The `@` button on a row is for the mouse and touch (not a tab stop). A file that
-// differs from HEAD has its name coloured and a letter (M, A, U, R); a folder with changes under it
+// differs from HEAD has its name coloured and a letter (M, A, U, R, C); a folder with changes under it
 // a dot. Both are said in words too (the row's label and title), never by colour alone.
 
 import { useRef, useState, type KeyboardEvent } from "react";
@@ -10,7 +10,7 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { ChevronDownIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
 import { DocumentIcon, FolderIcon, LinkIcon, PhotoIcon } from "@heroicons/react/24/solid";
 import { imageType, sizeLabel, type FileEntry } from "../../../shared/files";
-import { canOpen, isFolder, markText, MARKS, treeKey, type Marks, type Row } from "../files";
+import { canOpen, isFolder, markAt, markText, MARKS, treeKey, type Marks, type Row } from "../files";
 
 function EntryIcon({ e, path }: { e: FileEntry; path: string }) {
   if (e.kind === "link") return <Icon icon={LinkIcon} size="sm" />;
@@ -93,7 +93,7 @@ export function FileTree({ rows, hidden, marks, mentioned, onToggle, onOpen, onM
         const folder = isFolder(e);
         const openable = canOpen(e);
         const note = e.badName ? "name isn't UTF-8" : e.to ? LINK_NOTE[e.to] : "";
-        const mark = marks.files.get(r.path);
+        const mark = markAt(marks, r.path);
         const changed = markText(marks, r.path, folder);
         const said = [note, changed].filter(Boolean).join(", ");
         const act = () => (folder ? onToggle(r.path) : openable ? onOpen(r.path) : undefined);

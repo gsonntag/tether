@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import type { DirList, FileEntry } from "../../shared/files";
-import { canOpen, changedList, changeMarks, isFolder, lineNumbers, loadedOpen, markText, pruneOpen, treeRows, viewOf, withMention, type DirState } from "./files";
+import type { DirList, FileChanges, FileEntry } from "../../shared/files";
+import { canOpen, changedList, changeMarks, changesResult, isFolder, lineNumbers, loadedOpen, markAt, markText, pruneOpen, treeRows, viewOf, withMention, type DirState } from "./files";
 
 const list = (path: string, entries: FileEntry[], more?: number): DirState => ({ list: { path, entries, repo: true, ...(more ? { more } : {}) } satisfies DirList });
 const dir = (name: string): FileEntry => ({ name, kind: "dir" });
@@ -134,10 +134,11 @@ test("oddChars and mapLimit", async () => {
 });
 
 test("change marks: files keep their own, folders count what's under them, hidden paths only with the eye", () => {
-  const c = {
+  const c: FileChanges = {
     repo: true,
-    files: { "src/a.ts": "modified", "src/deep/b.ts": "untracked", "top.md": "added", "src/old.ts": "deleted", ".github/ci.yml": "modified", "lib/.env": "untracked", nested: "untracked" },
-  } as const;
+    files: { "src/a.ts": "modified", "src/deep/b.ts": "untracked", "top.md": "added", "src/old.ts": "deleted", ".github/ci.yml": "modified", "lib/.env": "untracked", nested: "untracked", "c.ts": "conflict" },
+    folders: ["nested"],
+  };
   const m = changeMarks(c, false);
   expect(m.files.get("src/a.ts")).toBe("modified");
   expect(m.files.get("top.md")).toBe("added");
@@ -151,16 +152,29 @@ test("change marks: files keep their own, folders count what's under them, hidde
     ["src", 3],
     ["src/deep", 1],
   ]);
+  // an untracked folder is named once: what's under it is untracked too
+  expect(markAt(m, "nested")).toBe("untracked");
+  expect(markAt(m, "nested/a/b.txt")).toBe("untracked");
+  expect(markAt(m, "src/deep/other.ts")).toBeUndefined();
   // words, not colour alone
   expect(markText(m, "src/a.ts", false)).toBe("modified");
-  expect(markText(m, "src", true)).toBe("3 changed files inside");
-  expect(markText(m, "src/deep", true)).toBe("1 changed file inside");
+  expect(markText(m, "c.ts", false)).toBe("conflict");
+  expect(markText(m, "src", true)).toBe("3 changes inside");
+  expect(markText(m, "src/deep", true)).toBe("1 change inside");
   expect(markText(m, "nested", true)).toBe("untracked");
+  expect(markText(m, "nested/x", true)).toBe("untracked");
   expect(markText(m, "lib", true)).toBe("");
   expect(markText(m, "README.md", false)).toBe("");
   // outside a repo, or not known: none
   expect(changeMarks({ repo: false, files: {} }, true).files.size).toBe(0);
   expect(changeMarks(undefined, true).dirs.size).toBe(0);
-  expect(changedList(c, false).map((x) => `${x.mark[0]} ${x.path}`)).toEqual(["u nested", "m src/a.ts", "u src/deep/b.ts", "d src/old.ts", "a top.md"]);
-  expect(changedList(c, true)).toHaveLength(7);
+  expect(changedList(c, false).map((x) => `${x.mark[0]}${x.folder ? "/" : ""} ${x.path}`)).toEqual(["c c.ts", "u/ nested", "m src/a.ts", "u src/deep/b.ts", "d src/old.ts", "a top.md"]);
+  expect(changedList(c, true)).toHaveLength(8);
+});
+
+test("changesResult: marks, a failure said, an older runner without the op silent", () => {
+  const c = { repo: true, files: { "a.ts": "modified" as const } };
+  expect(changesResult({ ok: true, data: c })).toEqual({ changes: c });
+  expect(changesResult({ ok: false, error: "git took too long." })).toEqual({ error: "git took too long." });
+  expect(changesResult({ ok: false, error: 'This runner doesn\'t know "fileChanges". Update and restart it.' })).toEqual({});
 });

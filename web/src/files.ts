@@ -51,11 +51,14 @@ export const MARKS: Readonly<Record<ChangeMark, { letter: string; label: string 
   untracked: { letter: "U", label: "untracked" },
   renamed: { letter: "R", label: "renamed" },
   deleted: { letter: "D", label: "deleted" },
+  conflict: { letter: "C", label: "conflict" },
 };
 
 export interface Marks {
-  /** a path's own mark (a file; a nested repo or untracked folder git names whole) */
+  /** a path's own mark (a file; a folder git names whole: untracked, a nested repo, a submodule) */
   files: ReadonlyMap<string, ChangeMark>;
+  /** the paths in `files` that are folders */
+  folders: ReadonlySet<string>;
   /** folders with changed paths under them, and how many */
   dirs: ReadonlyMap<string, number>;
 }
@@ -67,30 +70,46 @@ export interface Marks {
 export function changeMarks(c: FileChanges | undefined, hidden: boolean): Marks {
   const files = new Map<string, ChangeMark>();
   const dirs = new Map<string, number>();
-  if (!c?.repo) return { files, dirs };
+  if (!c?.repo) return { files, folders: new Set(), dirs };
   for (const [path, m] of Object.entries(c.files)) {
     files.set(path, m);
     if (!hidden && path.split("/").some(isHidden)) continue;
     for (let up = parentOf(path); up; up = parentOf(up)) dirs.set(up, (dirs.get(up) ?? 0) + 1);
   }
-  return { files, dirs };
+  return { files, folders: new Set(c.folders ?? []), dirs };
+}
+
+/** The mark on `path`: its own, else untracked when a folder above it is (git names an untracked folder once). */
+export function markAt(marks: Marks, path: string): ChangeMark | undefined {
+  const own = marks.files.get(path);
+  if (own) return own;
+  for (let up = parentOf(path); up; up = parentOf(up)) if (marks.folders.has(up) && marks.files.get(up) === "untracked") return "untracked";
+  return undefined;
 }
 
 /** The changed paths as a list (the Changed view), by path; dot-named ones only with `hidden`. */
-export function changedList(c: FileChanges | undefined, hidden: boolean): { path: string; mark: ChangeMark }[] {
+export function changedList(c: FileChanges | undefined, hidden: boolean): { path: string; mark: ChangeMark; folder: boolean }[] {
   if (!c?.repo) return [];
+  const folders = new Set(c.folders ?? []);
   return Object.entries(c.files)
     .filter(([p]) => hidden || !p.split("/").some(isHidden))
-    .map(([path, mark]) => ({ path, mark }))
+    .map(([path, mark]) => ({ path, mark, folder: folders.has(path) }))
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
 /** What a row says of its changes: a mark's word, or a folder's count; "" when none. */
 export function markText(marks: Marks, path: string, folder: boolean): string {
-  const own = marks.files.get(path);
+  const own = markAt(marks, path);
   if (own) return MARKS[own].label;
   const n = folder ? (marks.dirs.get(path) ?? 0) : 0;
-  return n ? `${n} changed ${n === 1 ? "file" : "files"} inside` : "";
+  return n ? `${n} ${n === 1 ? "change" : "changes"} inside` : "";
+}
+
+/** What a fileChanges answer or failure means for the tab: marks, else a note; an older runner without the op, neither. */
+export function changesResult(r: { ok: true; data: FileChanges } | { ok: false; error: string }): { changes?: FileChanges; error?: string } {
+  if (r.ok) return { changes: r.data };
+  if (/doesn't know "fileChanges"/.test(r.error)) return {};
+  return { error: r.error };
 }
 
 /** The folders to load again on Refresh or a hidden toggle: the top and every open one whose parents are open. */

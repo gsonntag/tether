@@ -259,3 +259,12 @@
   border-radius: 50%;
   background: var(--color-text-yellow, var(--color-warning));
 }
+.t-files-row.changed.conflict .t-files-name,
+.t-dstatus.conflict {
+  color: var(--color-text-red, var(--color-error));
+}
+.t-changes-note.t-files-changes-error {
+  flex: none;
+  padding: 4px 12px;
+  font-size: 12px;
+}
