@@ -45,6 +45,10 @@ import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type Request, ty
 import type { BillingSource, SourceOption } from "../../../../shared/credentials";
 import { HOME_AGENT_MODE, type HomeAgentSettings } from "../../../../shared/protocol";
 import { mapMode } from "../../../../shared/move";
+import { nextScheduled, unscheduled, waitingNow } from "../../../../shared/schedule";
+
+/** Why a scheduled message waits for the person (QueuedMessage.held), for the agent. */
+const STUCK_WHY = { late: "the runner was off for more than a day after its time", failed: "its send, or the turn before it, failed", stopped: "the person pressed Stop while it was due", restart: "a runner restart cut off the turn before it and didn't continue it", retry: "the rate limit retry it waited behind was cancelled" } as const;
 import type { Adapter, AgentSetup, AgentTool } from "../../core/adapter";
 import type { Module, ModuleContext } from "..";
 import { heicNote, HOME_SENDER, homeLabel, MAX_EXTRA_HOMES, PERSON_TEXT_MAX, type Home, type HomeEnd, type HomeTarget, type TakeVia } from "../homeLine";
@@ -944,6 +948,8 @@ export class HomeAgent implements HomeEnd {
     if (look.summary.parentSessionId) throw new Error("That's a subagent of another session: message its session instead.");
     if (look.summary.mode === "terminal" || look.state.mode === "terminal" || look.state.terminal) throw new Error("That session is open in a terminal: the person is working in it there. Leave it to them.");
     if (look.requests.length || look.state.requests.length) throw new Error(`That session is waiting for the person${look.state.requests[0] ? ` (${asks(look.state.requests[0])})` : ""}. Only they can answer it, in that session.`);
+    const stuck = look.state.queue.find((m) => m.held);
+    if (stuck) throw new Error(`That session has a scheduled message waiting for the person (${STUCK_WHY[stuck.held!]}): only they can send it, change its time or cancel it.`);
     if (look.summary.queuePaused || look.state.queueHeld) throw new Error("That session's queue is paused (after a Stop, a failure or a restart): it waits for the person.");
     // Its next turn's end would be read as its check-in answer.
     if (this.waiting(id)) throw new Error("That session is answering your check-in: wait for the check-in report.");
@@ -952,7 +958,7 @@ export class HomeAgent implements HomeEnd {
     if (revived) await s.setArchived(id, false);
     // Behind a turn (or messages) that isn't this one's: that turn's end isn't the report.
     // A rate limit retry waiting is the previous turn, not over yet.
-    const behind = look.status !== "idle" || look.state.queue.length > 0 || !!look.state.retry;
+    const behind = look.status !== "idle" || waitingNow(look.state.queue, Date.now()) || !!look.state.retry;
     const next: Child = c?.chat === chat && !c.released ? c : { chat, reports: 0, ...(c && !c.messaged ? {} : { messaged: true }) };
     if (behind) next.queued = true;
     this.state.children[id] = next;
@@ -1063,8 +1069,10 @@ export class HomeAgent implements HomeEnd {
             `Session ${id} ("${look.summary.title || "Untitled"}", ${look.summary.projectPath}, ${AGENT_NAMES[look.summary.harness] ?? look.summary.harness})`,
             `State: ${STATE_LABELS[st]}, last active ${ago(look.summary.updatedAt)}${error ? `. Last error: ${oneLine(error, 300)}` : ""}`,
             ...look.state.requests.map((r) => `Waiting for the person: ${asks(r)}`),
-            look.summary.queuePaused ? "Its queue is paused (after a Stop, a failure or a restart): it waits for the person." : "",
-            look.state.queue.length ? `${look.state.queue.length} message${look.state.queue.length === 1 ? "" : "s"} queued.` : "",
+            look.state.queueHeld && look.summary.queuePaused ? "Its queue is paused (after a Stop, a failure or a restart): it waits for the person." : "",
+            ...look.state.queue.filter((m) => m.held).map((m) => `A scheduled message waits for the person: ${STUCK_WHY[m.held!]}.`),
+            unscheduled(look.state.queue).length ? `${unscheduled(look.state.queue).length} message${unscheduled(look.state.queue).length === 1 ? "" : "s"} queued.` : "",
+            nextScheduled(look.state.queue) !== undefined ? `The person scheduled a message for ${new Date(nextScheduled(look.state.queue)!).toISOString()}.` : "",
             !mine
               ? "You didn't start it. You can message it with send_to_session when the person asks you to; you'd then get its reports."
               : c.released === "person"
@@ -1194,7 +1202,7 @@ export class HomeAgent implements HomeEnd {
       if (c.released === "person") throw new Error("The person has taken that session over: archive it only if they ask you to.");
       const look = await this.ctx.sessions.open(id).catch(() => undefined);
       if (!look) throw new Error(`There's no session ${id}.`);
-      if (look.status !== "idle" || look.requests.length || look.state.requests.length || look.state.queue.length) throw new Error("That session isn't finished: it's still working, has messages queued, or waits for the person.");
+      if (look.status !== "idle" || look.requests.length || look.state.requests.length || look.state.queue.length) throw new Error("That session isn't finished: it's still working, has messages queued or scheduled, or waits for the person.");
     }
     await this.ctx.sessions.setArchived(id, true);
     return `Archived ${await this.describe(id)}. send_to_session revives it if it's needed again.`;
@@ -1395,6 +1403,8 @@ export class HomeAgent implements HomeEnd {
     const running = answer ? await stillRunning(answer, this.probe, e.project).catch(() => answer.running) : undefined;
     const v = judge(answer, found, running);
     if (!v.archive) return Object.assign(e, { outcome: "kept", reason: v.reason });
+    // A message the person scheduled there is still to come: archiving would hide it.
+    if (this.ctx.session(id)?.state.queue.length) return Object.assign(e, { outcome: "kept", reason: "it has a message scheduled" });
     // The worktree Tether made for it goes first (with its branch): kept, the session is too.
     let reason = v.reason;
     const own = this.ctx.sessions.worktree?.(id);
@@ -1486,7 +1496,7 @@ export class HomeAgent implements HomeEnd {
     if (stopped || !this.watchable(id)) return;
     const look = this.ctx.session(id)!;
     if (error) return this.noteWatched(id, { kind: "failed", detail: error });
-    if (look.state.queue.length || look.background || look.requests.length || this.ctx.viewersOf(id).length) return;
+    if (waitingNow(look.state.queue, Date.now()) || look.background || look.requests.length || this.ctx.viewersOf(id).length) return;
     this.noteWatched(id, { kind: "finished" });
   }
 

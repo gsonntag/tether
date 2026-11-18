@@ -328,6 +328,26 @@ describe("New worktree", () => {
     await until(() => t.adapter.drivers.at(-1)?.sent.includes("and this") ?? false);
   });
 
+  test("a scheduled message that comes due waits for the setup: running or failed, until Send anyway", async () => {
+    const t = runnerFor();
+    const r = withSetup("#!/bin/sh\nsleep 0.3\nexit 2\n");
+    const made = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/sched" });
+    const id = made.sessionId;
+    await t.runner.live.queue.add(id, "early", [], { at: Date.now() + 50 });
+    await Bun.sleep(150);
+    expect(t.state(id).setup).toBe("running");
+    expect(t.adapter.drivers.at(-1)?.sent ?? []).toEqual([]);
+    await until(() => t.state(id).setup === "failed");
+    await t.runner.live.queue.add(id, "timed", [], { at: Date.now() + 50 });
+    await Bun.sleep(200);
+    expect(t.adapter.drivers.at(-1)?.sent ?? []).toEqual([]);
+    // Still scheduled, not held as failed: Send anyway lets them go.
+    expect(t.state(id).queue.map((m) => [m.text, m.held])).toEqual([["early", undefined], ["timed", undefined]]);
+    await t.runner.live.queue.resume(id);
+    await until(() => t.adapter.drivers.at(-1)?.sent.includes("timed") ?? false);
+    expect(t.adapter.drivers.at(-1)!.sent).toEqual(["early", "timed"]);
+  });
+
   test("a setup that ends while the harness is still starting: what waited goes once it has started", async () => {
     const t = runnerFor();
     let open!: () => void;

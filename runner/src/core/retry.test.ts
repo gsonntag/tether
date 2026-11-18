@@ -62,6 +62,21 @@ function fastRetry(live: LiveControl, calls: { attempt: number; deadline: number
 }
 
 describe("automatic rate limit retry integration", () => {
+  test("cancelling a retry holds the scheduled messages due behind it, saying so (SPEC §9)", async () => {
+    const { adapter, core, live } = setup();
+    adapter.addStored("sched", []);
+    live.retries.gapMs = 1;
+    live.retries.time = (_attempt, now) => now + 60_000;
+    adapter.script = () => [limit(1)];
+    await live.send("claude:sched", "original");
+    const s = await core.open("claude:sched");
+    await until(() => !!s.retry);
+    await live.queue.add("claude:sched", "timed", [], { at: Date.now() });
+    await Bun.sleep(80);
+    await live.cancelRetry(s.id);
+    expect(s.state.queue[0]?.held).toBe("retry");
+  });
+
   test("retries the same message through multiple limits and retains the attempt budget", async () => {
     const { adapter, core, live } = setup();
     adapter.addStored("multi", []);

@@ -23,10 +23,12 @@ function read(file: string): Partial<RunnerConfig> {
 /** Entries untouched this long are dropped on save. */
 const MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const MAX_ENTRIES = 2000;
-/** Entries kept whatever their age: a replaced thread (the only thing that says so), a pin, an archive. */
-const keep = (p: SessionPrefs) => !!(p.carried || p.pinned || p.archived);
-/** Carried and pinned entries first, so the cap cuts them last. Archived ones sort by age with the rest: they never expire, so ranking them up too would crowd out every new entry. */
-const rank = (p: SessionPrefs) => (p.carried ? 2 : p.pinned ? 1 : 0);
+/** A message scheduled far ahead (SPEC §9) keeps its session's entry however old it is. */
+const timed = (p: SessionPrefs) => Array.isArray(p.queue) && p.queue.some((m) => typeof m?.at === "number");
+/** Entries kept whatever their age: a replaced thread (the only thing that says so), a pin, an archive, a scheduled message. */
+const keep = (p: SessionPrefs) => !!(p.carried || p.pinned || p.archived || timed(p));
+/** Carried, scheduled and pinned entries first, so the cap cuts them last. Archived ones sort by age with the rest: they never expire, so ranking them up too would crowd out every new entry. */
+const rank = (p: SessionPrefs) => (p.carried ? 3 : timed(p) ? 2 : p.pinned ? 1 : 0);
 
 export class Prefs {
   private map: Record<string, SessionPrefs>;
@@ -37,6 +39,7 @@ export class Prefs {
   private open: SavedRequest[];
   private closed: ClosedRequest[];
   private runnerSettings: RunnerSettings;
+  private alive?: number;
 
   constructor(
     private file = CONFIG_FILE,
@@ -47,6 +50,20 @@ export class Prefs {
     this.open = Array.isArray(cfg.requests) ? cfg.requests : [];
     this.closed = Array.isArray(cfg.closedRequests) ? cfg.closedRequests : [];
     this.runnerSettings = cfg.settings && typeof cfg.settings === "object" ? { ...cfg.settings } : {};
+    this.alive = typeof cfg.aliveAt === "number" && Number.isFinite(cfg.aliveAt) ? cfg.aliveAt : undefined;
+  }
+
+  /** When the runner was last seen running (as saved: from before this start, until set). */
+  aliveAt(): number | undefined {
+    return this.alive;
+  }
+
+  /** The runner is running now (saved with the next write). */
+  setAliveAt(t: number | undefined) {
+    this.alive = t;
+    this.dirty = true;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.flush(), this.delayMs);
   }
 
   /** The runner-wide settings. */
@@ -158,9 +175,9 @@ export class Prefs {
     // Reread, so a name edited by hand meanwhile isn't overwritten.
     const cfg = read(this.file);
     if (!cfg.runnerId) return; // not a runner's file: never invent one here
-    const { requests: _, closedRequests: __, settings: ___, ...rest } = cfg;
+    const { requests: _, closedRequests: __, settings: ___, aliveAt: ____, ...rest } = cfg;
     saveConfig(
-      { ...rest, runnerId: cfg.runnerId, ...(Object.keys(this.runnerSettings).length ? { settings: this.runnerSettings } : {}), sessions: this.map, ...(this.open.length ? { requests: this.open } : {}), ...(this.closed.length ? { closedRequests: this.closed } : {}) },
+      { ...rest, runnerId: cfg.runnerId, ...(this.alive !== undefined ? { aliveAt: this.alive } : {}), ...(Object.keys(this.runnerSettings).length ? { settings: this.runnerSettings } : {}), sessions: this.map, ...(this.open.length ? { requests: this.open } : {}), ...(this.closed.length ? { closedRequests: this.closed } : {}) },
       this.file,
     );
   }

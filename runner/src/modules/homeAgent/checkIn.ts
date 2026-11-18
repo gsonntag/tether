@@ -18,6 +18,7 @@ import { existsSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import type { SessionLook } from "..";
 import type { SessionSummary } from "../../../../shared/transcript";
+import { waitingNow } from "../../../../shared/schedule";
 import { ANSWER_TAG, parseAnswer, type Answer } from "../../../../shared/checkIn";
 import { childEnv } from "../../childEnv";
 import type { WorktreeRecord } from "../../config";
@@ -64,7 +65,7 @@ export function skipReason(row: SessionSummary, look: SessionLook | undefined): 
   if (look.requests.length) return "it's waiting for the person";
   if (look.status !== "idle") return "it's running a turn";
   if (look.state.retry) return "it's waiting to retry after a rate limit";
-  if (look.state.queue.length || look.state.queueHeld) return "it has messages queued";
+  if (waitingNow(look.state.queue, Date.now()) || look.state.queueHeld) return "it has messages queued";
   if (look.busy) return "it has work running";
   return undefined;
 }

@@ -203,6 +203,18 @@ describe("a source change on a new thread (capabilities.sourceCarry)", () => {
     const n = await idle(t, "claude:carried-1");
     expect(n.state.cost).toEqual({ usd: 0.25, estimated: true, complete: true });
   });
+  test("a message scheduled on the old thread goes on from the new one (SPEC §9)", async () => {
+    const t = carrying(PLAN);
+    await t.live.send("claude:one", "plan");
+    await idle(t);
+    const at = Date.now() + 60 * 60 * 1000;
+    await t.live.queue.add("claude:one", "later", [], { at });
+    await t.live.setSource("claude:one", "anthropic");
+    await t.live.send("claude:one", "key");
+    const n = await idle(t, "claude:carried-1");
+    expect(n.state.queue.map((m) => [m.text, m.at])).toEqual([["later", at]]);
+    expect((await t.core.open("claude:one")).state.queue).toEqual([]);
+  });
   test("from a key thread whose entry was lost: the new thread can't be whole", async () => {
     const t = carrying(KEY);
     t.prefs.set("claude:one", { source: "anthropic", metered: true });
