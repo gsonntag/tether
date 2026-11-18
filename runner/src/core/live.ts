@@ -167,12 +167,13 @@ export class LiveControl {
    * which listeners (peers, Home agent, texting) skipped: its real end is now, as a stop. A Tether
    * send that replaces the chain neither holds the queue nor ends the turn: its own turn's end does.
    */
-  private cancelRetrySession(s: Session, o: { tether?: boolean } = {}) {
+  private cancelRetrySession(s: Session, o: { tether?: boolean; due?: "stopped" } = {}) {
     const waiting = (s.retry ?? this.core.o.prefs.get(s.id).retry)?.phase === "waiting";
     s.retrySuppressed = true;
     this.retries.clear(s);
     if (o.tether) return;
-    this.queue.hold(s, "stopped");
+    // Scheduled messages due behind the retry wait for you: you stopped it, or it was cancelled.
+    this.queue.hold(s, "stopped", { due: o.due ?? "retry" });
     if (waiting) this.core.o.bus.emit("turnEnded", { sessionId: s.id, stopped: true });
   }
 
@@ -685,7 +686,7 @@ export class LiveControl {
 
   async interrupt(id: string) {
     const s = await this.core.open(id);
-    if (s.retry) this.cancelRetrySession(s);
+    if (s.retry) this.cancelRetrySession(s, { due: "stopped" });
     const parentId = s.summary.parentSessionId;
     if (parentId) {
       // A subagent: stop just it (SPEC §6a). Its main session's process runs it, however deep it is nested.
@@ -854,7 +855,7 @@ export class LiveControl {
       if (!quiet) {
         this.read.set(id, { failure: "Couldn't tell whether Claude Code from before the restart was still working." });
         s.apply({ type: "msg", msg: notice("Couldn't tell whether Claude Code from before the restart was still working. Send a message to carry on.", "warning") });
-        this.queue.hold(s, "restart");
+        this.queue.hold(s, "restart", { due: "restart" });
         return this.endWait(s);
       }
       await this.terminal?.settled(s);
@@ -909,7 +910,7 @@ export class LiveControl {
     if (s) {
       // One notice: a failed start already said why in the transcript.
       if (!s.state.error) s.apply({ type: "msg", msg: notice(`Couldn't continue after the restart: ${why}. Send a message to continue.`, "warning") });
-      this.queue.hold(s, "restart");
+      this.queue.hold(s, "restart", { due: "restart" });
       this.core.touch(s);
     }
   }

@@ -631,14 +631,18 @@ Later, a Claude `PreToolUse` hook can route terminal approvals through the same 
   - *Apart from the queue:* holds are about the unscheduled messages, and a scheduled message neither
     holds nor releases them; one coming due goes next even while they're paused. It waits for a
     running turn or request, the terminal (Back to Tether), the quiet wait after a restart and a
-    rate limit retry. A Stop or a failed turn holds the scheduled messages due at that moment
-    (`held: "stopped" | "failed"`); ones coming due later still go at their time.
+    rate limit retry. A Stop, a failed turn, a cancelled rate limit retry or a restart that cut the
+    turn off without continuing it holds the scheduled messages due at that moment (`held:
+    "stopped" | "failed" | "retry" | "restart"`, each shown with why); ones coming due later still
+    go at their time. A message going out when its queue moves to a new session (below) comes back
+    there if it fails.
   - *Billing:* it goes through the normal send path (the session's source and checks). A send that
     fails says why in the chat and keeps the message, held (`failed`), never retried by itself.
   - *Timer and restarts:* one timer serves all, armed for the next time and never longer than a
-    minute, so long waits and clock jumps are safe. The runner saves when it was last seen running
-    (`aliveAt`) while messages are scheduled; the time from then to a start, or a gap of 5+ minutes
-    between two looks (a machine asleep), was off. A message whose time passed while the runner was
+    minute, so long waits and clock jumps are safe. While messages are scheduled the runner saves
+    when it was last seen running (`aliveAt`, removed once nothing is); the time from then to a
+    start, or a gap of 5+ minutes between two looks while something is scheduled (a machine
+    asleep), was off. Time with nothing scheduled is never counted. A message whose time passed while the runner was
     off sends on start; one the runner was off for more than 24 hours after waits for you instead
     (`held: "late"`, checked before anything can send it). Time spent waiting behind a turn or the
     terminal never makes one late. Sent 2+ minutes after its time (not Send now), a notice says

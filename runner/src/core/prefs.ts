@@ -53,7 +53,7 @@ export class Prefs {
   }
 
   /** The runner is running now (saved with the next write). */
-  setAliveAt(t: number) {
+  setAliveAt(t: number | undefined) {
     this.alive = t;
     this.dirty = true;
     clearTimeout(this.timer);

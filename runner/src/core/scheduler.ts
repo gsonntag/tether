@@ -12,6 +12,8 @@ export interface SchedulerHost {
   next(): number | undefined;
   /** sends (or queues next) whatever is due */
   fire(): void;
+  /** nothing is scheduled (any more) */
+  idle?(): void;
 }
 
 export class Scheduler {
@@ -30,7 +32,10 @@ export class Scheduler {
   arm() {
     if (this.off) return;
     const next = this.host.next();
-    if (next === undefined) return this.stop();
+    if (next === undefined) {
+      this.host.idle?.();
+      return this.stop();
+    }
     const now = this.host.now();
     // Something due that couldn't go yet (the turn runs, the terminal drives): its own triggers send
     // it (a turn's end, Back to Tether); this only looks again in a while, in case one is missed.
@@ -78,28 +83,42 @@ export const DOWN_GAP_MS = 5 * 60_000;
  * the time from then to this start, and any long gap between two looks (a machine asleep), was off.
  */
 export class Uptime {
-  private last: number;
+  /** the last look at the clock while something was scheduled; undefined: nothing is (gaps then aren't time off) */
+  private last?: number;
   private saved?: number;
   private down: { from: number; to: number }[] = [];
 
   constructor(
     private now: () => number,
-    private store: { get(): number | undefined; set(t: number): void },
+    private store: { get(): number | undefined; set(t: number | undefined): void },
   ) {
+    // Saved only while something is scheduled (cleared when nothing is): from then to now was off.
     const was = store.get();
-    this.last = now();
-    if (was !== undefined && this.last - was > DOWN_GAP_MS) this.down.push({ from: was, to: this.last });
+    const t = now();
+    if (was !== undefined) {
+      if (t - was > DOWN_GAP_MS) this.down.push({ from: was, to: t });
+      this.last = t;
+      this.saved = was;
+    }
   }
 
   /** The runner is running now. `save`: written now (a message was just scheduled), else every few minutes. */
   seen(save = false) {
     const t = this.now();
-    if (t - this.last > DOWN_GAP_MS) this.down = [...this.down, { from: this.last, to: t }].slice(-20);
-    this.last = Math.max(this.last, t);
+    // A gap between two looks while something was scheduled: the machine slept, or the process stalled.
+    if (this.last !== undefined && t - this.last > DOWN_GAP_MS) this.down = [...this.down, { from: this.last, to: t }].slice(-20);
+    this.last = Math.max(this.last ?? t, t);
     if (save || this.saved === undefined || t - this.saved >= DOWN_GAP_MS) {
       this.saved = t;
       this.store.set(t);
     }
+  }
+
+  /** Nothing is scheduled: the time from now on isn't watched, and runner.json forgets `aliveAt`. */
+  idle() {
+    if (this.last === undefined && this.saved === undefined) return;
+    this.last = this.saved = undefined;
+    this.store.set(undefined);
   }
 
   /** How long the runner was off after `at`. */

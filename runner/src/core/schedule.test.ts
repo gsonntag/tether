@@ -16,7 +16,7 @@ import type { CoreEvents } from "./events";
 import { FakeAdapter, FakeDriver, say } from "./fakeAdapter";
 import { LiveControl } from "./live";
 import { Prefs } from "./prefs";
-import { SCHEDULE_TICK_MS, Scheduler } from "./scheduler";
+import { SCHEDULE_TICK_MS, Scheduler, Uptime } from "./scheduler";
 import { SessionCore } from "./sessions";
 
 const cleanups: (() => void)[] = [];
@@ -473,3 +473,75 @@ describe("scheduled messages, review", () => {
   });
 });
 
+
+describe("scheduled messages, second review", () => {
+  test("time off counts only while something is scheduled; runner.json forgets aliveAt once nothing is", async () => {
+    const clock = { t: T0 };
+    let saved: number | undefined;
+    const u = new Uptime(() => clock.t, { get: () => saved, set: (t) => void (saved = t) });
+    u.seen(true);
+    expect(saved).toBe(T0);
+    u.idle(); // nothing scheduled any more
+    expect(saved).toBeUndefined();
+    clock.t += 3 * 24 * HOUR; // ran 3 days with nothing scheduled: no ticks, not off
+    u.seen(true);
+    expect(u.offSince(T0)).toBe(0);
+    clock.t += 2 * HOUR; // then asleep while something was
+    u.seen();
+    expect(u.offSince(T0)).toBe(2 * HOUR);
+
+    const { adapter, live, prefs, prefsFile, sent, advance } = setup();
+    adapter.addStored("s1", []);
+    const m = await live.queue.add("claude:s1", "x", [], { at: T0 + HOUR });
+    prefs.flush();
+    expect(JSON.parse(readFileSync(prefsFile, "utf8")).aliveAt).toBe(T0);
+    await live.queue.cancel("claude:s1", m.id);
+    prefs.flush();
+    expect(JSON.parse(readFileSync(prefsFile, "utf8")).aliveAt).toBeUndefined();
+    // A long idle stretch, then a message due soon after: it goes, not held late.
+    advance(5 * 24 * HOUR);
+    await live.queue.add("claude:s1", "fresh", [], { at: T0 + 5 * 24 * HOUR + MIN });
+    advance(MIN);
+    await until(() => sent().length === 1);
+  });
+
+  test("handed over while it went out, then the send failed: it comes back on the new session", async () => {
+    const { adapter, core, live, sent, advance } = setup();
+    adapter.addStored("s1", []);
+    adapter.addStored("s2", []);
+    let fail: (e: Error) => void = () => {};
+    adapter.script = (text) => (text === "timed" ? [() => new Promise<void>((_, r) => (fail = r))] : []);
+    await live.queue.add("claude:s1", "timed", [], { at: T0 + MIN });
+    await live.queue.add("claude:s1", "later", [], { at: T0 + 5 * HOUR });
+    advance(MIN);
+    await until(() => sent().length === 1);
+    await live.queue.handOver("claude:s1", "claude:s2");
+    fail(new Error("boom"));
+    await Bun.sleep(100);
+    const [a, b] = [await core.open("claude:s1"), await core.open("claude:s2")];
+    expect(a.state.queue).toEqual([]);
+    expect(b.state.queue.map((m) => [m.text, m.held])).toEqual([
+      ["timed", "failed"],
+      ["later", undefined],
+    ]);
+  });
+
+  test("a restart cut the turn off and didn't continue it: due ones wait for you, labelled so", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-sched-"));
+    const clock = { t: T0 };
+    const a = setup({ dir, clock });
+    a.adapter.addStored("s1", []);
+    await a.live.queue.add("claude:s1", "timed", [], { at: T0 + 10 * MIN });
+    a.prefs.set("claude:s1", { running: true });
+    a.prefs.flush();
+    a.live.queue.stop();
+    a.core.stop();
+    clock.t = T0 + HOUR;
+    const b = setup({ dir, prefsFile: a.prefsFile, clock });
+    b.adapter.addStored("s1", []);
+    await b.live.queue.restore();
+    await Bun.sleep(150);
+    expect(b.sent()).toEqual([]);
+    expect((await b.core.open("claude:s1")).state.queue[0]?.held).toBe("restart");
+  });
+});

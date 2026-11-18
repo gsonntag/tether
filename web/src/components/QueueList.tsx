@@ -53,6 +53,8 @@ const STUCK: Record<NonNullable<QueuedMessage["held"]>, string> = {
   late: "Not sent: the runner was off for more than a day after its time.",
   failed: "Not sent: the send failed or the turn before it failed.",
   stopped: "Not sent: you pressed Stop while it was due.",
+  restart: "Not sent: the runner restarted mid-turn and didn't continue that turn.",
+  retry: "Not sent: the rate limit retry it waited behind was cancelled.",
 };
 
 /**

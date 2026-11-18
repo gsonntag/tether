@@ -54,6 +54,8 @@ export class MessageQueue {
   private releases = new Map<string, number>();
   /** sessions whose turn was running when the runner last stopped (read before anything loads them) */
   private cutOff: Set<string>;
+  /** sessions whose queue was handed over while a message went out: where it goes back if it fails */
+  private handed = new Map<string, string>();
   /** the one timer for every scheduled message */
   readonly scheduler: Scheduler;
   /** when the runner was off (a message more than a day late for that waits for you) */
@@ -64,7 +66,7 @@ export class MessageQueue {
     private host: QueueHost,
   ) {
     this.cutOff = new Set(core.o.prefs.running());
-    this.scheduler = new Scheduler({ now: () => core.now(), next: () => this.nextDue(), fire: () => this.due() });
+    this.scheduler = new Scheduler({ now: () => core.now(), next: () => this.nextDue(), fire: () => this.due(), idle: () => this.uptime.idle() });
     this.uptime = new Uptime(() => core.now(), { get: () => core.o.prefs.aliveAt(), set: (t) => core.o.prefs.setAliveAt(t) });
     const bus = core.o.bus;
     bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => {
@@ -203,10 +205,12 @@ export class MessageQueue {
     const to = await this.root(toId);
     const going = this.going.get(from.id);
     const moving = from.state.queue;
+    // The message going out still goes from here (live.ts send follows movedTo); if it fails it
+    // comes back there, not here (drain).
+    if (going) this.handed.set(from.id, to.id);
     if (!moving.length) return;
     this.save(to, [...to.state.queue, ...moving], to.state.queueHeld ? undefined : (from.state.queueHeldBy ?? undefined));
     this.save(from, [], null);
-    // The message going out still goes from here (to the new session, live.ts send follows movedTo).
     if (going) this.persist(from);
     this.later(to.id);
   }
@@ -224,10 +228,14 @@ export class MessageQueue {
   // ---------------- holding ----------------
 
   /** The queue waits (Stop, a handoff, a failed turn, a restart). */
-  hold(s: Session, by: HeldBy, o: { over?: boolean } = {}) {
-    // Stop, or a failed turn: the scheduled messages due right now wait for you too (ones coming due
-    // later still go at their time).
-    if (by === "stopped" || by === "failed") this.holdDue(s, by);
+  /**
+   * `due`: the scheduled messages due right now wait for you too, and why (ones coming due later
+   * still go at their time): always after Stop or a failed turn; after a restart only when the turn
+   * it cut off isn't continued (not for the quiet wait, which they wait out anyway).
+   */
+  hold(s: Session, by: HeldBy, o: { over?: boolean; due?: NonNullable<QueuedMessage["held"]> } = {}) {
+    const due = o.due ?? (by === "stopped" || by === "failed" ? by : undefined);
+    if (due) this.holdDue(s, due);
     if (!unscheduled(s.state.queue).length || (s.state.queueHeld && s.state.queueHeldBy === by)) return;
     // A queue you paused stays paused through a terminal round trip (Back to Tether releases only
     // what the terminal held); `over`: the hold being replaced is the handoff's own Stop.
@@ -261,7 +269,7 @@ export class MessageQueue {
       // Held for a terminal that is gone (it exited while the runner was away, or the runner stopped
       // during Back to Tether): nothing would ever release that hold, so it waits for Resume.
       if (s.state.queueHeldBy === "terminal" && s.state.mode !== "terminal") this.save(s, s.state.queue, "restart");
-      if (this.cutOff.has(id) && !s.capabilities.persistent) this.hold(s, "restart");
+      if (this.cutOff.has(id) && !s.capabilities.persistent) this.hold(s, "restart", { due: "restart" });
       this.core.touch(s);
       this.later(id);
     }
@@ -367,6 +375,9 @@ export class MessageQueue {
       // A handoff got there first: it waits for Back to Tether.
       const mode: string = s.state.mode;
       const how: HeldBy | undefined = mode === "terminal" ? "terminal" : stoppedHere ? ((this.releases.get(id) ?? 0) !== released ? undefined : "stopped") : busy ? undefined : "failed";
+      // Its queue was handed to another session meanwhile (a source change, a move): back there.
+      const to = this.handed.get(id) ? this.core.sessions.get(this.handed.get(id)!) : undefined;
+      const home = to ?? s;
       if (cancelled) {
         this.persist(s);
         this.left(s, next!, "cancelled");
@@ -374,11 +385,13 @@ export class MessageQueue {
         // Back as it was, to go once the session is free (the turn, the terminal); anything else
         // waits for you, and holds nothing else.
         const held = how === "stopped" ? "stopped" : how === "failed" ? "failed" : undefined;
-        this.save(s, [held ? { ...next, held } : next, ...s.state.queue]);
-      } else this.save(s, [next!, ...s.state.queue], how);
-      if (how === undefined) this.later(id);
+        this.save(home, [held ? { ...next, held } : next, ...home.state.queue]);
+      } else this.save(home, [next!, ...home.state.queue], how);
+      if (to) this.persist(s);
+      if (how === undefined) this.later(home.id);
     } finally {
       this.going.delete(id);
+      this.handed.delete(id);
       this.draining.delete(id);
     }
   }

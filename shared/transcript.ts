@@ -256,10 +256,11 @@ export interface QueuedMessage {
   at?: number;
   /**
    * A scheduled message that came due but waits for you (Send now, a new time, or cancel): the runner
-   * was off for more than a day after its time, its send failed, or a Stop (or a failed turn) came
-   * while it was due.
+   * was off for more than a day after its time (`late`), its send or the turn before it failed, a
+   * Stop came while it was due, a restart cut the turn before it off and didn't continue it, or the
+   * rate limit retry it waited behind was cancelled (`retry`).
    */
-  held?: "late" | "failed" | "stopped";
+  held?: "late" | "failed" | "stopped" | "restart" | "retry";
   /** Send now (`scheduleQueued` with null): due at once, never marked or held late */
   asap?: true;
 }

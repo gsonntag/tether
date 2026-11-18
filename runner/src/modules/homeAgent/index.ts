@@ -48,7 +48,7 @@ import { mapMode } from "../../../../shared/move";
 import { nextScheduled, unscheduled, waitingNow } from "../../../../shared/schedule";
 
 /** Why a scheduled message waits for the person (QueuedMessage.held), for the agent. */
-const STUCK_WHY = { late: "the runner was off for more than a day after its time", failed: "its send failed", stopped: "a Stop came while it was due" } as const;
+const STUCK_WHY = { late: "the runner was off for more than a day after its time", failed: "its send, or the turn before it, failed", stopped: "the person pressed Stop while it was due", restart: "a runner restart cut off the turn before it and didn't continue it", retry: "the rate limit retry it waited behind was cancelled" } as const;
 import type { Adapter, AgentSetup, AgentTool } from "../../core/adapter";
 import type { Module, ModuleContext } from "..";
 import { heicNote, HOME_SENDER, homeLabel, MAX_EXTRA_HOMES, PERSON_TEXT_MAX, type Home, type HomeEnd, type HomeTarget, type TakeVia } from "../homeLine";
