@@ -17,11 +17,11 @@ import { ArrowPathIcon, XMarkIcon } from "@heroicons/react/24/solid";
 import { DIFF_SCOPES, isDiffScope, numberLines, type DiffScope, type GitDiff } from "../../../shared/gitDiff";
 import type { RunStatus } from "../../../shared/transcript";
 import { rpc } from "../connection";
-import { findLines, reviewKey, reviewMessage, type LineComment } from "../review";
+import { findLines, reviewKey, reviewMessage, unhand, unhandMissing, type LineComment } from "../review";
 import { updateComments, useComments, useUnsaved } from "../reviewStore";
 import { useStore, viewKey } from "../store";
-import { putDraft } from "./Composer";
-import { CommentCard, Counts, DiffFileView, type Sel } from "./DiffFile";
+import { draftOf, putDraft } from "./Composer";
+import { CommentCard, Counts, DiffFileView, fileKey, type Sel } from "./DiffFile";
 import { useFitViewport } from "./useFitViewport";
 import "./ChangesPane.css";
 
@@ -68,9 +68,9 @@ export function ChangesPane({
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [sel, setSel] = useState<Sel | null>(null);
-  /** files folded or unfolded by hand: kept across refreshes */
+  /** files (by fileKey) folded or unfolded by hand: kept across refreshes */
   const [folds, setFolds] = useState<Map<string, boolean>>(new Map());
-  /** whether files start open, decided by the scope's first load */
+  /** whether files start open: decided by each load until one is folded or unfolded by hand */
   const [openFirst, setOpenFirst] = useState<boolean>();
   const [trayOpen, setTrayOpen] = useState(false);
   const linkOpen = useStore((s) => s.link === "open");
@@ -99,13 +99,22 @@ export function ChangesPane({
     },
     [runnerId, sessionId],
   );
+  // Comments said to be in the message box that it doesn't hold (a reload emptied it) are back in the tray.
+  useEffect(() => updateComments(key, (l) => unhandMissing(l, draftOf(viewKey(runnerId, sessionId)))), [key]);
+  /** a reload waiting for the comment being written (a turn ended, the link came back) */
+  const [owed, setOwed] = useState(false);
+  const writing = useRef(false);
+  writing.current = !!sel;
+  const loaded = useRef<DiffScope>(undefined);
   useEffect(() => {
-    if (linkOpen) void load(scope);
+    if (!linkOpen) return;
+    if (writing.current && loaded.current === scope) return setOwed(true);
+    loaded.current = scope;
+    void load(scope);
   }, [load, scope, linkOpen]);
   // A turn ended: what it changed shows. While a comment is being written that waits for it.
   const busy = status !== "idle";
   const wasBusy = useRef(busy);
-  const [owed, setOwed] = useState(false);
   useEffect(() => {
     if (wasBusy.current && !busy) setOwed(true);
     wasBusy.current = busy;
@@ -132,19 +141,19 @@ export function ChangesPane({
   const shown = diff?.scope === scope ? diff : undefined;
   const files = shown?.files ?? [];
   useEffect(() => {
-    if (!shown || openFirst !== undefined) return;
+    if (!shown || folds.size) return;
     const lines = shown.files.reduce((n, f) => n + (f.hunks?.reduce((m, h) => m + h.lines.length, 0) ?? 0), 0);
     setOpenFirst(lines <= OPEN_LINES_MAX);
-  }, [shown, openFirst]);
+  }, [shown]);
   // A reload (Refresh) moved or removed the picked lines: the pick follows them, or goes.
   useEffect(() => {
     if (!sel || !shown) return;
-    const f = shown.files.find((x) => x.path === sel.path && x.hunks);
+    const f = shown.files.find((x) => fileKey(x) === sel.file && x.hunks);
     if (!f || !findLines(f.hunks!.map(numberLines), sel.ka, sel.kb)) setSel(null);
   }, [shown]);
 
-  const isOpen = (path: string) => folds.get(path) ?? openFirst ?? true;
-  const toggle = useCallback((path: string) => setFolds((f) => new Map(f).set(path, !(f.get(path) ?? openFirst ?? true))), [openFirst]);
+  const isOpen = (k: string) => folds.get(k) ?? openFirst ?? true;
+  const toggle = useCallback((k: string) => setFolds((f) => new Map(f).set(k, !(f.get(k) ?? openFirst ?? true))), [openFirst]);
   const inDiff = useMemo(() => new Set(files.map((f) => f.path)), [files]);
   /** this scope's comments, by file (a stable empty list for the rest, so their files don't redraw) */
   const byFile = useMemo(() => {
@@ -163,7 +172,8 @@ export function ChangesPane({
     },
     [key],
   );
-  const edit = useCallback((id: string, text: string) => updateComments(key, (l) => l.map((c) => (c.id === id ? { ...c, text } : c))), [key]);
+  // An edit made after Send to agent isn't in the message box: the comment is back in the tray.
+  const edit = useCallback((id: string, text: string) => updateComments(key, (l) => l.map((c) => (c.id === id ? { ...unhand(c), text } : c))), [key]);
   const remove = useCallback((id: string) => updateComments(key, (l) => l.filter((c) => c.id !== id)), [key]);
   const pending = comments.filter((c) => !c.handed);
   const handed = comments.length - pending.length;
@@ -176,9 +186,10 @@ export function ChangesPane({
     setTrayOpen(false);
     onSent();
   };
-  const takeBack = () => updateComments(key, (l) => l.map(({ handed: _, ...c }) => c));
+  const takeBack = () => updateComments(key, (l) => l.map(unhand));
   const show = (c: LineComment) => {
-    if (!isOpen(c.path)) toggle(c.path);
+    const f = files.find((x) => x.path === c.path && x.hunks) ?? files.find((x) => x.path === c.path);
+    if (f && !isOpen(fileKey(f))) toggle(fileKey(f));
     requestAnimationFrame(() => document.getElementById(`t-rc-${c.id}`)?.scrollIntoView({ block: "center", behavior: "smooth" }));
   };
 
@@ -210,7 +221,7 @@ export function ChangesPane({
           ))}
         </div>
         <div className="t-changes-actions">
-          {loading && shown ? <Spinner size="sm" label="Refreshing" /> : <IconButton label="Refresh" tooltip="Refresh" size="sm" variant="ghost" icon={<Icon icon={ArrowPathIcon} />} onClick={() => void load(scope)} />}
+          {loading && shown ? <Spinner size="sm" label="Refreshing" /> : <IconButton label="Refresh" tooltip="Refresh" size="sm" variant="ghost" icon={<Icon icon={ArrowPathIcon} />} onClick={() => (setOwed(false), void load(scope))} />}
           <IconButton label="Close changes" tooltip="Close" size="sm" variant="ghost" icon={<Icon icon={XMarkIcon} />} onClick={onClose} />
         </div>
       </div>
@@ -227,17 +238,31 @@ export function ChangesPane({
           </span>
         </div>
       )}
+      {owed && (
+        <div className="t-changes-note t-changes-owed">
+          New changes.
+          <Button
+            label="Show them"
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              setOwed(false);
+              void load(scope);
+            }}
+          />
+        </div>
+      )}
       {shown?.timedOut && <div className="t-changes-note">git took too long: some files show their counts only.</div>}
       {error && shown && <div className="t-changes-note error">{error}</div>}
       <div className="t-changes-body">
         {note}
         {files.map((f) => (
           <DiffFileView
-            key={`${f.status}:${f.path}`}
+            key={fileKey(f)}
             file={f}
-            open={isOpen(f.path)}
+            open={isOpen(fileKey(f))}
             onToggle={toggle}
-            sel={sel?.path === f.path ? sel : undefined}
+            sel={sel?.file === fileKey(f) ? sel : undefined}
             onSelect={setSel}
             touch={touch}
             comments={byFile.get(f.path) ?? NONE}

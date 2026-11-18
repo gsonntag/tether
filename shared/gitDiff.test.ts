@@ -130,3 +130,8 @@ test("sizes are JSON bytes: CJK text costs three bytes a character", () => {
   const [f] = parsePatch(`diff --git a/c.txt b/c.txt\n--- a/c.txt\n+++ b/c.txt\n@@ -1 +1 @@\n-x\n+${line}\n`);
   expect(f!.size).toBeGreaterThan(300);
 });
+
+test("a quoted path with an escaped quote and a space: the whole name", () => {
+  const out = 'diff --git "a/a\\" b" "b/a\\" b"\nnew file mode 100644\nindex 0000000..1111111\nBinary files /dev/null and "b/a\\" b" differ\n';
+  expect(parsePatch(out).map((f) => [f.path, f.binary])).toEqual([['a" b', true]]);
+});

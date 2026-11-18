@@ -169,6 +169,13 @@ await pane(p).locator(".t-review-count", { hasText: "3 in the message box" }).wa
 if (await pane(p).getByRole("button", { name: "Send to agent" }).count()) fail("Send to agent still offered");
 await pane(p).getByRole("button", { name: "Take back" }).click();
 await pane(p).locator(".t-review-count", { hasText: "3 comments" }).waitFor();
+// Handed again, then a reload empties the message box: they're back in the tray by themselves.
+await pane(p).getByRole("button", { name: "Send to agent" }).click();
+await pane(p).locator(".t-review-count", { hasText: "3 in the message box" }).waitFor();
+await p.reload();
+await p.getByRole("button", { name: "Changes", exact: true }).click();
+await pane(p).locator(".t-review-count", { hasText: "3 comments" }).waitFor({ timeout: 20_000 });
+await pane(p).locator(".t-dfile").first().waitFor({ timeout: 20_000 });
 while (await pane(p).locator(".t-dfile").getByRole("button", { name: "Remove", exact: true }).count()) await pane(p).locator(".t-dfile").getByRole("button", { name: "Remove", exact: true }).first().click();
 await pane(p).locator(".t-review-tray").waitFor({ state: "detached" });
 if (git(REPO, "status", "--porcelain").includes("A  notes.md")) fail("the index changed");

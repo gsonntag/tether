@@ -361,21 +361,20 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             shell={{ folder: summary.projectPath, heldBy: state.restartWait ? "restartWait" : state.queueHeld ? state.queueHeldBy : undefined }}
             onSend={async (kind, text, list) => {
               const attachments = list.length ? { attachments: list } : {};
-              // Review comments the message carries are done (Changes pane).
-              if (kind !== "shell") reviewSent(runnerId, sessionId, text);
               // A `!` command: runs now, whatever the agent does (SPEC §9 Shell commands).
-              if (kind === "shell") await rpc(runnerId, "runShell", { sessionId, command: text });
-              else if (kind === "steer") await rpc(runnerId, "steer", { sessionId, text, ...attachments });
+              if (kind === "shell") return void (await rpc(runnerId, "runShell", { sessionId, command: text }));
+              if (kind === "steer") await rpc(runnerId, "steer", { sessionId, text, ...attachments });
               else if (kind === "queue") await rpc(runnerId, "queue", { sessionId, text, ...attachments });
               else await rpc(runnerId, "send", { sessionId, text, ...attachments, ...(kind === "stopSend" ? { stop: true } : {}) });
+              // It went: the review comments it carries are done (Changes pane).
+              reviewSent(runnerId, sessionId, text);
             }}
             // In the terminal a message waits in the queue (its own row): no pending copy.
             sendNow={
               inTerminal
                 ? undefined
                 : (kind, text, list) => {
-                    reviewSent(runnerId, sessionId, text);
-                    void sendPending(runnerId, sessionId, text, list, { stop: kind === "stopSend" });
+                    void sendPending(runnerId, sessionId, text, list, { stop: kind === "stopSend", sent: () => reviewSent(runnerId, sessionId, text) });
                   }
             }
             onStop={async () => {

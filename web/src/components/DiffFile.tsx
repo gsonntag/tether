@@ -10,8 +10,13 @@ import { ChevronDownIcon, ChevronRightIcon } from "@heroicons/react/24/solid";
 import { numberLines, type DiffFile, type FileStatus, type NumberedLine } from "../../../shared/gitDiff";
 import { findLines, lineKey, location, selectionOf, type LineComment } from "../review";
 
+/** A file in the list: a path can be there twice (deleted, and untracked again). */
+export const fileKey = (f: Pick<DiffFile, "status" | "path">) => `${f.status}:${f.path}`;
+
 /** The lines picked for a new comment, by lineKey: after a reload they're found again, or dropped. */
 export interface Sel {
+  /** fileKey */
+  file: string;
   path: string;
   /** where the pick started */
   ka: string;
@@ -150,7 +155,8 @@ export const DiffFileView = memo(function DiffFileView({
 }: {
   file: DiffFile;
   open: boolean;
-  onToggle: (path: string) => void;
+  /** by fileKey */
+  onToggle: (key: string) => void;
   /** the selection, when it's in this file */
   sel?: Sel;
   onSelect: (s: Sel | null) => void;
@@ -192,12 +198,14 @@ export const DiffFileView = memo(function DiffFileView({
     if (extend && sel && at?.hunk === hunk) onSelect({ ...sel, kb: k });
     else {
       typed.current = "";
-      onSelect({ path: file.path, ka: k, kb: k });
+      onSelect({ file: fileKey(file), path: file.path, ka: k, kb: k });
     }
   };
   const st = STATUS[file.status];
   const body = file.badPath ? (
     <div className="t-dnote">Can't show this file: its name isn't UTF-8.</div>
+  ) : file.symlink !== undefined ? (
+    <div className="t-dnote">Symlink to {file.symlink}</div>
   ) : file.binary ? (
     <div className="t-dnote">Binary file</div>
   ) : file.tooLarge ? (
@@ -279,7 +287,7 @@ export const DiffFileView = memo(function DiffFileView({
   );
   return (
     <section className="t-dfile" aria-label={file.path} style={{ "--t-dl-w": numberWidth(hunks) } as React.CSSProperties}>
-      <button type="button" className="t-dfile-head" aria-expanded={open} onClick={() => onToggle(file.path)}>
+      <button type="button" className="t-dfile-head" aria-expanded={open} onClick={() => onToggle(fileKey(file))}>
         <Icon icon={open ? ChevronDownIcon : ChevronRightIcon} size="sm" />
         <span className={`t-dstatus ${file.status}`} title={st.label} aria-label={st.label}>
           {st.letter}
@@ -292,7 +300,7 @@ export const DiffFileView = memo(function DiffFileView({
           )}
           <PathLabel path={file.path} />
         </span>
-        {!file.binary && <Counts added={file.added} removed={file.removed} />}
+        {!file.binary && file.symlink === undefined && <Counts added={file.added} removed={file.removed} />}
       </button>
       {open && <div className="t-dfile-body">{body}</div>}
     </section>

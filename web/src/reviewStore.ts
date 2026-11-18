@@ -18,7 +18,9 @@ export function useComments(key: string): LineComment[] {
 export const useUnsaved = (key: string) => useReviews((s) => !!s.unsaved[key]);
 
 export function updateComments(key: string, f: (list: LineComment[]) => LineComment[]) {
-  const list = f(current(key));
+  const was = current(key);
+  const list = f(was);
+  if (list === was) return;
   const ok = writeComments(localStorage, key, list);
   useReviews.setState((s) => ({ lists: { ...s.lists, [key]: list }, unsaved: { ...s.unsaved, [key]: !ok } }));
 }

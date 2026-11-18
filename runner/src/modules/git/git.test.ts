@@ -2,7 +2,7 @@
 // the caps, a folder that isn't a repo, and that nothing in the repo changes.
 
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DIFF_FILE_LINES_MAX } from "../../../../shared/gitDiff";
@@ -232,12 +232,43 @@ test("odd names: '-', a path both deleted and untracked, a name that isn't UTF-8
   expect(bad!.hunks).toBeUndefined();
 });
 
+test("an untracked symlink (to a folder too) says where it points", async () => {
+  const d = repo();
+  mkdirSync(join(d, "real"));
+  writeFileSync(join(d, "real", "x.txt"), "x\n");
+  symlinkSync("real", join(d, "to-dir"));
+  symlinkSync("a.txt", join(d, "to-file"));
+  const f = byPath(await gitDiff(d, "uncommitted"));
+  expect(f["to-dir"]).toMatchObject({ status: "untracked", symlink: "real" });
+  expect(f["to-dir"]!.tooLarge).toBeUndefined();
+  expect(f["to-file"]).toMatchObject({ symlink: "a.txt" });
+});
+
+test("a cut batch is asked again file by file only while the budget lasts", async () => {
+  const d = repo();
+  for (const n of ["a", "b", "c", "d"]) writeFileSync(join(d, `${n}.txt`), "x\n");
+  sh(d, "add", ".");
+  sh(d, "commit", "-qm", "four");
+  writeFileSync(join(d, "a.txt"), "y".repeat(20_000) + "\n");
+  for (const n of ["b", "c", "d"]) writeFileSync(join(d, `${n}.txt`), "z\n".repeat(30));
+  const r = await gitDiff(d, "uncommitted", { fileBytes: 2000, totalBytes: 300 });
+  expect(r.files.filter((f) => /^[abcd]\.txt$/.test(f.path)).map((f) => [f.path, f.tooLarge ?? "shown"])).toEqual([
+    ["a.txt", "file"],
+    ["b.txt", "shown"],
+    ["c.txt", "total"],
+    ["d.txt", "total"],
+  ]);
+});
+
 test("out of time: the files not reached show their counts only", async () => {
   const d = repo();
   writeFileSync(join(d, "a.txt"), "x\n");
   const r = await gitDiff(d, "uncommitted", { timeMs: 0 });
   expect(r.timedOut).toBe(true);
   expect(r.files[0]).toMatchObject({ path: "a.txt", tooLarge: "total", added: 1 });
+  writeFileSync(join(d, "new.txt"), "n\n");
+  const u = await gitDiff(d, "uncommitted", { timeMs: 0 });
+  expect(u.files.find((f) => f.path === "new.txt")).toMatchObject({ status: "untracked", tooLarge: "total" });
 });
 
 test("the gitDiff op: the session's folder, a bad scope refused", async () => {

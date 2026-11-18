@@ -1115,12 +1115,14 @@ on its own (a minified bundle) shows its counts only and nothing else is lost. S
 (UTF-8, as frames are measured): a file over 3,000 changed lines or 512 KB of hunks shows its counts
 only, files fill 3 MB of hunks in path order and the rest show counts, past 1,000 files the rest are
 a count, and after 30 s the files not reached show counts (`timedOut`). Binary files say so, as do
-names that aren't UTF-8, a folder outside a repo, a missing default branch and a branch with no
+names that aren't UTF-8, an untracked symlink (where it points), a folder outside a repo, a missing default branch and a branch with no
 history in common with it. It reads the folder itself, untracked files included, so it needs drive
 access: it is never a view-only op (`VIEW_OPS`).
 
-The pane loads on opening, on a scope change, on Refresh, and when a turn ends; while a comment is
-being written that reload waits until it's saved or cancelled. A pick of lines is kept by their
+The pane loads on opening, on a scope change, on Refresh, and when a turn ends or the link comes
+back; while a comment is being written those two wait until it's saved or cancelled, and "New
+changes" offers them. Files start folded when a load shows over 2,000 lines, until one is folded or
+unfolded by hand. A pick of lines is kept by their
 numbers and text, so a reload either finds the same lines or drops the pick: a comment never lands
 on other lines.
 
@@ -1131,8 +1133,9 @@ drafts in this browser per session (`localStorage`; a write it refuses is said i
 agent** puts them in the composer as one message, each as `` `path:line` `` (or `path:a-b`; removed
 lines say "removed; lines in HEAD" or the branch's base) over its lines in a diff block. The message
 can be edited before it's sent; on a phone the sheet closes to show it. The comments stay, marked
-as in the message box (**Take back** unmarks them), until a message carrying them is sent: one
-with the review's opening line, or one still quoting a comment's place. Later git views join this
+as in the message box, until a message quoting their place is sent (the runner took it). **Take
+back**, editing a comment, or a box that no longer quotes it (a reload empties the box) puts it back
+in the tray. Later git views join this
 pane: a Turn scope, git actions in its header, a Files tab.
 
 ### Session names

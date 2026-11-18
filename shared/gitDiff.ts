@@ -39,6 +39,8 @@ export interface DiffFile {
   added: number;
   removed: number;
   binary?: true;
+  /** an untracked symlink: where it points (no hunks) */
+  symlink?: string;
   /** its name isn't UTF-8: it can't be shown or looked up by name */
   badPath?: true;
   /** no hunks: the file alone is over the caps, or the diff as a whole is ("total") */
@@ -163,8 +165,12 @@ const HUNK = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 /** "a/P" from a `diff --git a/P b/P` line, when the path is the same on both sides (prefix not stripped yet) */
 function gitLinePath(rest: string): string | undefined {
   if (rest.startsWith('"')) {
-    const end = rest.indexOf('" ');
-    return end > 0 ? unquote(rest.slice(0, end + 1)) : undefined;
+    // The quoted path ends at the first quote that isn't escaped.
+    for (let i = 1; i < rest.length; i++) {
+      if (rest[i] === "\\") i++;
+      else if (rest[i] === '"') return unquote(rest.slice(0, i + 1));
+    }
+    return undefined;
   }
   // "a/P b/P": P is half of what's left once the prefixes and the space are taken out.
   const n = (rest.length - 5) / 2;

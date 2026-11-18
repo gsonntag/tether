@@ -80,18 +80,22 @@ export function reviewMessage(list: LineComment[]): string {
   return `${blocks.length === 1 ? "A comment" : "Comments"} on the changes:\n\n${blocks.join("\n\n")}`;
 }
 
-/** The intro every review message starts with (how a sent message is recognized). */
-const INTRO = /^(A comment|Comments) on the changes:/m;
+/** Whether a message (sent, or in the box) still quotes a comment's place. */
+export const carries = (text: string, c: LineComment) => text.includes(`\`${location(c)}\``);
 
-/**
- * After a message went out: the comments handed to the composer that it carried are done. A
- * message with the review's intro carries them all; else those whose place it still quotes.
- */
+/** After a message went out: the comments handed to the composer whose place it quotes are done. */
 export function afterSend(list: LineComment[], text: string): LineComment[] {
-  if (!list.some((c) => c.handed)) return list;
-  const all = INTRO.test(text);
-  return list.filter((c) => !c.handed || (!all && !text.includes(`\`${location(c)}\``)));
+  return list.some((c) => c.handed && carries(text, c)) ? list.filter((c) => !c.handed || !carries(text, c)) : list;
 }
+
+/** Handed comments the message box no longer quotes (a reload emptied it, or it was cleared) go back to the tray. */
+export function unhandMissing(list: LineComment[], box: string): LineComment[] {
+  const gone = (c: LineComment) => !!c.handed && !carries(box, c);
+  return list.some(gone) ? list.map((c) => (gone(c) ? unhand(c) : c)) : list;
+}
+
+/** A comment back in the tray, no longer in the message box. */
+export const unhand = ({ handed: _, ...c }: LineComment): LineComment => c;
 
 // ---------- drafts (this browser) ----------
 

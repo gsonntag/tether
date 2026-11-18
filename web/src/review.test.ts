@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { numberLines, type DiffHunk } from "../../shared/gitDiff";
-import { afterSend, cleanComments, findLines, lineKey, location, readComments, reviewKey, reviewMessage, selectionOf, writeComments, type LineComment } from "./review";
+import { afterSend, unhandMissing, cleanComments, findLines, lineKey, location, readComments, reviewKey, reviewMessage, selectionOf, writeComments, type LineComment } from "./review";
 
 const hunk: DiffHunk = { header: "@@ -10,4 +10,5 @@", oldStart: 10, oldLines: 4, newStart: 10, newLines: 5, lines: [" a", "-b", "+B", "+C", " d", " e", "\\ No newline at end of file"] };
 const lines = numberLines(hunk);
@@ -107,8 +107,8 @@ test("comments put in the composer are done once a message carrying them is sent
   const list = [handed, kept];
   // Something else was sent: the handed comment waits.
   expect(afterSend(list, "just a question")).toEqual(list);
-  // The review message (edited) went: every handed one is done, the rest stay.
-  expect(afterSend(list, "Comments on the changes:\n\nsomething else")).toEqual([kept]);
+  // The review's opening line alone isn't enough: only the places it quotes are done.
+  expect(afterSend(list, "Comments on the changes:\n\nsomething else")).toEqual(list);
   // Only its place survived the edit: still done.
   expect(afterSend(list, "about `a.ts:4` please")).toEqual([kept]);
 });
@@ -118,4 +118,13 @@ test("storage keeps base and handed; a refused write says so", () => {
   const full = { getItem: () => null, setItem: () => { throw new Error("full"); }, removeItem: () => {} };
   expect(writeComments(full, "k", [c({})])).toBe(false);
   expect(writeComments(memory(), "k", [c({})])).toBe(true);
+});
+
+test("handed comments the box no longer quotes go back to the tray", () => {
+  const a = c({ id: "a", path: "a.ts", start: 1, end: 1, handed: true });
+  const b = c({ id: "b", path: "b.ts", start: 2, end: 2, handed: true });
+  const list = [a, b];
+  expect(unhandMissing(list, "x `a.ts:1` y").map((x) => [x.id, !!x.handed])).toEqual([["a", true], ["b", false]]);
+  expect(unhandMissing(list, "").every((x) => !x.handed)).toBe(true);
+  expect(unhandMissing(list, "`a.ts:1` `b.ts:2`")).toBe(list);
 });

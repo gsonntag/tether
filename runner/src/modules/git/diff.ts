@@ -6,7 +6,7 @@
 // `diffRange` is the general part: the working tree (or a commit) against a base. Scopes are bases:
 // HEAD, the merge base with the default branch; a turn's checkpoints would be two commits.
 
-import { lstat, open } from "node:fs/promises";
+import { lstat, open, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import {
   DIFF_FILE_BYTES_MAX,
@@ -159,15 +159,22 @@ export async function diffRange(root: string, base: string, opts: RangeOpts = {}
   const more = sorted.length - files.length;
   for (const f of files) if (isBadPath(f.path) || (f.oldPath && isBadPath(f.oldPath))) f.badPath = true;
 
-  // Untracked files are counted (and binary ones found) first, all of them: it's cheap.
+  let timedOut = false;
+  // Untracked files are counted (and binary ones found) first, within the time limit.
   await pool(
     files.filter((f) => f.status === "untracked" && !f.badPath),
     8,
     async (f) => {
+      if (Date.now() >= deadline) {
+        timedOut = true;
+        return void (f.tooLarge = "total");
+      }
       try {
         const st = await lstat(join(root, f.path));
-        if (st.isSymbolicLink()) f.added = 1;
-        else if (!st.isFile()) return;
+        if (st.isSymbolicLink()) {
+          f.added = 1;
+          f.symlink = await readlink(join(root, f.path));
+        } else if (!st.isFile()) return;
         else {
           const c = await countLines(join(root, f.path));
           f.added = c.lines;
@@ -178,13 +185,14 @@ export async function diffRange(root: string, base: string, opts: RangeOpts = {}
     },
   );
   for (const f of files) if (!f.binary && !f.tooLarge && f.added + f.removed > cap.fileLines) f.tooLarge = "file";
-  const wanted = files.filter((f) => !f.badPath && !f.binary && !f.tooLarge && f.added + f.removed > 0);
+  const wanted = files.filter((f) => !f.badPath && !f.binary && !f.tooLarge && !f.symlink && f.added + f.removed > 0);
 
   /** a tracked file's patch on its own, cut at its cap */
   const one = async (f: DiffFile) => {
     const specs = (f.oldPath ? [f.oldPath, f.path] : [f.path]).map(literal);
     const r = await git(root, [...DIFF, "-p", ...range, "--", ...specs], { maxBytes: cap.fileBytes * 2, timeoutMs: left() });
-    return parsePatch(r.out).find((p) => p.path === f.path) ?? (r.cut ? undefined : null);
+    const p = parsePatch(r.out).find((p) => p.path === f.path);
+    return p && !p.partial && !r.cut ? p : r.cut || p ? undefined : null;
   };
   /** an untracked file against /dev/null ("./" so a file named "-" isn't stdin) */
   const fresh = async (f: DiffFile) => {
@@ -194,7 +202,6 @@ export async function diffRange(root: string, base: string, opts: RangeOpts = {}
   };
 
   let budget = cap.totalBytes;
-  let timedOut = false;
   for (let i = 0; i < wanted.length; i += BATCH) {
     const chunk = wanted.slice(i, i + BATCH);
     if (budget <= 0 || timedOut) {
@@ -208,14 +215,23 @@ export async function diffRange(root: string, base: string, opts: RangeOpts = {}
       if (old.length) {
         const specs = old.flatMap((f) => (f.oldPath ? [f.oldPath, f.path] : [f.path])).map(literal);
         const r = await git(root, [...DIFF, "-p", ...range, "--", ...specs], { maxBytes: cap.fileBytes * 4, timeoutMs: left() });
-        const parsed = new Map(parsePatch(r.out).map((p) => [p.path, p]));
+        const patches = parsePatch(r.out);
+        // Output cut short ends inside its last file, maybe mid-line: that one isn't whole.
+        if (r.cut && patches.length) patches.at(-1)!.partial = true;
+        const parsed = new Map(patches.map((p) => [p.path, p]));
         for (const f of old) {
           const p = parsed.get(f.path);
           // Cut short: whatever wasn't whole is asked for again on its own, with its own cap.
           if (p && !p.partial) got.set(f, p);
           else if (!r.cut) got.set(f, null);
         }
-        for (const f of old) if (!got.has(f)) got.set(f, await one(f));
+        for (const f of old) {
+          if (got.has(f)) continue;
+          // Asked again only while the budget lasts: what's left over shows its counts.
+          const spent = [...got.values()].reduce((n, p) => n + (p ? p.size : 0), 0);
+          if (spent >= budget) break;
+          got.set(f, await one(f));
+        }
       }
       await pool(
         chunk.filter((f) => f.status === "untracked"),
