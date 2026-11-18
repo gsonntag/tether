@@ -492,6 +492,7 @@ describe("scheduled messages, second review", () => {
 
     const { adapter, live, prefs, prefsFile, sent, advance } = setup();
     adapter.addStored("s1", []);
+    await live.queue.restore();
     const m = await live.queue.add("claude:s1", "x", [], { at: T0 + HOUR });
     prefs.flush();
     expect(JSON.parse(readFileSync(prefsFile, "utf8")).aliveAt).toBe(T0);
@@ -543,5 +544,48 @@ describe("scheduled messages, second review", () => {
     await Bun.sleep(150);
     expect(b.sent()).toEqual([]);
     expect((await b.core.open("claude:s1")).state.queue[0]?.held).toBe("restart");
+  });
+});
+
+describe("scheduled messages, final review", () => {
+  test("a save before restore keeps aliveAt: a message the runner was off a day for is still held", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tether-sched-"));
+    const clock = { t: T0 };
+    const a = setup({ dir, clock });
+    a.adapter.addStored("s1", []);
+    a.adapter.addStored("s2", []);
+    await a.live.queue.add("claude:s1", "stale", [], { at: T0 + HOUR });
+    a.prefs.flush();
+    a.live.queue.stop();
+    a.core.stop();
+    clock.t = T0 + HOUR + SCHEDULE_LATE_MAX_MS + 3 * HOUR;
+    const b = setup({ dir, prefsFile: a.prefsFile, clock });
+    b.adapter.addStored("s1", []);
+    b.adapter.addStored("s2", []);
+    await b.live.queue.add("claude:s2", "unrelated", []);
+    b.prefs.flush();
+    expect(JSON.parse(readFileSync(a.prefsFile, "utf8")).aliveAt).toBe(T0);
+    await b.live.queue.restore();
+    await Bun.sleep(150);
+    expect(b.sent()).toEqual(["unrelated"]);
+    expect((await b.core.open("claude:s1")).state.queue[0]?.held).toBe("late");
+  });
+
+  test("a scheduled message going out keeps aliveAt saved until the harness has it", async () => {
+    const { adapter, live, prefs, prefsFile, sent, advance } = setup();
+    adapter.addStored("s1", []);
+    await live.queue.restore();
+    let go: () => void = () => {};
+    adapter.script = () => [() => new Promise<void>((r) => (go = r))];
+    await live.queue.add("claude:s1", "timed", [], { at: T0 + MIN });
+    advance(MIN);
+    await until(() => sent().length === 1);
+    prefs.flush();
+    // Mid-send (a crash now leaves it in runner.json): the time off would still count.
+    expect(JSON.parse(readFileSync(prefsFile, "utf8")).aliveAt).toBeNumber();
+    go();
+    await Bun.sleep(100);
+    prefs.flush();
+    expect(JSON.parse(readFileSync(prefsFile, "utf8")).aliveAt).toBeUndefined();
   });
 });

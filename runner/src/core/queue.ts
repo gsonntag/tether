@@ -54,6 +54,8 @@ export class MessageQueue {
   private releases = new Map<string, number>();
   /** sessions whose turn was running when the runner last stopped (read before anything loads them) */
   private cutOff: Set<string>;
+  /** restore() has run: until then, sessions with scheduled messages may not be open yet */
+  private restored = false;
   /** sessions whose queue was handed over while a message went out: where it goes back if it fails */
   private handed = new Map<string, string>();
   /** the one timer for every scheduled message */
@@ -66,7 +68,7 @@ export class MessageQueue {
     private host: QueueHost,
   ) {
     this.cutOff = new Set(core.o.prefs.running());
-    this.scheduler = new Scheduler({ now: () => core.now(), next: () => this.nextDue(), fire: () => this.due(), idle: () => this.uptime.idle() });
+    this.scheduler = new Scheduler({ now: () => core.now(), next: () => this.nextDue(), fire: () => this.due(), idle: () => this.idle() });
     this.uptime = new Uptime(() => core.now(), { get: () => core.o.prefs.aliveAt(), set: (t) => core.o.prefs.setAliveAt(t) });
     const bus = core.o.bus;
     bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => {
@@ -274,7 +276,18 @@ export class MessageQueue {
       this.later(id);
     }
     // Scheduled messages whose time passed while the runner was off: sent now, or held when long past.
+    this.restored = true;
     this.scheduler.tick();
+  }
+
+  /**
+   * Nothing is scheduled: the runner stops keeping when it was last seen running. Not before
+   * restore() (what's saved may not be open yet), nor while a scheduled message goes out (a crash
+   * then leaves it saved, and the time off must still count).
+   */
+  private idle() {
+    if (!this.restored || [...this.going.values()].some(isScheduled)) return;
+    this.uptime.idle();
   }
 
   // ---------------- scheduled ----------------
@@ -393,6 +406,8 @@ export class MessageQueue {
       this.going.delete(id);
       this.handed.delete(id);
       this.draining.delete(id);
+      // Nothing going out any more: the timer looks again (idle once nothing is scheduled).
+      this.scheduler.arm();
     }
   }
 
