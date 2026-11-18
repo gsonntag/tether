@@ -11,7 +11,8 @@ import { HARNESS_LABELS, type HarnessId, type Msg } from "../../../../shared/tra
 import type { Adapter, StartOpts } from "../../core/adapter";
 import { movedDir } from "../../core/moved";
 import { levelOf } from "../../core/permissionLevel";
-import type { Module, ModuleContext, SessionLook } from "..";
+import type { AdoptExtra, Module, ModuleContext, SessionLook } from "..";
+import type { ForkedFrom } from "../../../../shared/fork";
 
 const labelOf = (h: HarnessId) => HARNESS_LABELS[h] ?? h;
 
@@ -253,13 +254,35 @@ export class Mover {
     }
   }
 
+  /**
+   * A fork its harness can't make itself (SPEC §16, Adapter.fork.copyInstead): the history through
+   * `upTo` (all of it when absent), imported into a new session on the same harness, source and
+   * settings, stored: nothing starts until its first send.
+   */
+  async copy(id: string, upTo: string | undefined, title: string, forkedFrom: ForkedFrom): Promise<string> {
+    const { look, adapter } = await this.source(id);
+    if (!adapter.move?.importHistory) throw new Error(`${labelOf(adapter.id)} can't copy a session.`);
+    const portable = await exportSession(adapter, look);
+    if (upTo) {
+      const end = portable.messages.findIndex((m) => m.id === upTo);
+      if (end < 0) throw new Error("That message isn't in the session any more.");
+      portable.messages = portable.messages.slice(0, end + 1);
+    }
+    portable.from.title = title;
+    const { model, effort, permissionMode } = look.state;
+    const opts: StartOpts = { ...(model && model !== "default" ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) };
+    const made = await this.native(adapter, portable, opts, false, await this.ctx.sessions.sourceOf(id), undefined, { stored: true, forkedFrom });
+    this.ctx.log(`copied ${id} to ${made.sessionId} as a fork: ${made.kept} of ${made.total} messages in context`);
+    return made.sessionId;
+  }
+
   /** The history file of the move that made this session, when one did. */
   private earlier(s: PortableSession) {
     return join(movedDir(s.from.sessionId, this.ctx.dataDir), "history.md");
   }
 
   /** The harness takes the history itself. Throws, leaving no session, when it doesn't take. */
-  private async native(t: Adapter, s: PortableSession, opts: StartOpts, background: boolean, source: BillingSource, carriedFrom?: string) {
+  private async native(t: Adapter, s: PortableSession, opts: StartOpts, background: boolean, source: BillingSource, carriedFrom?: string, extra?: AdoptExtra) {
     const { projectPath, title } = s.from;
     const nativeId = await this.ctx.sessions.newId(t.id, projectPath, opts, source);
     const dir = movedDir(`${t.id}:${nativeId}`, this.ctx.dataDir);
@@ -271,7 +294,7 @@ export class Mover {
       await t.move!.importHistory!(request);
       if (t.move!.imported && !(await t.move!.imported(request))) throw new Error("the history didn't read back");
       if (carriedFrom) t.move!.carried?.(nativeId, parseSessionId(carriedFrom)!.nativeId);
-      const sessionId = await this.ctx.sessions.adopt(t.id, nativeId, projectPath, opts, source, carriedFrom);
+      const sessionId = await this.ctx.sessions.adopt(t.id, nativeId, projectPath, opts, source, carriedFrom, extra);
       // Where a person opening the session looks: under what came across, above what's new.
       const after = (await t.readHistory(nativeId, projectPath).catch(() => [])).at(-1)?.id;
       return { sessionId, kept: plan.kept, total: plan.total, after };

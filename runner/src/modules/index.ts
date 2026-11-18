@@ -8,12 +8,14 @@ import type { OpRegistry } from "../core/ops";
 import type { Adapter, StartOpts } from "../core/adapter";
 import type { BillingSource, SourceChoices } from "../../../shared/credentials";
 import type { HomeChatUpdate } from "../../../shared/protocol";
+import type { ForkedFrom } from "../../../shared/fork";
 import type { Attachment } from "../../../shared/attachments";
 import type { HarnessId, LiveState, Msg, ProjectInfo, RequestAnswer, RunStatus, SessionSummary } from "../../../shared/transcript";
 import { homeAgentModule } from "./homeAgent";
 import type { HomeLine } from "./homeLine";
 import { linksModule } from "./links";
 import type { ShortLinks } from "./links/store";
+import { forkModule } from "./fork";
 import { moveModule } from "./move";
 import { peersModule } from "./peers";
 import { pushModule } from "./push";
@@ -34,15 +36,30 @@ export interface SessionLook {
   background: boolean;
 }
 
+/** More about a session being adopted. `stored`: it isn't started, its first send does that (a fork). */
+export interface AdoptExtra {
+  stored?: boolean;
+  forkedFrom?: ForkedFrom;
+}
+
+/** How to fork: the reply its conversation ends at (shared/fork.ts forkPoints); absent, all of it (the last finished turn while one runs). */
+export interface ForkOptions {
+  messageId?: string;
+}
+
 /** What a module may do with sessions, through the core's own paths (SPEC §2.1). */
 export interface SessionActions {
   adapters(): Adapter[];
   /** a session, brought into memory if it's stored; throws when there's none */
   open(id: string): Promise<SessionLook>;
   /** a session whose store exists (a harness took a history): its settings, and it starts now, so its source is confirmed and shown before anything is typed. `from`: it's for that session's source change, unlisted, and a failed start throws */
-  adopt(harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string): Promise<string>;
+  adopt(harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string, extra?: AdoptExtra): Promise<string>;
   /** what makes the thread a session's source change goes to (Mover.carry) */
   carrier(make: (id: string, source: BillingSource) => Promise<string>): void;
+  /** a fork of a session (SPEC §16): a new stored session with its conversation, through `messageId` when given. Its id */
+  fork(id: string, o?: ForkOptions): Promise<string>;
+  /** what makes forks (the fork module) */
+  forker(make: (id: string, o: ForkOptions) => Promise<string>): void;
   /** a new session; its first send starts it */
   create(args: { harness: HarnessId; projectPath: string; source: BillingSource } & StartOpts): Promise<string>;
   /** a new native id, on that source */
@@ -116,7 +133,7 @@ export interface Module {
 }
 
 /** The modules this runner loads, in order. */
-export const MODULES: Module[] = [pushModule, textingModule, moveModule, homeAgentModule, peersModule, updatesModule, linksModule];
+export const MODULES: Module[] = [pushModule, textingModule, moveModule, forkModule, homeAgentModule, peersModule, updatesModule, linksModule];
 
 export async function startModules(modules: Module[], ctx: (m: Module) => ModuleContext): Promise<() => void> {
   const stops: (() => void)[] = [];

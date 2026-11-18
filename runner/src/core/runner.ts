@@ -8,6 +8,7 @@ import { CostLedger } from "../costs";
 import { testAzure } from "../adapters/codex/upstream";
 import { PROTOCOL_VERSION, type HarnessInfo, type HomeChatUpdate, type RunnerInfo } from "../../../shared/protocol";
 import { sessionId } from "../../../shared/ids";
+import type { ForkedFrom } from "../../../shared/fork";
 import type { BillingSource } from "../../../shared/credentials";
 import type { Attachment } from "../../../shared/attachments";
 import type { HarnessId, Msg, RequestAnswer } from "../../../shared/transcript";
@@ -168,6 +169,9 @@ export function createRunner(o: RunnerOptions) {
       : undefined;
   registerTerminalOps(ops, terminal);
 
+  /** the fork module's (SPEC §16): the core only passes calls on */
+  let forker: ((id: string, o: { messageId?: string }) => Promise<string>) | undefined;
+
   const lookAt = (s: Session) => ({
     summary: s.summary,
     status: s.state.status,
@@ -208,10 +212,10 @@ export function createRunner(o: RunnerOptions) {
       sessions: {
         adapters: () => o.adapters ?? [],
         open: async (id: string) => lookAt(await core.open(id)),
-        adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string) => {
+        adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string, extra: { stored?: boolean; forkedFrom?: ForkedFrom } = {}) => {
           const id = sessionId(harness, nativeId);
           opts = live.forSource(source, opts);
-          core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts), source, ...(source === "azure" && opts.model ? { deployment: opts.model } : {}), ...(from ? { carrying: true } : {}) });
+          core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts), source, ...(source === "azure" && opts.model ? { deployment: opts.model } : {}), ...(from ? { carrying: true } : {}), ...(extra.forkedFrom ? { forkedFrom: extra.forkedFrom } : {}) });
           for (const n of from ? core.notices.get(from) : []) core.notices.add(id, n);
           // A new session on a key (a Move, or a source change's new thread), metered from its first
           // request: what it brought across was spent elsewhere, and a carry adds that (live.ts
@@ -227,6 +231,8 @@ export function createRunner(o: RunnerOptions) {
             catch (e) { core.dropFresh(s); throw e; }
             return id;
           }
+          // A fork: its source is the original's, already confirmed there. Nothing starts until its first send.
+          if (extra.stored) return id;
           // A failure (a key refused, a source it can't confirm) stays on the session: nothing falls back.
           await live.resumeLive(s).catch(() => {});
           return id;
@@ -246,6 +252,8 @@ export function createRunner(o: RunnerOptions) {
         answer: (id: string, requestId: string, a: RequestAnswer) =>
           live.answerRequest(id, requestId, a.allow ? { ...a, ...(a.notes ? { notes: defang(a.notes) } : {}) } : { allow: false, ...(a.reason ? { reason: defang(a.reason) } : {}) }),
         carrier: (f: (id: string, source: BillingSource) => Promise<string>) => { live.carrier = f; },
+        fork: (id: string, f: { messageId?: string } = {}) => (forker ? forker(id, f) : Promise.reject(new Error("This runner can't fork sessions."))),
+        forker: (f: (id: string, o: { messageId?: string }) => Promise<string>) => { forker = f; },
         projects: () => core.listProjects(),
         list: () => core.book.list(),
         archived: async () => (await core.listSessions({ archived: true, limit: 2000 })).sessions,

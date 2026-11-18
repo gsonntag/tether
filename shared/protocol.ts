@@ -201,6 +201,8 @@ export interface Ops {
   moveOptions: { args: { sessionId: string }; result: MoveOptions };
   /** moves a session to another harness: a new session there; the old one stays as it is */
   moveSession: { args: { sessionId: string; harness: string; model?: string; effort?: string; source?: BillingSource }; result: { sessionId: string } };
+  /** SPEC §16: a fork, stored; `messageId` a reply that ends a turn (shared/fork.ts), absent: all of it */
+  forkSession: { args: { sessionId: string; messageId?: string }; result: { sessionId: string } };
 
   // ---------- driving ----------
 
