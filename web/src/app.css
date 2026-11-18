@@ -3144,3 +3144,63 @@
   /* Under the chips, a line of its own, out of the way of the title. */
   .t-header > .t-header-fork { order: 3; flex: 1 1 100%; }
 }
+
+/* ---------- side chats (SPEC §16a) ---------- */
+
+.t-session-split.with-side > .t-session {
+  flex: 1 1 0;
+  min-width: 300px;
+}
+.t-side-chat {
+  flex: 0 1 460px;
+  min-width: 340px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--t-border);
+  background: var(--color-background-body, inherit);
+  container-type: size;
+}
+.t-side-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--t-border);
+  min-width: 0;
+}
+.t-side-title {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.t-side-ro {
+  flex: none;
+}
+.t-side-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.t-side-opening {
+  padding: 16px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.t-side-error {
+  padding: 6px 12px;
+}
+/* No room beside the transcript (a phone): a sheet over the session. */
+.t-term-cover > .t-side-chat {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  min-width: 0;
+  border-left: none;
+}

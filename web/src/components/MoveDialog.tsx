@@ -14,7 +14,7 @@ import { focusComposerOf } from "./SessionView";
 import { azureDeployments, DeploymentPicker, SourcePicker } from "./SourcePicker";
 
 /** The session's menu, in the header: Fork (SPEC §16), Change session harness and its dialog (SPEC §15), Archive. */
-export function SessionMenu({ runnerId, session, state, canMove, canFork }: { runnerId: string; session: SessionSummary; state: LiveState; canMove: boolean; canFork?: boolean }) {
+export function SessionMenu({ runnerId, session, state, canMove, canFork, onSideChat }: { runnerId: string; session: SessionSummary; state: LiveState; canMove: boolean; canFork?: boolean; onSideChat?: () => void }) {
   const [open, setOpen] = useState(false);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const archive = async () => {
@@ -38,6 +38,7 @@ export function SessionMenu({ runnerId, session, state, canMove, canFork }: { ru
           </button>
         )}
       >
+        {onSideChat && <DropdownMenuItem label="Side chat" onClick={onSideChat} />}
         {canFork && <DropdownMenuItem label="Fork" onClick={() => void forkSession(runnerId, session.id)} />}
         {canMove && <DropdownMenuItem label="Change session harness" onClick={() => setOpen(true)} />}
         <DropdownMenuItem label={session.archived ? "Unarchive" : "Archive"} isDisabled={archiveBusy} onClick={() => void archive()} />

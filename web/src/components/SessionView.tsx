@@ -7,16 +7,18 @@ import { AGENT_NAMES, HARNESS_LABELS } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { setSessionCovered } from "../presence";
 import { openSession, replaceSession } from "../route";
-import { failedSend, loadModels, loadOlder, modelListKey, openView, sendPending, useStore, viewKey } from "../store";
+import { failedSend, loadModels, loadOlder, modelListKey, openView, sendPending, setArchived, useStore, viewKey } from "../store";
 import { startRow } from "../pendingSends";
 import { PendingSends, StartStatus, usePending } from "./PendingSends";
 import { handoffPrompt } from "../terminal";
-import { Composer, type ComposerHandle } from "./Composer";
+import { Composer, putDraft, type ComposerHandle } from "./Composer";
 import { QueueList } from "./QueueList";
 import { backQuestion, SHELL_TAB, TerminalPanel, type PanelState } from "./TerminalPanel";
 import { RequestDock } from "./RequestDock";
 import { dropRows, SessionCtx } from "./sessionContext";
 import { canFork, forkSession } from "../fork";
+import { btwQuestion, canSideChat, withBtw } from "../sideChat";
+import { SideChatChips, SideChatPanel, useSideChats, type SideState } from "./SideChatPanel";
 import { SessionHeader } from "./SessionHeader";
 import { Transcript } from "./Transcript";
 import { useChildren } from "./useChildren";
@@ -61,6 +63,10 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     terminalNext = undefined;
     return { tab: "tui", wantTui: true, nonce: 1 };
   });
+  /** the side chat in the panel's place (SPEC §16a), for this session */
+  const [sideFor, setSideFor] = useState<{ k: string; side: SideState } | null>(null);
+  const side = sideFor?.k === k ? sideFor.side : null;
+  const setSide = (next: SideState | null) => setSideFor(next ? { k, side: next } : null);
   // The agent's own interface (Claude Code, Codex) takes the whole screen; shells sit beside the chat.
   const cover = noRoom || panel?.tab === "tui";
   /** the question before handing a busy session to the terminal (SPEC §8) */
@@ -132,6 +138,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
 
   // Fork from here on the replies that end a finished turn (SPEC §16): a main session whose harness forks.
   const forks = !!view?.state && !!summary && canFork(summary, view.capabilities, view.state);
+  const sides = !!view?.state && !!summary && canSideChat(summary, view.capabilities, view.state);
+  const sideChats = useSideChats(runnerId, sessionId, sides || !!side);
   const forkBusy = view?.state ? view.state.status !== "idle" : false;
   const ctx = useMemo(
     () => ({ runnerId, sessionId, projectPath: summary?.projectPath, ...(forks ? { fork: { running: forkBusy, from: (messageId: string) => void forkSession(runnerId, sessionId, messageId) } } : {}) }),
@@ -155,6 +163,29 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
 
   const state = view.state;
   const retry = state.retry;
+  /** A side chat beside this session (SPEC §16a), asked `question`: the panel opens at once, on the fork once it's made. */
+  const openSide = async (question: string) => {
+    setPanel(null);
+    setSide({ opening: true, question });
+    try {
+      const r = await rpc(runnerId, "openSideChat", { sessionId, ...(question ? { question } : {}) });
+      setSideFor((cur) => (cur?.k === k && "opening" in cur.side ? { k, side: { id: r.sessionId } } : cur));
+    } catch (e) {
+      setSideFor((cur) => (cur?.k === k && "opening" in cur.side ? null : cur));
+      failedSend(runnerId, sessionId, `Side chat failed: ${(e as Error).message}`);
+    }
+  };
+  /** One of its side chats again (a closed one comes back). */
+  const reopenSide = (id: string) => {
+    setPanel(null);
+    setSide({ id });
+    if (sideChats.find((c) => c.id === id)?.archived) void setArchived(runnerId, id, false).catch(() => {});
+  };
+  /** Close archives it: the Side chats chip has it. */
+  const closeSide = (id: string | undefined) => {
+    setSide(null);
+    if (id) void setArchived(runnerId, id, true).catch((e) => failedSend(runnerId, sessionId, `Archive failed: ${(e as Error).message}`));
+  };
   const billing = billingForDisplay(state);
   const inTerminal = state.mode === "terminal";
   const agent = AGENT_NAMES[summary.harness];
@@ -262,9 +293,9 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
 
   return (
     <SessionCtx.Provider value={ctx}>
-      <div className={`t-session-split${panel ? " with-terminal" : ""}${cover ? " t-term-cover" : ""}`} ref={rootRef}>
+      <div className={`t-session-split${panel ? " with-terminal" : side ? " with-side" : ""}${cover || (side && noRoom) ? " t-term-cover" : ""}`} ref={rootRef}>
       <div className="t-session">
-        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move} canFork={canFork(summary, view.capabilities, state)} />}{terminalChip}</>} capabilities={view.capabilities} />
+        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move} canFork={canFork(summary, view.capabilities, state)} onSideChat={sides ? () => void openSide("") : undefined} />}<SideChatChips chats={sideChats} onOpen={reopenSide} />{terminalChip}</>} capabilities={view.capabilities} />
         {ask && !panelShown && (
           <div className="t-term-ask" role="group" aria-label="Open the terminal">
             <span>{ask.text}</span>
@@ -338,9 +369,12 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             placeholder={inTerminal ? (state.queueHeld && state.queueHeldBy !== "terminal" ? "Joins the paused queue" : "Waits for Back to Tether") : undefined}
             agent={agent}
             uploadTo={{ runnerId, sessionId }}
-            loadCommands={view.capabilities?.commands ? () => rpc(runnerId, "listCommands", { sessionId }).then((r) => r.commands) : undefined}
+            loadCommands={view.capabilities?.commands ? () => rpc(runnerId, "listCommands", { sessionId }).then((r) => (sides ? withBtw(r.commands) : r.commands)) : undefined}
             shell={{ folder: summary.projectPath, heldBy: state.restartWait ? "restartWait" : state.queueHeld ? state.queueHeldBy : undefined }}
             onSend={async (kind, text, list) => {
+              // `/btw <question>`: Tether's, never the harness's (SPEC §16a). Whatever the session does.
+              const btw = btwQuestion(text, sides);
+              if (btw !== undefined) return void openSide(btw);
               const attachments = list.length ? { attachments: list } : {};
               // A `!` command: runs now, whatever the agent does (SPEC §9 Shell commands).
               if (kind === "shell") await rpc(runnerId, "runShell", { sessionId, command: text });
@@ -349,7 +383,11 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
               else await rpc(runnerId, "send", { sessionId, text, ...attachments, ...(kind === "stopSend" ? { stop: true } : {}) });
             }}
             // In the terminal a message waits in the queue (its own row): no pending copy.
-            sendNow={inTerminal ? undefined : (kind, text, list) => void sendPending(runnerId, sessionId, text, list, { stop: kind === "stopSend" })}
+            sendNow={inTerminal ? undefined : (kind, text, list) => {
+              const btw = btwQuestion(text, sides);
+              if (btw !== undefined) return void openSide(btw);
+              void sendPending(runnerId, sessionId, text, list, { stop: kind === "stopSend" });
+            }}
             onStop={async () => {
               await rpc(runnerId, "interrupt", { sessionId });
             }}
@@ -357,6 +395,20 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           />
         )}
       </div>
+      {side && !panel && (
+        <SideChatPanel
+          runnerId={runnerId}
+          side={side}
+          cover={noRoom}
+          onClose={closeSide}
+          onBringBack={(text) => {
+            putDraft(k, text);
+            // Over the session (a phone): tucked away, not closed, so the box with the summary shows.
+            if (noRoom) setSide(null);
+            composer.current?.focus();
+          }}
+        />
+      )}
       {panel && !cover && <PanelHandle />}
       {panel && (
         <TerminalPanel

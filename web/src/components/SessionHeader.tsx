@@ -100,7 +100,7 @@ export function SessionHeader({
       <div className="t-header-sub" title={session.projectPath}>
         {isChild ? `Subagent${session.agentType ? ` · ${session.agentType}` : ""} · ${session.projectPath}` : session.projectPath}
       </div>
-      {session.forkedFrom && <ForkedFrom runnerId={runnerId} from={session.forkedFrom} />}
+      {session.sideOf ? <SideOf runnerId={runnerId} parentId={session.sideOf} /> : session.forkedFrom && <ForkedFrom runnerId={runnerId} from={session.forkedFrom} />}
       <div className={`t-chips${paid ? " t-paid-chips" : ""}`}>
         <BillingChip runnerId={runnerId} session={session} state={state} capabilities={capabilities} onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))} onAutoKey={(on) => void call(rpc(runnerId, "setAutoKey", { sessionId: session.id, on }))} />
         {nextBilling && <span className={`t-chip t-chip-info t-next-source${isApiBilling(nextBilling) ? " t-next-api" : ""}`} title={`${nextBilling.label} from the next start`}>Next: {nextBilling.label}</span>}
@@ -190,6 +190,18 @@ export function ForkedFrom({ runnerId, from }: { runnerId: string; from: NonNull
     <div className="t-header-fork">
       <button type="button" className="t-link" title="Open the session this was forked from" onClick={() => openSession(runnerId, from.sessionId)}>
         Forked from {title ? `“${title}”` : "another session"}
+      </button>
+    </div>
+  );
+}
+
+/** A side chat opened on its own (SPEC §16a): the session it's beside. */
+function SideOf({ runnerId, parentId }: { runnerId: string; parentId: string }) {
+  const title = useStore((s) => s.summaries[runnerId]?.sessions[parentId]?.title);
+  return (
+    <div className="t-header-fork">
+      <button type="button" className="t-link" title="Open the session this side chat is beside" onClick={() => openSession(runnerId, parentId)}>
+        Read-only side chat of {title ? `“${title}”` : "another session"}
       </button>
     </div>
   );
