@@ -163,7 +163,7 @@ export function NewSessionDialog() {
       const common = { harness, projectPath: typed, ...(billTo ? { source: billTo } : {}), ...(deployments ? { model: deployment } : modelOk && model !== "default" ? { model } : {}), permissionMode: validMode, ...(terminal ? { terminal: true } : {}) };
       // The branch shown is the branch made: the placeholder when nothing is typed.
       const { sessionId } = inWorktree
-        ? await rpc(rid, "newWorktreeSession", { ...common, branch: branch.trim() || ws.branch })
+        ? await rpc(rid, "newWorktreeSession", { ...common, branch: branch.trim() || ws.branch, ...(ws.setupId !== undefined ? { expectSetup: ws.setupId } : {}) })
         : await rpc(rid, "newSession", { ...common, ...(check?.state === "missing" && createFolder ? { createFolder: true } : {}) });
       try {
         localStorage.setItem(modeKey(harness), validMode);
@@ -178,6 +178,8 @@ export function NewSessionDialog() {
       openSession(rid, sessionId);
     } catch (e) {
       setError((e as Error).message);
+      // The setup (or the branch) changed meanwhile: show what's there now.
+      if (inWorktree && rid && existing) void rpc(rid, "workspaceInfo", { projectPath: existing }).then(setWs).catch(() => {});
     } finally {
       creating.current = false;
       setBusy(false);
@@ -360,7 +362,7 @@ export function NewSessionDialog() {
           <span>Start in the terminal ({HARNESS_LABELS[harness]}'s own interface)</span>
         </label>
         {noTerminal && inTerminal && <span className="t-inline-status">Not with this worktree: its setup runs first, and the terminal wouldn't wait for it.</span>}
-        {error && <div className="t-form-error">{error}</div>}
+        {error && <div className="t-form-error" style={{ whiteSpace: "pre-wrap" }}>{error}</div>}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <Button label="Cancel" variant="secondary" onClick={close} />
           <Button label={busy ? "Starting…" : "Create"} variant="primary" isDisabled={!rid || !typed || busy || folderBlocked(check, createFolder)} onClick={() => void create()} />

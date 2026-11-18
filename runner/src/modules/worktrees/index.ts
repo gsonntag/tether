@@ -18,7 +18,7 @@
 import type { Module, ModuleContext, SessionActions } from "..";
 import type { OpArgs } from "../../../../shared/protocol";
 import type { WorkspaceInfo, WorktreeMade } from "../../../../shared/worktree";
-import { SETUP_MAX_MS } from "../../../../shared/worktree";
+import { SETUP_MAX_MS, setupId } from "../../../../shared/worktree";
 import type { WorktreeRecord } from "../../config";
 import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredIn, lastFetched, repoOf, runGit, setupAt, shaOf, undoAdd, worktreePath, type Git, type Setup } from "./git";
 
@@ -67,6 +67,7 @@ export class Worktrees {
       branch,
       path: worktreePath(repo.main, branch),
       ...(setup ? { setup: setup.label, ...(setup.text ? { setupText: setup.text } : {}) } : {}),
+      setupId: setupId(setup),
       ...(remote ? { remote: true } : {}),
       ...(fetchedAt ? { fetchedAt } : {}),
     };
@@ -87,7 +88,7 @@ export class Worktrees {
 
   /** Makes the worktree, starts the session in it, records it as the session's own and starts its setup. */
   async create(args: OpArgs<"newWorktreeSession">): Promise<WorktreeMade> {
-    const { branch: asked, name, ...rest } = args;
+    const { branch: asked, name, expectSetup, ...rest } = args;
     const folder = this.o.sessions.folder(String(args.projectPath ?? ""));
     const repo = await repoOf(folder, this.git);
     if (!repo) throw new Error(`${folder} isn't in a git repository, so there's no worktree to make.`);
@@ -101,6 +102,9 @@ export class Worktrees {
       const sha = await shaOf(this.git, repo.main, base);
       if (!sha) throw new Error(`There's no ${base} to start from.`);
       const setup = await setupAt(repo.main, sha, this.git);
+      // The setup shown in the dialog came from before this fetch: one nobody saw never runs.
+      if (typeof expectSetup === "string" && setupId(setup) !== expectSetup)
+        throw new Error(setup ? `The setup changed on origin since you looked. Nothing was made. It's now ${setup.text ? `.tether/setup:\n${setup.text}` : `\`${setup.label}\``}\nCheck it, then create again.` : "The setup changed on origin since you looked: there's none now. Nothing was made; create again.");
       // A terminal starts its TUI at once: nothing would wait for the setup.
       if (args.terminal && setup) throw new Error(`This repo has a setup (${setup.label}) that runs before the first message, which a terminal start can't wait for. Start it in Tether, or in This folder.`);
       const branch = typed || (await freeBranch(repo.main, text, this.git));

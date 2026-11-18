@@ -471,6 +471,38 @@ describe("New worktree", () => {
     expect(await t.w.info(q.dir)).toMatchObject({ setup: "make dev" });
   });
 
+  test("a setup that changed on origin after the dialog looked is refused, nothing made; the new one is named", async () => {
+    const t = runnerFor();
+    const c = cloned();
+    const up = join(c.root, "app");
+    const info = await t.w.info(c.dir);
+    if (!info.git) throw new Error();
+    expect(info.setupId).toBe("");
+    // origin gains a setup after the dialog asked.
+    mkdirSync(join(up, ".tether"));
+    writeFileSync(join(up, ".tether", "setup"), "#!/bin/sh\necho pretend-evil\n");
+    chmodSync(join(up, ".tether", "setup"), 0o755);
+    sh(up, "add", ".");
+    sh(up, "commit", "-qm", "setup");
+    const err = await t.w.create({ harness: "claude", projectPath: c.dir, branch: "tether/seen", expectSetup: info.setupId }).catch((e) => e as Error);
+    expect(String(err)).toContain("The setup changed on origin since you looked. Nothing was made.");
+    expect(String(err)).toContain("echo pretend-evil");
+    expect(existsSync(join(c.root, "clone-worktrees", "seen"))).toBe(false);
+    expect(() => sh(c.dir, "rev-parse", "--verify", "tether/seen")).toThrow();
+    expect(t.adapter.drivers).toHaveLength(0);
+    // Looked again (now fetched): the shown setup is the one that runs.
+    const again = await t.w.info(c.dir);
+    if (!again.git) throw new Error();
+    expect(again.setupText).toContain("pretend-evil");
+    const made = await t.w.create({ harness: "claude", projectPath: c.dir, branch: "tether/seen", expectSetup: again.setupId });
+    expect(made.setup).toBe(".tether/setup");
+    // The setup going away counts as a change too; no expectSetup (the Home agent): whatever the base has.
+    sh(up, "rm", "-q", "-r", ".tether");
+    sh(up, "commit", "-qm", "no setup");
+    await expect(t.w.create({ harness: "claude", projectPath: c.dir, branch: "tether/gone", expectSetup: again.setupId })).rejects.toThrow("there's none now");
+    expect((await t.w.create({ harness: "claude", projectPath: c.dir, branch: "tether/home" })).setup).toBeUndefined();
+  });
+
   test("a terminal start in a repo with a setup is refused before anything is made", async () => {
     const t = runnerFor();
     const r = withSetup("#!/bin/sh\ntrue\n");

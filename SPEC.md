@@ -117,7 +117,9 @@ claim any id not starting with `runner-` (`CLOSE_RUNNER_ID` otherwise; server/sr
   known}` on the session: its own (`known`: the ignored files there once made and set up). The
   summary carries `worktreeOf` (the main checkout) for grouping. **Setup:** `.tether/setup`
   (executable, run directly) or `.tether/config.json`'s `"setup"` (via `$SHELL -c`), the worktree's
-  own (the base's, which the dialog reads from git and shows) before the main checkout's, runs in
+  own (the base's, which the dialog reads from git and shows; the dialog sends back its `setupId`,
+and a create whose fetched base has another setup is refused with the new one named, nothing
+made; the Home agent's runs whatever the base has) before the main checkout's, runs in
   the worktree with `TETHER_WORKTREE`, `TETHER_REPO` and `TETHER_BRANCH` as a `!` card (§9) marked
   `setup`, whose output never goes to the agent (state `done`), for at most 30 minutes (then
   stopped, failed). A terminal start in a repo with a setup is refused (its TUI wouldn't wait).
