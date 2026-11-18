@@ -1115,11 +1115,17 @@ the row from the Sidebar until the next click or key or a few seconds.
 
 ### Pinning
 
-Each main session row in the Sidebar has a pin button beside archive (filled, and always shown, while
-pinned). Pinned sessions sit in a Pinned group above Recent, oldest pin first, across runners, on every
+Each main session row in the Sidebar has a pin button beside archive (filled while pinned; on touch
+screens only a pinned row shows it, to unpin), and the session's ⋯ menu has Pin/Unpin. Pinned sessions
+sit in a Pinned group above Recent, oldest pin first, across runners (each runner's clock), on every
 device; a search or a folder lists them as usual. The runner keeps when it was pinned in its prefs
-(`pinSession`, carried on the row as `pinned`), past the 90-day pruning, and lists a pinned session
-however old. Archiving unpins; an archived session or a subagent can't be pinned. No reordering.
+(`pinSession`, carried on the row as `pinned`), past the 90-day pruning, and says so in its hello
+(`RunnerInfo.pinning`: no pin buttons for a runner from before it). A pinned session is listed however
+old: discovery looks up the old ones in parallel with a short timeout and keeps them (read again when
+the store changes or after a minute); a failed lookup keeps the row, a session twice not found is
+unpinned. The pin follows a conversation to its new thread (a source change, a renewed id). Modules
+see the lists without old sessions listed only because they're pinned. Archiving unpins; an archived
+session or a subagent can't be pinned. No reordering.
 
 ### The Home agent's model and source
 
