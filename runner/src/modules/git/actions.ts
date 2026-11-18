@@ -6,14 +6,60 @@
 // untracked files that aren't ignored), then `git commit` with the message on stdin. A commit a hook
 // refused leaves those changes staged. git's own identity is used, never one it would make up
 // (`user.useConfigOnly`): none configured, Commit says so. The default branch refuses unless the box
-// says to commit there anyway (`onDefault`).
+// says to commit (or push) there anyway (`onDefault`). The message is kept as written but for
+// surrounding blank lines (`--cleanup=whitespace`: a line starting with # stays). The person's
+// signing (commit.gpgsign) is respected; a pinentry that waits is cut by the time limit.
 
+import { rm, stat } from "node:fs/promises";
 import { outputTail, type GitActionResult, type GitStatus } from "../../../../shared/gitActions";
 import { currentBranch, defaultBranch, repoRoot } from "./diff";
 import { git, GitError } from "./run";
 
 const COMMIT_MS = 120_000;
 const PUSH_MS = 90_000;
+
+const LS_REMOTE_MS = 10_000;
+const REMOTE_HEAD_TTL_MS = 10 * 60_000;
+
+/**
+ * For git talking to a remote (push, ls-remote): nothing may wait on a person. No credential
+ * helper prompts (credential.interactive, Git Credential Manager's GCM_INTERACTIVE); ssh in batch
+ * mode, unless the person set their own ssh command (GIT_SSH_COMMAND, GIT_SSH, core.sshCommand),
+ * which is theirs to keep. A hang anyway is cut by the time limit (git runs in its own group).
+ */
+export async function remoteOpts(root: string): Promise<{ args: string[]; env: Record<string, string> }> {
+  const own = process.env.GIT_SSH_COMMAND || process.env.GIT_SSH || (await git(root, ["config", "--get", "core.sshCommand"], { ok: [0, 1] })).out.trim();
+  return {
+    args: ["-c", "credential.interactive=false"],
+    env: { GCM_INTERACTIVE: "never", ...(own ? {} : { GIT_SSH_COMMAND: "ssh -o BatchMode=yes" }) },
+  };
+}
+
+const remoteHeads = new Map<string, { at: number; v: Promise<string | undefined> }>();
+/** origin's default branch as origin says (`ls-remote --symref`), when there's no origin/HEAD here. Cached per repo. */
+export function remoteHead(root: string): Promise<string | undefined> {
+  const c = remoteHeads.get(root);
+  if (c && Date.now() - c.at < REMOTE_HEAD_TTL_MS) return c.v;
+  const v = (async () => {
+    const o = await remoteOpts(root);
+    const r = await git(root, [...o.args, "ls-remote", "--symref", "origin", "HEAD"], { ok: [0, 1, 2, 128], timeoutMs: LS_REMOTE_MS, env: o.env }).catch(() => undefined);
+    return r?.out.match(/^ref: refs\/heads\/(\S+)\s+HEAD$/m)?.[1];
+  })();
+  remoteHeads.set(root, { at: Date.now(), v });
+  return v;
+}
+
+/** The default branch's local name: origin/HEAD, else what origin says, else main or master. */
+async function defaultName(root: string, origin: boolean): Promise<string | undefined> {
+  const head = await git(root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], { ok: [0, 1, 128] });
+  if (head.code === 0 && head.out.trim()) return localName(head.out.trim());
+  if (origin) {
+    const r = await remoteHead(root);
+    if (r) return r;
+  }
+  const d = await defaultBranch(root);
+  return d ? localName(d) : undefined;
+}
 
 /** git's identity, never auto-detected. */
 const OWN_IDENTITY = ["-c", "user.useConfigOnly=true"];
@@ -41,15 +87,16 @@ export async function gitStatus(cwd: string): Promise<GitStatus> {
   const root = await repoRoot(cwd);
   if (!root) return NOT_REPO;
   const opt = { ok: [0, 1, 128] };
-  const [branch, head, up, def, origin, st, ident] = await Promise.all([
+  const [branch, head, up, origin, st, ident] = await Promise.all([
     currentBranch(root),
     git(root, ["rev-parse", "--verify", "--quiet", "--short", "HEAD"], opt),
     git(root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], opt),
-    defaultBranch(root),
     git(root, ["config", "--get", "remote.origin.url"], opt),
     git(root, ["status", "--porcelain", "-z", "--untracked-files=all"]),
     git(root, [...OWN_IDENTITY, "var", "GIT_COMMITTER_IDENT"], opt),
   ]);
+  const hasOrigin = origin.code === 0 && !!origin.out.trim();
+  const def = await defaultName(root, hasOrigin);
   const upstream = up.code === 0 ? up.out.trim() || undefined : undefined;
   let ahead = 0;
   let behind = 0;
@@ -67,8 +114,8 @@ export async function gitStatus(cwd: string): Promise<GitStatus> {
     ...(upstream ? { upstream } : {}),
     ahead,
     behind,
-    ...(def ? { defaultBranch: localName(def) } : {}),
-    origin: origin.code === 0 && !!origin.out.trim(),
+    ...(def ? { defaultBranch: def } : {}),
+    origin: hasOrigin,
     changed: countStatus(st.out),
     ...(identity ? { identity } : {}),
   };
@@ -79,7 +126,7 @@ const fail = (status: GitStatus, error: string, output?: string): GitActionResul
 export const NO_IDENTITY = 'git has no name and email to commit with on this computer. Set them there: git config --global user.name "Your Name" and git config --global user.email you@example.com.';
 
 /** `git add -A` and `git commit` with `message`. Refusals and failures come back as `error` (with git's or a hook's output). */
-export async function commit(cwd: string, message: string, onDefault = false): Promise<GitActionResult> {
+export async function commit(cwd: string, message: string, onDefault = false, timeoutMs = COMMIT_MS): Promise<GitActionResult> {
   const status = await gitStatus(cwd);
   if (status.state !== "ok" || !status.root) return fail(status, "This folder isn't in a git repository.");
   if (!message.trim()) return fail(status, "Write a commit message first.");
@@ -88,17 +135,35 @@ export async function commit(cwd: string, message: string, onDefault = false): P
   if (status.branch === status.defaultBranch && !onDefault) return fail(status, `${status.branch} is the default branch. Tick “Commit to ${status.branch} anyway” to commit to it.`);
   if (!status.identity) return fail(status, NO_IDENTITY);
   const root = status.root;
+  const started = Date.now();
   try {
-    await git(root, ["add", "-A"], { timeoutMs: COMMIT_MS });
-    await git(root, [...OWN_IDENTITY, "commit", "-q", "--file=-"], { input: message.trim() + "\n", hooks: true, timeoutMs: COMMIT_MS, env: { GIT_EDITOR: ":" } });
+    await git(root, ["add", "-A"], { timeoutMs });
+    await git(root, [...OWN_IDENTITY, "commit", "-q", "--cleanup=whitespace", "--file=-"], { input: message.trim() + "\n", hooks: true, timeoutMs, env: { GIT_EDITOR: ":" } });
   } catch (e) {
+    // Stopped at the time limit, git left its index lock: ours (made since we started), so it goes.
+    if (e instanceof GitError && /too long/.test(e.message)) await dropOwnLock(root, started);
     const after = await gitStatus(cwd).catch(() => status);
     if (!(e instanceof GitError)) return fail(after, (e as Error).message);
     const out = outputTail(e.stderr);
-    return fail(after, /too long/.test(e.message) ? "git commit took too long (a hook?)." : /identity|tell me who you are/i.test(e.stderr) ? NO_IDENTITY : "The commit failed. Nothing was committed.", out);
+    const why = /too long/.test(e.message)
+      ? "git commit took too long and was stopped: a hook, or signing waiting for a passphrase. Nothing was committed."
+      : /identity|tell me who you are/i.test(e.stderr)
+        ? NO_IDENTITY
+        : /gpg|failed to sign|signing failed|ssh-keygen/i.test(e.stderr)
+          ? "Signing the commit failed (commit.gpgsign is on). Nothing was committed."
+          : "The commit failed. Nothing was committed.";
+    return fail(after, why, out);
   }
   const after = await gitStatus(cwd);
   return { ok: true, ...(after.head ? { commit: after.head } : {}), status: after };
+}
+
+/** Removes index.lock if it was made at or after `since` (a git this module stopped). */
+async function dropOwnLock(root: string, since: number) {
+  try {
+    const p = (await git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index.lock"])).out.trim();
+    if (p && (await stat(p)).mtimeMs >= since - 1000) await rm(p, { force: true });
+  } catch {}
 }
 
 /** What a failed push says, in a line. */
@@ -110,15 +175,17 @@ export function pushError(stderr: string): string {
   return "The push failed.";
 }
 
-/** `git push -u origin <branch>`: never forced. */
-export async function push(cwd: string): Promise<GitActionResult> {
+/** `git push -u origin <branch>`: never forced; the default branch only with `onDefault`. */
+export async function push(cwd: string, onDefault = false): Promise<GitActionResult> {
   const status = await gitStatus(cwd);
   if (status.state !== "ok" || !status.root) return fail(status, "This folder isn't in a git repository.");
   if (!status.branch) return fail(status, "HEAD is detached: check out a branch to push.");
+  if (status.branch === status.defaultBranch && !onDefault) return fail(status, `${status.branch} is the default branch. Tick “Push to ${status.branch} anyway” to push it.`);
   if (!status.origin) return fail(status, "There's no remote called origin to push to.");
   if (!status.head) return fail(status, "There are no commits to push.");
   try {
-    await git(status.root, ["push", "-u", "origin", `refs/heads/${status.branch}:refs/heads/${status.branch}`], { hooks: true, timeoutMs: PUSH_MS });
+    const o = await remoteOpts(status.root);
+    await git(status.root, [...o.args, "push", "-u", "origin", `refs/heads/${status.branch}:refs/heads/${status.branch}`], { hooks: true, timeoutMs: PUSH_MS, env: o.env });
   } catch (e) {
     const after = await gitStatus(cwd).catch(() => status);
     if (!(e instanceof GitError)) return fail(after, (e as Error).message);

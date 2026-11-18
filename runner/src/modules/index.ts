@@ -83,6 +83,8 @@ export interface SessionActions {
   ask?(id: string, prompt: string, opts: { system: string; timeoutMs: number }): Promise<string>;
   /** holds every main session whose folder is in `folder` (stored ones, and any made there meanwhile, too), as `hold` */
   holdFolder?(folder: string, why: string): () => void;
+  /** why a session is held (a restore in its repo), when it is */
+  heldWhy?(id: string): string | undefined;
 }
 
 export interface ModuleContext {

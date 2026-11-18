@@ -1,29 +1,45 @@
 // The git actions' ops (SPEC §10 Git actions): gitStatus, gitPr, gitDraft, gitCommit, gitPush and
-// gitOpenPr. Actions in one folder run one at a time. Commit is refused while the session's turn runs
-// (its edits would land half-made in the commit). Generated text (gitDraft) is a one-shot side query on
-// the session's own harness and source (SessionActions.ask): it never blocks committing, and a failure
-// is a note under an empty box. Open PR pushes first when the branch isn't pushed or is ahead.
+// gitOpenPr. Actions in one repo (by its top folder) run one at a time. Commit is refused while this
+// session, or any other live session whose folder is in the repo or holds it, is doing anything (files
+// may be half-written), and while a restore holds the repo; it runs with the checkpoints' repo lock,
+// so no snapshot or restore runs beside it. Generated text (gitDraft) is a one-shot side query on the
+// session's own harness and source (SessionActions.ask): it never blocks committing, and a failure is
+// a note under an empty box. Open PR pushes first when the branch isn't pushed or is ahead.
 
 import type { GitActionResult, GitDraft, PrLookup } from "../../../../shared/gitActions";
-import type { ModuleContext } from "..";
+import type { ModuleContext, SessionLook } from "..";
+import type { Checkpoints } from "../checkpoints";
 import { commit, gitStatus, push } from "./actions";
+import { repoRoot } from "./diff";
 import { COMMIT_SYSTEM, commitPrompt, DRAFT_MS, draftOf, PR_SYSTEM, prPrompt } from "./draft";
 import type { Prs } from "./gh";
+import { git } from "./run";
 
-export function registerActions(ctx: ModuleContext, prs: Prs) {
+/** origin's URL, if there's an origin. */
+async function originUrl(root: string): Promise<string | undefined> {
+  const r = await git(root, ["config", "--get", "remote.origin.url"], { ok: [0, 1] });
+  return r.out.trim() || undefined;
+}
+
+export function registerActions(ctx: ModuleContext, prs: Prs, checkpoints: Pick<Checkpoints, "exclusive" | "commitBlocked">) {
   const look = async (sessionId: unknown) => {
     if (typeof sessionId !== "string" || !sessionId) throw new Error("sessionId is required.");
     return ctx.session(sessionId) ?? (await ctx.sessions.open(sessionId));
   };
   const chains = new Map<string, Promise<unknown>>();
-  const serial = <T>(key: string, f: () => Promise<T>): Promise<T> => {
-    const run = (chains.get(key) ?? Promise.resolve()).then(f, f);
+  /** `f` after every action already asked for in this repo (by its top folder, else the folder) */
+  const serial = async <T>(folder: string, f: (root: string | undefined) => Promise<T>): Promise<T> => {
+    const root = await repoRoot(folder).catch(() => undefined);
+    const key = root ?? folder;
+    const run = (chains.get(key) ?? Promise.resolve()).then(() => f(root), () => f(root));
     const tail = run.catch(() => {});
     chains.set(key, tail);
     void tail.then(() => chains.get(key) === tail && chains.delete(key));
     return run;
   };
   const drafting = new Map<string, Promise<GitDraft>>();
+  /** why a commit in `root` can't run now, if it can't */
+  const commitBlocked = (s: SessionLook, root: string) => ctx.sessions.heldWhy?.(s.summary.id) ?? checkpoints.commitBlocked(s.summary.id, s, root);
 
   ctx.ops.register("gitStatus", async ({ sessionId }) => gitStatus((await look(sessionId)).summary.projectPath));
 
@@ -31,7 +47,8 @@ export function registerActions(ctx: ModuleContext, prs: Prs) {
     const s = await look(sessionId);
     const st = await gitStatus(s.summary.projectPath);
     if (st.state !== "ok" || !st.root) return { gh: "noRemote", at: Date.now() };
-    return prs.lookup(s.summary.id, { root: st.root, branch: st.branch, defaultBranch: st.defaultBranch, origin: st.origin }, fresh === true);
+    const url = st.origin ? await originUrl(st.root) : undefined;
+    return prs.lookup(s.summary.id, { root: st.root, branch: st.branch, defaultBranch: st.defaultBranch, ...(url ? { originUrl: url } : {}) }, fresh === true);
   });
 
   ctx.ops.register("gitDraft", async ({ sessionId, kind }) => {
@@ -60,17 +77,25 @@ export function registerActions(ctx: ModuleContext, prs: Prs) {
     const s = await look(sessionId);
     if (typeof message !== "string") throw new Error("message is required.");
     const folder = s.summary.projectPath;
-    return serial(folder, async () => {
-      if ((ctx.session(s.summary.id) ?? s).status === "running") return { ok: false, error: "The session is working. Commit when its turn ends.", status: await gitStatus(folder) };
-      const r = await commit(folder, message, onDefault === true);
-      if (r.ok) ctx.log(`${s.summary.id}: committed ${r.commit ?? ""} on ${r.status.branch ?? "?"}`);
-      return r;
+    return serial(folder, async (root) => {
+      if (!root) return commit(folder, message, onDefault === true);
+      const refuse = async (error: string): Promise<GitActionResult> => ({ ok: false, error, status: await gitStatus(folder) });
+      const why = commitBlocked(s, root);
+      if (why) return refuse(why);
+      // The repo to itself: no snapshot or restore beside it; checked again once it has it.
+      return checkpoints.exclusive(root, async () => {
+        const again = commitBlocked(s, root);
+        if (again) return refuse(again);
+        const r = await commit(folder, message, onDefault === true);
+        if (r.ok) ctx.log(`${s.summary.id}: committed ${r.commit ?? ""} on ${r.status.branch ?? "?"}`);
+        return r;
+      });
     });
   });
 
-  ctx.ops.register("gitPush", async ({ sessionId }) => {
+  ctx.ops.register("gitPush", async ({ sessionId, onDefault }) => {
     const s = await look(sessionId);
-    const r = await serial(s.summary.projectPath, () => push(s.summary.projectPath));
+    const r = await serial(s.summary.projectPath, () => push(s.summary.projectPath, onDefault === true));
     prs.forget(s.summary.id);
     return r;
   });
@@ -85,16 +110,16 @@ export function registerActions(ctx: ModuleContext, prs: Prs) {
       if (st.state !== "ok" || !st.root) return no("This folder isn't in a git repository.");
       if (!title.trim()) return no("Write a title first.");
       if (!st.branch) return no("HEAD is detached: check out a branch to open a PR from.");
-      if (!st.defaultBranch) return no("There's no default branch to open a PR against.");
       if (st.branch === st.defaultBranch) return no(`This is ${st.branch}, the default branch: a PR needs another branch.`);
-      if (!st.origin) return no("There's no remote called origin.");
+      const url = st.origin ? await originUrl(st.root) : undefined;
+      if (!url) return no("There's no remote called origin.");
       if (!prs.bin()) return no("gh isn't installed on this computer. Install GitHub's gh and run gh auth login there.");
       if (!st.upstream || st.ahead > 0) {
         const p = await push(folder);
         if (!p.ok) return p;
         st = p.status;
       }
-      const r = await prs.create(s.summary.id, st.root!, { base: st.defaultBranch!, head: st.branch!, title: title.trim(), body });
+      const r = await prs.create(s.summary.id, st.root!, { originUrl: url, ...(st.defaultBranch ? { base: st.defaultBranch } : {}), head: st.branch!, title: title.trim(), body });
       if (r.pr) ctx.log(`${s.summary.id}: PR #${r.pr.number} ${r.pr.url}`);
       return { ok: !r.error, ...(r.error ? { error: r.error } : {}), ...(r.output ? { output: r.output } : {}), ...(r.pr ? { pr: r.pr } : {}), status: st };
     });

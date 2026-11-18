@@ -22,7 +22,7 @@ export function makeGitModule(o: GitModuleOpts = {}): Module {
     name: "git",
     start(ctx) {
       const { checkpoints, stop } = startCheckpoints(ctx);
-      registerActions(ctx, new Prs({ dir: ctx.dataDir, ...(o.ghBin ? { bin: o.ghBin } : {}) }));
+      registerActions(ctx, new Prs({ dir: ctx.dataDir, ...(o.ghBin ? { bin: o.ghBin } : {}) }), checkpoints);
       ctx.ops.register("gitDiff", async ({ sessionId, scope, checkpoint }) => {
         if (typeof sessionId !== "string" || !sessionId) throw new Error("sessionId is required.");
         if (!isDiffScope(scope)) throw new Error("Unknown diff scope.");

@@ -33,6 +33,8 @@ export interface GitOpts {
 }
 
 export const GIT_TIMEOUT_MS = 15_000;
+/** How long pipes are read after git exits (a hook's background child may hold them). */
+const EXIT_GRACE_MS = 2_000;
 
 /** The same in every call: plain paths, no color, no pager, no prompts, no fsmonitor hook. */
 const CONFIG = ["-c", "core.quotepath=off", "-c", "color.ui=never", "-c", "core.fsmonitor=false", "-c", "core.pager=cat"];
@@ -48,7 +50,25 @@ export class GitError extends Error {
   }
 }
 
-/** `git <args>` in `cwd`. Throws GitError on an exit code outside `ok`, a timeout, or no git. */
+/** Kills a child started `detached` and everything in its process group (a hook's children, ssh). */
+export function killGroup(p: { pid: number; kill(sig?: number | NodeJS.Signals): void }) {
+  try {
+    process.kill(-p.pid, "SIGKILL");
+  } catch {
+    try {
+      p.kill("SIGKILL");
+    } catch {}
+  }
+}
+
+/** Resolves when `stop` does, else with `p`: a pipe a grandchild still holds is never waited on past a kill. */
+const until = <T>(p: Promise<T>, stop: Promise<void>, dflt: T): Promise<T> => Promise.race([p, stop.then(() => dflt)]);
+
+/**
+ * `git <args>` in `cwd`. Throws GitError on an exit code outside `ok`, a timeout, or no git. git runs
+ * in its own process group: a timeout kills the group (hooks, ssh, a pinentry) and stops waiting on
+ * pipes their children may still hold.
+ */
 export async function git(cwd: string, args: string[], opts: GitOpts = {}): Promise<GitOut> {
   const { timeoutMs = GIT_TIMEOUT_MS, maxBytes = 16 * 1024 * 1024, ok = [0] } = opts;
   let p: ReturnType<typeof Bun.spawn<"ignore" | "pipe", "pipe", "pipe">>;
@@ -58,14 +78,15 @@ export async function git(cwd: string, args: string[], opts: GitOpts = {}): Prom
       stdin: opts.input === undefined ? "ignore" : "pipe",
       stdout: "pipe",
       stderr: "pipe",
+      detached: true,
       // The folder decides the repo: nothing inherited points git elsewhere.
-      // No lazy fetch: a partial clone never goes to the network for a diff.
+      // No lazy fetch: a partial clone never goes to the network for a diff. Hooks (what the person
+      // asked git to do) get the person's own locale and fetching.
       env: childEnv({
         GIT_OPTIONAL_LOCKS: "0",
         GIT_TERMINAL_PROMPT: "0",
-        GIT_NO_LAZY_FETCH: "1",
+        ...(opts.hooks ? {} : { GIT_NO_LAZY_FETCH: "1", LC_ALL: "C" }),
         GIT_PAGER: "cat",
-        LC_ALL: "C",
         GIT_DIR: undefined,
         GIT_WORK_TREE: undefined,
         GIT_INDEX_FILE: undefined,
@@ -83,22 +104,52 @@ export async function git(cwd: string, args: string[], opts: GitOpts = {}): Prom
   }
   if (opts.input !== undefined) {
     const w = p.stdin as import("bun").FileSink;
-    w.write(opts.input);
-    void Promise.resolve(w.end()).catch(() => {});
+    try {
+      w.write(opts.input);
+      void Promise.resolve(w.end()).catch(() => {});
+    } catch {}
   }
   let timedOut = false;
+  let stopNow!: () => void;
+  const stop = new Promise<void>((r) => (stopNow = r));
+  const kill = () => {
+    killGroup(p);
+    stopNow();
+  };
   const timer = setTimeout(() => {
     timedOut = true;
-    p.kill();
+    kill();
   }, timeoutMs);
+  // git is done but something it started (a hook's background child) still holds a pipe: a moment
+  // later its group goes, and what was read is the answer.
+  let finished = false;
+  void p.exited.then(() => Bun.sleep(EXIT_GRACE_MS)).then(() => {
+    if (finished) return;
+    killGroup(p);
+    stopNow();
+  });
   const chunks: Uint8Array[] = [];
   let size = 0;
   let cut = false;
   const reader = p.stdout.getReader();
+  // stderr as it comes, so a timeout still has what a hook printed before it
+  let errSoFar = "";
+  const dec = new TextDecoder();
+  const errText = (async () => {
+    const r = p.stderr.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await r.read();
+        if (done) break;
+        if (errSoFar.length < 1 << 20) errSoFar += dec.decode(value, { stream: true });
+      }
+    } catch {}
+    return errSoFar;
+  })();
   try {
     for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      const { done, value } = await until(reader.read(), stop, { done: true, value: undefined });
+      if (done || !value) break;
       if (opts.sink) {
         await opts.sink(value);
         continue;
@@ -107,17 +158,20 @@ export async function git(cwd: string, args: string[], opts: GitOpts = {}): Prom
         chunks.push(value.subarray(0, maxBytes - size));
         size = maxBytes;
         cut = true;
-        p.kill();
+        kill();
         break;
       }
       chunks.push(value);
       size += value.length;
     }
   } finally {
-    reader.releaseLock();
+    try {
+      reader.releaseLock();
+    } catch {}
   }
-  const err = await new Response(p.stderr).text().catch(() => "");
-  const code = await p.exited;
+  const err = await until(errText, stop, "").then((e) => e || errSoFar);
+  const code = await until(p.exited, stop.then(() => Bun.sleep(1000)), -1);
+  finished = true;
   clearTimeout(timer);
   if (timedOut) throw new GitError("git took too long.", code, err);
   const bytes = Buffer.concat(chunks);

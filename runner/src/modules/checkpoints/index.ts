@@ -75,6 +75,23 @@ function busyWhy(look: SessionLook): string | undefined {
   return undefined;
 }
 
+/**
+ * Why a commit can't run now, if it can't (git actions): this session or another live one in the
+ * repo (or holding it) is doing something, so files may be half-written. Messages waiting in a queue
+ * don't count: they wait for the commit's repo lock like any turn's snapshot.
+ */
+export function commitBlockedWhy(look: SessionLook, others: { s: OtherSession; look?: SessionLook }[] = []): string | undefined {
+  const why = busyWhy(look);
+  if (why === "working") return "The session is working. Commit when its turn ends.";
+  if (why === "waiting on you") return "The session is waiting on you. Answer it first.";
+  if (why) return `The session is ${why}. Commit when that's done.`;
+  for (const o of others) {
+    const w = o.look ? busyWhy(o.look) : o.s.status === "running" ? "working" : o.s.status === "waiting" ? "waiting on you" : undefined;
+    if (w) return `“${o.s.title || "Another session"}” in this repository is ${w}. Commit when it's done.`;
+  }
+  return undefined;
+}
+
 /** Why a restore can't run now, if it can't: this session, or another live one in the repo. */
 export function blockedWhy(look: SessionLook, others: { s: OtherSession; look?: SessionLook }[] = []): string | undefined {
   const why = busyWhy(look);
@@ -299,6 +316,11 @@ export class Checkpoints {
     const others = this.others(sessionId, root);
     const blocked = blockedWhy(look, others.map((s) => ({ s, look: this.o.look(s.id) })));
     return { state: "ok", root, checkpoints: items.map(info).reverse(), others, ...(blocked ? { blocked } : {}) };
+  }
+
+  /** Why a commit in `root` can't run now (commitBlockedWhy), from this session and the repo's others. */
+  commitBlocked(sessionId: string, look: SessionLook, root: string): string | undefined {
+    return commitBlockedWhy(this.o.look(sessionId) ?? look, this.others(sessionId, root).map((s) => ({ s, look: this.o.look(s.id) })));
   }
 
   /** Live sessions besides this one whose folder is in the repo or holds it (their agents can edit it; real paths). */

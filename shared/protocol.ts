@@ -218,10 +218,10 @@ export interface Ops {
   gitPr: { args: { sessionId: string; fresh?: boolean }; result: PrLookup };
   /** a generated commit message, or PR title and body: a one-shot side query on the session's own harness and source, never a turn */
   gitDraft: { args: { sessionId: string; kind: "commit" | "pr" }; result: GitDraft };
-  /** `git add -A` and commit with `message`; on the default branch only with `onDefault` */
+  /** `git add -A` and commit with `message`; on the default branch only with `onDefault`. Refused while a session in the repo is busy or a restore holds it */
   gitCommit: { args: { sessionId: string; message: string; onDefault?: boolean }; result: GitActionResult };
-  /** `git push -u origin <branch>`, never forced */
-  gitPush: { args: { sessionId: string }; result: GitActionResult };
+  /** `git push -u origin <branch>`, never forced; the default branch only with `onDefault` */
+  gitPush: { args: { sessionId: string; onDefault?: boolean }; result: GitActionResult };
   /** pushes if it needs to, then `gh pr create` against the default branch; the PR is recorded as the session's */
   gitOpenPr: { args: { sessionId: string; title: string; body: string }; result: GitActionResult };
   /** moves a session to another harness: a new session there; the old one stays as it is */
