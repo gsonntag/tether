@@ -226,7 +226,7 @@ is dropped, so `plan` is always the plan's.
 
 `listProjects`, `listSessions`, `subscribe`, `unsubscribe`, `newSession`, `checkFolder`, `send`, `steer`,
 `queue`, `editQueued`, `cancelQueued`, `interrupt`, `answerRequest`, `setModel`, `setEffort`,
-`setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `setSessionArchived`, `openTerminal`, `closeTerminal`,
+`setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `setSessionArchived`, `pinSession`, `openTerminal`, `closeTerminal`,
 `terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands). The move module
 adds `moveOptions` and `moveSession` (§15).
 
@@ -852,8 +852,8 @@ event (with the message's text) and the queued message's id from `SessionActions
 ## 10. UI
 
 - **Sidebar:** a flat list of recent sessions across projects (title, harness glyph, project, how long
-  ago, status dot), with projects below. Search. New session (pick a project, harness, model). Archive
-  (Archiving below).
+  ago, status dot), with projects below; pinned sessions above it. Search. New session (pick a project,
+  harness, model). Archive and pin (Archiving, Pinning below).
 - **Session view:** the transcript (markdown, thinking folded, tool cards rendered by `kind` with
   diffs and shell output), the requests dock, the queue, the composer, and a header with model, effort,
   permission mode, the context chip ("Context 42%", tooltip "84k of 200k context"), the usage chip (what it
@@ -1112,6 +1112,14 @@ search still finds them (marked Archived), and Home still shows one while it nee
 The flag is saved in the runner's prefs (`setSessionArchived`), so it survives restarts and the
 90-day pruning, and shows on every connected device. A failure shows once: in the chat from ⋯, under
 the row from the Sidebar until the next click or key or a few seconds.
+
+### Pinning
+
+Each main session row in the Sidebar has a pin button beside archive (filled, and always shown, while
+pinned). Pinned sessions sit in a Pinned group above Recent, oldest pin first, across runners, on every
+device; a search or a folder lists them as usual. The runner keeps when it was pinned in its prefs
+(`pinSession`, carried on the row as `pinned`), past the 90-day pruning, and lists a pinned session
+however old. Archiving unpins; an archived session or a subagent can't be pinned. No reordering.
 
 ### The Home agent's model and source
 
