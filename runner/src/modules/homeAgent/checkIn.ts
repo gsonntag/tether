@@ -117,7 +117,7 @@ export async function removeOwnWorktree(own: WorktreeRecord, others: string[], g
     const onBranch = (await git(path, "symbolic-ref", "--quiet", "--short", "HEAD")) === own.branch;
     const headMerged = onBranch ? branchMerged : mains.length > 0 && (await inMain(git, path, "HEAD", mains));
     if (!headMerged) return { removed: false, why: `its worktree ${path} has commits that aren't in main (it's on ${(await git(path, "rev-parse", "--abbrev-ref", "HEAD")) ?? "an unknown commit"})` };
-    const ignored = ignoredFiles(path);
+    const ignored = await ignoredFiles(path, argv);
     if (!ignored) return { removed: false, why: `Tether couldn't list the ignored files in its worktree ${path} (or there are too many to check)` };
     const lost = precious(ignored, own.known && !Array.isArray(own.known) ? own.known : {});
     if (lost.length) return { removed: false, why: `removing its worktree ${path} would delete ignored files: ${lost.slice(0, 5).join(", ")}${lost.length > 5 ? ` and ${lost.length - 5} more` : ""}` };

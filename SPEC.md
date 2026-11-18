@@ -113,9 +113,11 @@ claim any id not starting with `runner-` (`CLOSE_RUNNER_ID` otherwise; server/sr
   existing; the worktree only when git lists it on this branch, the branch only while still at the
   base commit (`update-ref -d`), an empty `<repo>-worktrees` it made. git runs as argv, in its own
   process group, with time limits and no prompts; `worktree add` runs the repo's post-checkout hook,
-  as a person's would (the agent gets the same access there anyway). Then `newSession` in it (a
+  as a person's would (the agent gets the same access there anyway), in the C locale (its error
+  text is matched). Then `newSession` in it (a
   failed start undoes it the same way), and runner.json records `worktree: {path, branch, repo,
-  known}` on the session: its own (`known`: each ignored file, with its size and time, there once it
+  known}` on the session: its own (`known`: each ignored file, with its size, time and, up to 1 MB, a
+  content hash, there once it
   was made, plus what each setup run made or changed, taken when it ends before anything waiting goes
   to the agent, against a snapshot at its start; files made by hand before a Re-run setup aren't). The
   summary carries `worktreeOf` (the main checkout) for grouping. **Setup:** `.tether/setup`
@@ -129,7 +131,8 @@ runs whatever the base has) before the main checkout's, runs in
   `setup`, whose output never goes to the agent (state `done`), for at most 30 minutes (then
   stopped, failed). A terminal start in a repo with a setup is refused (its TUI wouldn't wait).
   While it runs (`LiveState.setup: "running"`, also in runner.json) every send, the Home agent's
-  too, queues held (`queueHeldBy: "setup"`, not shown as needing you) and Resume refuses; success
+  too, queues held (`queueHeldBy: "setup"`, not shown as needing you), Resume and `!` commands
+  refuse; success
   releases the queue. After a failure (`setup: "failed"`), or a restart that cut it off, what waits
   and what you send next stay held, even with nothing queued; Home shows the session failed, and
   the card offers **Re-run setup** (`rerunSetup`) and **Send anyway** (Resume, which ends the gate).
@@ -1198,7 +1201,7 @@ once the answer passes, Tether removes it itself and then archives. Its HEAD mus
 ancestry or as equal patches: a rebase merge counts, a squash of several commits may not). Ignored
 files it would delete, file by file, must be in regenerable folders (`node_modules`, `dist`, `build`,
 `target`, `.venv`, `venv`, `__pycache__`, `.next`, `.turbo`, `coverage`, `.cache`) or `known` and
-unchanged (same size and time); anything else (a `.env`, a local database, a file added or edited
+unchanged (same size, time and hash); anything else (a `.env`, a local database, a file added or edited
 since, more than 20,000 to check) keeps it, named in the reason. Then `git worktree remove` without
 `--force` (a clean worktree only), and its branch by `update-ref -d` at the commit checked to be in
 main, so it can't have moved in between; a branch with work not in main stays. A worktree folder

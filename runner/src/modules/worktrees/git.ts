@@ -9,9 +9,10 @@
 // origin/<x> it fetches that branch, best effort (15 s, no prompts); a failed fetch leaves the base
 // as the last fetch left it.
 
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, rmdirSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, readdirSync, readFileSync, rmdirSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { childEnv } from "../../childEnv";
 import { folderForBranch, hashSlug, randomSlug, slugOf, WORKTREE_BRANCH_PREFIX } from "../../../../shared/worktree";
@@ -37,7 +38,7 @@ export const runGit: Git = (cwd, args, ms = QUICK_MS, extra = {}) =>
   new Promise((done) => {
     let p: ChildProcess;
     try {
-      p = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"], detached: true, env: childEnv({ GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", SSH_ASKPASS: "", GCM_INTERACTIVE: "never", ...extra }) });
+      p = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"], detached: true, env: childEnv({ GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", SSH_ASKPASS: "", GCM_INTERACTIVE: "never", LC_ALL: "C", LANGUAGE: "", ...extra }) });
     } catch (e) {
       return done({ ok: false, out: "", err: (e as Error).message });
     }
@@ -226,64 +227,74 @@ function rmEmpty(dir: string) {
 /** Ignored folders that only hold what a build or an install makes again: Archive done may delete them. */
 export const REGENERABLE = new Set(["node_modules", "dist", "build", "target", ".venv", "venv", "__pycache__", ".next", ".turbo", "coverage", ".cache"]);
 
-/** An ignored file as it was: its size and modification time. */
-export type FileStamp = [size: number, mtimeMs: number];
+/** An ignored file as it was: its size, modification time and, up to HASH_MAX bytes, a hash of its content. */
+export type FileStamp = [size: number, mtimeMs: number, sha1?: string];
 /** Ignored files by path (relative to the worktree), outside regenerable folders. */
 export type IgnoredFiles = Record<string, FileStamp>;
 
 /** At most this many ignored files are looked at; more: can't tell (the worktree is kept). */
 export const IGNORED_MAX = 20_000;
+/** Files up to this size are stamped with a hash of their content too. */
+export const HASH_MAX = 1024 * 1024;
 
 const regenerable = (rel: string) => rel.replace(/\/$/, "").split("/").some((seg) => REGENERABLE.has(seg));
 
+/** Whether two stamps say the same file: size and time, and the content hash when both have one. */
+export const sameStamp = (a: FileStamp | undefined, b: FileStamp | undefined) =>
+  Array.isArray(a) && Array.isArray(b) && a[0] === b[0] && a[1] === b[1] && (a[2] === undefined || b[2] === undefined || a[2] === b[2]);
+
 /**
- * A worktree's ignored files, each with its size and time, outside regenerable folders (which are
- * never walked). Synchronous, so it can be taken at an exact moment (a setup's end, before anything
- * waiting goes to the agent). git names the ignored paths (`ls-files -o -i --directory`, so an
- * ignored folder is one entry); folders are then walked file by file, links not followed.
- * Undefined: git failed, or there are more than IGNORED_MAX.
+ * A worktree's ignored files, each stamped, outside regenerable folders (which are never walked).
+ * git names the ignored paths (`ls-files -o -i --directory`, so an ignored folder is one entry);
+ * folders are then walked file by file, links not followed. Undefined: git failed, or there are
+ * more than IGNORED_MAX.
  */
-export function ignoredFiles(path: string): IgnoredFiles | undefined {
-  const r = spawnSync("git", ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], { cwd: path, encoding: "utf8", timeout: 30_000, maxBuffer: 64 * 1024 * 1024, env: childEnv({ GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" }) });
-  if (r.status !== 0 || typeof r.stdout !== "string") return undefined;
+export async function ignoredFiles(path: string, git: Git = runGit): Promise<IgnoredFiles | undefined> {
+  const r = await git(path, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], 30_000);
+  if (!r.ok) return undefined;
   const out: IgnoredFiles = {};
   let n = 0;
-  const add = (rel: string): boolean => {
+  const add = async (rel: string): Promise<boolean> => {
     if (regenerable(rel)) return true;
+    const abs = join(path, rel);
     let st;
     try {
-      st = lstatSync(join(path, rel));
+      st = await lstat(abs);
     } catch {
       return true;
     }
     if (st.isDirectory()) {
       let names: string[];
       try {
-        names = readdirSync(join(path, rel));
+        names = await readdir(abs);
       } catch {
         return false;
       }
-      return names.every((name) => add(`${rel.replace(/\/$/, "")}/${name}`));
+      for (const name of names) if (!(await add(`${rel.replace(/\/$/, "")}/${name}`))) return false;
+      return true;
     }
     if (++n > IGNORED_MAX) return false;
-    out[rel] = [st.size, st.mtimeMs];
+    let sha: string | undefined;
+    if (st.isFile() && st.size <= HASH_MAX) {
+      try {
+        sha = createHash("sha1").update(await readFile(abs)).digest("hex");
+      } catch {}
+    }
+    out[rel] = sha ? [st.size, st.mtimeMs, sha] : [st.size, st.mtimeMs];
     return true;
   };
-  for (const rel of r.stdout.split("\0").filter(Boolean)) if (!add(rel)) return undefined;
+  for (const rel of r.out.split("\0").filter(Boolean)) if (!(await add(rel))) return undefined;
   return out;
 }
 
 /**
  * The ignored files removing a worktree would lose: all but those in regenerable folders and those
- * unchanged (same size and time) since it was made and set up (`known`). A file added or edited
- * since, even inside a folder that was there, counts.
+ * unchanged (same size, time and content hash) since it was made and set up (`known`). A file
+ * added or edited since, even inside a folder that was there, counts.
  */
 export function precious(now: IgnoredFiles, known: IgnoredFiles = {}): string[] {
   return Object.entries(now)
-    .filter(([rel, [size, mtime]]) => {
-      const k = known[rel];
-      return !(Array.isArray(k) && k[0] === size && k[1] === mtime);
-    })
+    .filter(([rel, st]) => !sameStamp(known[rel], st))
     .map(([rel]) => rel)
     .sort();
 }

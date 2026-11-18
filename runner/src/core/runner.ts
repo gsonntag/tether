@@ -265,22 +265,20 @@ export function createRunner(o: RunnerOptions) {
         setArchived: async (id: string, archived: boolean) => core.setArchived(await core.open(id), archived),
         setWorktree: async (id: string, worktree: WorktreeRecord) => core.setWorktree(await core.open(id), worktree),
         worktree: (id: string) => prefs.get(id).worktree,
-        setup: async (id: string, command: string, { beforeRelease, ...run }: Omit<SetupRun, "done"> & { beforeRelease?: () => void } = {}) => {
+        setup: async (id: string, command: string, { beforeRelease, ...run }: Omit<SetupRun, "done"> & { beforeRelease?: () => void | Promise<void> } = {}) => {
           const s = await core.open(id);
           live.queue.setupStarted(s);
           let settle!: (v: { ok: boolean; why: string }) => void;
           const done = new Promise<{ ok: boolean; why: string }>((r) => (settle = r));
-          const end = (ok: boolean, why: string) => {
-            // What the setup left, taken before anything waiting can reach the agent.
-            try {
-              beforeRelease?.();
-            } catch {}
+          const end = async (ok: boolean, why: string) => {
+            // What the setup left, taken before anything waiting can reach the agent (the gate holds until then).
+            await Promise.resolve(beforeRelease?.()).catch(() => {});
             live.queue.setupEnded(s, ok);
             // Home shows it as needing you, whether or not anything waits.
             if (!ok) live.read.set(s.id, { failure: `${why} What you send waits: re-run the setup, or send anyway.` });
             settle({ ok, why });
           };
-          await shellRuns.run(id, command, { ...run, done: end }).catch((e) => end(false, `The worktree's setup couldn't start: ${(e as Error).message}`));
+          await shellRuns.run(id, command, { ...run, done: (ok, why) => void end(ok, why) }).catch((e) => end(false, `The worktree's setup couldn't start: ${(e as Error).message}`));
           return { done };
         },
         notice: async (id: string, msg: Msg, where: { first?: boolean; after?: string } = {}) => {

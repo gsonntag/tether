@@ -20,13 +20,12 @@ import type { OpArgs } from "../../../../shared/protocol";
 import type { WorkspaceInfo, WorktreeMade } from "../../../../shared/worktree";
 import { SETUP_MAX_MS } from "../../../../shared/worktree";
 import type { WorktreeRecord } from "../../config";
-import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredFiles, lastFetched, repoOf, runGit, setupAt, shaOf, undoAdd, worktreePath, type Git, type FileStamp, type IgnoredFiles, type Setup } from "./git";
+import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredFiles, lastFetched, repoOf, runGit, setupAt, shaOf, undoAdd, worktreePath, type Git, type IgnoredFiles, type Setup, sameStamp } from "./git";
 
 /** At most this many ignored files are remembered as there after setup (more: the rest count as new). */
 const KNOWN_MAX = 5000;
 const capped = (k: IgnoredFiles): IgnoredFiles => Object.fromEntries(Object.entries(k).slice(0, KNOWN_MAX));
 
-const same = (a: FileStamp | undefined, b: FileStamp | undefined) => !!a && !!b && a[0] === b[0] && a[1] === b[1];
 
 /**
  * What's known after a setup: the earlier known files still unchanged, and what the setup made or
@@ -34,8 +33,8 @@ const same = (a: FileStamp | undefined, b: FileStamp | undefined) => !!a && !!b 
  * taken: those files then stay precious.
  */
 export function knownAfter(had: IgnoredFiles, before: IgnoredFiles | undefined, after: IgnoredFiles): IgnoredFiles {
-  const kept = Object.entries(had).filter(([p, st]) => same(after[p], st));
-  const made = before ? Object.entries(after).filter(([p, st]) => !same(before[p], st)) : [];
+  const kept = Object.entries(had).filter(([p, st]) => sameStamp(after[p], st));
+  const made = before ? Object.entries(after).filter(([p, st]) => !sameStamp(before[p], st)) : [];
   return Object.fromEntries([...kept, ...made]);
 }
 
@@ -127,7 +126,7 @@ export class Worktrees {
     });
     const { base, branch, path, sha } = made;
     // What's ignored there before anyone works in it (a hook's output, say): Archive done may delete it while unchanged.
-    const known = ignoredFiles(path);
+    const known = await ignoredFiles(path, this.git);
     let sessionId: string;
     try {
       ({ sessionId } = await this.o.newSession({ ...rest, projectPath: path }));
@@ -152,9 +151,10 @@ export class Worktrees {
   private async runSetup(sessionId: string, rec: WorktreeRecord, setup: Setup) {
     if (!this.o.sessions.setup) return;
     const env = { TETHER_WORKTREE: rec.path, TETHER_REPO: rec.repo, TETHER_BRANCH: rec.branch };
-    const before = ignoredFiles(rec.path);
+    const before = await ignoredFiles(rec.path, this.git);
     let after: IgnoredFiles | undefined;
-    const beforeRelease = () => void (after = ignoredFiles(rec.path));
+    // Awaited before the queue is let go: the setup's gate holds meanwhile.
+    const beforeRelease = async () => void (after = await ignoredFiles(rec.path, this.git));
     const { done } = await this.o.sessions.setup(sessionId, setup.label, { ...(setup.argv ? { argv: setup.argv } : {}), env, maxMs: this.o.setupMs ?? SETUP_MAX_MS, beforeRelease });
     void done.then(async ({ ok, why }) => {
       this.o.log?.(`${sessionId}: setup ${ok ? "done" : `failed: ${why}`}`);

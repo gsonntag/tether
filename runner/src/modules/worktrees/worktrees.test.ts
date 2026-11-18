@@ -3,7 +3,7 @@
 // gating the first message, and the record that makes the worktree the session's own.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { folderForBranch, hashSlug, randomSlug, slugOf } from "../../../../shared/worktree";
@@ -559,7 +559,7 @@ describe("New worktree", () => {
     mkdirSync(join(path, "data", "node_modules"), { recursive: true });
     writeFileSync(join(path, "data", "seed.db"), "seed");
     writeFileSync(join(path, "data", "node_modules", "y"), "");
-    const known = ignoredFiles(path)!;
+    const known = (await ignoredFiles(path))!;
     expect(Object.keys(known)).toEqual(["data/seed.db"]);
     expect(precious(known, known)).toEqual([]);
     const own = { path, branch: "tether/ig", repo: r.dir, known };
@@ -575,7 +575,7 @@ describe("New worktree", () => {
     // Back to only what setup left (the seed as it was): it goes.
     rmSync(join(path, ".env"));
     rmSync(join(path, "data", "notes.db"));
-    const again = { ...own, known: ignoredFiles(path)! };
+    const again = { ...own, known: (await ignoredFiles(path))! };
     expect(await removeOwnWorktree(again, [])).toEqual({ removed: true });
     expect(existsSync(path)).toBe(false);
     expect(sh(r.dir, "branch", "--list", "tether/ig")).toBe("");
@@ -589,7 +589,7 @@ describe("New worktree", () => {
     const path = await addWorktree(r.dir, "tether/many", "main");
     mkdirSync(join(path, "logs"));
     for (let i = 0; i <= IGNORED_MAX; i++) writeFileSync(join(path, "logs", `${i}`), "");
-    expect(ignoredFiles(path)).toBeUndefined();
+    expect(await ignoredFiles(path)).toBeUndefined();
     expect((await removeOwnWorktree({ path, branch: "tether/many", repo: r.dir }, [])).why).toContain("too many");
   }, 30_000);
 
@@ -611,7 +611,7 @@ describe("New worktree", () => {
     const rec = t.runner.look.sessions.worktree!(made.sessionId)!;
     // Known as the setup left it (4 bytes), so the agent's edit counts as precious.
     expect(rec.known![".env"]![0]).toBe(4);
-    expect(precious(ignoredFiles(made.path)!, rec.known)).toEqual([".env"]);
+    expect(precious((await ignoredFiles(made.path))!, rec.known)).toEqual([".env"]);
   });
 
   test("Archive done: a branch with work not in main is never deleted, even when HEAD moved to merged work", async () => {
@@ -718,6 +718,40 @@ describe("New worktree", () => {
     await until(() => !!t.runner.look.sessions.worktree!(made.sessionId)?.known?.["seed.db"]);
     const rec = t.runner.look.sessions.worktree!(made.sessionId)!;
     expect(Object.keys(rec.known!).sort()).toEqual(["seed.db"]);
-    expect(precious(ignoredFiles(made.path)!, rec.known)).toEqual([".env", "scratch.db"]);
+    expect(precious((await ignoredFiles(made.path))!, rec.known)).toEqual([".env", "scratch.db"]);
+  });
+
+  test("small ignored files carry a content hash: an edit that keeps size and time still counts", async () => {
+    const r = repo();
+    writeFileSync(join(r.dir, ".gitignore"), ".env\n");
+    sh(r.dir, "add", ".");
+    sh(r.dir, "commit", "-qm", "ignore");
+    const path = await addWorktree(r.dir, "tether/hash", "main");
+    // A whole-second time, so it can be set back exactly.
+    const when = new Date(1_700_000_000_000);
+    writeFileSync(join(path, ".env"), "A=1");
+    utimesSync(join(path, ".env"), when, when);
+    const known = (await ignoredFiles(path))!;
+    expect(known[".env"]![2]).toMatch(/^[0-9a-f]{40}$/);
+    writeFileSync(join(path, ".env"), "B=2");
+    utimesSync(join(path, ".env"), when, when);
+    const now = (await ignoredFiles(path))!;
+    expect(now[".env"]!.slice(0, 2)).toEqual(known[".env"]!.slice(0, 2));
+    expect(precious(now, known)).toEqual([".env"]);
+  });
+
+  test("git runs in the C locale, so the error text matched is git's English", async () => {
+    const r = await runGit(scratch(), ["-c", "alias.lc=!echo $LC_ALL", "lc"]);
+    expect(r.out).toBe("C");
+  });
+
+  test("a ! command while the worktree's setup runs is refused; once it has failed, it runs", async () => {
+    const t = runnerFor();
+    const r = withSetup("#!/bin/sh\nsleep 0.5\nexit 1\n");
+    const made = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/bang" });
+    await expect(t.runner.shellRuns.run(made.sessionId, "touch x")).rejects.toThrow("setup is still running");
+    await until(() => t.state(made.sessionId).setup === "failed");
+    await t.runner.shellRuns.run(made.sessionId, "touch x");
+    await until(() => existsSync(join(made.path, "x")));
   });
 });

@@ -38,8 +38,8 @@ export interface WorktreeRecord {
   path: string;
   branch: string;
   repo: string;
-  /** ignored files there once it was made and set up, with their size and time: Archive done may delete these while unchanged */
-  known?: Record<string, [number, number]>;
+  /** ignored files there once it was made and set up, with size, time and (up to 1 MB) a content hash: Archive done may delete these while unchanged */
+  known?: Record<string, [number, number, string?]>;
 }
 
 /** What Tether keeps for a session: the settings picked for it, applied when it (re)starts. */

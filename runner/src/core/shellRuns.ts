@@ -172,6 +172,8 @@ export class ShellRuns {
     try {
       s = await this.core.open(sessionId);
       if (s.summary.parentSessionId) throw new Error("Run commands from the main session.");
+      // A new worktree's setup runs in this folder now: a command would race it (SPEC §4).
+      if (!setup && s.state.setup === "running") throw new Error("The worktree's setup is still running. Run commands once it's done.");
       const cwd = s.summary.projectPath;
       if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`The session's folder ${cwd} isn't there any more, so nothing ran.`);
       await this.core.load(s);
