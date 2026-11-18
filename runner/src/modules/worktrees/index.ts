@@ -20,11 +20,24 @@ import type { OpArgs } from "../../../../shared/protocol";
 import type { WorkspaceInfo, WorktreeMade } from "../../../../shared/worktree";
 import { SETUP_MAX_MS } from "../../../../shared/worktree";
 import type { WorktreeRecord } from "../../config";
-import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredFiles, lastFetched, repoOf, runGit, setupAt, shaOf, undoAdd, worktreePath, type Git, type IgnoredFiles, type Setup } from "./git";
+import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredFiles, lastFetched, repoOf, runGit, setupAt, shaOf, undoAdd, worktreePath, type Git, type FileStamp, type IgnoredFiles, type Setup } from "./git";
 
 /** At most this many ignored files are remembered as there after setup (more: the rest count as new). */
 const KNOWN_MAX = 5000;
 const capped = (k: IgnoredFiles): IgnoredFiles => Object.fromEntries(Object.entries(k).slice(0, KNOWN_MAX));
+
+const same = (a: FileStamp | undefined, b: FileStamp | undefined) => !!a && !!b && a[0] === b[0] && a[1] === b[1];
+
+/**
+ * What's known after a setup: the earlier known files still unchanged, and what the setup made or
+ * changed (`after` against `before`, its start). Nothing new is known when `before` couldn't be
+ * taken: those files then stay precious.
+ */
+export function knownAfter(had: IgnoredFiles, before: IgnoredFiles | undefined, after: IgnoredFiles): IgnoredFiles {
+  const kept = Object.entries(had).filter(([p, st]) => same(after[p], st));
+  const made = before ? Object.entries(after).filter(([p, st]) => !same(before[p], st)) : [];
+  return Object.fromEntries([...kept, ...made]);
+}
 
 export class Worktrees {
   /** creates in progress, by repo: one at a time, so two can't pick (or clean up) the same branch */
@@ -131,21 +144,24 @@ export class Worktrees {
   }
 
   /**
-   * Runs the setup as the session's card. When it ends, what it left (ignored files, with their
-   * size and time) is taken at once, before anything waiting goes to the agent, and remembered as
-   * the worktree's.
+   * Runs the setup as the session's card. Ignored files are taken just before it starts and again
+   * when it ends (at once, before anything waiting goes to the agent): what the setup made or
+   * changed is remembered as the worktree's, with what was known and is still unchanged. Files made
+   * by hand before it (a `!` command while it had failed) aren't, so they stay precious.
    */
   private async runSetup(sessionId: string, rec: WorktreeRecord, setup: Setup) {
     if (!this.o.sessions.setup) return;
     const env = { TETHER_WORKTREE: rec.path, TETHER_REPO: rec.repo, TETHER_BRANCH: rec.branch };
+    const before = ignoredFiles(rec.path);
     let after: IgnoredFiles | undefined;
     const beforeRelease = () => void (after = ignoredFiles(rec.path));
     const { done } = await this.o.sessions.setup(sessionId, setup.label, { ...(setup.argv ? { argv: setup.argv } : {}), env, maxMs: this.o.setupMs ?? SETUP_MAX_MS, beforeRelease });
     void done.then(async ({ ok, why }) => {
       this.o.log?.(`${sessionId}: setup ${ok ? "done" : `failed: ${why}`}`);
       const now = this.o.sessions.worktree?.(sessionId);
-      const had = now?.known && !Array.isArray(now.known) ? now.known : {};
-      if (after && now) await this.o.sessions.setWorktree?.(sessionId, { ...now, known: capped({ ...had, ...after }) }).catch(() => {});
+      if (!after || !now) return;
+      const had = now.known && !Array.isArray(now.known) ? now.known : {};
+      await this.o.sessions.setWorktree?.(sessionId, { ...now, known: capped(knownAfter(had, before, after)) }).catch(() => {});
     });
   }
 

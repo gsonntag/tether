@@ -689,4 +689,35 @@ describe("New worktree", () => {
     await fetchBase(c.dir, "origin/main", spy);
     expect(seen.find((x) => x.args.includes("fetch"))!.env).toEqual({});
   });
+
+  test("knownAfter: what the setup made or changed, and earlier known files still unchanged; nothing new without a start snapshot", async () => {
+    const { knownAfter } = await import(".");
+    const had = { "a.db": [1, 1] as [number, number], "gone.db": [1, 1] as [number, number], "edited.db": [1, 1] as [number, number] };
+    const before = { "a.db": [1, 1] as [number, number], "edited.db": [2, 2] as [number, number], "mine.env": [3, 3] as [number, number] };
+    const after = { "a.db": [1, 1] as [number, number], "edited.db": [2, 2] as [number, number], "mine.env": [3, 3] as [number, number], "new.db": [4, 4] as [number, number] };
+    expect(knownAfter(had, before, after)).toEqual({ "a.db": [1, 1], "new.db": [4, 4] });
+    expect(knownAfter(had, undefined, after)).toEqual({ "a.db": [1, 1] });
+  });
+
+  test("Re-run setup: files made by hand before it stay precious; what it makes is known", async () => {
+    const t = runnerFor();
+    const r = repo();
+    writeFileSync(join(r.dir, ".gitignore"), "*.db\n.env\n");
+    mkdirSync(join(r.dir, ".tether"));
+    writeFileSync(join(r.dir, ".tether", "setup"), "#!/bin/sh\nif [ -e .env ]; then echo seed > seed.db; exit 0; fi\nexit 1\n");
+    chmodSync(join(r.dir, ".tether", "setup"), 0o755);
+    sh(r.dir, "add", ".");
+    sh(r.dir, "commit", "-qm", "setup");
+    const made = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/hand" });
+    await until(() => t.state(made.sessionId).setup === "failed");
+    // The person fixes it by hand (a `!` command, say): a .env, and a scratch database.
+    writeFileSync(join(made.path, ".env"), "TOKEN=mine");
+    writeFileSync(join(made.path, "scratch.db"), "mine");
+    await t.w.rerun(made.sessionId);
+    await until(() => t.state(made.sessionId).setup === undefined);
+    await until(() => !!t.runner.look.sessions.worktree!(made.sessionId)?.known?.["seed.db"]);
+    const rec = t.runner.look.sessions.worktree!(made.sessionId)!;
+    expect(Object.keys(rec.known!).sort()).toEqual(["seed.db"]);
+    expect(precious(ignoredFiles(made.path)!, rec.known)).toEqual([".env", "scratch.db"]);
+  });
 });

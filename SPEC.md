@@ -115,8 +115,9 @@ claim any id not starting with `runner-` (`CLOSE_RUNNER_ID` otherwise; server/sr
   process group, with time limits and no prompts; `worktree add` runs the repo's post-checkout hook,
   as a person's would (the agent gets the same access there anyway). Then `newSession` in it (a
   failed start undoes it the same way), and runner.json records `worktree: {path, branch, repo,
-  known}` on the session: its own (`known`: each ignored file there once it was made, and when the
-  setup ends, before anything waiting goes to the agent, with its size and time). The
+  known}` on the session: its own (`known`: each ignored file, with its size and time, there once it
+  was made, plus what each setup run made or changed, taken when it ends before anything waiting goes
+  to the agent, against a snapshot at its start; files made by hand before a Re-run setup aren't). The
   summary carries `worktreeOf` (the main checkout) for grouping. **Setup:** `.tether/setup`
   (executable, run directly) or `.tether/config.json`'s `"setup"` (via `$SHELL -c`), the worktree's
   own (the base's, which the dialog reads from git and shows, marked when cut short; the dialog
