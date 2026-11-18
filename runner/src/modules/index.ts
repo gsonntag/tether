@@ -10,6 +10,7 @@ import type { BillingSource, SourceChoices } from "../../../shared/credentials";
 import type { HomeChatUpdate } from "../../../shared/protocol";
 import type { Attachment } from "../../../shared/attachments";
 import type { HarnessId, LiveState, Msg, ProjectInfo, RequestAnswer, RunStatus, SessionSummary } from "../../../shared/transcript";
+import { filesModule } from "./files";
 import { gitModule } from "./git";
 import { homeAgentModule } from "./homeAgent";
 import type { HomeLine } from "./homeLine";
@@ -123,7 +124,7 @@ export interface Module {
 }
 
 /** The modules this runner loads, in order. */
-export const MODULES: Module[] = [pushModule, textingModule, moveModule, homeAgentModule, peersModule, updatesModule, linksModule, gitModule];
+export const MODULES: Module[] = [pushModule, textingModule, moveModule, homeAgentModule, peersModule, updatesModule, linksModule, gitModule, filesModule];
 
 export async function startModules(modules: Module[], ctx: (m: Module) => ModuleContext): Promise<() => void> {
   const stops: (() => void)[] = [];

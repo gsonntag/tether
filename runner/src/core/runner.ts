@@ -91,6 +91,7 @@ export function createRunner(o: RunnerOptions) {
     ...(o.homeFolder ? { homeFolder: o.homeFolder } : {}),
     git: true,
     gitActions: true,
+    files: true,
   });
 
   const conn = new Connection({

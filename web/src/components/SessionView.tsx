@@ -50,6 +50,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   const runnerGit = useStore((s) => !!s.runners.find((r) => r.id === runnerId)?.git);
   /** and its git actions (Commit, Push, Open PR, the PR chip) */
   const runnerGitActions = useStore((s) => !!s.runners.find((r) => r.id === runnerId)?.gitActions);
+  const runnerFiles = useStore((s) => !!s.runners.find((r) => r.id === runnerId)?.files);
   const children = useChildren(runnerId, sessionId);
   const pending = usePending(runnerId, sessionId);
   const composer = useRef<ComposerHandle>(null);
@@ -398,6 +399,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           status={state.status}
           cover={cover}
           git={runnerGitActions ? prs : undefined}
+          filesTab={runnerFiles}
           onClose={() => setChanges(false)}
           onSent={() => {
             // On a phone the composer is under the pane: back to the chat with the message in the box.
