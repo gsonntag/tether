@@ -65,3 +65,12 @@ test("in the terminal with the queue paused after Stop, the hint says it's pause
   expect(shellWhen("Claude", { running: false, inTerminal: true, heldBy: "stopped" })).toMatch(/paused after Stop/);
   expect(shellWhen("Claude", { running: false, inTerminal: true, heldBy: "terminal" })).toMatch(/Back to Tether/);
 });
+
+test("Alt+Enter opens Send later (with text, in any state but a command)", () => {
+  const k = (mode: Parameters<typeof keyAction>[1], hasText = true) => keyAction({ key: "Enter", shiftKey: false, metaKey: false, ctrlKey: false, altKey: true }, mode, { hasText, phone: false });
+  expect(k("idle")).toBe("later");
+  expect(k("steer")).toBe("later");
+  expect(k("terminal")).toBe("later");
+  expect(k("idle", false)).toBeNull();
+  expect(k("shell")).toBe("shell");
+});

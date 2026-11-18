@@ -92,25 +92,26 @@ export function mergeRows(a: Row[], b: Row[]): Row[] {
 /** The last part of a path: "/home/me/web" -> "web". */
 export const folderName = (path: string) => path.replace(/\/+$/, "").split("/").pop() || path;
 
-export type InboxKind = "needs" | "failed" | "finished" | "working";
+export type InboxKind = "needs" | "failed" | "finished" | "working" | "scheduled";
 export interface InboxRow extends Row {
   inbox: InboxKind;
 }
 
 /**
  * Home's inbox (SPEC §10), across runners: what needs you (open requests, a TUI asking), then
- * failed and finished turns nobody has looked at, then what is working. Main sessions only (a
- * subagent's request counts in its parent's).
+ * failed and finished turns nobody has looked at, then what is working, then sessions with a
+ * message scheduled (SPEC §9; never needing you for that). Main sessions only (a subagent's
+ * request counts in its parent's).
  */
 export function inbox(summaries: Record<string, SummaryState>): InboxRow[] {
   const out: InboxRow[] = [];
   for (const r of rows(summaries)) {
     if (r.parentSessionId) continue;
     const kind: InboxKind | undefined =
-      (r.requests ?? 0) > 0 || r.status === "waiting" || (r.queuePaused && r.status === "idle") ? "needs" : r.unread === "failed" ? "failed" : r.unread === "finished" && !r.backgroundSubagents ? "finished" : r.status === "running" ? "working" : undefined;
+      (r.requests ?? 0) > 0 || r.status === "waiting" || (r.queuePaused && r.status === "idle") ? "needs" : r.unread === "failed" ? "failed" : r.unread === "finished" && !r.backgroundSubagents ? "finished" : r.status === "running" ? "working" : r.scheduledAt !== undefined ? "scheduled" : undefined;
     if (kind) out.push({ ...r, inbox: kind });
   }
-  const rank: Record<InboxKind, number> = { needs: 0, failed: 1, finished: 2, working: 3 };
-  // Waiting longest first; the rest newest first.
-  return out.sort((a, b) => rank[a.inbox] - rank[b.inbox] || (a.inbox === "needs" ? a.updatedAt - b.updatedAt : b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
+  const rank: Record<InboxKind, number> = { needs: 0, failed: 1, finished: 2, working: 3, scheduled: 4 };
+  // Waiting longest first; scheduled soonest first; the rest newest first.
+  return out.sort((a, b) => rank[a.inbox] - rank[b.inbox] || (a.inbox === "needs" ? a.updatedAt - b.updatedAt : a.inbox === "scheduled" ? a.scheduledAt! - b.scheduledAt! : b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
 }

@@ -341,6 +341,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
               else if (kind === "queue") await rpc(runnerId, "queue", { sessionId, text, ...attachments });
               else await rpc(runnerId, "send", { sessionId, text, ...attachments, ...(kind === "stopSend" ? { stop: true } : {}) });
             }}
+            // Send later (SPEC §9 Scheduled sends): it waits in the queue for its time.
+            onSchedule={async (at, text, list) => void (await rpc(runnerId, "queue", { sessionId, text, at, ...(list.length ? { attachments: list } : {}) }))}
             // In the terminal a message waits in the queue (its own row): no pending copy.
             sendNow={inTerminal ? undefined : (kind, text, list) => void sendPending(runnerId, sessionId, text, list, { stop: kind === "stopSend" })}
             onStop={async () => {
