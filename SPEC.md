@@ -1131,8 +1131,8 @@ At each turn's start and end the git module's checkpoints snapshot the session's
 changes: a temporary `GIT_INDEX_FILE` seeded with a copy of the real index, its mtime kept (its stat
 cache keeps it quick and racy entries stay racy; sparse entries stay), `add -A`, `write-tree`,
 `commit-tree` with a fixed identity and date, `update-ref`. Untracked files over 32 MB or unreadable
-are left out and listed with the checkpoint; past 16 MB of untracked names (or 2,000 left out) the
-snapshot takes tracked files only and says so. No hooks or fsmonitor; clean filters the person's git
+are left out, and the checkpoint keeps the first 200 of them and their count; past 16 MB of untracked
+names (or 2,000 left out) the snapshot takes tracked files only and says so. No hooks or fsmonitor; clean filters the person's git
 config defines run as `git add` would run them (git-lfs keeps pointers), bounded by a time limit.
 Outside a repo nothing is taken. A turn resumed after an answer is the same turn, and so is a
 rate-limit retry (a different message sent instead starts a new one); a turn cut off by a restart is
@@ -1155,21 +1155,25 @@ at a running turn snapshots outside that order, so it never delays a turn's star
 **The Turn scope** lists the session's checkpoints, newest first, by time and the start of the prompt
 (`checkpoints { sessionId }`), and diffs the one picked: before → after, or before → the working tree
 while it runs (`gitDiff { scope: "turn", checkpoint }`). **Restore files to before this turn**
-(`restoreCheckpoint { sessionId, checkpointId }`) has the repo to itself and holds the session (what's
-sent meanwhile waits in its queue, then goes). It first takes the undo: a snapshot of the files as
+(`restoreCheckpoint { sessionId, checkpointId }`) has the repo to itself and holds the session and every
+other live session in the repo (`hold`: what's sent meanwhile waits in its queue and goes on release; a
+rate-limit retry due meanwhile waits too; `!` commands and opening the terminal refuse, "Restoring
+files…"). Each git step of it has a 60 s limit. It first takes the undo: a snapshot of the files as
 they are, into which every path the restore will write or remove is forced exactly as it is on disk,
-whatever its size, ignore rules or index bits (assume-unchanged, skip-worktree), or its absence. That
-is saved as a restore checkpoint, listed like a turn, so **Undo restore** (a restore to its own before)
-puts back byte for byte whatever the restore touched. Then the working tree goes back to the turn's
+as raw bytes (no filters, no line-ending conversion), whatever its size, ignore rules or index bits
+(assume-unchanged, skip-worktree), or its absence. That is saved as a restore checkpoint, listed like
+a turn, so **Undo restore** (a restore to its own before, writing those paths back as raw bytes) puts
+back byte for byte whatever the restore touched. Then the working tree goes back to the turn's
 before: files it made are removed (empty folders with them), ones it changed or deleted are written
 back. Left alone, and listed under the button: a path that can't be read into the undo, one the
-target snapshot left out (or any untracked path, when it took none), files the restored `.gitignore`
+target snapshot left out (or any untracked path, when it took none or left out more than it lists), files the restored `.gitignore`
 ignores (tracked or not), nested repositories and anything in them, a folder where a file goes, a path
 under a symlink. The real index, `HEAD` and branches aren't touched, so commits and staged changes
 stay. No confirm (§2): the undo is the safety net. Refused while the session runs, waits on you, runs
-a command, subagent or background task, or has messages queued, and while any other live session in
-the same repo (folders compared as real paths) runs or waits on you; checked again once the undo is
-saved, right before files change. The text under the button names the other live sessions in the repo.
+a command, subagent or background task, waits on its harness after a restart or on a rate-limit
+retry, is driven from its terminal, or has messages queued, and while any other live session in the
+same repo (folders compared as real paths) is in any of those states but the queue; checked again
+once the undo is saved, right before files change. The text under the button names the other live sessions in the repo.
 
 Kept 14 days and at most 200 per session (pruned as checkpoints are taken and at start). The list
 (times, prompts, commit ids, what was left out) is a JSON file per session in the module's folder; the
