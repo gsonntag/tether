@@ -19,6 +19,7 @@ import { forkModule } from "./fork";
 import { moveModule } from "./move";
 import { peersModule } from "./peers";
 import { pushModule } from "./push";
+import { sideChatsModule } from "./sideChats";
 import { textingModule } from "./texting";
 import { updatesModule } from "./updates";
 
@@ -40,11 +41,19 @@ export interface SessionLook {
 export interface AdoptExtra {
   stored?: boolean;
   forkedFrom?: ForkedFrom;
+  /** a side chat (SPEC §16a): the session it's beside */
+  sideOf?: string;
 }
 
 /** How to fork: the reply its conversation ends at (shared/fork.ts forkPoints); absent, all of it (the last finished turn while one runs). */
 export interface ForkOptions {
   messageId?: string;
+  /** the fork's permission mode instead of the original's (a side chat's read-only one) */
+  permissionMode?: string;
+  /** its title instead of "<title> (fork)" */
+  title?: string;
+  /** a side chat (SPEC §16a): beside the original, left out of the lists */
+  sideOf?: string;
 }
 
 /** What a module may do with sessions, through the core's own paths (SPEC §2.1). */
@@ -133,7 +142,7 @@ export interface Module {
 }
 
 /** The modules this runner loads, in order. */
-export const MODULES: Module[] = [pushModule, textingModule, moveModule, forkModule, homeAgentModule, peersModule, updatesModule, linksModule];
+export const MODULES: Module[] = [pushModule, textingModule, moveModule, forkModule, sideChatsModule, homeAgentModule, peersModule, updatesModule, linksModule];
 
 export async function startModules(modules: Module[], ctx: (m: Module) => ModuleContext): Promise<() => void> {
   const stops: (() => void)[] = [];

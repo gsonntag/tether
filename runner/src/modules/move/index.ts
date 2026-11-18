@@ -259,7 +259,7 @@ export class Mover {
    * `upTo` (all of it when absent), imported into a new session on the same harness, source and
    * settings, stored: nothing starts until its first send.
    */
-  async copy(id: string, upTo: string | undefined, title: string, forkedFrom: ForkedFrom): Promise<string> {
+  async copy(id: string, upTo: string | undefined, title: string, forkedFrom: ForkedFrom, o: { permissionMode?: string; sideOf?: string } = {}): Promise<string> {
     const { look, adapter } = await this.source(id);
     if (!adapter.move?.importHistory) throw new Error(`${labelOf(adapter.id)} can't copy a session.`);
     const portable = await exportSession(adapter, look);
@@ -269,9 +269,10 @@ export class Mover {
       portable.messages = portable.messages.slice(0, end + 1);
     }
     portable.from.title = title;
-    const { model, effort, permissionMode } = look.state;
+    const { model, effort } = look.state;
+    const permissionMode = o.permissionMode ?? look.state.permissionMode;
     const opts: StartOpts = { ...(model && model !== "default" ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) };
-    const made = await this.native(adapter, portable, opts, false, await this.ctx.sessions.sourceOf(id), undefined, { stored: true, forkedFrom });
+    const made = await this.native(adapter, portable, opts, false, await this.ctx.sessions.sourceOf(id), undefined, { stored: true, forkedFrom, ...(o.sideOf ? { sideOf: o.sideOf } : {}) });
     this.ctx.log(`copied ${id} to ${made.sessionId} as a fork: ${made.kept} of ${made.total} messages in context`);
     return made.sessionId;
   }

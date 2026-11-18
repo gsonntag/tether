@@ -21,11 +21,14 @@ export function forkRefusal(s: SessionLook, a: Adapter | undefined): string | un
   return undefined;
 }
 
+/** What a copy takes from the fork's options. */
+export type CopyOptions = Pick<ForkOptions, "permissionMode" | "sideOf">;
+
 export class Forker {
   constructor(
     private ctx: Pick<ModuleContext, "sessions" | "log">,
     /** a fork the harness can't make itself: a copy of the history (Mover.copy) */
-    private copy?: (id: string, upTo: string | undefined, title: string, from: ForkedFrom) => Promise<string>,
+    private copy?: (id: string, upTo: string | undefined, title: string, from: ForkedFrom, o: CopyOptions) => Promise<string>,
   ) {}
 
   private adapter(h: string) {
@@ -56,16 +59,18 @@ export class Forker {
       upTo = point.upTo;
     }
     const forkedFrom: ForkedFrom = { sessionId: id, ...(upTo ? { messageId: upTo } : {}), title };
-    const name = forkTitle(title);
+    const name = o.title ?? forkTitle(title);
+    const own: CopyOptions = { ...(o.permissionMode ? { permissionMode: o.permissionMode } : {}), ...(o.sideOf ? { sideOf: o.sideOf } : {}) };
     let forked: string;
     if (a!.fork!.copyInstead?.(nativeId)) {
       if (!this.copy) throw new Error("This session can't be forked here.");
-      forked = await this.copy(id, upTo, name, forkedFrom);
+      forked = await this.copy(id, upTo, name, forkedFrom, own);
     } else {
-      const { model, effort, permissionMode } = look.state;
+      const { model, effort } = look.state;
+      const permissionMode = o.permissionMode ?? look.state.permissionMode;
       const opts: StartOpts = { ...(model && model !== "default" ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) };
       const made = await a!.fork!.fork({ nativeId, projectPath, ...(upTo ? { upTo } : {}), title: name });
-      forked = await this.ctx.sessions.adopt(harness, made, projectPath, opts, await this.ctx.sessions.sourceOf(id), undefined, { stored: true, forkedFrom });
+      forked = await this.ctx.sessions.adopt(harness, made, projectPath, opts, await this.ctx.sessions.sourceOf(id), undefined, { stored: true, forkedFrom, ...(o.sideOf ? { sideOf: o.sideOf } : {}) });
     }
     // Where the fork's own conversation begins: under what it took from the original.
     const after = (await a!.readHistory(parseSessionId(forked)!.nativeId, projectPath).catch(() => [] as Msg[])).at(-1)?.id;
@@ -89,7 +94,7 @@ export const forkModule: Module = {
   start(ctx) {
     // A copy keeps its history where moves do (core/moved.ts): the harness may be told to read it there.
     const mover = new Mover({ ...ctx, dataDir: join(dirname(ctx.dataDir), "move") });
-    const forker = new Forker(ctx, (id, upTo, title, from) => mover.copy(id, upTo, title, from));
+    const forker = new Forker(ctx, (id, upTo, title, from, o) => mover.copy(id, upTo, title, from, o));
     ctx.sessions.forker((id, o) => forker.fork(id, o));
     ctx.ops.register("forkSession", async (a) => ({ sessionId: await ctx.sessions.fork(String(a.sessionId ?? ""), typeof a.messageId === "string" && a.messageId ? { messageId: a.messageId } : {}) }));
   },
