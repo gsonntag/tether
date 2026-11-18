@@ -184,7 +184,7 @@ export function GitBar({
             </label>
           )}
           <div className="t-rform-row">
-            {drafting === "commit" && <Spinner size="sm" label="Writing a message" />}
+            {drafting === "commit" && <span className="t-gitbar-writing"><Spinner size="sm" /> Writing a message…</span>}
             <Button label="Cancel" size="sm" variant="ghost" onClick={() => setBox(undefined)} />
             <Button
               label={busy === "commit" ? "Committing…" : "Commit"}
@@ -226,7 +226,7 @@ export function GitBar({
             {needsPush ? `; pushes ${st.branch} to origin first` : ""}.
           </div>
           <div className="t-rform-row">
-            {drafting === "pr" && <Spinner size="sm" label="Writing a description" />}
+            {drafting === "pr" && <span className="t-gitbar-writing"><Spinner size="sm" /> Writing a description…</span>}
             <Button label="Cancel" size="sm" variant="ghost" onClick={() => setBox(undefined)} />
             <Button label={busy === "pr" ? "Opening…" : "Open PR"} size="sm" variant="primary" isDisabled={!title.trim() || !!busy} onClick={() => void openPr()} />
           </div>

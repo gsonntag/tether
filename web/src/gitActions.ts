@@ -8,10 +8,10 @@ export type Tone = "ok" | "bad" | "pending" | "muted";
 const STATE: Record<PrInfo["state"], string> = { open: "Open", draft: "Draft", merged: "Merged", closed: "Closed" };
 const CHECKS: Record<PrInfo["checks"], string> = { passing: "Checks passing", failing: "Checks failing", pending: "Checks running", none: "" };
 
-/** The PR chip: "#42 · Open · ✓", its tone (from checks while it's open, else its state) and its tooltip. */
+/** The PR chip: "#42 · Open · ✓" (✗ failing, ● running), its tone (from checks while it's open, else its state) and its tooltip. */
 export function prChip(pr: PrInfo): { text: string; tone: Tone; title: string } {
   const live = pr.state === "open" || pr.state === "draft";
-  const mark = !live ? "" : pr.checks === "passing" ? " · ✓" : pr.checks === "failing" ? " · ✗" : pr.checks === "pending" ? " · …" : "";
+  const mark = !live ? "" : pr.checks === "passing" ? " · ✓" : pr.checks === "failing" ? " · ✗" : pr.checks === "pending" ? " · ●" : "";
   const tone: Tone = !live ? (pr.state === "merged" ? "ok" : "muted") : pr.checks === "failing" ? "bad" : pr.checks === "pending" ? "pending" : pr.checks === "passing" ? "ok" : "muted";
   const checks = live && CHECKS[pr.checks] ? `, ${CHECKS[pr.checks].toLowerCase()}` : "";
   return { text: `#${pr.number} · ${STATE[pr.state]}${mark}`, tone, title: `${pr.title ? `${pr.title}: ` : ""}${STATE[pr.state].toLowerCase()}${checks}. Opens on GitHub.` };

@@ -7,9 +7,9 @@ const pr = (p: Partial<PrInfo>): PrInfo => ({ number: 42, url: "https://github.c
 test("PR chip: number and state; checks while open, as a mark and a tone", () => {
   expect(prChip(pr({ checks: "passing" }))).toEqual({ text: "#42 · Open · ✓", tone: "ok", title: "Add git actions: open, checks passing. Opens on GitHub." });
   expect(prChip(pr({ checks: "failing" }))).toMatchObject({ text: "#42 · Open · ✗", tone: "bad" });
-  expect(prChip(pr({ checks: "pending" }))).toMatchObject({ text: "#42 · Open · …", tone: "pending" });
+  expect(prChip(pr({ checks: "pending" }))).toMatchObject({ text: "#42 · Open · ●", tone: "pending" });
   expect(prChip(pr({ checks: "none" }))).toMatchObject({ text: "#42 · Open", tone: "muted" });
-  expect(prChip(pr({ state: "draft", checks: "pending" }))).toMatchObject({ text: "#42 · Draft · …", tone: "pending" });
+  expect(prChip(pr({ state: "draft", checks: "pending" }))).toMatchObject({ text: "#42 · Draft · ●", tone: "pending" });
   // done: checks no longer matter
   expect(prChip(pr({ state: "merged", checks: "failing" }))).toEqual({ text: "#42 · Merged", tone: "ok", title: "Add git actions: merged. Opens on GitHub." });
   expect(prChip(pr({ state: "closed", title: "" }))).toEqual({ text: "#42 · Closed", tone: "muted", title: "closed. Opens on GitHub." });
