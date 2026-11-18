@@ -33,6 +33,18 @@ describe("fork points", () => {
     expect(wholeForkPoint([user("u1")], true)).toBeUndefined();
     expect(wholeForkPoint([notice("n")], false)).toBeUndefined();
   });
+  test("history brought in from elsewhere (noFork) is never a fork point; whole, it's copied whole", () => {
+    const borrowed = [{ ...user("m1"), noFork: true as const }, { ...reply("m2"), noFork: true as const }];
+    expect([...forkPoints([...borrowed, user("u1"), reply("a1")], false)]).toEqual(["a1"]);
+    expect(wholeForkPoint(borrowed, false)).toEqual({});
+    expect(wholeForkPoint(borrowed, true)).toBeUndefined();
+  });
+  test("a store that ends mid-turn (a turn outside Tether) forks through its last finished turn", () => {
+    expect(wholeForkPoint([user("u1"), reply("a1"), user("u2")], false)).toEqual({ upTo: "a1" });
+    expect(wholeForkPoint([user("u1"), reply("a1"), user("u2"), calling("a2")], false)).toEqual({ upTo: "a1" });
+    expect(wholeForkPoint([user("u1"), reply("a1"), user("u2"), { ...reply("a2"), error: "boom" }], false)).toEqual({ upTo: "a1" });
+    expect(wholeForkPoint([user("u1")], false)).toBeUndefined();
+  });
   test("titles", () => {
     expect(forkTitle("Fix the build")).toBe("Fix the build (fork)");
     expect(forkTitle(" ")).toBe("Untitled (fork)");

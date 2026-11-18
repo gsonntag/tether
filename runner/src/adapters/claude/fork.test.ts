@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { entriesOf } from "./move";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { forkPoints } from "../../../../shared/fork";
@@ -51,6 +52,47 @@ describe("forking a Claude Code session", () => {
     expect(fork.at(-1)!.id).toBe(first.id);
     const upTo = orig.filter((m) => m.role !== "notice");
     expect(fork.map((m) => m.parts)).toEqual(upTo.slice(0, upTo.findIndex((m) => m.id === first.id) + 1).map((m) => m.parts));
+  });
+
+  test("a moved-in session: its imported replies (model <moved>) are fork points the store can end at", async () => {
+    const native = "0f0f0f0f-0000-4000-8000-000000000001";
+    const items = [
+      { role: "user" as const, text: "[From Tether] This session moved here from Codex.", ts: 1 },
+      { role: "assistant" as const, text: "Ready.", ts: 2 },
+      { role: "user" as const, text: "remember 7", ts: 3 },
+      { role: "assistant" as const, text: "ok, 7", ts: 4 },
+    ];
+    mkdirSync(join(dir, "projects", "-moved"), { recursive: true });
+    writeFileSync(join(dir, "projects", "-moved", `${native}.jsonl`), `${entriesOf({ nativeId: native, projectPath: "/moved", items }).join("\n")}\n`);
+    const orig = await readHistory(native, "/moved");
+    const points = orig.filter((m) => forkPoints(orig, false).has(m.id));
+    expect(points.map((m) => (m.parts[0] as any).text)).toEqual(["Ready.", "ok, 7"]);
+    const id = await claudeFork.fork({ nativeId: native, projectPath: "/moved", upTo: points[0]!.id, title: "Moved (fork)" });
+    const fork = (await readHistory(id, "/moved")).filter((m) => m.role !== "notice");
+    expect(fork.map((m) => (m.parts[0] as any).text)).toEqual([(orig[0]!.parts[0] as any).text, "Ready."]);
+  });
+
+  test("across a compaction (recorded): from a reply before it and one after, each ends where asked", async () => {
+    // The recorded file under a real UUID: the SDK takes only those.
+    const native = "c0ffee7e-0000-4000-8000-000000000001";
+    cpSync(join(dir, "projects", "-compacted", "c0mpac7e-0000-4000-8000-000000000001.jsonl"), join(dir, "projects", "-compacted", `${native}.jsonl`));
+    const orig = await readHistory(native, "/compacted");
+    const ids = orig.filter((m) => forkPoints(orig, false).has(m.id)).map((m) => m.id);
+    const compaction = orig.findIndex((m) => m.role === "notice" && (m.parts[0] as any)?.text === "Context compacted.");
+    expect(compaction).toBeGreaterThan(0);
+    const before = ids.filter((id) => orig.findIndex((m) => m.id === id) < compaction).at(-1)!;
+    const after = ids.filter((id) => orig.findIndex((m) => m.id === id) > compaction)[0]!;
+    for (const upTo of [before, after]) {
+      const id = await claudeFork.fork({ nativeId: native, projectPath: "/compacted", upTo, title: "C (fork)" });
+      expect((await readHistory(id, "/compacted")).filter((m) => m.role !== "notice").at(-1)!.id).toBe(upTo);
+    }
+  });
+
+  test("discard removes a fork's file", async () => {
+    const id = await claudeFork.fork({ nativeId: SESSION, projectPath: PROJECT, title: "x" });
+    expect(sessionFile(id, PROJECT)).toBeDefined();
+    await claudeFork.discard!(id, PROJECT);
+    expect(sessionFile(id, PROJECT)).toBeUndefined();
   });
 
   test("a message that isn't there, or a subagent, leaves nothing", async () => {

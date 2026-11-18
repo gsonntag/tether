@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { forkPoints } from "../../../../shared/fork";
+import { forkPoints, wholeForkPoint } from "../../../../shared/fork";
 import { setConnector } from "./daemon";
 import { codexFork, forkTurn } from "./fork";
 import { historyMsgs } from "./items";
@@ -19,6 +19,7 @@ function daemon(fail?: string) {
   const rpc = new CodexRpc();
   const answer = (method: string, p: any): unknown => {
     if (method === fail) throw new Error(`${method} failed`);
+    if (method === "thread/read") return { thread: { id: p.threadId, cwd: "/p", status: { type: "idle" } } };
     if (method === "thread/turns/list") return { data: threads.get(p.threadId) ?? [], nextCursor: null };
     if (method === "thread/fork") {
       const turns = threads.get(p.threadId)!;
@@ -91,10 +92,36 @@ describe("forking a Codex thread", () => {
     expect(d.calls("thread/archive").map((p) => p.threadId)).toEqual(["fork-1"]);
   });
 
-  test("a thread on a key's own process is copied instead", async () => {
+  test("a thread on a key's own process, or with history brought in, is copied instead", async () => {
     rememberIn(undefined);
+    expect(codexFork.copyInstead!(ORIG)).toBe(false);
     remember(ORIG, { source: { id: "a".repeat(32), source: "openai", projectPath: "/p" } });
     expect(codexFork.copyInstead!(ORIG)).toBe(true);
     await expect(codexFork.fork({ nativeId: ORIG, projectPath: "/p", title: "x" })).rejects.toThrow("copied");
+    rememberIn(undefined);
+    remember(ORIG, { imported: true });
+    expect(codexFork.copyInstead!(ORIG)).toBe(true);
+  });
+
+  test("a carried thread: the earlier thread's messages aren't fork points; right after the change, Fork copies it whole", async () => {
+    rememberIn(undefined);
+    daemon();
+    remember("NEW", { carriedFrom: ORIG, imported: true });
+    const { codexAdapter } = await import("./index");
+    const msgs = await codexAdapter.readHistory("NEW", "/p");
+    expect(msgs.length).toBe(historyMsgs(TURNS, "/p").length);
+    expect(msgs.every((m) => m.noFork)).toBe(true);
+    expect(forkPoints(msgs, false).size).toBe(0);
+    expect(wholeForkPoint(msgs, false)).toEqual({});
+    expect(codexFork.copyInstead!("NEW")).toBe(true);
+    // The earlier thread itself is its own: forkable.
+    expect(forkPoints(await codexAdapter.readHistory(ORIG, "/p"), false).size).toBeGreaterThan(0);
+  });
+
+  test("a failed adoption's fork is archived", async () => {
+    rememberIn(undefined);
+    const d = daemon();
+    await codexFork.discard!("fork-9", "/p");
+    expect(d.calls("thread/archive")).toEqual([{ threadId: "fork-9" }]);
   });
 });
