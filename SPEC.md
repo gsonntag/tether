@@ -228,7 +228,7 @@ is dropped, so `plan` is always the plan's.
 `queue`, `editQueued`, `cancelQueued`, `interrupt`, `answerRequest`, `setModel`, `setEffort`,
 `setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `setSessionArchived`, `openTerminal`, `closeTerminal`,
 `terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands). The move module
-adds `moveOptions` and `moveSession` (§15).
+adds `moveOptions` and `moveSession` (§15), the usage module `usage` (§10 Usage).
 
 ## 6. Adapters
 
@@ -1227,6 +1227,42 @@ The usage-limit error's retry timestamp is interpreted as runner UTC and display
 browser's local timezone, including the date and timezone label. When the provider gives only a time (the retry is
 within a day), it means the next such UTC time after the message. Native error text stays unchanged
 in the store. Ordinary transcript dates and user messages are not rewritten.
+
+### Usage
+
+**Settings → Usage** (`#/settings/usage`), per runner: the last 7 or 30 days. At the top, each
+harness's latest plan limits (`planLines`). Tiles: tokens; the API price of it all (est.); that
+price split by source, plan, API keys and unknown; **Billed to API keys**, the ledger's (`costs.json`)
+whole-session totals for the sessions with usage in the range, so it can include earlier days; cache
+savings, cache reads at the full input price less what they cost. Then a bar chart by day (tokens
+stacked by input, output, cache write and cache read, or API price) with the same numbers in a table,
+and tables by harness and model and by project (the top 8, the rest as one row, and
+TETHER_HIDE_PROJECTS folders and the Home agent's as one unnamed row).
+
+The `usage` module reads the harness stores, not Tether's records: Claude's
+`projects/**/*.jsonl` (subagents included) and Codex's `sessions/` and `archived_sessions/`, plus
+the private homes of Tether's key threads (`codex-keys/`). A request is one record. Claude: one per
+message id and request id, at the largest counts its streamed entries carry; a compaction's own
+request isn't in the store. Codex: `token_usage_record` by response id; before a file's first one,
+each `token_count` whose running total moved (`last_token_usage`; a fork's inherited total isn't
+counted). The same request in two files counts once. Prices: Anthropic's published first-party table
+(`shared/anthropicRates.ts`: 5-minute and 1-hour writes, Haiku 5.5's long-prompt rates, fast mode,
+US-only inference) and OpenAI's Standard table (writes at the 30-minute default, nothing over 272K
+input). An unlisted model, another tier, Azure or another provider has no price: its tokens count,
+its row says "no price", and a partly priced row ends in "+". Sources: Codex by the rollout (a
+private home or a key's provider is a key; OpenAI's own whose token counts carry plan limits is the
+plan). Claude by Tether's record of the session's latest start: a plan session never on the ledger
+was on the plan throughout; otherwise that start's source holds from its time on, and before it is
+unknown.
+
+The scan runs in the background, soon after start and when the op is called over a minute after the
+last. One file at a time, in 4 MB chunks, yielding between them. Each file's records are cached in
+the module's data dir with its size, mtime, read offset (the end of its last whole line) and a hash
+of its first bytes: an unchanged file isn't opened, a grown one is read from the offset, a shrunk or
+replaced one from the start. Files and records older than 32 days are dropped. The op answers at
+once with what's read and `scan.running`, and the page polls while it runs. Days are calendar days
+in the browser's IANA zone (`timeZone`), so DST and half-hour zones bucket correctly. It reveals
+every project's activity: a drive op, not for view-only access.
 
 ## 11. Phases
 
