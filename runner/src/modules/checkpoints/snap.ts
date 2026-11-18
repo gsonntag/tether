@@ -27,7 +27,7 @@
 import { access, chmod, constants, copyFile, lstat, mkdir, open, readlink, rename, rm, rmdir, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { dirname, join, sep } from "node:path";
-import { CHECKPOINT_FILE_BYTES_MAX, type Skipped } from "../../../../shared/checkpoints";
+import { CHECKPOINT_FILE_BYTES_MAX, RESTORE_TMP_EXCLUDE, RESTORE_TMP_PREFIX, RESTORE_TMP_RE, type Skipped } from "../../../../shared/checkpoints";
 import { git, GitError, type GitOpts } from "../git/run";
 
 /** Snapshot steps get longer than reads: `add` hashes every changed file. */
@@ -112,7 +112,7 @@ async function snapInto(root: string, env: Record<string, string>, path: string)
     const head = await headCommit(root);
     if (head) await git(root, [...SAFE, "read-tree", head], o);
   }
-  const others = await git(root, ["ls-files", "--others", "--exclude-standard", "-z"], { ...o, maxBytes: OTHERS_BYTES_MAX });
+  const others = await git(root, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", RESTORE_TMP_EXCLUDE], { ...o, maxBytes: OTHERS_BYTES_MAX });
   if (others.cut) {
     await git(root, [...SAFE, "add", "-u", "--ignore-errors", "--", "."], { ...o, ok: [0, 1] });
     return { noUntracked: true };
@@ -129,7 +129,7 @@ async function snapInto(root: string, env: Record<string, string>, path: string)
     await git(root, [...SAFE, "add", "-u", "--ignore-errors", "--", "."], { ...o, ok: [0, 1] });
     return { noUntracked: true };
   }
-  const specs = [".", ...left.map((p) => `:(exclude,literal)${p}`)];
+  const specs = [".", RESTORE_TMP_EXCLUDE, ...left.map((p) => `:(exclude,literal)${p}`)];
   await git(root, [...SAFE, "add", "-A", "--ignore-errors", "--pathspec-from-file=-", "--pathspec-file-nul"], { ...o, ok: [0, 1], input: specs.join("\0") + "\0" });
   return left.length ? { left: left.slice(0, LEFT_KEPT), leftCount: left.length } : {};
 }
@@ -230,6 +230,26 @@ async function pruneDirs(root: string, removed: string[]) {
   for (const d of [...dirs].sort((a, b) => b.length - a.length)) await rmdir(d).catch(() => {}); // ENOTEMPTY: kept
 }
 
+/** Writes all of `chunk`, however many writes that takes. */
+export async function writeAll(fh: { write(b: Uint8Array, off: number, len: number): Promise<{ bytesWritten: number }> }, chunk: Uint8Array) {
+  for (let off = 0; off < chunk.length; ) {
+    const { bytesWritten } = await fh.write(chunk, off, chunk.length - off);
+    if (bytesWritten <= 0) throw new Error("Couldn't write a restored file.");
+    off += bytesWritten;
+  }
+}
+
+/** Removes temporary files an interrupted restore left (regular files named as a restore names them). */
+export async function sweepTemp(root: string): Promise<number> {
+  const list = (await git(root, ["ls-files", "--others", "--exclude-standard", "-z", "--", `:(glob)**/${RESTORE_TMP_PREFIX}*`], { timeoutMs: SNAP_TIMEOUT_MS })).out.split("\0");
+  let n = 0;
+  for (const p of list) {
+    if (!p || !RESTORE_TMP_RE.test(p.slice(p.lastIndexOf("/") + 1)) || (await whyNot(root, p))) continue;
+    if (await lstat(join(root, p)).then((st) => st.isFile(), () => false)) n += (await unlink(join(root, p)).then(() => 1, () => 0));
+  }
+  return n;
+}
+
 /** Blobs read per `cat-file --batch` call, at most (bytes). */
 const BATCH_BYTES = 64 * 1024 * 1024;
 /** A blob bigger than this is never held in memory: `cat-file blob` streams it to its file. */
@@ -273,10 +293,10 @@ async function writeRaw(root: string, tree: string, paths: string[]) {
   for (const e of entries.filter((e) => e.size > STREAM_BYTES && e.mode !== "120000")) {
     const abs = join(root, e.path);
     await mkdir(dirname(abs), { recursive: true });
-    const tmp = join(dirname(abs), `.tether-restore-${randomBytes(6).toString("hex")}`);
+    const tmp = join(dirname(abs), `${RESTORE_TMP_PREFIX}${randomBytes(6).toString("hex")}`);
     const fh = await open(tmp, "wx", fileMode(e.mode));
     try {
-      await git(root, ["cat-file", "blob", e.sha], { timeoutMs: FORCE_TIMEOUT_MS, sink: (c) => fh.write(c) });
+      await git(root, ["cat-file", "blob", e.sha], { timeoutMs: FORCE_TIMEOUT_MS, sink: (c) => writeAll(fh, c) });
       await fh.close();
       await chmod(tmp, fileMode(e.mode));
       await rename(tmp, abs);
@@ -319,6 +339,7 @@ export interface Restored {
 export async function restoreTo(root: string, target: Snap, tmpDir: string, undo: (u: Snap) => Promise<void>, hooks: { afterSnap?: () => Promise<void> | void } = {}): Promise<Restored> {
   const skipped = new Map<string, Skipped["why"]>();
   const skip = (path: string, why: Skipped["why"]) => void (skipped.has(path) || skipped.set(path, why));
+  await sweepTemp(root);
   const u = await withIndex(tmpDir, async (env, path) => {
     const o = { env, timeoutMs: FORCE_TIMEOUT_MS };
     const rest = await snapInto(root, env, path);

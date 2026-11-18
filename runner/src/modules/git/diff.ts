@@ -22,6 +22,7 @@ import {
   type GitDiff,
   type PatchFile,
 } from "../../../../shared/gitDiff";
+import { RESTORE_TMP_EXCLUDE } from "../../../../shared/checkpoints";
 import { git, GitError } from "./run";
 
 /** Flags every diff gets, so the repo's config can't change what we parse. */
@@ -149,7 +150,7 @@ export async function diffRange(root: string, base: string, opts: RangeOpts = {}
   });
   const untracked: DiffFile[] =
     opts.untracked && !opts.to
-      ? (await git(root, ["ls-files", "--others", "--exclude-standard", "-z"])).out
+      ? (await git(root, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", RESTORE_TMP_EXCLUDE])).out
           .split("\0")
           .filter((p) => p && !p.endsWith("/"))
           .map((path) => ({ path, status: "untracked", added: 0, removed: 0 }))

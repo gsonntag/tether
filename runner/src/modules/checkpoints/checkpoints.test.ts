@@ -13,7 +13,8 @@ import { OpRegistry } from "../../core/ops";
 import type { SessionLook } from "..";
 import { gitModule } from "../git";
 import { Checkpoints } from ".";
-import { snapshot } from "./snap";
+import { snapshot, writeAll } from "./snap";
+import { gitDiff } from "../git/diff";
 import { refSafe } from "./store";
 
 const dirs: string[] = [];
@@ -689,4 +690,30 @@ test("a live session whose folder holds the repo counts as in it", async () => {
   const l = await c.list("claude:s1");
   expect(l.others.map((o) => o.id)).toEqual(["codex:up"]);
   expect(l.blocked).toMatch(/“Above”/);
+});
+
+test("a restore's leftover temporary files: never in a snapshot or a diff, swept by the next restore", async () => {
+  const d = repo();
+  const { c, turn } = setup(d);
+  mkdirSync(join(d, "sub"));
+  const left = [".tether-restore-0123456789ab", "sub/.tether-restore-abcdef012345"];
+  await turn(() => {
+    writeFileSync(join(d, "a.txt"), "changed\n");
+    for (const p of left) writeFileSync(join(d, p), "half a file");
+  });
+  expect((await c.diff("claude:s1", "1")).files.map((f) => f.path)).toEqual(["a.txt"]);
+  expect((await gitDiff(d, "uncommitted")).files.map((f) => f.path)).toEqual(["a.txt"]);
+  const { tree } = await snapshot(d, temp());
+  expect(sh(d, "ls-tree", "-r", "--name-only", tree)).not.toContain("tether-restore");
+  await c.restore("claude:s1", "1");
+  for (const p of left) expect(existsSync(join(d, p))).toBe(false);
+  expect(read(d, "a.txt")).toBe("one\ntwo\n");
+});
+
+test("streaming writes all of each chunk, however short the writes", async () => {
+  const got: number[] = [];
+  const fh = { write: async (b: Uint8Array, off: number, len: number) => (got.push(...b.subarray(off, off + Math.min(3, len))), { bytesWritten: Math.min(3, len) }) };
+  await writeAll(fh, Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
+  expect(got).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  await expect(writeAll({ write: async () => ({ bytesWritten: 0 }) }, Uint8Array.from([1]))).rejects.toThrow();
 });

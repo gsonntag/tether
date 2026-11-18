@@ -1177,7 +1177,8 @@ there meanwhile included. What's sent to one meanwhile waits in its queue and go
 rate-limit retry due meanwhile waits too; `!` commands and opening the terminal refuse ("Restoring
 files…"). Each git step of it has a 60 s limit, and paths reach git on stdin only, never as arguments
 (thousands of them would pass the argv limit); files over 16 MB are streamed from git into a
-temporary file beside their path and renamed over it, never held in memory; folders emptied by
+temporary file beside their path (`.tether-restore-…`, which snapshots and diffs leave out and the
+next restore sweeps if a crash left one) and renamed over it, never held in memory; folders emptied by
 removals go afterwards, deepest first. It first takes the undo:
 a snapshot of the files as they are, into which every path the restore will write or remove is
 forced exactly as it is on disk, as raw bytes (no filters, no line-ending conversion), whatever its
