@@ -169,8 +169,11 @@ export interface Ops {
   homeAgentCloseAll: { args: Record<string, never>; result: { rev: number } };
   /** "Watch all sessions": whether the Home agent hears when sessions it doesn't follow finish, fail or wait for the person (default on). No `on`: just answers. `following`: the sessions its chats follow (absent from a runner from before it was sent) */
   homeAgentWatch: { args: { on?: boolean }; result: { watchAll: boolean; following?: string[] } };
-  /** "Reply by text": whether the Home agent's Texts tab answers the person's texts (and reports on work they texted for) by text (default on). No `on`: just answers */
-  homeAgentReplyByText: { args: { on?: boolean }; result: { replyByText: boolean } };
+  /**
+   * "Reply by text": whether the Home agent's Texts tab answers the person's texts (and reports on work they texted for) by text (default on). No `on`: just answers.
+   * `paused`: the person told it to stop texting, so only answers to their own texts go until they text again; `on: true` resumes (absent from older runners)
+   */
+  homeAgentReplyByText: { args: { on?: boolean }; result: { replyByText: boolean; paused?: boolean } };
   /**
    * "Archive done sessions" on Home: the Home agent's check-in (check_in_sessions) without a chat.
    * `start` begins one unless one is running; `dismiss` forgets the last result. Always answers with

@@ -34,6 +34,11 @@
 // person itself with text_person: it's the person's PM over text, so the sessions it drives don't
 // text them; their text_person comes to it as a report (relay) and it decides what's worth a text,
 // condensed. A Texts turn that texted isn't texted again at its end.
+// Nothing contentless is texted: an empty answer, a dash or "…", or the agent's "[no text]" (NO_TEXT),
+// nor a report's answer that's only filler or "still running" (routine). When the person says "stop
+// texting" (by text or in the app; asksToStopTexting, or the agent's pause_texts), texts pause
+// (state.textsPaused): reports aren't texted and text_person sends nothing, while their own texts are
+// still answered; their next text (or turning "Reply by text" on) resumes them.
 
 import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -157,6 +162,11 @@ interface State {
   textHomes?: string[];
   /** "Reply by text"; none: on */
   replyByText?: boolean;
+  /**
+   * The person told Home to stop texting: reports aren't texted and text_person sends nothing until
+   * they text again (or turn texts back on). Their own texts are still answered.
+   */
+  textsPaused?: boolean;
 }
 
 /** What started the Texts chat's turn, and so whether its answer is texted. */
@@ -185,8 +195,42 @@ const act = (t: TextTurn, id: string) => {
 /** The session a report starts with (describe: "Session <id> (…"). */
 const REPORT_ABOUT = /^Session (\S+) \(/;
 
+/** What the agent replies to say nothing: a turn whose answer has it isn't texted. */
+export const NO_TEXT = "[no text]";
 /** A report whose answer goes back by text carries this line, for the agent and to tell it apart. */
-export const TEXTED = "(Your reply to this report is texted to the person.)";
+export const TEXTED = `(Your reply to this report is texted to the person. If there's no outcome and nothing needs them, reply exactly ${NO_TEXT} and nothing is sent.)`;
+
+/**
+ * A reply with nothing in it for the person: empty, starting or ending with the no-text marker, or no letters or digits at
+ * all (a dash, "…", punctuation, an emoji). Never texted.
+ */
+export function contentless(s: string | undefined): boolean {
+  const t = (s ?? "").trim();
+  const low = t.toLowerCase().replace(/[\s.!]+$/, "");
+  return low.startsWith(NO_TEXT) || low.endsWith(NO_TEXT) || !/[\p{L}\p{N}]/u.test(t);
+}
+
+/**
+ * A reply to a report that says nothing happened: filler ("ok", "noted") or routine progress
+ * ("nothing new", "X is still running"). Not texted as a report's answer (a real "ok" to the
+ * person's own text still is).
+ */
+export function routine(s: string | undefined): boolean {
+  const t = (s ?? "").trim().replace(/^\[h\d*\]\s*/i, "");
+  if (contentless(t)) return true;
+  if (/^(ok(ay)?|k|kk|noted|got it|sure|cool|fine|ack(nowledged)?|thanks|none|n\/a|nothing|no news|no change|no update|all good|all quiet)[\s.,!…\-–—]*$/i.test(t)) return true;
+  if (/^(nothing (new|yet|to report|notable|changed|else)|no (news|changes?|updates?|progress)|still (running|going|working|waiting|in progress|on it)|all quiet|same as before|status unchanged)\b/i.test(t)) return true;
+  // A short line whose only news is that something is still going: "Tika's still running."
+  return t.length <= 80 && /^[^.!?]*\bstill (running|going|working|in progress|chugging|grinding)\b[^.!?]*[.!…]*$/i.test(t);
+}
+
+/** Whether the person's words ask Home to stop texting them ("stop texting", "why are you spamming me", "STOP"). */
+export function asksToStopTexting(s: string): boolean {
+  const t = s.replace(/^\(replying to your text[^)]*\)\s*/i, "").trim();
+  if (/^(stop|mute|quiet|silence|unsubscribe|stfu|shut up|enough)[\s.!]*$/i.test(t)) return true;
+  if (/\b(stop|quit|cease|pause|mute|no more|don'?t|do not|enough( with)?)\b[^.?!]{0,30}\b(text(s|ing)?|messag(e|es|ing)|spam(ming)?|ping(s|ing)?|updates?|notifications?)\b/i.test(t)) return !/\b(don'?t|do not) stop\b|\b(unless|except|only|other than)\b/i.test(t);
+  return /\b(why are you|you'?re|you are|stop) (just )?spamming\b/i.test(t);
+}
 /** The Texts tab's title. */
 export const TEXTS_TITLE = "Texts";
 
@@ -235,10 +279,11 @@ How to work:
 - When the person asks you to check in with their sessions ("ask all agents if they're done", "clean up finished sessions"), use check_in_sessions (with project_path if they name a project). It asks every session that is idle right now (in the last few days' list, not archived, not your own chats; sessions that are running a turn, waiting for the person, or open in a terminal are skipped, not interrupted) whether its task is done and all its work is merged or applied, and tells the finished ones to remove the git worktrees they made (never the main checkout or another session's folder) before they answer. Tether checks each answer against git and archives only the sessions that are done, merged and cleaned up; one that still has a worktree left is kept, with the reason. Tell the person in one sentence how many you asked; one report comes back when they've all answered (or after ${CHECKIN_WAIT_MS / 60_000} minutes). Then give a short summary: which were archived, and which weren't and why, one line each. Don't send the sessions anything else about it.
 - archive_session: with why "done" only for a session you started, once it has confirmed it's done, delivered and cleaned up. Any other session only when the person asks to archive it (why "person_asked"), for example one the check-in kept. Never archive anyone else's session on your own judgment. An archived session isn't gone: send_to_session revives it.
 - Never do the coding yourself. You have no shell and can't edit files.
-- Texts: a message starting with "[From iMessage]" is the person texting you from their phone (one starting with "[From <app>]", like "[From Discord]", is them writing from that messaging app, the same thing), and your reply goes back to them as a text, the way it came. Keep it to a few words, mostly an acknowledgement ("ok, on it", "started the login fix in web-coder"), or the one question you need answered. A report that says "${TEXTED}" goes back as a text too: say only the outcome in a few words ("done: <PR link>", or what the session needs from them); if you're just keeping the session going, your reply isn't texted. Tether texts the person a session's own permission requests itself: don't repeat them.
+- Texts: a message starting with "[From iMessage]" is the person texting you from their phone (one starting with "[From <app>]", like "[From Discord]", is them writing from that messaging app, the same thing), and your reply goes back to them as a text, the way it came. Keep it to a few words, mostly an acknowledgement ("ok, on it", "started the login fix in web-coder"), or the one question you need answered. A report that says "${TEXTED}" goes back as a text too: say only the outcome in a few words ("done: <PR link>", or what the session needs from them); if you're just keeping the session going, your reply isn't texted. When a texted report has no outcome and nothing needs the person (it's still running, nothing new, a progress estimate), reply exactly "${NO_TEXT}": nothing is sent. Never reply with a dash, "…", "ok" or other filler to say nothing.
+- "Stop texting": when the person tells you to stop texting them (by text or in the app, in any words), stop. Tether pauses texts when it hears "stop texting"; if they say it another way, call pause_texts (paused: true). While paused, reports aren't texted and text_person sends nothing, until they text you again (that resumes it) or ask you to resume. Still answer their own texts, in a few words. Tether texts the person a session's own permission requests itself: don't repeat them.
 - Replies to texts: when the person answers soon after one of your texts about a session, their message starts with "(replying to your text about session <id>, ...)". Assume they mean that same session: relay instructions there with send_to_session ("merge it", "yes do that", "try again") without asking which session, unless their words clearly name a different one or ask for something new. Files they send come as attachments (listed with their paths): forward the paths in your message when a session needs them.
 - The person can text several of your chats: each tab is named by its place: the first is "h", the next "h1", "h2", … (they start one by texting "hn"; closing a tab renumbers the ones after it), and each tab's texts go out marked with its name. Answer in the chat the text came to.
-- You're the person's PM over text: text_person texts their phone (or whichever messaging app Tether reaches them on), and the sessions you start or message don't text them themselves (if one tries, its message comes to you as a report). Text them when they're away or prefer texts: they texted you (the chat started from a messaging app), they asked ("text me when the PR is merged": text once it is), or "Reply by text" is on and the news matters. What's worth a text: what needs them (a decision, a blocker, a failure), what shipped (with the link), and decisions you made for them. Batch several sessions' news into one text where you can; never text routine progress. One or two short sentences, outcome first. Your replies to their texts (and to reports marked as texted) already go back by text, so don't also call text_person for those. Their replies come back to the chat that texted them: relay any instruction to the right session with send_to_session. When a text is about one session, pass its session_id to text_person so their reply is tied to it. text_person can send an image too (image: an absolute path), for a screenshot a session made.
+- You're the person's PM over text: text_person texts their phone (or whichever messaging app Tether reaches them on), and the sessions you start or message don't text them themselves (if one tries, its message comes to you as a report). Text them when they're away or prefer texts: they texted you (the chat started from a messaging app), they asked ("text me when the PR is merged": text once it is), or "Reply by text" is on and the news matters. What's worth a text: what needs them (a decision, a blocker, a failure), what shipped (with the link), and decisions you made for them. Batch several sessions' news into one text where you can; never text routine progress ("nothing new", "X is still running", "about 45h left", "test 3 passed"): wait for the outcome. One or two short sentences, outcome first. Your replies to their texts (and to reports marked as texted) already go back by text, so don't also call text_person for those. Their replies come back to the chat that texted them: relay any instruction to the right session with send_to_session. When a text is about one session, pass its session_id to text_person so their reply is tied to it. text_person can send an image too (image: an absolute path), for a screenshot a session made.
 - Every reply is at most one casual sentence, like a coworker texting (links are fine). Only say what's notable or what needs the person: a decision, a failure, where to find the work. Never confirm that something works, that tests pass, or that it was verified. No file lists, no cause analysis, no caveats, unless the person asks. Never paste or summarize a session's reply: they can open the session. The person reads you on a phone.`;
 
 const text = (m: Msg) =>
@@ -415,6 +460,7 @@ export class HomeAgent implements HomeEnd {
           ...(v.watchAll === false ? { watchAll: false } : {}),
           ...(textHomes.length ? { textHomes } : {}),
           ...(v.replyByText === false ? { replyByText: false } : {}),
+          ...(v.textsPaused === true ? { textsPaused: true } : {}),
         };
       }
     } catch {}
@@ -448,14 +494,25 @@ export class HomeAgent implements HomeEnd {
     return { watchAll: this.state.watchAll !== false, following };
   }
 
-  /** "Reply by text" (default on); `on` changes it. */
-  replyByText(on?: unknown): { replyByText: boolean } {
+  /** "Reply by text" (default on); `on` changes it. Turning it on lifts a pause the person asked for (`paused`). */
+  replyByText(on?: unknown): { replyByText: boolean; paused: boolean } {
     if (typeof on === "boolean") {
-      if (on) delete this.state.replyByText;
-      else this.state.replyByText = false;
+      if (on) {
+        delete this.state.replyByText;
+        delete this.state.textsPaused;
+      } else this.state.replyByText = false;
       this.save();
     }
-    return { replyByText: this.state.replyByText !== false };
+    return { replyByText: this.state.replyByText !== false, paused: !!this.state.textsPaused };
+  }
+
+  /** Pauses (or resumes) texts other than answers to the person's own texts. */
+  pauseTexts(paused: boolean) {
+    if (!!this.state.textsPaused === paused) return;
+    if (paused) this.state.textsPaused = true;
+    else delete this.state.textsPaused;
+    this.save();
+    this.ctx.log(paused ? "the person asked to stop texting: texts paused" : "texts resumed");
   }
 
   // ── texts (homeLine.ts) ──
@@ -586,8 +643,11 @@ export class HomeAgent implements HomeEnd {
     const texted = (!!msg.origin && Object.hasOwn(TEXTED_VIA, msg.origin.kind)) || (!msg.origin && !!fromTexted(raw));
     const tether = msg.origin?.kind === "tether" || (!msg.origin && fromTether(raw) !== undefined);
     const report = tether && raw.includes(TEXTED);
-    if (texted) t.kind = "text";
-    else if (report && t.kind === "quiet") t.kind = "report";
+    if (texted) {
+      t.kind = "text";
+      // "Stop texting" pauses texts; any other text from them resumes them.
+      this.pauseTexts(asksToStopTexting(fromTexted(raw)?.text ?? raw));
+    } else if (report && t.kind === "quiet") t.kind = "report";
     // A report on a session: this turn acts on it. (What the person's text was about doesn't count:
     // they may be turning to something else.)
     const reported = tether ? REPORT_ABOUT.exec(fromTether(raw) ?? raw)?.[1] : undefined;
@@ -600,10 +660,13 @@ export class HomeAgent implements HomeEnd {
     this.textTurns.delete(chat);
     const phone = this.ctx.homeLine?.phone;
     if (!t || t.kind === "quiet" || stopped || !phone || this.state.replyByText === false) return;
+    // The person asked for no more texts: only answers to their own texts go.
+    if (t.kind === "report" && this.state.textsPaused) return;
     if (t.kind === "report" && t.nudged && !error) return;
     if (t.texted && !error) return;
     const words = error ? `Couldn't do that: ${failureKind(error)}.` : t.said;
-    if (!words) return;
+    // Nothing to say ("—", "…", the no-text marker), or a report's answer that's only filler or "still running".
+    if (!words || (!error && (contentless(words) || (t.kind === "report" && routine(words))))) return;
     // Only the answer to a text the person sent may go back to where they wrote it (a channel others
     // read); a report's outcome goes to them privately. It's about the one session the turn acted on.
     const about = error ? undefined : actedOn(t);
@@ -1158,6 +1221,8 @@ export class HomeAgent implements HomeEnd {
         run: async (a: { message: string; session_id?: string; image?: string }) => {
           const phone = this.ctx.homeLine?.phone;
           if (!phone) throw new Error("Texting is off in Tether, so nothing was sent. Say it in your reply instead.");
+          if (this.state.textsPaused) throw new Error("The person asked you to stop texting them, so nothing was sent. Put it in your reply in the chat; texts resume when they text you again.");
+          if (routine(a.message)) throw new Error("Nothing was sent: that has no news for the person (filler or routine progress). Only text an outcome or something that needs them.");
           // What it's about: the session it names (it must exist), else the one session this turn acted on.
           const named = a.session_id?.trim();
           if (named && (this.isChat(named) || !(this.ctx.session(named) ?? (await this.ctx.sessions.open(named).catch(() => undefined)))))
@@ -1167,6 +1232,15 @@ export class HomeAgent implements HomeEnd {
           if (r.isError) throw new Error(r.text);
           if (this.isTextsChat(chat)) this.turnOf(chat).texted = true;
           return r.text;
+        },
+      },
+      {
+        name: "pause_texts",
+        description: `Stops (paused: true) or restarts (paused: false) texting the person: while paused, your replies to reports aren't texted and text_person sends nothing; your answers to their own texts still go. Tether pauses on its own when they say "stop texting" and resumes when they text you again; call this when they ask in other words, or ask you to text them again from the app.`,
+        input: { paused: z.boolean() },
+        run: async (a: { paused: boolean }) => {
+          this.pauseTexts(a.paused === true);
+          return a.paused ? "Texts paused: nothing more is texted until the person texts you again or asks you to resume." : "Texts resumed.";
         },
       },
       {
@@ -1261,9 +1335,9 @@ export class HomeAgent implements HomeEnd {
     };
   }
 
-  /** Whether a chat's answers to its reports go back by text: the person texts it and "Reply by text" is on. */
+  /** Whether a chat's answers to its reports go back by text: the person texts it, "Reply by text" is on, and they haven't asked for no more texts. */
   private texted(chat: string) {
-    return this.isTextsChat(chat) && this.state.replyByText !== false && !!this.ctx.homeLine?.phone;
+    return this.isTextsChat(chat) && this.state.replyByText !== false && !this.state.textsPaused && !!this.ctx.homeLine?.phone;
   }
 
   /** Tells a chat about one of its sessions, through its queue (after its own turn, if one runs). */
@@ -1566,7 +1640,12 @@ export class HomeAgent implements HomeEnd {
    */
   personSpoke(id: string, msg: Msg) {
     if (this.isTextsChat(id)) this.textsMessage(id, msg);
-    if (msg.role === "user" && msg.origin?.kind !== "tether" && !msg.parts.some((p) => p.type === "text" && fromTether(p.text) !== undefined) && this.state.tabs.includes(id)) this.touched(id);
+    if (msg.role === "user" && msg.origin?.kind !== "tether" && !msg.parts.some((p) => p.type === "text" && fromTether(p.text) !== undefined) && this.state.tabs.includes(id)) {
+      this.touched(id);
+      // "Stop texting" typed in the app pauses texts too (a text says it in textsMessage).
+      const typed = !(msg.origin && Object.hasOwn(TEXTED_VIA, msg.origin.kind)) && !fromTexted(text(msg));
+      if (typed && msg.origin?.kind !== "shell" && asksToStopTexting(text(msg))) this.pauseTexts(true);
+    }
     const c = this.state.children[id];
     if (!c || c.released || msg.role !== "user") return;
     // A harness that hasn't parsed the marker yet shows Tether's own text as it was sent.

@@ -13,7 +13,7 @@ import { askQuestion, FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
 import { CredentialStore } from "../../credentials";
 import type { Msg, SessionSummary } from "../../../../shared/transcript";
-import { ADVERSARIAL_BRIEF, ago, END_GOALS, HomeAgent, homeAgentModule, inProject, INSTRUCTIONS, lastPrompt, lastRawReply, lastReply, MAX_REPORTS, REPLY_MAX, SESSION_MODE, settingsOf, stateOf, TEXTED, TEXTS_TITLE } from ".";
+import { ADVERSARIAL_BRIEF, ago, asksToStopTexting, contentless, NO_TEXT, routine, END_GOALS, HomeAgent, homeAgentModule, inProject, INSTRUCTIONS, lastPrompt, lastRawReply, lastReply, MAX_REPORTS, REPLY_MAX, SESSION_MODE, settingsOf, stateOf, TEXTED, TEXTS_TITLE } from ".";
 import { ANSWER_TAG } from "./checkIn";
 import { claudeMove } from "../../adapters/claude/move";
 import { worktreesModule } from "../worktrees";
@@ -71,7 +71,7 @@ test("the chat is current, and only its folder gets the tools", async () => {
   expect((await op("homeAgent")).sessionId).toBe(chat);
   expect([...setups.keys()]).toEqual([homeFolder]);
   const s = setups.get(homeFolder)!("x");
-  expect(s.tools.map((t) => t.name)).toEqual(["list_projects", "project_overview", "start_session", "list_sessions", "session_status", "live_state", "check_in_sessions", "archive_session", "send_to_session", "text_person", "check_harness_updates"]);
+  expect(s.tools.map((t) => t.name)).toEqual(["list_projects", "project_overview", "start_session", "list_sessions", "session_status", "live_state", "check_in_sessions", "archive_session", "send_to_session", "text_person", "pause_texts", "check_harness_updates"]);
   expect(s.deny).toContain("Bash");
   expect(s.deny).toContain("Edit");
   // Brief replies, always (a relayed report was "a big wall of text").
@@ -1201,8 +1201,8 @@ test("reports to another tab, and watch reports in the Texts tab, aren't texted"
 
 test("Reply by text: on by default, kept, and off means nothing is texted", async () => {
   const { line, sent, op, runner, driverOf, textsTab, tools, project, dataDir } = await texting();
-  expect(await op("homeAgentReplyByText", {})).toEqual({ replyByText: true });
-  expect(await op("homeAgentReplyByText", { on: false })).toEqual({ replyByText: false });
+  expect(await op("homeAgentReplyByText", {})).toEqual({ replyByText: true, paused: false });
+  expect(await op("homeAgentReplyByText", { on: false })).toEqual({ replyByText: false, paused: false });
   expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).replyByText).toBe(false);
   await line.home!.take("start x in project");
   const texts = await textsTab();
@@ -1214,10 +1214,94 @@ test("Reply by text: on by default, kept, and off means nothing is texted", asyn
   await Bun.sleep(50);
   expect(sent).toEqual([]);
   // On again: the next text's reply goes back.
-  expect(await op("homeAgentReplyByText", { on: true })).toEqual({ replyByText: true });
+  expect(await op("homeAgentReplyByText", { on: true })).toEqual({ replyByText: true, paused: false });
   await line.home!.take("thanks");
   await until(() => sent.length === 1);
   expect(sent[0]).toBe(`echo ${FROM_IMESSAGE}thanks`);
+});
+
+test("contentless and routine replies, and what asks to stop texting", () => {
+  for (const r of ["", "  ", "—", "-", "–", "…", "...", "—.", "👍", NO_TEXT, `Nothing new. ${NO_TEXT}`]) expect(contentless(r)).toBe(true);
+  for (const r of ["ok", "done: https://github.com/x/y/pull/3", "45"]) expect(contentless(r)).toBe(false);
+  for (const r of ["—", "ok", "Ok.", "noted", "Nothing new, Tika's still running.", "nothing new", "No change.", "Tika's still running.", "Still running."]) expect(routine(r)).toBe(true);
+  for (const r of ["done: https://github.com/x/y/pull/3", "FHIR failed at 1 vCPU: out of memory", "the validator needs your AWS key"]) expect(routine(r)).toBe(false);
+  for (const t of ["Stop texting", "stop texting me", "STOP", "please stop the texts", "why are you just spamming me", "no more updates", "don't text me", "(replying to your text about session claude:x, \"Queue\") stop texting"]) expect(asksToStopTexting(t)).toBe(true);
+  for (const t of ["stop the queue job", "start the login fix", "don't stop texting me", "don't text me unless it breaks", "ok"]) expect(asksToStopTexting(t)).toBe(false);
+});
+
+test("a report answered with a dash, nothing or the no-text marker isn't texted; routine progress isn't either", async () => {
+  const { line, sent, runner, driverOf, textsTab, tools, project, fake } = await texting();
+  await line.home!.take("run the queue in project");
+  await until(() => sent.length === 1);
+  const texts = await textsTab();
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  const replies = ["—", "", NO_TEXT, "…", "Nothing new, Tika's still running.", "done: https://github.com/x/y/pull/3"];
+  let n = 0;
+  const plain = fake.script;
+  fake.script = (text) => (text.includes(TEXTED) ? [say(`r${n}`, replies[n++] ?? "x"), idle] : plain(text));
+  // Each report comes from its own session (a nudge would keep the answer from being texted anyway).
+  for (let i = 0; i < replies.length; i++) {
+    await tools(texts).start_session!({ project_path: project, prompt: `Queue step ${i}.` });
+    await until(() => n === i + 1 && runner.core.sessions.get(texts)?.state.status === "idle");
+  }
+  await until(() => sent.length === 2);
+  await Bun.sleep(50);
+  // Only the outcome went: no dash, no blank, no marker, no "still running".
+  expect(sent).toEqual([`echo ${FROM_IMESSAGE}run the queue in project`, "done: https://github.com/x/y/pull/3"]);
+  // text_person won't send filler either.
+  await expect(tools(texts).text_person!({ message: "—" })).rejects.toThrow("Nothing was sent");
+  await expect(tools(texts).text_person!({ message: "Nothing new, Tika's still running." })).rejects.toThrow("Nothing was sent");
+});
+
+test("\"Stop texting\" pauses report texts and text_person; their next text is still answered and resumes them", async () => {
+  const { line, sent, personTexts, runner, driverOf, textsTab, tools, project, fake, op, dataDir } = await texting();
+  await line.home!.take("run the queue in project");
+  await until(() => sent.length === 1);
+  const texts = await textsTab();
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  const child = /session (\S+) in/.exec(await tools(texts).start_session!({ project_path: project, prompt: "Run the queue." }))![1]!;
+  // Report 1 is texted (the agent echoes it).
+  await until(() => sent.length === 2 && runner.core.sessions.get(texts)?.state.status === "idle");
+  expect(sent[1]).toContain("Report 1 of");
+  // The person: "Stop texting". The agent's "ok" to it still goes; then texts pause, for real.
+  const plain = fake.script;
+  fake.script = (text) => (text.includes("Stop texting") ? [say("ok", "ok"), idle] : plain(text));
+  await line.home!.take("Stop texting");
+  await until(() => sent.length === 3 && runner.core.sessions.get(texts)?.state.status === "idle");
+  expect(sent[2]).toBe("ok");
+  expect(await op("homeAgentReplyByText", {})).toEqual({ replyByText: true, paused: true });
+  expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).textsPaused).toBe(true);
+  // More reports: not marked as texted, and nothing is texted, whatever the agent says.
+  for (const i of [2, 3]) {
+    await tools(texts).send_to_session!({ session_id: child, message: `Step ${i}.` });
+    await until(() => driverOf(texts)!.sent.some((t) => t.includes(`Report ${i} of`)) && runner.core.sessions.get(texts)?.state.status === "idle");
+    expect(driverOf(texts)!.sent.at(-1)).not.toContain(TEXTED);
+  }
+  await expect(tools(texts).text_person!({ message: "FHIR passed at 1 vCPU." })).rejects.toThrow("stop texting");
+  await Bun.sleep(50);
+  expect(sent.length).toBe(3);
+  expect(personTexts).toEqual([]);
+  // A direct text from them is answered, and texts resume.
+  await line.home!.take("how's the queue?");
+  await until(() => sent.length === 4);
+  expect(sent[3]).toBe(`echo ${FROM_IMESSAGE}how's the queue?`);
+  expect((await op("homeAgentReplyByText", {})).paused).toBe(false);
+});
+
+test("\"stop texting\" typed in the app pauses texts; pause_texts and turning Reply by text on resume them", async () => {
+  const { line, sent, runner, textsTab, tools, op } = await texting();
+  await line.home!.take("hi");
+  await until(() => sent.length === 1);
+  const texts = await textsTab();
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  await op("send", { sessionId: texts, text: "stop texting me please" });
+  await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
+  expect((await op("homeAgentReplyByText", {})).paused).toBe(true);
+  expect(await op("homeAgentReplyByText", { on: true })).toEqual({ replyByText: true, paused: false });
+  await tools(texts).pause_texts!({ paused: true });
+  expect((await op("homeAgentReplyByText", {})).paused).toBe(true);
+  await tools(texts).pause_texts!({ paused: false });
+  expect((await op("homeAgentReplyByText", {})).paused).toBe(false);
 });
 
 test("closing h: the next tab is h now and texts to h reach it; with no tabs left, the next text makes a fresh h", async () => {
