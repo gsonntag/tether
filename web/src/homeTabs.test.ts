@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { afterClose, canDelete, homesFull, homeTag, loadTab, mergeHomeChat, NEW, nextHomeTag, pickTab, saveTab, tabLabel, tabMark, tabsOf } from "./homeTabs";
+import { afterClose, homesFull, homeTag, loadTab, mergeHomeChat, NEW, nextHomeTag, pickTab, renumber, saveTab, tabLabel, tabMark, tabsOf } from "./homeTabs";
 
 const memory = () => {
   const m = new Map<string, string>();
@@ -54,17 +54,31 @@ test("a tab's name and marker", () => {
   expect(tabMark(undefined, false)).toBeUndefined();
 });
 
-test("home names match the texts: h for the Texts tab, h1, h2, … for the others; h can't be deleted", () => {
-  const labels = { t: 0, a: 1, c: 3 };
-  expect(["t", "a", "c", "x"].map((id) => homeTag(labels, id))).toEqual(["h", "h1", "h3", undefined]);
+test("home names match the texts: by place, h for the first tab, h1, h2, … for the next; a new one goes after the last", () => {
+  const labels = { t: 0, a: 1, c: 2 };
+  expect(["t", "a", "c", "x"].map((id) => homeTag(labels, id))).toEqual(["h", "h1", "h2", undefined]);
   expect(homeTag(undefined, "a")).toBeUndefined();
-  expect(canDelete(labels, "t")).toBe(false);
-  expect(canDelete(labels, "a")).toBe(true);
-  // A runner from before homes: every tab closes as before.
-  expect(canDelete(undefined, "t")).toBe(true);
-  expect(nextHomeTag(labels)).toBe("h2");
+  expect(nextHomeTag(labels)).toBe("h3");
   expect(nextHomeTag({ t: 0 })).toBe("h1");
-  expect(nextHomeTag(undefined)).toBe("h1");
+  // No tabs: the next is h.
+  expect(nextHomeTag({})).toBe("h");
+  expect(nextHomeTag(undefined)).toBe("h");
+});
+
+test("renumber: a tab change made here renumbers by place, only when the runner numbers by place", () => {
+  const labels = { t: 0, a: 1, c: 2 };
+  // Closing h: a is h now, c h1.
+  expect(renumber(labels, ["t", "a", "c"], ["a", "c"])).toEqual({ a: 0, c: 1 });
+  // Closing the middle one.
+  expect(renumber(labels, ["t", "a", "c"], ["t", "c"])).toEqual({ t: 0, c: 1 });
+  // A new tab after the last.
+  expect(renumber(labels, ["t", "a", "c"], ["t", "a", "c", "n"])).toEqual({ t: 0, a: 1, c: 2, n: 3 });
+  // Close all.
+  expect(renumber(labels, ["t", "a", "c"], [])).toEqual({});
+  // A runner from before renumbering (kept numbers, gaps) or before homes: its broadcast says.
+  expect(renumber({ t: 0, a: 1, c: 3 }, ["t", "a", "c"], ["t", "c"])).toBeUndefined();
+  expect(renumber({ a: 1 }, ["a"], [])).toBeUndefined();
+  expect(renumber(undefined, ["a"], [])).toBeUndefined();
 });
 
 test("tab updates: a newer rev replaces; the same rev fills in tabs and labels; labels of tabs still open are kept", () => {

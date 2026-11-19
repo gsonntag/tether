@@ -165,6 +165,8 @@ export interface Ops {
   homeAgentClear: { args: Record<string, never>; result: { rev: number } };
   /** closes a Home tab: that chat is archived (its history kept), stopped if it runs, and stops following its sessions */
   homeAgentClose: { args: { sessionId: string }; result: { rev: number } };
+  /** closes every Home tab (each archived, as homeAgentClose); none are left, and the next message or text to h starts a fresh one */
+  homeAgentCloseAll: { args: Record<string, never>; result: { rev: number } };
   /** "Watch all sessions": whether the Home agent hears when sessions it doesn't follow finish, fail or wait for the person (default on). No `on`: just answers. `following`: the sessions its chats follow (absent from a runner from before it was sent) */
   homeAgentWatch: { args: { on?: boolean }; result: { watchAll: boolean; following?: string[] } };
   /** "Reply by text": whether the Home agent's Texts tab answers the person's texts (and reports on work they texted for) by text (default on). No `on`: just answers */
@@ -575,8 +577,9 @@ export interface HomeChatUpdate {
   /** the open chats, Home's tabs (absent from a runner from before tabs) */
   chats?: string[];
   /**
-   * each tab's home number, as the person texts it (homeLabel: 0 is `h`, the Texts tab; 1 is `h1`, …),
-   * kept while the tab is open; absent from a runner from before homes
+   * each tab's home number, as the person texts it (homeLabel: 0 is `h`, 1 is `h1`, …): its place
+   * among the tabs (the first is `h`), so closing one renumbers the rest; absent from a runner from
+   * before homes (and, from one before renumbering, kept while the tab was open, h being the Texts tab)
    */
   labels?: Record<string, number>;
   rev: number;

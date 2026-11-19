@@ -24,9 +24,10 @@
 // of the sessions it started (they keep going on their own, in the lists). Every change of the tabs
 // or of `current` is broadcast, so each device's Home follows. Settings are one for all chats.
 //
-// The person can text it over iMessage (texting module, through homeLine.ts): their texts go to one
-// tab, "Texts" (made when the first text comes, again if it was closed), marked as texted. Unless
-// they turn "Reply by text" off, that chat's answer to a text goes back as a short text, and so does
+// The person can text it over iMessage (texting module, through homeLine.ts): each tab is a home
+// named by its place (the first `h`, then `h1`, `h2`, …; closing one renumbers the rest), and their
+// texts go to `h` unless they name another (with no tabs, a text to h makes a "Texts" tab), marked
+// as texted. Unless they turn "Reply by text" off, a texted chat's answer to a text goes back as a short text, and so does
 // its answer to a finished-turn report from a session it started (the outcome: done with a link, or
 // what it needs); a turn that only kept a session going, a watch report, a "waiting for the person"
 // report (Tether texts the request itself) and tool calls aren't texted. Any chat can also text the
@@ -140,7 +141,7 @@ interface CheckIn {
 interface State {
   /** the chat watch reports go to: the tab the person last wrote in or opened */
   current?: string;
-  /** the open chats (Home's tabs), oldest first */
+  /** the open chats (Home's tabs), in order: each one's home name is its place (the first `h`, then `h1`, `h2`, …) */
   tabs: string[];
   /** grows with each change of `current`, across restarts (HomeChatUpdate.rev) */
   rev: number;
@@ -152,11 +153,7 @@ interface State {
   lastCheckIn?: CheckInStatus["last"];
   /** "Watch all sessions"; none: on */
   watchAll?: boolean;
-  /** the tab the person's texts go to ("Texts"), once one came: the primary home, `h` */
-  texts?: string;
-  /** the other tabs' home numbers (h1, h2, …), by chat: kept while the tab is open, the lowest free one for a new tab */
-  labels?: Record<string, number>;
-  /** tabs other than Texts that the person has texted (or made by text): their answers go back by text too */
+  /** the tabs the person has texted (or made by text): their answers go back by text too */
   textHomes?: string[];
   /** "Reply by text"; none: on */
   replyByText?: boolean;
@@ -240,8 +237,8 @@ How to work:
 - Never do the coding yourself. You have no shell and can't edit files.
 - Texts: a message starting with "[From iMessage]" is the person texting you from their phone (one starting with "[From <app>]", like "[From Discord]", is them writing from that messaging app, the same thing), and your reply goes back to them as a text, the way it came. Keep it to a few words, mostly an acknowledgement ("ok, on it", "started the login fix in web-coder"), or the one question you need answered. A report that says "${TEXTED}" goes back as a text too: say only the outcome in a few words ("done: <PR link>", or what the session needs from them); if you're just keeping the session going, your reply isn't texted. Tether texts the person a session's own permission requests itself: don't repeat them.
 - Replies to texts: when the person answers soon after one of your texts about a session, their message starts with "(replying to your text about session <id>, ...)". Assume they mean that same session: relay instructions there with send_to_session ("merge it", "yes do that", "try again") without asking which session, unless their words clearly name a different one or ask for something new. Files they send come as attachments (listed with their paths): forward the paths in your message when a session needs them.
-- The person can text several of your chats: "h" is the Texts tab, "h1", "h2", … are your other tabs (they start one by texting "hn"), and each tab's texts go out marked with its name. Answer in the chat the text came to.
-- You're the person's PM over text: text_person texts their phone (or whichever messaging app Tether reaches them on), and the sessions you start or message don't text them themselves (if one tries, its message comes to you as a report). Text them when they're away or prefer texts: they texted you (the chat started from a messaging app), they asked ("text me when the PR is merged": text once it is), or "Reply by text" is on and the news matters. What's worth a text: what needs them (a decision, a blocker, a failure), what shipped (with the link), and decisions you made for them. Batch several sessions' news into one text where you can; never text routine progress. One or two short sentences, outcome first. Your replies to their texts (and to reports marked as texted) already go back by text, so don't also call text_person for those. Their replies come back to your Texts tab: relay any instruction to the right session with send_to_session. When a text is about one session, pass its session_id to text_person so their reply is tied to it. text_person can send an image too (image: an absolute path), for a screenshot a session made.
+- The person can text several of your chats: each tab is named by its place: the first is "h", the next "h1", "h2", … (they start one by texting "hn"; closing a tab renumbers the ones after it), and each tab's texts go out marked with its name. Answer in the chat the text came to.
+- You're the person's PM over text: text_person texts their phone (or whichever messaging app Tether reaches them on), and the sessions you start or message don't text them themselves (if one tries, its message comes to you as a report). Text them when they're away or prefer texts: they texted you (the chat started from a messaging app), they asked ("text me when the PR is merged": text once it is), or "Reply by text" is on and the news matters. What's worth a text: what needs them (a decision, a blocker, a failure), what shipped (with the link), and decisions you made for them. Batch several sessions' news into one text where you can; never text routine progress. One or two short sentences, outcome first. Your replies to their texts (and to reports marked as texted) already go back by text, so don't also call text_person for those. Their replies come back to the chat that texted them: relay any instruction to the right session with send_to_session. When a text is about one session, pass its session_id to text_person so their reply is tied to it. text_person can send an image too (image: an absolute path), for a screenshot a session made.
 - Every reply is at most one casual sentence, like a coworker texting (links are fine). Only say what's notable or what needs the person: a decision, a failure, where to find the work. Never confirm that something works, that tests pass, or that it was verified. No file lists, no cause analysis, no caveats, unless the person asks. Never paste or summarize a session's reply: they can open the session. The person reads you on a phone.`;
 
 const text = (m: Msg) =>
@@ -398,19 +395,25 @@ export class HomeAgent implements HomeEnd {
       const v = JSON.parse(readFileSync(this.file, "utf8"));
       if (v && typeof v === "object") {
         const current = typeof v.current === "string" ? v.current : undefined;
+        // A state from before homes were numbered by place: the Texts tab (`texts`) and the kept
+        // numbers (`labels`) put the tabs in order, so they keep their names (closing up any gaps).
+        const texts = typeof v.texts === "string" && v.texts ? v.texts : undefined;
+        const old: Record<string, number> = v.labels && typeof v.labels === "object" ? v.labels : {};
+        const rank = (t: string) => (t === texts ? 0 : Number.isSafeInteger(old[t]) && old[t]! > 0 ? old[t]! : Infinity);
+        // A state from before tabs: its one chat is the one tab.
+        const tabs: string[] = Array.isArray(v.tabs) ? [...new Set(v.tabs.filter((t: unknown): t is string => typeof t === "string" && !!t))] as string[] : current ? [current] : [];
+        const textHomes: string[] = Array.isArray(v.textHomes) ? v.textHomes.filter((x: unknown): x is string => typeof x === "string") : [];
+        if (texts && !textHomes.includes(texts)) textHomes.push(texts);
         this.state = {
           current,
-          // A state from before tabs: its one chat is the one tab.
-          tabs: Array.isArray(v.tabs) ? [...new Set(v.tabs.filter((t: unknown): t is string => typeof t === "string" && !!t))] : current ? [current] : [],
+          tabs: tabs.map((t, i) => ({ t, i, r: rank(t) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.t),
           rev: Number.isSafeInteger(v.rev) ? v.rev : 0,
           children: v.children && typeof v.children === "object" ? v.children : {},
           ...(settingsOf(v.settings) ? { settings: settingsOf(v.settings) } : {}),
           checkIns: v.checkIns && typeof v.checkIns === "object" ? v.checkIns : {},
           ...(v.lastCheckIn && typeof v.lastCheckIn === "object" ? { lastCheckIn: v.lastCheckIn } : {}),
           ...(v.watchAll === false ? { watchAll: false } : {}),
-          ...(typeof v.texts === "string" && v.texts ? { texts: v.texts } : {}),
-          ...(v.labels && typeof v.labels === "object" ? { labels: Object.fromEntries(Object.entries(v.labels).filter(([k, n]) => typeof k === "string" && Number.isSafeInteger(n) && (n as number) > 0)) as Record<string, number> } : {}),
-          ...(Array.isArray(v.textHomes) ? { textHomes: v.textHomes.filter((x: unknown): x is string => typeof x === "string") } : {}),
+          ...(textHomes.length ? { textHomes } : {}),
           ...(v.replyByText === false ? { replyByText: false } : {}),
         };
       }
@@ -457,71 +460,51 @@ export class HomeAgent implements HomeEnd {
 
   // ── texts (homeLine.ts) ──
 
-  /** Whether a chat is one the person texts: the Texts tab (h), or another home they texted. */
+  /** Whether a chat is one the person texts: an open tab they texted (or made by text). */
   isTextsChat(id: string): boolean {
-    return (!!this.state.texts && this.state.texts === id) || !!this.state.textHomes?.includes(id);
+    return !!this.state.textHomes?.includes(id) && this.state.tabs.includes(id);
+  }
+
+  /** Drops the text marks of tabs that closed. */
+  private label() {
+    this.state.textHomes = (this.state.textHomes ?? []).filter((t) => this.state.tabs.includes(t));
   }
 
   /**
-   * Gives every open tab but Texts a home number (h1, h2, …), keeping the ones they have: a new tab
-   * takes the lowest free one. Drops the numbers (and text marks) of tabs that closed. Whether
-   * anything changed.
+   * The open homes, numbered by their tab's place: the first tab is h (0), the next h1, h2, ….
+   * Closing one renumbers the rest. With no tabs, h alone, without a chat (a text makes one).
    */
-  private label(): boolean {
-    const before = JSON.stringify([this.state.labels, this.state.textHomes]);
-    const open = this.state.tabs.filter((t) => t !== this.state.texts);
-    const labels: Record<string, number> = {};
-    for (const t of open) if (this.state.labels?.[t]) labels[t] = this.state.labels[t]!;
-    const used = new Set(Object.values(labels));
-    for (const t of open) {
-      if (labels[t]) continue;
-      let n = 1;
-      while (used.has(n)) n++;
-      labels[t] = n;
-      used.add(n);
-    }
-    this.state.labels = labels;
-    this.state.textHomes = (this.state.textHomes ?? []).filter((t) => open.includes(t));
-    return JSON.stringify([this.state.labels, this.state.textHomes]) !== before;
-  }
-
-  /** The open homes: h (the Texts tab, absent until a text makes it) and h1, h2, … (the other tabs). */
   homes(): Home[] {
-    const texts = this.state.texts && this.state.tabs.includes(this.state.texts) ? this.state.texts : undefined;
-    const rest = Object.entries(this.state.labels ?? {})
-      .filter(([chat]) => this.state.tabs.includes(chat))
-      .map(([chat, n]) => ({ n, chat }))
-      .sort((a, b) => a.n - b.n);
-    return [{ n: 0, ...(texts ? { chat: texts } : {}) }, ...rest];
+    const tabs = this.state.tabs;
+    return tabs.length ? tabs.map((chat, n) => ({ n, chat })) : [{ n: 0 }];
   }
 
-  /** Each open tab's home number (the Texts tab: 0), for Home's tabs. */
+  /** Each open tab's home number (the first: 0, h), for Home's tabs. */
   labels(): Record<string, number> {
-    return Object.fromEntries(this.homes().flatMap((h) => (h.chat ? [[h.chat, h.n]] : [])));
+    return Object.fromEntries(this.state.tabs.map((chat, n) => [chat, n]));
   }
 
-  /** A new home (a new tab), texted: its number. Its first message, if any, goes in as the person's text. */
+  /** A new home (a new tab, after the last), texted: its number. Its first message, if any, goes in as the person's text. */
   async newHome(text: string, via: TakeVia = {}): Promise<number> {
     const { sessionId } = await this.newChat();
     (this.state.textHomes ??= []).push(sessionId);
     this.save();
     const files = via.files ? await via.files(sessionId) : [];
     if (text.trim() || files.length) await this.ctx.sessions.queue(sessionId, (via.mark ?? FROM_IMESSAGE) + (text.trim() || "(sent a file)") + heicNote(files), files);
-    return this.state.labels?.[sessionId] ?? 0;
+    return Math.max(0, this.state.tabs.indexOf(sessionId));
   }
 
-  /** Deletes home `n` (by text): closes its tab (its chat is archived). The homes left. */
+  /** Deletes home `n` (by text): closes its tab (its chat is archived), and the rest are renumbered. The homes left. */
   async deleteHome(n: number): Promise<Home[]> {
-    if (n === 0) throw new Error("h is your main home, so it can't be deleted");
     const h = this.homes().find((x) => x.n === n);
-    if (!h?.chat) throw new Error(`there's no h${n}`);
+    if (!h?.chat) throw new Error(`there's no ${homeLabel(n)}`);
     await this.close(h.chat);
     return this.homes();
   }
 
-  /** A home's chat (none: the Texts chat) is running a turn or has messages waiting. */
+  /** A home's chat (none: h's, the first tab) is running a turn or has messages waiting. */
   textsBusy(chat?: string): boolean {
-    const id = chat ?? this.state.texts;
+    const id = chat ?? this.state.tabs[0];
     if (!id || !this.state.tabs.includes(id)) return false;
     const look = this.ctx.session(id);
     const st = look?.state;
@@ -542,8 +525,8 @@ export class HomeAgent implements HomeEnd {
   }
 
   /**
-   * The person texted the Home agent: to a home (none, or h: the Texts tab, made if it's gone; h1,
-   * …: that tab, if it's open), as theirs (marked with the connector it came by), after its turn if
+   * The person texted the Home agent: to a home (none, or h: the first tab, made if there's none;
+   * h1, …: that tab, if it's open; a chat: that tab, whatever its number now), as theirs (marked with the connector it came by), after its turn if
    * one runs, with the files they sent.
    */
   async take(text: string, via: TakeVia = {}, to?: HomeTarget): Promise<void> {
@@ -556,30 +539,33 @@ export class HomeAgent implements HomeEnd {
     await this.ctx.sessions.queue(chat, (via.mark ?? FROM_IMESSAGE) + text + heicNote(files), files);
   }
 
-  /** The chat a text to a home goes to: h's Texts tab (made if it's gone), or that home's tab if it's open. */
+  /** The chat a text to a home goes to: h's (the first tab, made if there's none), or that home's tab if it's open. */
   async chatOf(to?: HomeTarget): Promise<string> {
     const n = to && "n" in to ? to.n : undefined;
     const want = to && "chat" in to ? to.chat : undefined;
-    if (!to || n === 0 || (want && want === this.state.texts)) return this.textsChat();
-    const h = this.homes().find((x) => x.n !== 0 && (n !== undefined ? x.n === n : x.chat === want));
+    if (!to || n === 0) return this.textsChat();
+    const h = this.homes().find((x) => (n !== undefined ? x.n === n : x.chat === want));
     if (!h?.chat) throw new Error(`there's no ${n !== undefined ? homeLabel(n) : "such home"}`);
     return this.follow(h.chat).catch(() => h.chat!);
   }
 
-  /** The Texts tab: the one texts went to, else a new one (current once a text lands in it). */
+  /** h's chat: the first tab, else a new one (a fresh "Texts" chat, the only tab then). */
   private async textsChat(): Promise<string> {
-    const id = this.state.texts;
-    if (id && this.state.tabs.includes(id)) {
+    const id = this.state.tabs[0];
+    if (id) {
       const at = await this.follow(id).catch(() => undefined);
       if (at) return at;
+      // Gone (never sent to before a restart): the open tabs without it, and h is the next one.
+      const first = (await this.chats())[0];
+      if (first) return first;
     }
     this.makingTexts ??= (async () => {
       const { harness, source, model, mode } = await this.settings();
       const permissionMode = await this.modeFor(harness, mode);
       const chat = await this.ctx.sessions.create({ harness, projectPath: this.folder, source, permissionMode, ...(model ? { model } : {}) });
       await this.ctx.sessions.rename(chat, TEXTS_TITLE).catch(() => {});
-      this.state.texts = chat;
-      this.state.tabs.push(chat);
+      // First, so it's h even if a tab was opened meanwhile.
+      this.state.tabs.unshift(chat);
       this.label();
       this.announce();
       return chat;
@@ -622,7 +608,7 @@ export class HomeAgent implements HomeEnd {
     // read); a report's outcome goes to them privately. It's about the one session the turn acted on.
     const about = error ? undefined : actedOn(t);
     await phone
-      .send(words, { answer: t.kind === "text" && !error, ...(about ? { about } : {}), ...(chat === this.state.texts ? {} : { chat }) })
+      .send(words, { answer: t.kind === "text" && !error, ...(about ? { about } : {}), chat })
       .catch((e) => this.ctx.log(`couldn't text the person: ${(e as Error).message}`));
   }
 
@@ -777,11 +763,6 @@ export class HomeAgent implements HomeEnd {
     const tabs = this.state.tabs.map((t) => (t === from ? to : t));
     this.state.tabs = tabs.filter((t, i) => tabs.indexOf(t) === i);
     if (this.state.current === from) this.state.current = to;
-    if (this.state.texts === from) this.state.texts = to;
-    if (this.state.labels?.[from]) {
-      this.state.labels[to] = this.state.labels[from]!;
-      delete this.state.labels[from];
-    }
     if (this.state.textHomes?.includes(from)) this.state.textHomes = this.state.textHomes.map((t) => (t === from ? to : t));
     this.label();
     // Replies to its texts follow it (texting's router keeps them by chat).
@@ -821,8 +802,8 @@ export class HomeAgent implements HomeEnd {
 
   async newChat(): Promise<{ sessionId: string; rev: number }> {
     // The slot is taken before anything is awaited: two at once can't both get the last one.
-    if (this.homes().filter((h) => h.n !== 0).length + this.making >= MAX_EXTRA_HOMES)
-      throw new Error(`At most ${MAX_EXTRA_HOMES} Home tabs besides Texts (h1 to h${MAX_EXTRA_HOMES}): close one first.`);
+    if (this.state.tabs.length + this.making > MAX_EXTRA_HOMES)
+      throw new Error(`At most ${MAX_EXTRA_HOMES} Home tabs besides h (h1 to h${MAX_EXTRA_HOMES}): close one first.`);
     this.making++;
     try {
       const { harness, source, model, mode } = await this.settings();
@@ -918,12 +899,36 @@ export class HomeAgent implements HomeEnd {
     if (look && look.status !== "idle") await this.ctx.sessions.interrupt(old).catch((e) => this.ctx.log(`couldn't stop ${old}: ${(e as Error).message}`));
     this.state.tabs = this.state.tabs.filter((t) => t !== old);
     if (this.state.current === old) this.state.current = this.state.tabs.at(-1);
-    // The next text makes a new Texts tab.
-    if (this.state.texts === old) delete this.state.texts;
+    // The rest are renumbered by place (homes); with none left, the next text to h makes a new one.
     this.label();
     const rev = this.announce();
     // Nothing stored yet (never sent to): there's nothing to archive.
     if (look || (await this.ctx.sessions.open(old).catch(() => undefined))) await this.ctx.sessions.setArchived(old, true).catch((e) => this.ctx.log(`couldn't archive ${old}: ${(e as Error).message}`));
+    return { rev };
+  }
+
+  /**
+   * Home's "Close all": closes every tab at once, as close does each (stopped, archived, its
+   * sessions let go), with one change told to browsers. No tabs are left: the next message on Home,
+   * or text to h, starts a fresh h.
+   */
+  async closeAll(): Promise<{ rev: number }> {
+    const all = [...this.state.tabs];
+    const looks = new Map<string, ReturnType<ModuleContext["session"]>>();
+    for (const id of all) {
+      for (const c of Object.values(this.state.children)) if (c.chat === id && !c.released) c.released = "cleared";
+      const look = this.ctx.session(id);
+      looks.set(id, look);
+      if (look && look.status !== "idle") await this.ctx.sessions.interrupt(id).catch((e) => this.ctx.log(`couldn't stop ${id}: ${(e as Error).message}`));
+    }
+    // Tabs made while these stopped are closed too: "all" is what's open when it's done.
+    for (const id of this.state.tabs) if (!looks.has(id)) looks.set(id, this.ctx.session(id));
+    this.state.tabs = [];
+    this.state.current = undefined;
+    this.label();
+    const rev = this.announce();
+    for (const [id, look] of looks)
+      if (look || (await this.ctx.sessions.open(id).catch(() => undefined))) await this.ctx.sessions.setArchived(id, true).catch((e) => this.ctx.log(`couldn't archive ${id}: ${(e as Error).message}`));
     return { rev };
   }
 
@@ -1144,7 +1149,7 @@ export class HomeAgent implements HomeEnd {
       },
       {
         name: "text_person",
-        description: `Texts the person in the messaging app Tether reaches them on, as "[h] <message>". One short sentence (cut at ${PERSON_TEXT_MAX} characters). Their reply comes back to your Texts tab. Pass session_id when the text is about one session: a reply right after it comes to you marked as about that session. Optionally send one image after the text (image: its absolute path; PNG, JPEG, GIF, WebP or HEIC, at most 10 MB; where the app takes images). Not for answering their texts: those replies are texted already.`,
+        description: `Texts the person in the messaging app Tether reaches them on, as "[h] <message>". One short sentence (cut at ${PERSON_TEXT_MAX} characters). Their reply comes back to this chat. Pass session_id when the text is about one session: a reply right after it comes to you marked as about that session. Optionally send one image after the text (image: its absolute path; PNG, JPEG, GIF, WebP or HEIC, at most 10 MB; where the app takes images). Not for answering their texts: those replies are texted already.`,
         input: {
           message: z.string().min(1).describe("The text: one short sentence."),
           session_id: z.string().optional().describe("The session the text is about, if it's about one."),
@@ -1158,7 +1163,7 @@ export class HomeAgent implements HomeEnd {
           if (named && (this.isChat(named) || !(this.ctx.session(named) ?? (await this.ctx.sessions.open(named).catch(() => undefined)))))
             throw new Error(`There's no session ${named.slice(0, 200)}: pass an id from list_sessions, or leave session_id out. Nothing was sent.`);
           const about = named || (this.isTextsChat(chat) ? actedOn(this.textTurns.get(chat)) : undefined);
-          const r = await phone.text(HOME_SENDER, a.message, { ...(about ? { about } : {}), ...(a.image?.trim() ? { image: a.image.trim() } : {}), ...(chat !== this.state.texts ? { chat } : {}) });
+          const r = await phone.text(HOME_SENDER, a.message, { ...(about ? { about } : {}), ...(a.image?.trim() ? { image: a.image.trim() } : {}), chat });
           if (r.isError) throw new Error(r.text);
           if (this.isTextsChat(chat)) this.turnOf(chat).texted = true;
           return r.text;
@@ -1256,7 +1261,7 @@ export class HomeAgent implements HomeEnd {
     };
   }
 
-  /** Whether a chat's answers to its reports go back by text: it's the Texts tab and "Reply by text" is on. */
+  /** Whether a chat's answers to its reports go back by text: the person texts it and "Reply by text" is on. */
   private texted(chat: string) {
     return this.isTextsChat(chat) && this.state.replyByText !== false && !!this.ctx.homeLine?.phone;
   }
@@ -1608,6 +1613,7 @@ export const homeAgentModule: Module = {
     ctx.ops.register("homeAgentNew", () => agent.newChat());
     ctx.ops.register("homeAgentClear", () => agent.close());
     ctx.ops.register("homeAgentClose", (a) => agent.close((a as { sessionId?: unknown } | undefined)?.sessionId));
+    ctx.ops.register("homeAgentCloseAll", () => agent.closeAll());
     // A chat from before modes could be chosen takes the chosen one (auto) once the runner is up.
     void agent.alignMode().catch((e) => ctx.log(`couldn't set the Home chats' mode: ${(e as Error).message}`));
 

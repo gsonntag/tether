@@ -2,7 +2,8 @@
 // starts a session in the right project with a full brief, then keeps it going until it's done.
 // Each chat is a session like any other, shown here instead of in the lists, as a tab: several can
 // be open and run at once; + starts another, and closing a tab (or `/new` / `/clear` in it) archives
-// that chat. Which chats are open is the runner's, on every device at once; which tab shows is this
+// that chat; "Close all" closes every one. Each tab is named by its place (h, h1, …), so closing one
+// renumbers the ones after it. Which chats are open is the runner's, on every device at once; which tab shows is this
 // device's (homeTabs.ts).
 // Expand puts it over the whole window (Escape or Collapse brings it back), remembered per device.
 
@@ -21,7 +22,7 @@ import { startRow } from "../pendingSends";
 import { PendingSends, StartStatus, usePending } from "./PendingSends";
 import { billingForDisplay } from "../sourceMenu";
 import { escapeCollapses, loadExpanded, saveExpanded } from "../homeExpand";
-import { afterClose, canDelete, homesFull, homeTag, loadTab, NEW, nextHomeTag, pickTab, saveTab, tabLabel, tabMark, tabsOf } from "../homeTabs";
+import { afterClose, homesFull, homeTag, loadTab, NEW, nextHomeTag, pickTab, renumber, saveTab, tabLabel, tabMark, tabsOf } from "../homeTabs";
 import type { HomeAgentSettings } from "../../../shared/protocol";
 import { HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
 import { Composer, putDraft } from "./Composer";
@@ -108,7 +109,9 @@ export function HomeChat() {
   };
   const newChat = async () => {
     const r = await rpc(rid!, "homeAgentNew", {});
-    noteHomeChat(rid!, { ...r, chats: oldRunner ? undefined : [...chats.filter((c) => c !== r.sessionId), r.sessionId] });
+    const next = [...chats.filter((c) => c !== r.sessionId), r.sessionId];
+    const labels = oldRunner ? undefined : renumber(known?.labels, chats, next);
+    noteHomeChat(rid!, { ...r, chats: oldRunner ? undefined : next, ...(labels ? { labels } : {}) });
     show(r.sessionId);
     return r.sessionId;
   };
@@ -118,9 +121,23 @@ export function HomeChat() {
     else {
       const { rev } = await rpc(rid!, "homeAgentClose", { sessionId: id });
       const left = chats.filter((c) => c !== id);
-      noteHomeChat(rid!, { rev, chats: left, ...(known?.sessionId && known.sessionId !== id ? { sessionId: known.sessionId } : left.length ? { sessionId: left.at(-1)! } : {}) });
+      const labels = renumber(known?.labels, chats, left);
+      noteHomeChat(rid!, { rev, chats: left, ...(labels ? { labels } : {}), ...(known?.sessionId && known.sessionId !== id ? { sessionId: known.sessionId } : left.length ? { sessionId: left.at(-1)! } : {}) });
     }
     if (tab === id) show(next);
+  };
+  /** "Close all": every tab closed (each archived); none left, so the next message starts a fresh h */
+  const closeAll = async () => {
+    const all = chats;
+    const r = await rpc(rid!, "homeAgentCloseAll", {}).catch(async (e) => {
+      // A runner from before "Close all": one at a time.
+      if (!/doesn.t know/.test((e as Error).message)) throw e;
+      let rev = known?.rev ?? 0;
+      for (const id of all) rev = (await rpc(rid!, "homeAgentClose", { sessionId: id })).rev;
+      return { rev };
+    });
+    noteHomeChat(rid!, { rev: r.rev, chats: [], labels: {} });
+    show(NEW);
   };
   const fail = (e: unknown) => setError((e as Error).message);
 
@@ -158,7 +175,7 @@ export function HomeChat() {
           />
         </div>
       </div>
-      {known && !oldRunner && <HomeTabs runnerId={rid!} chats={chats} labels={known.labels} tab={tab!} onShow={show} onClose={(id) => close(id).catch(fail)} />}
+      {known && !oldRunner && <HomeTabs runnerId={rid!} chats={chats} labels={known.labels} tab={tab!} onShow={show} onClose={(id) => close(id).catch(fail)} onCloseAll={() => closeAll().catch(fail)} />}
       {error && <div className="t-form-error">{error}</div>}
       {current ? (
         <ChatView key={current} runnerId={rid!} sessionId={current} onReset={() => close(current, NEW)} />
@@ -199,15 +216,18 @@ export function HomeChat() {
  * reach it) and its title (double-click to rename), with a pulsing dot while it works and a dot for
  * a reply nobody read; a "New chat" tab while one is being started; "New Home" for another, always
  * in reach: the tabs scroll sideways when they don't fit (a phone). Deleting a home (archiving its
- * chat) asks first; the primary home (h, the Texts tab) can't be deleted.
+ * chat), h too, asks first, and the tabs after it are renumbered; "Close all" (asks first too)
+ * closes every one.
  */
 const MARK_LABELS = { running: "Working", waiting: "Needs you", failed: "Failed", unread: "New reply" } as const;
 
-function HomeTabs({ runnerId, chats, labels, tab, onShow, onClose }: { runnerId: string; chats: string[]; labels?: Record<string, number>; tab: string; onShow: (t: string) => void; onClose: (id: string) => void }) {
+function HomeTabs({ runnerId, chats, labels, tab, onShow, onClose, onCloseAll }: { runnerId: string; chats: string[]; labels?: Record<string, number>; tab: string; onShow: (t: string) => void; onClose: (id: string) => void; onCloseAll: () => void }) {
   const sessions = useStore((s) => s.summaries[runnerId]?.sessions);
   const [editing, setEditing] = useState<string>();
   /** the home whose delete waits for a yes */
   const [confirming, setConfirming] = useState<string>();
+  /** "Close all" waits for a yes */
+  const [confirmingAll, setConfirmingAll] = useState(false);
   const confirmTag = confirming ? homeTag(labels, confirming) : undefined;
   const strip = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -262,17 +282,19 @@ function HomeTabs({ runnerId, chats, labels, tab, onShow, onClose }: { runnerId:
                   <span className="t-home-tab-label">{label}</span>
                 </button>
               )}
-              {canDelete(labels, id) && (
-                <button
-                  type="button"
-                  className="t-home-tab-close"
-                  aria-label={hTag ? `Delete ${hTag}` : `Close ${label}`}
-                  title={hTag ? `Delete ${hTag} (archives its chat)` : "Close (archives the chat)"}
-                  onClick={() => (hTag ? setConfirming(id) : onClose(id))}
-                >
-                  <XMarkIcon aria-hidden />
-                </button>
-              )}
+              <button
+                type="button"
+                className="t-home-tab-close"
+                aria-label={hTag ? `Delete ${hTag}` : `Close ${label}`}
+                title={hTag ? `Delete ${hTag} (archives its chat)` : "Close (archives the chat)"}
+                onClick={() => {
+                  setConfirmingAll(false);
+                  if (hTag) setConfirming(id);
+                  else onClose(id);
+                }}
+              >
+                <XMarkIcon aria-hidden />
+              </button>
             </div>
           );
         })}
@@ -300,10 +322,42 @@ function HomeTabs({ runnerId, chats, labels, tab, onShow, onClose }: { runnerId:
         <PlusIcon aria-hidden />
         {labels && <span className="t-home-tab-new-label">New Home</span>}
       </button>
+      {chats.length > 1 && (
+        <button
+          type="button"
+          className="t-home-tab-new"
+          aria-label="Close all Home chats"
+          title="Close every Home chat (each is archived)"
+          onClick={() => {
+            setConfirming(undefined);
+            setConfirmingAll(true);
+          }}
+        >
+          <XMarkIcon aria-hidden />
+          <span className="t-home-tab-new-label">Close all</span>
+        </button>
+      )}
+      {confirmingAll && chats.length > 0 && (
+        <div className="t-home-tab-confirm" role="alertdialog" aria-label="Close all Home chats?">
+          <span>
+            Close all {chats.length} Home chats? Each is archived (its history kept); the next message or text to h starts a fresh one.
+          </span>
+          <Button
+            label="Close all"
+            size="sm"
+            variant="destructive"
+            clickAction={() => {
+              setConfirmingAll(false);
+              onCloseAll();
+            }}
+          />
+          <Button label="Cancel" size="sm" variant="ghost" clickAction={() => setConfirmingAll(false)} />
+        </div>
+      )}
       {confirming && chats.includes(confirming) && (
         <div className="t-home-tab-confirm" role="alertdialog" aria-label={`Delete ${confirmTag}?`}>
           <span>
-            Delete {confirmTag}? Its chat is archived and texts to {confirmTag} stop reaching it.
+            Delete {confirmTag}? Its chat is archived{chats.length > 1 ? `, and the tabs after it are renumbered (the first left is h)` : `; the next message or text to h starts a fresh one`}.
           </span>
           <Button
             label="Delete"

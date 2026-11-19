@@ -80,8 +80,6 @@ export const TEXTS = {
   homeDeleted: (label: string, list: string) => `Deleted ${label}, your homes are ${list}.`,
   /** "hn" with MAX_EXTRA_HOMES open already */
   homesFull: (list: string) => `You have ${list} already, delete one with hd and its number first.`,
-  /** "hd0" or the like */
-  cantDeletePrimary: "h is your main home, so it can't be deleted.",
   /** a reply to a request text after the request closed: it isn't sent anywhere (text again to message the session) */
   alreadyAnswered: (n: number) => `[${n}] That was already answered, so I didn't send your reply anywhere.`,
 };

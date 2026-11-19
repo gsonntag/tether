@@ -166,7 +166,8 @@ test("/new and /clear: no current chat until the next message, which starts a fr
   const { op, chat, tools, project, runner, driverOf, announced, dataDir } = await setup();
   const first = await op("homeAgent");
   expect(first.sessionId).toBe(chat);
-  expect(announced).toEqual([{ sessionId: chat, chats: [chat], labels: { [chat]: 1 }, rev: first.rev }]);
+  // The only tab is h.
+  expect(announced).toEqual([{ sessionId: chat, chats: [chat], labels: { [chat]: 0 }, rev: first.rev }]);
   const said = await tools(chat).start_session!({ project_path: project, prompt: "Go." });
   const child = /session (\S+) in/.exec(said)![1]!;
   await until(() => driverOf(chat)?.sent.length === 1 && runner.core.sessions.get(chat)?.state.status === "idle" && runner.core.sessions.get(child)?.state.status === "idle");
@@ -190,7 +191,7 @@ test("/new and /clear: no current chat until the next message, which starts a fr
   const next = await op("homeAgentNew");
   expect(next.sessionId).not.toBe(chat);
   expect(next.rev).toBeGreaterThan(rev);
-  expect(announced.at(-1)).toEqual({ sessionId: next.sessionId, chats: [next.sessionId], labels: { [next.sessionId]: 1 }, rev: next.rev });
+  expect(announced.at(-1)).toEqual({ sessionId: next.sessionId, chats: [next.sessionId], labels: { [next.sessionId]: 0 }, rev: next.rev });
   expect((await op("homeAgent")).sessionId).toBe(next.sessionId);
 });
 
@@ -206,12 +207,12 @@ test("tabs: each new chat is a tab, closing one archives it and keeps the rest, 
   // Several run at once, each its own conversation.
   expect([chat, b, c].map((id) => driverOf(id)!.sent)).toEqual([["hi"], ["hi"], ["hi"]]);
 
-  // Each is a home, h1, h2, h3 (no Texts tab yet: no h).
-  expect((await op("homeAgent")).labels).toEqual({ [chat]: 1, [b]: 2, [c]: 3 });
+  // Each is a home, named by its place: h, h1, h2.
+  expect((await op("homeAgent")).labels).toEqual({ [chat]: 0, [b]: 1, [c]: 2 });
   // Closing the middle one: the others stay, it's archived (history kept), every device is told.
-  // The others keep their numbers; a new tab takes the free one.
+  // The ones after it are renumbered: c is h1 now.
   const { rev } = await op("homeAgentClose", { sessionId: b });
-  expect(announced.at(-1)).toEqual({ sessionId: c, chats: [chat, c], labels: { [chat]: 1, [c]: 3 }, rev });
+  expect(announced.at(-1)).toEqual({ sessionId: c, chats: [chat, c], labels: { [chat]: 0, [c]: 1 }, rev });
   expect(runner.core.sessions.get(b)?.summary.archived ?? runner.look.sessions.list().find((r) => r.id === b)?.archived).toBe(true);
   expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8"))).toMatchObject({ tabs: [chat, c], current: c });
   // Closing the current one: the newest tab left is current.
@@ -1086,7 +1087,12 @@ async function texting(o: { attachments?: boolean } = {}) {
     send: async (t, o) => (sent.push(t), abouts.push(o?.about), sentChats.push(o?.chat), answers.push(!!o?.answer), true),
     text: async (from, body, o) => (personTexts.push([from, body]), personOpts.push(o), { text: "Texted the person." }),
   };
-  const t = await setup({ homeLine: line, ...o });
+  const s = await setup({ homeLine: line, ...o });
+  // Tabs are named by place: the Texts tab (made by a text to h, with no tabs) is h, and a tab
+  // opened after it is h1 (`chat`, "another tab").
+  await s.op("homeAgentClose", { sessionId: s.chat });
+  await line.home!.chatOf!({ n: 0 });
+  const t = { ...s, chat: (await s.op("homeAgentNew")).sessionId as string };
   const textsTab = async () => (await t.op("homeAgent")).chats.find((id: string) => t.runner.core.sessions.get(id)?.summary.title === TEXTS_TITLE) as string;
   return { ...t, line, sent, abouts, sentChats, answers, personTexts, personOpts, textsTab };
 }
@@ -1214,20 +1220,67 @@ test("Reply by text: on by default, kept, and off means nothing is texted", asyn
   expect(sent[0]).toBe(`echo ${FROM_IMESSAGE}thanks`);
 });
 
-test("closing the Texts tab: the next text makes a new one", async () => {
-  const { line, sent, op, runner, textsTab, dataDir } = await texting();
+test("closing h: the next tab is h now and texts to h reach it; with no tabs left, the next text makes a fresh h", async () => {
+  const { line, sent, sentChats, op, runner, textsTab, chat, dataDir } = await texting();
   await line.home!.take("one");
   await until(() => sent.length === 1);
   const first = await textsTab();
   await until(() => runner.core.sessions.get(first)?.state.status === "idle");
-  expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).texts).toBe(first);
+  expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8")).tabs).toEqual([first, chat]);
+  expect(line.home!.homes()).toEqual([{ n: 0, chat: first }, { n: 1, chat }]);
+  // h can be closed like any tab: h1 moves up to h.
   await op("homeAgentClose", { sessionId: first });
   expect(line.home!.isTextsChat(first)).toBe(false);
+  expect(line.home!.homes()).toEqual([{ n: 0, chat }]);
+  expect((await op("homeAgent")).labels).toEqual({ [chat]: 0 });
   await line.home!.take("two");
   await until(() => sent.length === 2);
-  const second = await textsTab();
-  expect(second).not.toBe(first);
-  expect(line.home!.isTextsChat(second)).toBe(true);
+  expect(sentChats[1]).toBe(chat);
+  expect(line.home!.isTextsChat(chat)).toBe(true);
+  expect(await textsTab()).toBeUndefined();
+  // Close all: no tabs, h has no chat; the next text to h makes a fresh one, the only tab.
+  await until(() => runner.core.sessions.get(chat)?.state.status === "idle");
+  await op("homeAgentCloseAll");
+  expect(line.home!.homes()).toEqual([{ n: 0 }]);
+  expect(await op("homeAgent")).toMatchObject({ chats: [], labels: {} });
+  await line.home!.take("three");
+  await until(() => sent.length === 3);
+  const fresh = await textsTab();
+  expect([first, chat]).not.toContain(fresh);
+  expect(line.home!.homes()).toEqual([{ n: 0, chat: fresh }]);
+  expect(line.home!.isTextsChat(fresh)).toBe(true);
+});
+
+test("close all: every tab is stopped and archived, its sessions let go, one change told, and state.json has no tabs", async () => {
+  const { op, chat, runner, driverOf, tools, project, announced, dataDir } = await setup();
+  await op("send", { sessionId: chat, text: "hi" });
+  const b = (await op("homeAgentNew")).sessionId as string;
+  await op("send", { sessionId: b, text: "hi" });
+  await until(() => [chat, b].every((id) => runner.core.sessions.get(id)?.state.status === "idle" && !!driverOf(id)));
+  const child = /session (\S+) in/.exec(await tools(b).start_session!({ project_path: project, prompt: "Go." }))![1]!;
+  await until(() => runner.core.sessions.get(child)?.state.status === "idle" && runner.core.sessions.get(b)?.state.status === "idle");
+  const told = announced.length;
+  const { rev } = await op("homeAgentCloseAll");
+  expect(announced.slice(told)).toEqual([{ chats: [], labels: {}, rev }]);
+  for (const id of [chat, b]) expect(runner.core.sessions.get(id)?.summary.archived ?? runner.look.sessions.list().find((r) => r.id === id)?.archived).toBe(true);
+  expect(JSON.parse(readFileSync(join(dataDir, "state.json"), "utf8"))).toMatchObject({ tabs: [] });
+  expect(await tools(b).session_status!({ session_id: child })).toContain("stopped following");
+  // A new tab after it is h.
+  const next = (await op("homeAgentNew")).sessionId as string;
+  expect((await op("homeAgent")).labels).toEqual({ [next]: 0 });
+});
+
+test("a state from before renumbering: the Texts tab is h and the kept numbers set the order (gaps closed)", async () => {
+  const { runner, dataDir, chat } = await setup();
+  const folder = runner.core.sessions.get(chat)!.summary.projectPath;
+  writeFileSync(join(dataDir, "state.json"), JSON.stringify({ rev: 5, current: chat, tabs: ["claude:a", "claude:b", chat, "claude:t"], texts: "claude:t", labels: { "claude:a": 3, "claude:b": 1, [chat]: 4 }, textHomes: ["claude:a"], children: {} }));
+  const again = new HomeAgent({ ...runner.look, dataDir, log: () => {}, ops: runner.ops, bus: runner.bus } as any, folder);
+  expect(again.state.tabs).toEqual(["claude:t", "claude:b", "claude:a", chat]);
+  expect(again.labels()).toEqual({ "claude:t": 0, "claude:b": 1, "claude:a": 2, [chat]: 3 });
+  // The old Texts tab still answers by text.
+  expect(again.isTextsChat("claude:t")).toBe(true);
+  expect(again.isTextsChat("claude:a")).toBe(true);
+  expect(again.isTextsChat("claude:b")).toBe(false);
 });
 
 test("a failed turn on a text is texted briefly", async () => {
@@ -1340,19 +1393,20 @@ test("a Home text says which session it's about only by what its turn acted on, 
   await line.home!.take(`${replyContext({ sessionId: "claude:abc" })}send the chart`);
   await until(() => personOpts.length === 1);
   // The turn acted on nothing: what the text was about doesn't count.
-  expect(personOpts[0]).toEqual({ image: "/tmp/chart.png" });
+  expect(personOpts[0]).toEqual({ image: "/tmp/chart.png", chat: texts });
   await until(() => runner.core.sessions.get(texts)?.state.status === "idle");
   await expect(tools(texts).text_person!({ message: "other news", session_id: "codex:nope" })).rejects.toThrow(/no session/);
   expect(personOpts.length).toBe(1);
   expect(await tools(texts).text_person!({ message: "other news", session_id: y })).toContain("Texted");
-  expect(personOpts[1]).toEqual({ about: y });
+  expect(personOpts[1]).toEqual({ about: y, chat: texts });
 });
 
-test("homes: hn makes one (h2, h3, …), its number reaches it, its texts are marked with its name, and it can be deleted but h can't", async () => {
+test("homes: named by place (h, h1, …); hn adds one after the last; deleting any, h too, renumbers the rest", async () => {
   const { line, sent, sentChats, runner, driverOf, textsTab, op, chat } = await texting();
   const home = line.home!;
-  // The chat Home opened with is a home too: h1 (no Texts tab, h, until a text makes it).
-  expect(home.homes()).toEqual([{ n: 0 }, { n: 1, chat }]);
+  const texts = await textsTab();
+  // The Texts tab is h (first), the chat opened after it h1.
+  expect(home.homes()).toEqual([{ n: 0, chat: texts }, { n: 1, chat }]);
   expect(await home.newHome("look at the logo")).toBe(2);
   const h2 = home.homes().find((h) => h.n === 2)!.chat!;
   await until(() => !!driverOf(h2)?.sent.length);
@@ -1362,12 +1416,10 @@ test("homes: hn makes one (h2, h3, …), its number reaches it, its texts are ma
   expect(sentChats[0]).toBe(h2);
   expect(home.isTextsChat(h2)).toBe(true);
   expect(home.isTextsChat(chat)).toBe(false);
-  // The primary home is made by the first text to h.
+  // h, by text.
   await home.take("hi");
-  const texts = await textsTab();
   await until(() => sent.length === 2);
-  expect(sentChats[1]).toBeUndefined();
-  expect(home.homes()).toEqual([{ n: 0, chat: texts }, { n: 1, chat }, { n: 2, chat: h2 }]);
+  expect(sentChats[1]).toBe(texts);
   // To h2 by number; to one that isn't open, it throws.
   await until(() => runner.core.sessions.get(h2)?.state.status === "idle");
   await home.take("and the favicon", undefined, { n: 2 });
@@ -1377,15 +1429,23 @@ test("homes: hn makes one (h2, h3, …), its number reaches it, its texts are ma
   await home.take("status?", undefined, { n: 1 });
   expect(home.isTextsChat(chat)).toBe(true);
   expect(await home.newHome("")).toBe(3);
-  expect((await op("homeAgent")).labels).toMatchObject({ [texts]: 0, [chat]: 1, [h2]: 2 });
-  // Delete: h can't go; h2 goes (archived), h3 keeps its number, a new one takes 2.
-  await expect(home.deleteHome(0)).rejects.toThrow(/can't be deleted/);
+  const h3 = home.homes().find((h) => h.n === 3)!.chat!;
+  expect((await op("homeAgent")).labels).toEqual({ [texts]: 0, [chat]: 1, [h2]: 2, [h3]: 3 });
   await expect(home.deleteHome(7)).rejects.toThrow(/no h7/);
+  // Deleting h2: archived, and h3 moves up to h2.
   const left = await home.deleteHome(2);
-  expect(left.map((h) => h.n)).toEqual([0, 1, 3]);
+  expect(left).toEqual([{ n: 0, chat: texts }, { n: 1, chat }, { n: 2, chat: h3 }]);
   expect(runner.look.sessions.list().find((r) => r.id === h2)?.archived ?? runner.core.sessions.get(h2)?.summary.archived).toBe(true);
+  // A text by chat still reaches h3's chat, whatever its number now.
+  await home.take("you're h2 now", undefined, { chat: h3 });
+  await until(() => !!driverOf(h3)?.sent.some((x) => x.includes("you're h2 now")));
+  // Deleting h: h1 is h now, and a text to h reaches it.
+  await until(() => [texts, chat].every((id) => runner.core.sessions.get(id)?.state.status === "idle"));
+  expect(await home.deleteHome(0)).toEqual([{ n: 0, chat }, { n: 1, chat: h3 }]);
+  expect(await home.chatOf!({ n: 0 })).toBe(chat);
+  // A new one goes after the last.
   expect(await home.newHome("")).toBe(2);
-  expect(home.homes().map((h) => h.n)).toEqual([0, 1, 2, 3]);
+  expect(home.homes().map((h) => h.n)).toEqual([0, 1, 2]);
 });
 
 test("the person's texted images reach the Texts tab as attachments, and a HEIC one that couldn't be converted says so", async () => {

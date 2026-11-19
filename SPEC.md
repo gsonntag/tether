@@ -1788,24 +1788,25 @@ with `[h]`, like a session's `[n]`. Who a reply belongs to, in order:
    agent.
 2. While the Home agent runs (without it these are ordinary words for a session), a first word in
    any case followed by a space, `:`, `,` or nothing (`texting/router.ts` parseHome):
-   - `h`/`home` (`home …`, `Home, …`, `H: …`, `@h`, `[h]`, `[home]`): the primary home; `h1`/`home1`,
-     `h2`, …: that home. The prefix and separator are taken off. Just `h1` sends a held text there,
+   - `h`/`home` (`home …`, `Home, …`, `H: …`, `@h`, `[h]`, `[home]`): the primary home (the first
+     tab; made if there are none); `h1`/`home1`, `h2`, …: that home, as the tabs are numbered now. The prefix and separator are taken off. Just `h1` sends a held text there,
      or aims the next one. A home that isn't open gets "There's no h5, your homes are h, h1, h3."
    - `hn`/`homenew`/`home-new`: a new home; the rest of the text (and its images) is its first
      message. With nothing after it: "Started h2, text h2 to reach it." At most 9 homes besides `h`
      (`h1`–`h9`; Home's New Home button stops there too, and two made at once can't both take the last): past that, a short text listing the homes
      says to delete one with `hd` and its number. Not `home new …`: "Home new build is broken" is
      words to `h`.
-   - `hd1`/`hd 1`/`homedelete 1`/`home-delete 1`, as the whole text only: deletes home 1 (archives its
-     chat, as closing its tab does) and answers with the homes left. `h` can't be deleted. No y/n:
+   - `hd1`/`hd 1`/`hd h1`/`homedelete 1`/`home-delete 1`, as the whole text only: deletes home 1
+     (archives its chat, as closing its tab does) and answers with the homes left, renumbered.
+     `hd h`/`hd0` deletes `h` itself (the next tab becomes `h`). No y/n:
      the syntax isn't something typed by accident, a longer text never deletes, and an archived chat
      comes back from the archive. (`home delete 1` is words to `h`.)
    Never a word that only starts with them (`hey`, `how`, `Homer`, `homework`, `hnn`, `hn's`,
-   `h1n1`, `homeless`, `home-newbie`, `hello1`). Just `h1` aims the next text at that home's chat:
-if the home is deleted meanwhile (and its number reused), the person is told it's gone instead.
+   `h1n1`, `homeless`, `home-newbie`, `hello1`). Just `h1` (or `h`) aims the next text at that home's
+chat: if the home is deleted meanwhile (and the tabs renumbered), the person is told it's gone instead.
 3. `n text` (and just `n`) goes to session n, as before.
-4. Plain text goes to the home that sent Tether's last text when that was a home's (the primary one
-   when no session is open).
+4. Plain text goes to the home (by its chat) that sent Tether's last text when that was a home's
+   (the primary one when no session is open).
    Otherwise it goes to the one open session, or gets the numbered picker, which ends with a
    `home:` row.
 
@@ -1813,21 +1814,30 @@ if the home is deleted meanwhile (and its number reused), the person is told it'
 same on every connector, Discord included. The way back for private answers, `replyVia`, is kept
 for the Home agent as a whole; a shared channel's claim is each home's own (`home:<chat>`): a
 channel message to one home may be answered in that channel only by that home's turn, armed only
-when that home's own chat is idle, so another home's private answer never goes there.) Each of Home's tabs is a home the person can text: `h` is the primary one, the **Texts**
-tab (made by the first text to `h`, again if it was closed; Home shows no delete for it, though
-`/new` in it still starts a fresh one), and every other tab is `h1`, `h2`, …. A tab keeps its number
-while it's open (a move keeps it too); a new tab takes the lowest free number, so deleting `h2` and
-making a new home gives `h2` again. A reply to a deleted home (threaded to its text, or plain text
-when it texted last) never reaches the new one: it goes to `h`, and the person is told ("That home
-was deleted, so I sent it to h."). What goes to a home goes by its chat, not its number. The numbers are in the Home agent's state.json (they survive a
-restart) and go to browsers with the tabs (`HomeChatUpdate.labels`). When a Home chat moves to a new
+when that home's own chat is idle, so another home's private answer never goes there.) Each of Home's tabs is a home the person can text, named by its place among the tabs:
+the first is `h`, the primary one, the next `h1`, `h2`, …. Closing any tab, `h` included, renumbers
+the ones after it (close `h` of `h, h1, h2` and they're `h, h1`; a single tab left is `h`); a new tab
+(Home's **New Home**, or `hn`) goes after the last and takes the next number. With no tabs, the
+first text to `h` makes a fresh one (titled **Texts**), and so does a message on Home. What goes to a
+home goes by its chat, not its number: texting notes each home text's chat (`sent[].home`,
+`homeChat`, `about.home`, `aimed.chat`), so a threaded reply, or plain text after a home's text,
+reaches the chat that sent it under whatever name it has now. A reply to a closed home (threaded
+to its text, or plain text when it texted last) never reaches another: it goes to `h`, and the
+person is told ("That home was deleted, so I sent it to h."). (A text noted before chats were noted
+for `h` counts as `h`'s, whichever that is.) The order is the Home agent's state.json `tabs` (it
+survives a restart; a state from before keeps its names: the Texts tab first, then by the kept
+numbers, gaps closed) and the numbers go to browsers with the tabs (`HomeChatUpdate.labels`, each
+tab's place). A tab answers by text when the person has texted it (or made it with `hn`), whatever
+its number; the mark goes when it closes. When a Home chat moves to a new
 thread (a harness or source change), its number, and texting's record of its texts (threads, the
 last text, what it was about), go with it. A home's texts start
-`[h]` (primary) or `[h1]`, …. A tab the person has texted (or made with `hn`) answers by text
-like the Texts tab. Home shows each tab's name (h, h1, …), a **New Home** button, and on every tab
-but `h` a delete that asks first ("Delete h2? Its chat is archived and texts to h2 stop reaching
-it.") before closing the tab through the usual close (stopped if running, archived, its sessions
-let go).
+`[h]` (primary) or `[h1]`, …, by its number when it texts. Home shows each tab's name (h, h1, …), a
+**New Home** button, on every tab a delete that asks first ("Delete h1? Its chat is archived, and
+the tabs after it are renumbered") before closing the tab through the usual close (stopped if
+running, archived, its sessions let go), and, with two tabs or more, **Close all**, which asks
+first too ("Close all 3 Home chats? …") and closes every tab at once (`homeAgentCloseAll`: each
+closed as one is, one change told to browsers), leaving no tabs: the next message on Home, or text
+to `h`, starts a fresh `h`.
 
 *Replies about what was just texted.* A home's text can say which session it's about: the session
 its turn acted on, when it acted on exactly one (started it, messaged it, archived it, or answered
@@ -1892,12 +1902,13 @@ has) that is exactly the configured phone once both are in E.164 (`+1 555-123-45
 `+15551234567`); another country's number ending in the same digits isn't. (Discord: the owner user
 ids.) A link sent with its preview (`richlink`) is its URL as words.
 A text heard twice (same message id) is taken once. A text for the Home agent gets the ✅ and goes
-to its **Texts** tab: one tab, made when the first text comes and made again if it was closed. It
+to `h`, its first tab (with no tabs, a new one titled **Texts**, made when the text comes), unless it
+names another home (*Homes* below). It
 arrives as the person's message marked `[From iMessage] ` (`shared/fromTether.ts`; the chat shows it
 as theirs, labelled "via iMessage") and becomes the current tab.
 
-With **Reply by text** on (a Home agent setting next to Watch all sessions, default on), the Texts
-tab's last words go back as a `[h]` text, at most 600 characters, after:
+With **Reply by text** on (a Home agent setting next to Watch all sessions, default on), a texted
+tab's (one the person texted) last words go back as a `[h]` (or `[h1]`, …) text, at most 600 characters, after:
 - a turn started by a text: mostly an acknowledgement ("ok, on it", "started X in web-coder") or
   the one question it needs answered;
 - a finished-turn report from a session that tab started or messaged: the outcome ("done: <PR
