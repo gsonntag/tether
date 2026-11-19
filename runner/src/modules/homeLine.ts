@@ -5,8 +5,9 @@
 // as Tether or posing as the person's phone.
 //
 // The Home agent has several chats (Home's tabs), each one a "home" the person can text by its
-// label: `h` is the primary one (the Texts tab), `h1`, `h2`, … the others (homeAgent/index.ts gives
-// each tab its number, kept while it's open).
+// label: its place among the tabs, `h` the first (the primary one), then `h1`, `h2`, …
+// (homeAgent/index.ts homes). Closing a tab renumbers the ones after it; texting keeps track of a
+// home's texts by its chat, so a reply still reaches the chat that sent the text.
 
 import type { Attachment } from "../../../shared/attachments";
 
@@ -15,7 +16,7 @@ export const HOME_SENDER = "home";
 /** How long an agent's own text (text_person) may be. */
 export const PERSON_TEXT_MAX = 300;
 
-/** At most this many homes besides the primary one (h1 … h9). */
+/** At most this many homes besides the primary one (h1 … h9): ten tabs. */
 export const MAX_EXTRA_HOMES = 9;
 
 /** A home's label as the person texts it and sees it: "h" for the primary one (0), "h1", "h2", … */
@@ -84,15 +85,15 @@ export interface HomeEnd {
    * isn't open.
    */
   take(text: string, via?: TakeVia, to?: HomeTarget): Promise<void>;
-  /** the open homes, the primary one (n 0) always among them (its chat absent until it's made) */
+  /** the open homes, numbered by place, the primary one (n 0) always among them (its chat absent when there are no tabs) */
   homes(): Home[];
-  /** a new home (a new Home tab): its number; `text` (and `via`'s files), if any, is its first message */
+  /** a new home (a new Home tab, after the last): its number; `text` (and `via`'s files), if any, is its first message */
   newHome(text: string, via?: TakeVia): Promise<number>;
-  /** deletes home `n` (its chat is archived, as closing its tab does): the homes left. Throws for the primary one or one that isn't open */
+  /** deletes home `n`, h too (its chat is archived, as closing its tab does): the homes left, renumbered. Throws for one that isn't open */
   deleteHome(n: number): Promise<Home[]>;
   /** whether a session is a chat texts go to: its own turns aren't texted as a session's */
   isTextsChat(sessionId: string): boolean;
-  /** a home's chat (none: the primary one, the Texts chat) is running a turn or has messages waiting (a text now wouldn't start its next turn) */
+  /** a home's chat (none: the primary one's) is running a turn or has messages waiting (a text now wouldn't start its next turn) */
   textsBusy?(chat?: string): boolean;
   /** the chat a text to this home goes to (h's made if it's gone); throws when that home isn't open */
   chatOf?(to?: HomeTarget): Promise<string>;

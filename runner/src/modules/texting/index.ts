@@ -362,11 +362,13 @@ export class Texter {
     this.store.save();
   }
 
-  /** The home a chat is (none, or the primary one's: undefined), for stamping its texts "[h1] …". */
+  /**
+   * The home a chat is now (none: the primary one), for stamping its texts "[h1] …" and keeping them
+   * by its chat: a reply goes to that chat even after the tabs are renumbered. Undefined: no such tab.
+   */
   private homeOf(chat?: string): { n: number; chat: string } | undefined {
-    if (!chat) return undefined;
-    const h = this.ctx.homeLine?.home?.homes().find((x) => x.chat === chat);
-    return h && h.n !== 0 ? { n: h.n, chat } : undefined;
+    const h = this.ctx.homeLine?.home?.homes().find((x) => (chat ? x.chat === chat : x.n === 0));
+    return h?.chat ? { n: h.n, chat: h.chat } : undefined;
   }
 
   /**

@@ -65,8 +65,8 @@ export function tabMark(s: Pick<SessionSummary, "status" | "requests" | "unread"
 }
 
 /**
- * A tab's home name, matching the texts (runner/src/modules/homeLine.ts homeLabel): "h" for the
- * Texts tab, "h1", "h2", … for the others; undefined from a runner from before homes.
+ * A tab's home name, matching the texts (runner/src/modules/homeLine.ts homeLabel): its place, "h"
+ * for the first tab, "h1", "h2", … for the next; undefined from a runner from before homes.
  */
 export function homeTag(labels: Record<string, number> | undefined, id: string): string | undefined {
   const n = labels?.[id];
@@ -74,21 +74,28 @@ export function homeTag(labels: Record<string, number> | undefined, id: string):
   return n === 0 ? "h" : `h${n}`;
 }
 
-/** Whether a tab can be deleted from Home: any but the primary home (h), which stays. */
-export const canDelete = (labels: Record<string, number> | undefined, id: string) => labels?.[id] !== 0;
+/**
+ * The home numbers after a tab change made here, before the runner's broadcast says: the tabs
+ * renumbered by place (the first h). Undefined (the runner's to say) unless the labels were by place
+ * already: a runner from before renumbering kept each tab's number.
+ */
+export function renumber(labels: Record<string, number> | undefined, before: string[], after: string[]): Record<string, number> | undefined {
+  if (!labels || !before.every((c, i) => labels[c] === i)) return undefined;
+  return Object.fromEntries(after.map((c, i) => [c, i]));
+}
 
-/** At most this many Home tabs besides Texts (runner/src/modules/homeLine.ts MAX_EXTRA_HOMES). */
+/** At most this many Home tabs besides h (runner/src/modules/homeLine.ts MAX_EXTRA_HOMES). */
 export const MAX_EXTRA_HOMES = 9;
 
 /** Whether there's room for another Home tab. */
 export const homesFull = (labels: Record<string, number> | undefined) => Object.values(labels ?? {}).filter((n) => n !== 0).length >= MAX_EXTRA_HOMES;
 
-/** The name the next new Home tab will get: the lowest number no open tab has. */
+/** The name the next new Home tab will get: the lowest number no open tab has (after the last; h with none). */
 export function nextHomeTag(labels: Record<string, number> | undefined): string {
   const used = new Set(Object.values(labels ?? {}));
-  let n = 1;
+  let n = 0;
   while (used.has(n)) n++;
-  return `h${n}`;
+  return n === 0 ? "h" : `h${n}`;
 }
 
 /**

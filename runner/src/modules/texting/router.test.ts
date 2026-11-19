@@ -393,7 +393,7 @@ describe("several homes: h, h1, h2, …", () => {
     const { r } = setup();
     expect(r.route("h1 do x", undefined, homes)).toEqual({ kind: "home", text: "do x", home: 1, chat: "claude:h1" });
     expect(r.route("H3: do y", undefined, homes)).toEqual({ kind: "home", text: "do y", home: 3, chat: "claude:h3" });
-    expect(r.route("h do z", undefined, homes)).toEqual({ kind: "home", text: "do z" });
+    expect(r.route("h do z", undefined, homes)).toEqual({ kind: "home", text: "do z", chat: "claude:t" });
     expect(r.route("h2 do x", undefined, homes)).toEqual({ kind: "reply", text: TEXTS.noSuchHome("h2", "h, h1, h3") });
     expect(r.route("h1", undefined, homes)).toEqual({ kind: "reply", text: TEXTS.whatToSendTo("h1") });
     expect(r.route("go on", undefined, homes)).toEqual({ kind: "home", text: "go on", home: 1, chat: "claude:h1" });
@@ -403,7 +403,11 @@ describe("several homes: h, h1, h2, …", () => {
     const { r } = setup();
     expect(r.route("hn fix the logo", undefined, homes)).toEqual({ kind: "newHome", text: "fix the logo" });
     expect(r.route("hd3", undefined, homes)).toEqual({ kind: "deleteHome", n: 3 });
-    expect(r.route("hd0", undefined, homes)).toEqual({ kind: "reply", text: TEXTS.cantDeletePrimary });
+    // h can be deleted too (the tabs after it move up); with no tabs, there's no h to delete.
+    expect(r.route("hd0", undefined, homes)).toEqual({ kind: "deleteHome", n: 0 });
+    expect(r.route("hd h", undefined, homes)).toEqual({ kind: "deleteHome", n: 0 });
+    expect(r.route("HD H1", undefined, homes)).toEqual({ kind: "deleteHome", n: 1 });
+    expect(r.route("hd h", undefined, [{ n: 0 }])).toEqual({ kind: "reply", text: TEXTS.noSuchHome("h", "h") });
     expect(r.route("hd2", undefined, homes)).toEqual({ kind: "reply", text: TEXTS.noSuchHome("h2", "h, h1, h3") });
     // Without a Home agent, none of it is a command.
     r.stamp("a", "finished", ".");
@@ -416,22 +420,48 @@ describe("several homes: h, h1, h2, …", () => {
     expect(r.stampHome("PR is up, merge?", "claude:x", { n: 1, chat: "claude:h1" })).toBe("[h1] PR is up, merge?");
     r.noteSent("m1", HOME, undefined, "claude:x", "claude:h1");
     expect(r.stampHome("ok", undefined, { n: 0, chat: "claude:t" })).toBe("[h] ok");
-    r.noteSent("m2", HOME);
+    r.noteSent("m2", HOME, undefined, undefined, "claude:t");
     // The last text was h's: plain text answers h, nothing carried.
-    expect(r.route("thanks", undefined, homes)).toEqual({ kind: "home", text: "thanks" });
+    expect(r.route("thanks", undefined, homes)).toEqual({ kind: "home", text: "thanks", chat: "claude:t" });
     // A threaded reply to h1's text goes to h1 with its session, however late.
     clock.tick(REPLY_MS * 2);
     expect(r.route("merge it", "m1", homes)).toEqual({ kind: "home", text: "merge it", home: 1, chat: "claude:h1", about: { sessionId: "claude:x", byHome: true } });
     // h1 texts last: plain text goes to h1, about what it said; "h …" turns to h, carrying nothing.
     r.stampHome("PR is up, merge?", "claude:x", { n: 1, chat: "claude:h1" });
     expect(r.route("yes", undefined, homes)).toEqual({ kind: "home", text: "yes", home: 1, chat: "claude:h1", about: { sessionId: "claude:x", byHome: true } });
-    expect(r.route("h what's running", undefined, homes)).toEqual({ kind: "home", text: "what's running" });
+    expect(r.route("h what's running", undefined, homes)).toEqual({ kind: "home", text: "what's running", chat: "claude:t" });
     expect(r.route("h1 merge", undefined, homes)).toEqual({ kind: "home", text: "merge", home: 1, chat: "claude:h1", about: { sessionId: "claude:x", byHome: true } });
     // A threaded reply to a home that was deleted goes to h (with what it was about), marked so the person is told.
     expect(r.route("merge it", "m1", [{ n: 0 }, { n: 3, chat: "claude:h3" }])).toEqual({ kind: "home", text: "merge it", about: { sessionId: "claude:x", byHome: true }, gone: true });
     // So does plain text after the home that texted last was deleted; after that, h is the last one.
     expect(r.route("hello?", undefined, [{ n: 0 }])).toEqual({ kind: "home", text: "hello?", gone: true });
     expect(r.route("still there?", undefined, [{ n: 0 }])).toEqual({ kind: "home", text: "still there?" });
+  });
+
+  test("renumbered: a home's texts follow its chat, not its name; a reply to a closed h goes to the new h, the person told", () => {
+    const { r, clock } = setup();
+    // h (claude:t) and h1 (claude:h1) text the person.
+    r.stampHome("which branch?", undefined, { n: 0, chat: "claude:t" });
+    r.noteSent("t1", HOME, undefined, undefined, "claude:t");
+    r.stampHome("PR is up, merge?", "claude:x", { n: 1, chat: "claude:h1" });
+    r.noteSent("h1", HOME, undefined, "claude:x", "claude:h1");
+    // h closes: claude:h1 is h now.
+    const after = [{ n: 0, chat: "claude:h1" }];
+    // Plain text goes to the chat that texted last, now h, with what it was about.
+    expect(r.route("yes", undefined, after)).toEqual({ kind: "home", text: "yes", chat: "claude:h1", about: { sessionId: "claude:x", byHome: true } });
+    // "h …" is whatever is h now.
+    clock.tick(REPLY_MS * 2);
+    expect(r.route("h status", undefined, after)).toEqual({ kind: "home", text: "status", chat: "claude:h1" });
+    // A threaded reply to its text reaches it under its new name.
+    expect(r.route("merge it", "h1", after)).toEqual({ kind: "home", text: "merge it", chat: "claude:h1", about: { sessionId: "claude:x", byHome: true } });
+    // A threaded reply to the closed h's text goes to the new h, and the person is told.
+    expect(r.route("main", "t1", after)).toEqual({ kind: "home", text: "main", chat: "claude:h1", gone: true });
+    // Every tab closed: h has no chat; a text makes one.
+    expect(r.route("merge it", "h1", [{ n: 0 }])).toEqual({ kind: "home", text: "merge it", about: { sessionId: "claude:x", byHome: true }, gone: true });
+    expect(r.route("h hi", undefined, [{ n: 0 }])).toEqual({ kind: "home", text: "hi" });
+    // A text from before (no chat noted) was h's: it goes to h, whichever that is.
+    r.noteSent("old", HOME);
+    expect(r.route("ok", "old", after)).toEqual({ kind: "home", text: "ok", chat: "claude:h1" });
   });
 
   test("the held text: a number or a home takes it with its id", () => {
@@ -465,7 +495,7 @@ describe("round 3", () => {
     let s = held();
     expect(s.r.route("2 what is wrong here", undefined, homes)).toEqual({ kind: "deliver", sessionId: "b", n: 2, text: "what is wrong here", held: s.id });
     s = held();
-    expect(s.r.route("h what is wrong here", undefined, homes)).toEqual({ kind: "home", text: "what is wrong here", held: s.id });
+    expect(s.r.route("h what is wrong here", undefined, homes)).toEqual({ kind: "home", text: "what is wrong here", chat: "claude:t", held: s.id });
     s = held();
     expect(s.r.route("h1 what is wrong here", undefined, homes)).toEqual({ kind: "home", text: "what is wrong here", home: 1, chat: "claude:h1", held: s.id });
     s = held();
@@ -489,9 +519,12 @@ describe("round 3", () => {
     const now = [{ n: 0, chat: "claude:t" }, { n: 1, chat: "claude:new" }];
     expect(r.route("deploy it", undefined, now)).toEqual({ kind: "reply", text: TEXTS.homeGone("h, h1") });
     expect(r.state.aimed).toBeUndefined();
-    // Aimed at h: h, whatever its chat.
+    // Aimed at h: h's chat.
     r.route("h", undefined, now);
-    expect(r.route("deploy it", undefined, now)).toEqual({ kind: "home", text: "deploy it" });
+    expect(r.route("deploy it", undefined, now)).toEqual({ kind: "home", text: "deploy it", chat: "claude:t" });
+    // Aimed at h with no tabs: h, made then.
+    r.route("h", undefined, [{ n: 0 }]);
+    expect(r.route("deploy it", undefined, [{ n: 0 }])).toEqual({ kind: "home", text: "deploy it" });
   });
 
   test("a Home chat that moves takes its texts, its last text and what it was about along", () => {

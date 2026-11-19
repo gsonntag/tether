@@ -855,9 +855,7 @@ describe("round 2: homes over text, image downloads, held images", () => {
     expect(took.at(-1)).toEqual(["(replying to your text about session claude:a, \"secret plans\" in /home/me/web) and deploy", { chat: "claude:home2" }]);
     await hear({ text: "hd2" });
     expect(texts.at(-1)).toBe(TEXTS.homeDeleted("h2", "h, h1"));
-    await hear({ text: "hd0" });
-    expect(texts.at(-1)).toBe(TEXTS.cantDeletePrimary);
-    for (const x of [TEXTS.homeStarted("h1"), TEXTS.noSuchHome("h7", "h, h1"), TEXTS.homeDeleted("h2", "h, h1"), TEXTS.cantDeletePrimary, TEXTS.whatToSendTo("h1"), TEXTS.homeGone("h"), TEXTS.filesNotSent])
+    for (const x of [TEXTS.homeStarted("h1"), TEXTS.noSuchHome("h7", "h, h1"), TEXTS.homeDeleted("h2", "h, h1"), TEXTS.whatToSendTo("h1"), TEXTS.homeGone("h"), TEXTS.filesNotSent])
       expect([x, casualText(x)]).toEqual([x, true]);
   });
 
@@ -990,7 +988,7 @@ describe("round 3: held photos on every path, unsupported content, restarts", ()
   test('"h …" and "h1 …": the held photo goes to that home', async () => {
     let s = await heldPhoto();
     await s.hear({ text: "h what is wrong here" });
-    expect(s.took).toEqual([["what is wrong here", { n: 0 }, IMG]]);
+    expect(s.took).toEqual([["what is wrong here", { chat: "claude:home" }, IMG]]);
     s = await heldPhoto();
     await s.hear({ text: "h1 what is wrong here" });
     expect(s.took).toEqual([["what is wrong here", { chat: "claude:home1" }, IMG]]);
@@ -1140,7 +1138,7 @@ describe("round 4: held images expire once, failures say it once, deleted homes"
     await line.phone!.send("logo done", { chat: "claude:home1" });
     extra.length = 0;
     await s.hear({ text: "ship it" });
-    expect(took).toEqual([["ship it", { n: 0 }]]);
+    expect(took).toEqual([["ship it", { chat: "claude:home" }]]);
     expect(s.texts.at(-1)).toBe(TEXTS.homeGoneSentToH);
     expect(casualText(TEXTS.homeGoneSentToH)).toBe(true);
   });
