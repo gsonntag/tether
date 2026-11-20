@@ -22,7 +22,7 @@ import { canonicalCommand } from "./content";
 import { keepBilling } from "./context";
 import { claudeAuthSettings, claudeEnv, claudeKeyLease, confirmClaudeBilling } from "./credentials";
 import { claudeAsk, claudeResult } from "./requests";
-import { ClaudeStream } from "./stream";
+import { ClaudeStream, type SessionCron } from "./stream";
 import { ClaudeCostCounter } from "./cost";
 import { claudeSetupFor, claudeToolServerFor } from "./setup";
 import { readOnlyOptions } from "./readOnly";
@@ -107,6 +107,12 @@ export class ClaudeDriver implements Driver {
       if (args.run_in_background === true) return {};
       return { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { ...args, run_in_background: true } } };
     };
+    // Each turn's end (the main agent's or a subagent's) lists the session's scheduled wakeups
+    // (CronCreate, ScheduleWakeup, /loop): what it's watching besides its background tasks.
+    const crons: HookCallback = async (input) => {
+      if (input.hook_event_name === "Stop" || input.hook_event_name === "SubagentStop") this.stream.setCrons((input as { session_crons?: SessionCron[] }).session_crons);
+      return {};
+    };
     // Every other session: Tether's MCP server (sessions talking to each other), its tools allowed.
     const tools = extra ? undefined : claudeToolServerFor(this.projectPath, this.nativeId);
     // A side chat (SPEC §16a): nothing but reading, whatever the mode, settings and the person's hooks allow.
@@ -137,7 +143,7 @@ export class ClaudeDriver implements Driver {
         // Tether's instructions: the Home agent's own, or every other session's (concise replies, texting).
         systemPrompt: { type: "preset", preset: "claude_code", ...(append ? { append } : {}) },
         canUseTool,
-        hooks: { PreToolUse: [...ro.preToolUse, { matcher: SUBAGENT_TOOLS, hooks: [background] }] },
+        hooks: { PreToolUse: [...ro.preToolUse, { matcher: SUBAGENT_TOOLS, hooks: [background] }], Stop: [{ hooks: [crons] }], SubagentStop: [{ hooks: [crons] }] },
         env: claudeEnv(opts.credential),
         pathToClaudeCodeExecutable: CLAUDE_BIN,
         stderr: (data: string) => {
@@ -343,8 +349,9 @@ export class ClaudeDriver implements Driver {
     return this.stream.onlyBackground();
   }
 
+  /** Tasks still run, or a scheduled wakeup is pending (closing the process would lose it). */
   busy() {
-    return this.stream.running.size > 0;
+    return this.stream.running.size > 0 || this.stream.hasWakeups();
   }
 
   /** The store a moment after the turn: Claude Code writes the evaluation around its result. */

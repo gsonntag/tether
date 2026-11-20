@@ -250,3 +250,61 @@ test("a terminal short API throttle signals before idle, while plan limits and i
   result({ subtype: "error_during_execution" });
   expect(sink.rateLimits).toHaveLength(1);
 });
+
+// ---------------- watchers (shared/watchers.ts) ----------------
+
+/** A main-thread assistant frame with one tool call. */
+const toolCall = (id: string, name: string, input: unknown) => ({ type: "assistant", uuid: `u-${id}`, message: { id: `msg-${id}`, model: "claude-opus-5-5", content: [{ type: "tool_use", id, name, input }] } });
+const listed = (tasks: unknown[]) => ({ type: "system", subtype: "background_tasks_changed", tasks });
+
+test("background shells and monitors show as watching until the level drops them", () => {
+  const sink = new TestSink();
+  const s = new ClaudeStream(sink, { nativeId: "S" });
+  s.handle(toolCall("t-mon", "Monitor", { description: "progress.log events", command: "tail -F x" }));
+  s.handle(listed([{ task_id: "m1", task_type: "local_bash", description: "progress.log events" }]));
+  s.handle({ type: "system", subtype: "task_started", task_id: "m1", tool_use_id: "t-mon", task_type: "local_bash", description: "progress.log events" });
+  s.handle(listed([
+    { task_id: "m1", task_type: "local_bash", description: "progress.log events" },
+    { task_id: "b1", task_type: "local_bash", description: "until results land" },
+    { task_id: "a1", task_type: "local_agent", description: "Step 1", subagent_type: "general-purpose" },
+    { task_id: "x1", task_type: "local_bash", description: "housekeeping", ambient: true },
+  ]));
+  expect(sink.st.watching).toEqual([
+    { kind: "monitor", label: "progress.log events" },
+    { kind: "shell", label: "until results land" },
+  ]);
+  s.handle(listed([{ task_id: "b1", task_type: "local_bash", description: "until results land" }]));
+  expect(sink.st.watching).toEqual([{ kind: "shell", label: "until results land" }]);
+  s.handle(listed([]));
+  expect(sink.st.watching).toBeUndefined();
+});
+
+test("a subagent's watchers outlive its 'completed' notification and name it", () => {
+  const sink = new TestSink();
+  const s = new ClaudeStream(sink, { nativeId: "S" });
+  s.handle({ type: "system", subtype: "task_started", task_id: "a2", task_type: "local_agent", subagent_type: "general-purpose", description: "Step 2: policy space", tool_use_id: "t-a2" });
+  s.handle(listed([
+    { task_id: "a2", task_type: "local_agent", description: "Step 2: policy space" },
+    { task_id: "w1", task_type: "local_bash", description: "wait for smoke", parent_task_id: "a2" },
+  ]));
+  // Claude Code reports the subagent done while its own background work still runs.
+  s.handle({ type: "system", subtype: "task_notification", task_id: "a2", status: "completed" });
+  s.handle(listed([{ task_id: "w1", task_type: "local_bash", description: "wait for smoke", parent_task_id: "a2" }]));
+  expect(sink.st.watching).toEqual([{ kind: "shell", label: "wait for smoke", by: "Step 2: policy space" }]);
+});
+
+test("a Stop hook's session crons are scheduled wakeups, with their next fire time", () => {
+  const sink = new TestSink();
+  const s = new ClaudeStream(sink, { nativeId: "S" });
+  expect(s.hasWakeups()).toBe(false);
+  const now = new Date(2026, 10, 20, 23, 10, 30).getTime();
+  s.setCrons([{ id: "c1", schedule: "40 23 20 11 *", recurring: false, prompt: "<<autonomous-loop-dynamic>>" }], now);
+  expect(sink.st.watching).toEqual([{ kind: "wakeup", label: "Autonomous loop", at: new Date(2026, 10, 20, 23, 40).getTime() }]);
+  expect(s.hasWakeups()).toBe(true);
+  // A missing list (an older CLI) changes nothing; an empty one clears.
+  s.setCrons(undefined, now);
+  expect(s.hasWakeups()).toBe(true);
+  s.setCrons([], now);
+  expect(sink.st.watching).toBeUndefined();
+  expect(s.hasWakeups()).toBe(false);
+});

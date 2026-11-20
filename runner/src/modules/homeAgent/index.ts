@@ -52,6 +52,7 @@ import type { BillingSource, SourceOption } from "../../../../shared/credentials
 import { HOME_AGENT_MODE, type HomeAgentSettings } from "../../../../shared/protocol";
 import { mapMode } from "../../../../shared/move";
 import { nextScheduled, unscheduled, waitingNow } from "../../../../shared/schedule";
+import { watcherText, type Watcher } from "../../../../shared/watchers";
 
 /** Why a scheduled message waits for the person (QueuedMessage.held), for the agent. */
 const STUCK_WHY = { late: "the runner was off for more than a day after its time", failed: "its send, or the turn before it, failed", stopped: "the person pressed Stop while it was due", restart: "a runner restart cut off the turn before it and didn't continue it", retry: "the rate limit retry it waited behind was cancelled" } as const;
@@ -337,13 +338,15 @@ export function lastPrompt(msgs: Msg[]): string | undefined {
 export const CHECKIN_PROMPT = "(the Home agent's check-in: is the task done and merged?)";
 
 /** What a session is doing, for the Home agent. */
-export type SessionState = "running" | "waiting" | "finished" | "failed";
-export const STATE_LABELS: Record<SessionState, string> = { running: "running", waiting: "waiting on you", finished: "finished", failed: "failed" };
+export type SessionState = "running" | "waiting" | "watching" | "finished" | "failed";
+export const STATE_LABELS: Record<SessionState, string> = { running: "running", waiting: "waiting on you", watching: "watching (idle until background work wakes it; not finished)", finished: "finished", failed: "failed" };
 
 /** A row's state; `error` is a failure the session has in memory (an unread failure is on the row). */
 export function stateOf(s: SessionSummary, error?: string): SessionState {
   if (s.status === "waiting" || s.requests || s.queuePaused) return "waiting";
   if (s.status === "running" || s.backgroundSubagents) return "running";
+  // Its turn is over, but it left something running that will wake it: not finished.
+  if (s.watching) return "watching";
   if (s.unread === "failed" || s.failure || error) return "failed";
   return "finished";
 }
@@ -362,6 +365,20 @@ const oneLine = (s: string, n: number) => {
   const t = s.replace(/\s+/g, " ").trim();
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 };
+
+/**
+ * What a session is watching (LiveState.watching), for session_status and turn reports: it isn't
+ * finished while one of these can wake it. `report`: said to the agent following it.
+ */
+export function watchingLines(list: Watcher[] | undefined, report = false): string {
+  if (!list?.length) return "";
+  const items = list.slice(0, 5).map((w) => `- ${watcherText(w)}`);
+  if (list.length > 5) items.push(`- and ${list.length - 5} more`);
+  const head = report
+    ? "It isn't finished: its turn ended, but it's watching background work that will wake it (it'll take a turn then, and you'll get another report). Don't treat it as done, wrap it up or archive it yet; just let the person know it's waiting if that's useful. It's watching:"
+    : "Watching (its turn ended, but these will wake it; it isn't finished):";
+  return [head, ...items].join("\n");
+}
 
 /** Whether a session's folder is the project `want` names: its path (~ works), or the folder's name. */
 export function inProject(projectPath: string, want: string) {
@@ -1123,9 +1140,9 @@ export class HomeAgent implements HomeEnd {
       {
         name: "list_sessions",
         description:
-          "Every coding session on this machine, whoever started it: active in the last 3 days, or running now (archived: true lists the archived ones instead, of any age). Newest activity first. Each line: id, title, project, agent, state (running, waiting on you, finished, failed), last active, and what it's on (its latest prompt or reply). Use for \"what's running?\", \"what's finished?\", \"is anything working on X?\", and to find a finished session to revive for a follow-up.",
+          "Every coding session on this machine, whoever started it: active in the last 3 days, or running now (archived: true lists the archived ones instead, of any age). Newest activity first. Each line: id, title, project, agent, state (running, waiting on you, watching, finished, failed; watching = its turn ended but a background command, monitor or scheduled wakeup it set up will wake it, so it isn't finished), last active, and what it's on (its latest prompt or reply). Use for \"what's running?\", \"what's finished?\", \"is anything working on X?\", and to find a finished session to revive for a follow-up.",
         input: {
-          state: z.enum(["running", "waiting", "finished", "failed", "active"]).optional().describe("Only sessions in this state. active = running or waiting on you."),
+          state: z.enum(["running", "waiting", "watching", "finished", "failed", "active"]).optional().describe("Only sessions in this state. active = running, waiting on you or watching."),
           project: z.string().optional().describe("Only this project: its folder (from list_projects) or the folder's name."),
           query: z.string().optional().describe("Only sessions whose title or project name contains this (any case)."),
           archived: z.boolean().optional().describe("true: only archived sessions (finished work you can revive with send_to_session)."),
@@ -1167,6 +1184,7 @@ export class HomeAgent implements HomeEnd {
             `Session ${id} ("${look.summary.title || "Untitled"}", ${look.summary.projectPath}, ${AGENT_NAMES[look.summary.harness] ?? look.summary.harness})`,
             `State: ${STATE_LABELS[st]}, last active ${ago(look.summary.updatedAt)}${error ? `. Last error: ${oneLine(error, 300)}` : ""}`,
             ...look.state.requests.map((r) => `Waiting for the person: ${asks(r)}`),
+            watchingLines(look.state.watching),
             look.state.queueHeld && look.summary.queuePaused ? "Its queue is paused (after a Stop, a failure or a restart): it waits for the person." : "",
             ...look.state.queue.filter((m) => m.held).map((m) => `A scheduled message waits for the person: ${STUCK_WHY[m.held!]}.`),
             unscheduled(look.state.queue).length ? `${unscheduled(look.state.queue).length} message${unscheduled(look.state.queue).length === 1 ? "" : "s"} queued.` : "",
@@ -1305,8 +1323,8 @@ export class HomeAgent implements HomeEnd {
       .filter((r) => !r.parentSessionId && resolve(r.projectPath) !== resolve(this.folder))
       .filter((r) => !q || (r.title || "").toLowerCase().includes(q) || basename(r.projectPath).toLowerCase().includes(q))
       .map((r) => ({ r, st: stateOf(r, this.ctx.session(r.id)?.state.error) }))
-      .filter(({ r, st }) => (!a.state || (a.state === "active" ? st === "running" || st === "waiting" : st === a.state)) && (!a.project || inProject(r.projectPath, a.project)));
-    if (!rows.length) return `No${a.archived ? " archived" : ""} sessions${a.state ? ` ${a.state === "active" ? "running or waiting on you" : STATE_LABELS[a.state]}` : ""}${a.project ? ` in ${a.project}` : ""}${q ? ` matching "${a.query!.trim()}"` : ""}.`;
+      .filter(({ r, st }) => (!a.state || (a.state === "active" ? st === "running" || st === "waiting" || st === "watching" : st === a.state)) && (!a.project || inProject(r.projectPath, a.project)));
+    if (!rows.length) return `No${a.archived ? " archived" : ""} sessions${a.state ? ` ${a.state === "active" ? "running, waiting on you or watching" : STATE_LABELS[a.state]}` : ""}${a.project ? ` in ${a.project}` : ""}${q ? ` matching "${a.query!.trim()}"` : ""}.`;
     const limit = Math.min(Math.max(1, Math.floor(a.limit ?? LIST_DEFAULT)), LIST_MAX);
     const page = rows.slice(0, limit);
     const lines = await Promise.all(
@@ -1319,7 +1337,8 @@ export class HomeAgent implements HomeEnd {
         const promptIdx = msgs.findLastIndex((m) => m.role === "user" && m.origin?.kind !== "shell" && !!text(m));
         const on = reply && replyIdx > promptIdx ? `replied: ${reply}` : prompt ? `asked: ${prompt}` : "";
         const project = basename(r.projectPath) || r.projectPath;
-        const head = `${r.id} · "${oneLine(r.title || "Untitled", 60)}" · ${project} · ${AGENT_NAMES[r.harness] ?? r.harness} · ${r.archived ? "archived" : STATE_LABELS[st]} · ${ago(r.updatedAt)}`;
+        const watch = st === "watching" && r.watching ? ` (${r.watching.n === 1 ? "" : `${r.watching.n}, first: `}${oneLine(r.watching.label, 80)}${r.watching.at !== undefined ? `; next wake ${new Date(r.watching.at).toISOString()}` : ""})` : "";
+        const head = `${r.id} · "${oneLine(r.title || "Untitled", 60)}" · ${project} · ${AGENT_NAMES[r.harness] ?? r.harness} · ${r.archived ? "archived" : st === "watching" ? `watching${watch}` : STATE_LABELS[st]} · ${ago(r.updatedAt)}`;
         return on ? `${head}\n  ${oneLine(on, LINE_MAX)}` : head;
       }),
     );
@@ -1393,6 +1412,7 @@ export class HomeAgent implements HomeEnd {
       const look = await this.ctx.sessions.open(id).catch(() => undefined);
       if (!look) throw new Error(`There's no session ${id}.`);
       if (look.status !== "idle" || look.requests.length || look.state.requests.length || look.state.queue.length) throw new Error("That session isn't finished: it's still working, has messages queued or scheduled, or waits for the person.");
+      if (look.state.watching?.length) throw new Error("That session isn't finished: it's watching background work that will wake it (session_status says what).");
     }
     await this.ctx.sessions.setArchived(id, true);
     return `Archived ${await this.describe(id)}. send_to_session revives it if it's needed again.`;
@@ -1668,13 +1688,14 @@ export class HomeAgent implements HomeEnd {
     const reply = lastReply(await this.ctx.sessions.recent(id, 30).catch(() => [] as Msg[]));
     const lines = [
       `${await this.describe(id)} finished a turn${error ? ` with an error: ${error}` : "."}`,
+      watchingLines(this.ctx.session(id)?.state.watching, true),
       reply ? `Its last reply:\n<<<\n${unfence(cut(reply, REPLY_MAX))}\n>>>${reply.length > REPLY_MAX ? "\n(session_status shows more.)" : ""}` : "It said nothing.",
       last
         ? `That's report ${MAX_REPORTS} of ${MAX_REPORTS}: you've stopped following this session and can't message it any more. Tell the person where it stands in one casual sentence.`
         : `Report ${c.reports} of ${MAX_REPORTS}. Keep it going with send_to_session if the task isn't done; if it is, send the wrap-up for its end goal (merge if chosen, deploy/restart if needed, remove its worktree and branch) and archive it once it confirms; or tell the person in one casual sentence: only what's notable or needs them (a decision, a failure, where the work is, e.g. a PR link). Don't say it works, tests pass or it was verified.`,
       ...(this.texted(c.chat) ? [TEXTED] : []),
     ];
-    await this.report(id, c, lines.join("\n\n"));
+    await this.report(id, c, lines.filter(Boolean).join("\n\n"));
   }
 
   /**

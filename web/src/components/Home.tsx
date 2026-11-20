@@ -21,6 +21,7 @@ import { HomeChat } from "./HomeChat";
 import { RunnerDot, runnerStatus } from "./RunnerStatus";
 import { useNow } from "./useNow";
 import { whenLabel } from "../schedule";
+import { watchingChip, watchingTitle } from "../watching";
 
 export function Home() {
   const runners = useStore((s) => s.runners);
@@ -63,7 +64,7 @@ export function Home() {
   );
 }
 
-const KIND_LABEL: Record<InboxKind, string> = { needs: "Needs you", failed: "Failed", finished: "Finished", working: "Working", scheduled: "Scheduled" };
+const KIND_LABEL: Record<InboxKind, string> = { needs: "Needs you", failed: "Failed", finished: "Finished", working: "Working", watching: "Watching", scheduled: "Scheduled" };
 
 /** One ranked list of what needs you, across runners (SPEC §10). */
 function Inbox() {
@@ -103,6 +104,7 @@ function Inbox() {
                   {r.inbox === "needs" && (r.requests ?? 0) > 1 && <span>· {r.requests} requests</span>}
                   {(r.queued ?? 0) > 0 && <span>· {r.queued} queued{r.queuePaused ? ", paused" : ""}</span>}
                   {r.scheduledAt !== undefined && <span>· Scheduled {whenLabel(r.scheduledAt, now).replace(/^at /, "")}</span>}
+                  {r.watching && r.status !== "running" && <span className="t-watching" title={watchingTitle(r.watching)}>· {watchingChip(r.watching, now)}</span>}
                 </span>
                 {r.inbox === "failed" && r.failure && <span className="t-inbox-why">{r.failure}</span>}
               </button>

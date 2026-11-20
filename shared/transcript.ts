@@ -6,6 +6,7 @@ import type { ForkedFrom } from "./fork";
 import type { SessionCost } from "./costs";
 import type { BillingSource, CredentialSource } from "./credentials";
 import type { ShellRun } from "./shellRun";
+import type { Watcher, WatchingSummary } from "./watchers";
 
 export type HarnessId = "claude" | "codex";
 
@@ -422,6 +423,12 @@ export interface LiveState {
   };
   /** the main agent is free and this many of its subagents still run (never saved: it can't outlive them) */
   backgroundSubagents?: number;
+  /**
+   * What the session left running to wake it later (background commands, monitors, workflows,
+   * scheduled wakeups; shared/watchers.ts), not counting subagents. Ephemeral like
+   * backgroundSubagents: it ends with the process.
+   */
+  watching?: Watcher[];
   /** Tether's `!` shell commands still running; ephemeral like backgroundSubagents */
   shellsRunning?: number;
   /** why the session can't run right now (the harness failed to start, isn't signed in, …); the chat shows it as a notice */
@@ -474,6 +481,8 @@ export interface SessionSummary {
   scheduledAt?: number;
   /** LiveState.backgroundSubagents: the session is still working */
   backgroundSubagents?: number;
+  /** LiveState.watching: the session waits on these to wake it (it isn't finished) */
+  watching?: WatchingSummary;
   /** a subagent: the session that started it, and the tool call that did (SPEC §6a) */
   parentSessionId?: string;
   parentToolId?: string;

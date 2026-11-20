@@ -119,3 +119,14 @@ test("Recent by project: no groups while searching or in a project's list", () =
   expect(recentGroups(list, { query: "  " })).toBeDefined();
   expect(recentGroups(list, { filter: "/p/web" })).toBeUndefined();
 });
+
+test("a session watching background work reads as watching on Home, not finished", () => {
+  const row = (over: object) => ({ id: "a", harness: "claude", nativeId: "a", projectPath: "/p", title: "a", mode: "live", status: "idle", updatedAt: 1, ...over });
+  const at = (over: object) => inbox({ r1: { seq: 1, sessions: { a: row(over) } } } as any)[0]?.inbox;
+  const watching = { n: 1, label: "progress.log events" };
+  expect(at({ watching, unread: "finished" })).toBe("watching");
+  expect(at({ watching })).toBe("watching");
+  expect(at({ watching, status: "running" })).toBe("working");
+  expect(at({ watching, requests: 1 })).toBe("needs");
+  expect(at({ watching, archived: true })).toBeUndefined();
+});

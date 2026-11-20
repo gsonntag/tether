@@ -13,7 +13,7 @@ import { askQuestion, FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
 import { CredentialStore } from "../../credentials";
 import type { Msg, SessionSummary } from "../../../../shared/transcript";
-import { ADVERSARIAL_BRIEF, ago, asksToStopTexting, contentless, NO_TEXT, routine, END_GOALS, HomeAgent, homeAgentModule, inProject, INSTRUCTIONS, lastPrompt, lastRawReply, lastReply, MAX_REPORTS, REPLY_MAX, SESSION_MODE, settingsOf, stateOf, TEXTED, TEXTS_TITLE } from ".";
+import { ADVERSARIAL_BRIEF, ago, asksToStopTexting, contentless, NO_TEXT, routine, END_GOALS, HomeAgent, homeAgentModule, inProject, INSTRUCTIONS, lastPrompt, lastRawReply, lastReply, MAX_REPORTS, REPLY_MAX, SESSION_MODE, settingsOf, stateOf, watchingLines, TEXTED, TEXTS_TITLE } from ".";
 import { ANSWER_TAG } from "./checkIn";
 import { claudeMove } from "../../adapters/claude/move";
 import { worktreesModule } from "../worktrees";
@@ -573,6 +573,10 @@ test("stateOf, inProject, lastPrompt and ago", () => {
   expect(stateOf(row({}))).toBe("finished");
   expect(stateOf(row({ status: "running" }))).toBe("running");
   expect(stateOf(row({ backgroundSubagents: 1 }))).toBe("running");
+  // Its turn ended but a watcher will wake it: not finished, even after a failure.
+  expect(stateOf(row({ watching: { n: 1, label: "log" } }))).toBe("watching");
+  expect(stateOf(row({ watching: { n: 1, label: "log" }, unread: "failed" }))).toBe("watching");
+  expect(stateOf(row({ watching: { n: 1, label: "log" }, status: "running" }))).toBe("running");
   expect(stateOf(row({ status: "running", requests: 1 }))).toBe("waiting");
   expect(stateOf(row({ queuePaused: true }))).toBe("waiting");
   expect(stateOf(row({ unread: "failed", failure: "boom" }))).toBe("failed");
@@ -1685,4 +1689,15 @@ test("search_sessions: finds sessions by what they said, of any age, archived or
   expect(one).toContain("Stopped at 1 matching sessions");
   expect(await search({ query: "never said anywhere" })).toMatch(/^Nothing in \d+ sessions says "never said anywhere"\.$/);
   await expect(search({ query: " " })).rejects.toThrow("at least 2 characters");
+});
+
+test("watchingLines: what a session watches, for session_status and its turn reports", () => {
+  expect(watchingLines(undefined)).toBe("");
+  expect(watchingLines([])).toBe("");
+  const one = watchingLines([{ kind: "monitor", label: "progress.log events", by: "Step 1" }]);
+  expect(one).toContain("it isn't finished");
+  expect(one).toContain("- monitor “progress.log events” (started by subagent “Step 1”)");
+  expect(watchingLines([{ kind: "shell", label: "x" }], true)).toContain("Don't treat it as done");
+  const many = watchingLines(Array.from({ length: 7 }, (_, i) => ({ kind: "shell" as const, label: `w${i}` })));
+  expect(many).toContain("- and 2 more");
 });

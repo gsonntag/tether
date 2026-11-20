@@ -4,6 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Spinner } from "@astryxdesign/core/Spinner";
+import { Icon } from "@astryxdesign/core/Icon";
+import { EyeIcon } from "@heroicons/react/24/outline";
+import { useNow } from "./useNow";
+import { watchingDetail, watchingLine } from "../watching";
 import { AGENT_NAMES, HARNESS_LABELS } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { setSessionCovered } from "../presence";
@@ -163,6 +167,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   );
   // The session's PR (SPEC §10 Git actions): its chip in the header, and the pane's Open PR.
   const prs = usePr(runnerId, sessionId, { enabled: runnerGitActions && !!summary && !summary.parentSessionId && !summary.sideOf, paneOpen: changes, status: view?.state?.status ?? "idle" });
+  // The watching line's next wake time stays current.
+  const now = useNow();
 
   if (!view?.window || !view.state || !summary) {
     if (view?.error)
@@ -298,6 +304,14 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     </div>
   );
   const beside = isChild ? 0 : (state.backgroundSubagents ?? 0);
+  // What it left running to wake it (background commands, monitors, scheduled wakeups): its turn
+  // ending doesn't mean it's done.
+  const watchers = isChild ? [] : (state.watching ?? []);
+  const watchRow = watchers.length > 0 && !waiting && (
+    <div className="t-inline-status t-watching-line" title={watchingDetail(watchers)} style={{ padding: "0 0 12px" }}>
+      <Icon icon={EyeIcon} size="sm" /> {watchingLine(watchers, now)}
+    </div>
+  );
   const working = (running || beside > 0 || (isChild && waiting)) && (
     <div className="t-inline-status" style={{ padding: "8px 0 12px" }}>
       {waiting ? (
@@ -362,7 +376,8 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
                   <Spinner size="sm" /> Forking…
                 </div>
               )}
-              {inTerminal ? empty : starting ? <StartStatus row={starting} /> : working || empty}
+              {inTerminal ? empty : starting ? <StartStatus row={starting} /> : working || (!watchRow && empty)}
+              {!inTerminal && !starting && watchRow}
             </>
           } />
         {terminalBar}

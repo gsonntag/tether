@@ -1729,7 +1729,8 @@ export class LiveControl {
     const before = s.state.status;
     // What's reported as running came from the driver: with it gone nothing can be stopped from here,
     // and joining again says what still runs.
-    this.setMode(s, "stored", { turnSettings: undefined, ...(error ? { error } : {}) });
+    // Its watchers (background tasks, scheduled wakeups) ran in its process too.
+    this.setMode(s, "stored", { turnSettings: undefined, watching: undefined, ...(error ? { error } : {}) });
     // A turn the process took down with it ended (failed when it says why): Home, the queue and
     // notifications hear, as for any turn end. Not at shutdown: the turn is cut off, not over.
     if (before !== "idle" && !this.stopping) {
@@ -1841,7 +1842,7 @@ export class LiveControl {
         if (background && !wasBackground) core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, running: true });
         else if (wasBackground && !background && s.state.status === "idle" && !s.driver?.busy()) core.o.prefs.set(s.id, { running: undefined });
         if (changed.status && changed.status !== before) this.statusChanged(s, before);
-        else if (changed.model || changed.modelResolved || changed.permissionMode || changed.billing) core.touch(s);
+        else if (changed.model || changed.modelResolved || changed.permissionMode || changed.billing || "watching" in changed) core.touch(s);
         // The harness changed its own mode (a plan approved): kept, so the next start uses it.
         if (changed.permissionMode && !s.summary.parentSessionId && !s.capabilities.persistent) core.o.prefs.set(s.id, { projectPath: s.summary.projectPath, permissionMode: changed.permissionMode });
       },

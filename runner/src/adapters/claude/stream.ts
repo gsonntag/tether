@@ -12,6 +12,7 @@
 // Message ids match history.ts: assistant messages are their API message id, user ones their uuid.
 
 import type { ContextUse, Msg } from "../../../../shared/transcript";
+import { nextCronFire, type Watcher } from "../../../../shared/watchers";
 import type { Sink } from "../../core/adapter";
 import { contextOf, contextUsed, keepPlan, noteWindows, planOf } from "./context";
 import { assistantPart, blockText, goalMet, messageId, commandOutput, mergePart, notice, toolResults, userMessage } from "./content";
@@ -46,6 +47,22 @@ interface Thread {
 /** Task types that are subagents (others are background shells, monitors, workflows). */
 const AGENT_TASKS = new Set(["local_agent", "remote_agent"]);
 
+/** A background task as background_tasks_changed lists it. */
+interface Listed {
+  type: string;
+  description: string;
+  parent?: string;
+  ambient?: boolean;
+}
+
+/** A session cron as a Stop hook reports it (CronCreate, ScheduleWakeup, /loop). */
+export interface SessionCron {
+  id?: string;
+  schedule?: string;
+  recurring?: boolean;
+  prompt?: string;
+}
+
 export class ClaudeStream {
   private main: Thread;
   /** subagent threads, by task id (= agent id) */
@@ -58,6 +75,16 @@ export class ClaudeStream {
   readonly running = new Set<string>();
   /** tasks background_tasks_changed has listed: only those can end by dropping off its list */
   readonly background = new Set<string>();
+  /** the live background tasks, as background_tasks_changed last listed them (what watching reports) */
+  private listed = new Map<string, Listed>();
+  /** background tasks a Monitor call started (they list as shells) */
+  private monitors = new Set<string>();
+  /** subagent titles by task id, to say who started a watcher */
+  private agentTitles = new Map<string, string>();
+  /** the session's crons (scheduled wakeups), as the last Stop hook reported them */
+  private crons: Watcher[] = [];
+  /** the watching state last reported (JSON) */
+  private lastWatching = "[]";
   /** subagents that ended, by task id: frames still arriving (a stop's interrupt, a last tool result) land here, never reopening them */
   private endedAgents = new Map<string, Thread>();
   /** the main agent is on a turn: session_state_changed also stays running for background tasks */
@@ -97,6 +124,48 @@ export class ClaudeStream {
   handle(m: any) {
     this.dispatch(m);
     this.freeChanged();
+    this.watchChanged();
+  }
+
+  /**
+   * What the session left running to wake it later (shared/watchers.ts): background shells,
+   * monitors, workflows and other tasks still listed (subagents aside: they count on their own), and
+   * its scheduled wakeups.
+   */
+  watching(): Watcher[] {
+    const out: Watcher[] = [];
+    for (const [id, t] of this.listed) {
+      if (t.ambient || AGENT_TASKS.has(t.type)) continue;
+      const kind: Watcher["kind"] = this.monitors.has(id) || t.type.startsWith("monitor") ? "monitor" : t.type === "local_bash" ? "shell" : t.type === "local_workflow" ? "workflow" : "task";
+      const by = t.parent ? (this.agentTitles.get(t.parent) ?? this.listed.get(t.parent)?.description) : undefined;
+      out.push({ kind, label: t.description, ...(by ? { by } : {}) });
+    }
+    return [...out, ...this.crons];
+  }
+
+  /** Whether a scheduled wakeup is pending: the process must stay up for it to fire. */
+  hasWakeups() {
+    return this.crons.length > 0;
+  }
+
+  /** A Stop hook's session_crons: the scheduled wakeups now (replacing what was known). */
+  setCrons(list: SessionCron[] | undefined, now = Date.now()) {
+    if (!Array.isArray(list)) return;
+    this.crons = list.map((c) => {
+      const at = typeof c.schedule === "string" ? nextCronFire(c.schedule, now) : undefined;
+      const prompt = typeof c.prompt === "string" ? c.prompt.trim() : "";
+      const label = !prompt ? "Scheduled wakeup" : prompt.startsWith("<<autonomous-loop") ? "Autonomous loop" : prompt;
+      return { kind: "wakeup" as const, label, ...(at !== undefined ? { at } : {}), ...(c.recurring ? { recurring: true } : {}) };
+    });
+    this.watchChanged();
+  }
+
+  private watchChanged() {
+    const list = this.watching();
+    const json = JSON.stringify(list);
+    if (json === this.lastWatching) return;
+    this.lastWatching = json;
+    this.main.sink.state({ watching: list.length ? list : undefined });
   }
 
   /** The main agent starts a turn: a message went to it. */
@@ -309,6 +378,7 @@ export class ClaudeStream {
         // Explicitly started again (a finished subagent resumed): a new run.
         if (AGENT_TASKS.has(m.task_type) || m.subagent_type) this.agentStarted(m, true);
         if (m.task_id) this.running.add(m.task_id);
+        if (m.task_id && m.tool_use_id && this.toolName(m.tool_use_id) === "Monitor") this.monitors.add(m.task_id);
         return;
       case "task_updated":
         if (["completed", "failed", "killed"].includes(m.patch?.status)) this.taskEnded(m.task_id, m.patch.status === "killed" ? "stopped" : m.patch.status, m.patch.error);
@@ -323,6 +393,12 @@ export class ClaudeStream {
           const now = new Set<string>(m.tasks.map((x: any) => x?.task_id).filter(Boolean));
           for (const id of [...this.background]) if (!now.has(id)) this.taskEnded(id, "completed");
           for (const id of now) this.running.add(id), this.background.add(id);
+          this.listed = new Map(
+            m.tasks
+              .filter((x: any) => x?.task_id)
+              .map((x: any) => [x.task_id, { type: String(x.task_type ?? ""), description: typeof x.description === "string" ? x.description : "", ...(x.parent_task_id ? { parent: x.parent_task_id } : {}), ...(x.ambient ? { ambient: true } : {}) }]),
+          );
+          for (const x of m.tasks) if (x?.task_id && AGENT_TASKS.has(x.task_type) && x.description) this.agentTitles.set(x.task_id, x.description);
         }
         return;
     }
@@ -411,6 +487,7 @@ export class ClaudeStream {
   private agentStarted(m: any, again = false) {
     const taskId: string = m.task_id;
     if (!taskId || this.agents.has(taskId)) return;
+    if (m.description) this.agentTitles.set(taskId, m.description);
     if (this.endedAgents.has(taskId) && !again) return;
     this.endedAgents.delete(taskId);
     const parentThread = (m.parent_task_id && this.agents.get(m.parent_task_id)) || this.main;
@@ -443,6 +520,9 @@ export class ClaudeStream {
     if (!taskId) return;
     this.running.delete(taskId);
     this.background.delete(taskId);
+    // Not from `listed`: a subagent's notification can come while its own watchers still run, and
+    // only the level says when they end.
+    this.monitors.delete(taskId);
     const t = this.agents.get(taskId);
     if (!t) return;
     this.agents.delete(taskId);
@@ -457,7 +537,18 @@ export class ClaudeStream {
   private turnEnded() {
     this.endedAgents.clear();
     for (const id of [...this.agentNames.keys()]) if (!this.agents.has(id)) this.agentNames.delete(id);
+    for (const id of [...this.agentTitles.keys()]) if (!this.agents.has(id) && !this.listed.has(id)) this.agentTitles.delete(id);
     for (const [tool, task] of this.agentByTool) if (!this.agents.has(task)) this.agentByTool.delete(tool);
+  }
+
+  /** The name of the tool a call id belongs to, on the main thread or a running subagent's. */
+  private toolName(toolId: string): string | undefined {
+    for (const t of [this.main, ...this.agents.values()]) {
+      const msgId = t.tools.get(toolId);
+      const part = msgId ? t.sink.message(msgId)?.parts.find((p) => p.type === "tool" && p.id === toolId) : undefined;
+      if (part?.type === "tool") return part.name;
+    }
+    return undefined;
   }
 
   /** A running subagent's sink, by its agent id (canUseTool's agentID). */
