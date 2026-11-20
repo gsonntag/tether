@@ -105,3 +105,108 @@ export function validTimeZone(tz: unknown): string {
     return "UTC";
   }
 }
+
+/** One runner's row in "All runners": its totals, and why it's missing if it is. */
+export interface UsageRunner extends UsageTotals { id: string; name: string }
+
+/** Settings → Usage, All runners: every reachable runner's report together. */
+export interface CombinedUsage extends UsageReport {
+  /** each runner whose report came, in the order given */
+  byRunner: UsageRunner[];
+}
+
+/** How many named projects the combined table keeps before "N other projects" (as a runner does). */
+export const COMBINED_TOP_PROJECTS = 8;
+
+const worth = (a: UsageTotals, b: UsageTotals) => b.usd - a.usd || totalTokens(b) - totalTokens(a);
+const copy = <T extends UsageTotals>(t: T): T => ({ ...t, sources: Object.fromEntries(USAGE_SOURCES.map((s) => [s, { ...t.sources[s] }])) as UsageTotals["sources"] });
+
+/**
+ * Several runners' reports as one: totals summed, days merged by day, models by harness and model,
+ * projects by folder (re-ranked: the top named ones, the rest as one row, hidden ones as one), plan
+ * limits named by runner, the scan running if any is and as old as the oldest. Reports are for the
+ * same range and zone; a day only some have still counts.
+ */
+export function combineUsage(parts: { id: string; name: string; report: UsageReport }[]): CombinedUsage {
+  const reports = parts.map((p) => p.report);
+  const first = reports[0];
+  const total = emptyTotals();
+  const days = new Map<string, UsageDay>();
+  const models = new Map<string, UsageModel>();
+  const named = new Map<string, UsageProject>();
+  const unknownFolder: UsageProject = { name: "Unknown folder", ...emptyTotals() };
+  const hidden: UsageProject = { name: "Hidden projects", hidden: true, ...emptyTotals() };
+  const others: UsageProject = { name: "", others: 0, ...emptyTotals() };
+  let ledger: UsageReport["ledger"];
+  const scan: UsageReport["scan"] = { running: false, files: 0, done: 0, errors: 0 };
+  let skipped = 0;
+  const ats: number[] = [];
+  let ms = 0;
+  for (const r of reports) {
+    addTotals(total, r.total);
+    for (const d of r.byDay) {
+      const had = days.get(d.day);
+      if (had) addTotals(had, d);
+      else days.set(d.day, copy(d));
+    }
+    for (const m of r.byModel) {
+      const k = `${m.harness}\u0000${m.model}`;
+      const had = models.get(k);
+      if (had) addTotals(had, m);
+      else models.set(k, copy(m));
+    }
+    for (const p of r.byProject) {
+      if (p.hidden) addTotals(hidden, p);
+      else if (p.others !== undefined) (addTotals(others, p), (others.others! += p.others));
+      else if (!p.path) addTotals(unknownFolder, p);
+      else {
+        const had = named.get(p.path);
+        if (had) addTotals(had, p);
+        else named.set(p.path, copy(p));
+      }
+    }
+    if (r.ledger) {
+      ledger ??= { usd: 0, sessions: 0, complete: true };
+      ledger.usd += r.ledger.usd;
+      ledger.sessions += r.ledger.sessions;
+      if (!r.ledger.complete) ledger.complete = false;
+    }
+    scan.running ||= r.scan.running;
+    scan.files += r.scan.files;
+    scan.done += r.scan.done;
+    scan.errors += r.scan.errors;
+    skipped += r.scan.skipped ?? 0;
+    if (r.scan.at !== undefined) ats.push(r.scan.at);
+    ms = Math.max(ms, r.scan.ms ?? 0);
+  }
+  if (unknownFolder.requests) named.set("", unknownFolder);
+  const ranked = [...named.values()].sort(worth);
+  const byProject = ranked.slice(0, COMBINED_TOP_PROJECTS);
+  const rest = ranked.slice(COMBINED_TOP_PROJECTS);
+  // One project left over and no runner's own "other projects": it keeps its name.
+  if (rest.length === 1 && !others.others) byProject.push(rest[0]!);
+  else {
+    for (const p of rest) (addTotals(others, p), (others.others! += 1));
+    if (others.others) byProject.push({ ...others, name: `${others.others} other projects` });
+  }
+  if (hidden.requests) byProject.push(hidden);
+  // Every runner has been read only as recently as the one read longest ago; not at all if one hasn't been.
+  if (ats.length && ats.length === reports.length) scan.at = Math.min(...ats);
+  if (ms) scan.ms = ms;
+  if (skipped) scan.skipped = skipped;
+  const byDay = [...days.values()].sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
+  return {
+    days: first?.days ?? 0,
+    timeZone: first?.timeZone ?? "UTC",
+    from: reports.map((r) => r.from).sort()[0] ?? "",
+    to: reports.map((r) => r.to).sort().at(-1) ?? "",
+    total,
+    byDay,
+    byModel: [...models.values()].sort(worth),
+    byProject,
+    ...(ledger ? { ledger } : {}),
+    plans: parts.flatMap((p) => p.report.plans.map((pl) => ({ ...pl, label: parts.length > 1 ? `${pl.label} · ${p.name}` : pl.label }))),
+    scan,
+    byRunner: parts.map((p) => ({ id: p.id, name: p.name, ...copy(p.report.total) })),
+  };
+}

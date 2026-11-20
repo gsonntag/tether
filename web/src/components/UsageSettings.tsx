@@ -3,7 +3,7 @@ import { Button } from "@astryxdesign/core/Button";
 import { Heading } from "@astryxdesign/core/Heading";
 import { dollars } from "../../../shared/costs";
 import { planLines } from "../../../shared/labels";
-import { totalTokens, type UsageReport, type UsageTotals } from "../../../shared/usage";
+import { combineUsage, totalTokens, type CombinedUsage, type UsageReport, type UsageTotals } from "../../../shared/usage";
 import { rpc } from "../connection";
 import { useStore } from "../store";
 import { bars, browserTimeZone, dayLabel, fmtPart, fmtPrice, fmtTokens, modelName, partial, scanLine, SERIES, unpricedNote, type Metric } from "../usage";
@@ -12,30 +12,58 @@ import { useNow } from "./useNow";
 const POLL_MS = 1500;
 const RANGES = [7, 30];
 
-/** Settings → Usage: one runner's tokens and API-price estimates, from its harnesses' own logs. */
-export function UsageSettings({ runnerId }: { runnerId: string }) {
+export interface UsageRunnerRef { id: string; name: string; online: boolean }
+/** A runner left out of "All runners", and why. */
+interface Missing { name: string; why: string }
+
+const loadError = (msg: string) => (/doesn't know/.test(msg) ? "This runner can't show usage. Update and restart it." : msg || "Couldn't load usage.");
+
+/**
+ * Settings → Usage: tokens and API-price estimates from the harnesses' own logs, for one runner or,
+ * given several (All runners), every reachable one together; offline or failing ones are named and left out.
+ */
+export function UsageSettings({ runners }: { runners: UsageRunnerRef[] }) {
   const link = useStore((s) => s.link);
   const now = useNow();
   const [days, setDays] = useState(30);
-  const [report, setReport] = useState<UsageReport>();
+  const [report, setReport] = useState<UsageReport | CombinedUsage>();
+  const [missing, setMissing] = useState<Missing[]>([]);
   const [error, setError] = useState<string>();
   const alive = useRef(true);
   useEffect(() => () => void (alive.current = false), []);
+  const all = runners.length > 1;
+  const key = runners.map((r) => `${r.id}:${r.online ? 1 : 0}:${r.name}`).join("|");
 
   const load = useCallback(async (refresh = false) => {
-    try {
-      const r = await rpc(runnerId, "usage", { days, timeZone: browserTimeZone(), ...(refresh ? { refresh } : {}) });
-      if (alive.current) (setReport(r), setError(undefined));
-    } catch (e) {
-      const msg = (e as Error)?.message ?? "";
-      if (alive.current) setError(/doesn't know/.test(msg) ? "This runner can't show usage. Update and restart it." : msg || "Couldn't load usage.");
+    const args = { days, timeZone: browserTimeZone(), ...(refresh ? { refresh } : {}) };
+    if (!all) {
+      try {
+        const r = await rpc(runners[0]!.id, "usage", args);
+        if (alive.current) (setReport(r), setError(undefined));
+      } catch (e) {
+        if (alive.current) setError(loadError((e as Error)?.message ?? ""));
+      }
+      return;
     }
-  }, [runnerId, days]);
+    const online = runners.filter((r) => r.online);
+    const got = await Promise.allSettled(online.map((r) => rpc(r.id, "usage", args)));
+    if (!alive.current) return;
+    const parts: { id: string; name: string; report: UsageReport }[] = [];
+    const lost: Missing[] = runners.filter((r) => !r.online).map((r) => ({ name: r.name, why: "offline" }));
+    got.forEach((g, i) => {
+      const r = online[i]!;
+      if (g.status === "fulfilled") parts.push({ id: r.id, name: r.name, report: g.value });
+      else lost.push({ name: r.name, why: loadError((g.reason as Error)?.message ?? "") });
+    });
+    setMissing(lost);
+    if (parts.length) (setReport(combineUsage(parts)), setError(undefined));
+    else setError(online.length ? "Couldn't load usage from any runner." : "Every runner is offline.");
+  }, [key, days, all]);
 
   useEffect(() => {
     if (link === "open") void load();
   }, [link, load]);
-  // While the runner reads its logs, follow along.
+  // While a runner reads its logs, follow along.
   const running = !!report?.scan.running;
   useEffect(() => {
     if (!running || link !== "open") return;
@@ -53,12 +81,13 @@ export function UsageSettings({ runnerId }: { runnerId: string }) {
         <Button label="Refresh" variant="secondary" size="sm" isDisabled={link !== "open" || running} onClick={() => void load(true)} />
       </div>
       {error && <div className="t-inline-status error" role="alert">{error}</div>}
-      {report && <Report report={report} now={now} />}
+      {all && missing.length > 0 && <div className="t-inline-status" role="status">Not included: {missing.map((m) => `${m.name} (${m.why})`).join(", ")}.</div>}
+      {report && <Report report={report} now={now} all={all} />}
     </div>
   );
 }
 
-function Report({ report, now }: { report: UsageReport; now: number }) {
+function Report({ report, now, all }: { report: UsageReport | CombinedUsage; now: number; all: boolean }) {
   const t = report.total;
   const src = t.sources;
   const providers = src.provider.requests > 0;
@@ -82,10 +111,11 @@ function Report({ report, now }: { report: UsageReport; now: number }) {
       <Tile label="Cache savings (est.)" {...partial(lost, dollars(t.savings), "cache reads at the full input price, less their cost")} />
     </dl>
     <Daily report={report} />
+    {all && "byRunner" in report && <Table title="By runner" providers={providers} rows={report.byRunner.map((r) => ({ key: r.id, name: r.name, t: r }))} empty="No runner answered." />}
     <Table title="By model" providers={providers} rows={report.byModel.map((m) => ({ key: `${m.harness}:${m.model}`, name: modelName(m.harness, m.model), title: m.model, t: m }))} />
     <Table title="By project" providers={providers} rows={report.byProject.map((p) => ({ key: p.path ?? p.name, name: p.name, title: p.path ?? (p.hidden ? "Folders TETHER_HIDE_PROJECTS hides, and the Home agent's" : undefined), t: p }))} />
     <p className="t-usage-note">
-      Read from Claude Code's and Codex's own session logs on this runner, every session on it. Dollars are estimates at published API prices (Anthropic's and OpenAI's standard rates), not invoices; a model with no published price shows its tokens only, and a "+" marks a sum that leaves some out. Hosted tool fees (web search) aren't counted. Claude's source is as of Tether's last start of the session (before it, unknown); Codex's is from its own logs. Days are in {report.timeZone}.
+      Read from Claude Code's and Codex's own session logs {all ? "on each runner shown, every session on them" : "on this runner, every session on it"}. Dollars are estimates at published API prices (Anthropic's and OpenAI's standard rates), not invoices; a model with no published price shows its tokens only, and a "+" marks a sum that leaves some out. Hosted tool fees (web search) aren't counted. Claude's source is as of Tether's last start of the session (before it, unknown); Codex's is from its own logs. Days are in {report.timeZone}.
     </p>
   </>;
 }
