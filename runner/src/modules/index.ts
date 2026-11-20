@@ -105,6 +105,10 @@ export interface SessionActions {
   list(): SessionSummary[];
   /** the archived sessions (which the lists leave out), newest activity first */
   archived(): Promise<SessionSummary[]>;
+  /** every stored session of any age, archived ones too (marked), newest activity first; no subagents or side chats */
+  all?(): Promise<SessionSummary[]>;
+  /** the file its harness keeps a session's transcript in, when there's one (search reads it raw) */
+  storeFile?(id: string, projectPath: string): Promise<string | undefined>;
   /** an existing folder for a new session, expanded; throws when there's none */
   folder(path: string): string;
   /** a message through the session's queue: now when it's idle, else after its turn (its id: the queueGone event says when it leaves) */

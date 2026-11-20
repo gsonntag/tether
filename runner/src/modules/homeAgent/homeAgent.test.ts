@@ -71,7 +71,7 @@ test("the chat is current, and only its folder gets the tools", async () => {
   expect((await op("homeAgent")).sessionId).toBe(chat);
   expect([...setups.keys()]).toEqual([homeFolder]);
   const s = setups.get(homeFolder)!("x");
-  expect(s.tools.map((t) => t.name)).toEqual(["list_projects", "project_overview", "start_session", "list_sessions", "session_status", "live_state", "check_in_sessions", "archive_session", "send_to_session", "text_person", "pause_texts", "check_harness_updates"]);
+  expect(s.tools.map((t) => t.name)).toEqual(["list_projects", "project_overview", "start_session", "list_sessions", "search_sessions", "session_status", "live_state", "check_in_sessions", "archive_session", "send_to_session", "text_person", "pause_texts", "check_harness_updates"]);
   expect(s.deny).toContain("Bash");
   expect(s.deny).toContain("Edit");
   // Brief replies, always (a relayed report was "a big wall of text").
@@ -1628,4 +1628,61 @@ test("scheduled messages (SPEC §9): one for later doesn't hold a message from t
   const s = await runner.core.open(done);
   s.setState({ queue: s.state.queue.map((m) => ({ ...m, at: Date.now() - 1000, held: "late" as const })) });
   await expect(tools(chat).send_to_session!({ session_id: done, message: "more" })).rejects.toThrow("scheduled message waiting for the person (the runner was off for more than a day after its time)");
+});
+
+test("search_sessions: finds sessions by what they said, of any age, archived or not, never the agent's own chats", async () => {
+  const t = await setup();
+  const { op, fake, runner, chat, tools } = t;
+  const DAY = 86_400_000;
+  // An old session (out of the lists) whose store is a Claude Code JSONL file.
+  const dir = mkdtempSync(join(tmpdir(), "tether-search-"));
+  stops.push(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "old.jsonl");
+  const at = new Date(Date.now() - 30 * DAY).toISOString();
+  writeFileSync(
+    file,
+    [
+      { type: "user", message: { role: "user", content: "restart the runner please" }, timestamp: at },
+      { type: "api-request-blob", message: [{ type: "text", text: "I couldn't restart the SERVERLESS runner" }] },
+      { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Sorry: I couldn't restart the SERVERLESS runner, systemd refused." }] }, timestamp: at },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join("\n") + "\n",
+  );
+  fake.addStored("old", [], { title: "Runner work", projectPath: t.project, updatedAt: Date.now() - 30 * DAY });
+  (fake as Adapter).storeFile = async (nativeId) => (nativeId === "old" ? file : undefined);
+  // An archived one with no store file: its messages are searched.
+  fake.addStored("arch", [{ id: "m1", role: "assistant", ts: Date.now() - 2 * DAY, parts: [{ type: "text", text: "The serverless deploy is done." }] }], { title: "Deploy", projectPath: t.project, updatedAt: Date.now() - 2 * DAY });
+  await runner.look.sessions.setArchived("claude:arch", true);
+  // A recent one that never said it.
+  const other = await personSession(t, "Something else");
+  await op("send", { sessionId: other, text: "unrelated work" });
+  // The agent's own chat says it too, and is never a result.
+  await op("send", { sessionId: chat, text: "find the serverless one" });
+  await until(() => [other, chat].every((id) => runner.core.sessions.get(id)?.state.status === "idle"));
+  const search = tools(chat).search_sessions!;
+
+  const all: string = await search({ query: "Serverless" });
+  expect(all).toContain(`claude:old · "Runner work" · project`);
+  expect(all).toContain("[reply, 30d ago] Sorry: I couldn't restart the SERVERLESS runner");
+  // A bookkeeping entry that repeats it isn't a match of its own.
+  expect(all.match(/couldn't restart/g)).toHaveLength(1);
+  expect(all).toContain(`claude:arch · "Deploy"`);
+  expect(all).toContain("· archived ·");
+  expect(all).toContain("The serverless deploy is done.");
+  expect(all).not.toContain(other);
+  expect(all).not.toContain(chat);
+  // Newest first.
+  expect(all.indexOf("claude:arch")).toBeLessThan(all.indexOf("claude:old"));
+  // archived restricts either way; project narrows.
+  expect(await search({ query: "serverless", archived: true })).not.toContain("claude:old");
+  expect(await search({ query: "serverless", archived: false })).not.toContain("claude:arch");
+  expect(await search({ query: "serverless", project: "elsewhere" })).toBe(`Nothing in 0 sessions in elsewhere says "serverless".`);
+  // limit stops early.
+  const one: string = await search({ query: "serverless", limit: 1 });
+  expect(one).toContain("claude:arch");
+  expect(one).not.toContain("claude:old");
+  expect(one).toContain("Stopped at 1 matching sessions");
+  expect(await search({ query: "never said anywhere" })).toMatch(/^Nothing in \d+ sessions says "never said anywhere"\.$/);
+  await expect(search({ query: " " })).rejects.toThrow("at least 2 characters");
 });

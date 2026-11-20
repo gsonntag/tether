@@ -63,6 +63,7 @@ import { levelOf } from "../move";
 import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, removeOwnWorktree, repoOf, runGit, skipReason, stillRunning, systemProbe, verify, type Git, type Probe } from "./checkIn";
 import type { CheckInRow, CheckInStatus } from "../../../../shared/protocol";
 import { liveDeps, liveState, type LiveDeps } from "./liveState";
+import { SEARCH, searchFile, searchMsgs, type Found } from "./search";
 
 /** Text going inside a <<< >>> fence, unable to close or open one: any run of 3+ "<" or ">" becomes 2 (can't rebuild a run). */
 export function unfence(s: string): string {
@@ -80,6 +81,9 @@ const LINE_MAX = 140;
 /** list_sessions: rows by default, and at most. */
 const LIST_DEFAULT = 20;
 const LIST_MAX = 50;
+/** search_sessions: sessions with matches by default, and at most. */
+const SEARCH_DEFAULT = 10;
+const SEARCH_MAX = 25;
 /**
  * Watch reports: how long a line waits for others to come with it (each new one restarts the wait),
  * and the longest the first one waits. Tests shorten them.
@@ -107,6 +111,14 @@ interface ListArgs {
   project?: string;
   query?: string;
   archived?: boolean;
+  limit?: number;
+}
+
+/** search_sessions' arguments. */
+interface SearchArgs {
+  query: string;
+  archived?: boolean;
+  project?: string;
   limit?: number;
 }
 
@@ -268,10 +280,10 @@ How to work:
 - The end goal: before starting a session that changes code, know what "done" means for it. If the person hasn't said, and it isn't clear from context or from a standing instruction (one earlier in this chat, for example "when any PR comes back, merge it and restart", or a project rule such as "my-site: only the staging branch"), first ask one short question, offering these options on one line: "${END_GOALS}". Then put their answer in the brief. One quick question, never a list of them. Research, questions and other read-only tasks don't need it. If they say it holds from now on ("always do X for jungle"), it's a standing instruction for that project for the rest of this chat: don't ask again there.
 - When the person picks adversarial review, the brief must spell out the workflow, in these words (with the chosen delivery filled in): "${ADVERSARIAL_BRIEF}"
 - Use Claude Code unless the person asks for Codex. Leave the model at its default unless they name one.
-- For questions about what's going on ("what's running?", "what's finished?", "is anything working on X?", "how is the session on Y doing?"), use list_sessions: it sees every session on this machine, whoever started it, with its state and what it's on. Filter by state or project rather than listing everything. Read one more closely with session_status.
+- For questions about what's going on ("what's running?", "what's finished?", "is anything working on X?", "how is the session on Y doing?"), use list_sessions: it sees every session on this machine, whoever started it, with its state and what it's on. Filter by state or project rather than listing everything. Read one more closely with session_status. To find a session by what it said or did ("the session that said it couldn't restart the runner", "which one touched deploy.sh?"), use search_sessions: it searches every session's whole transcript, of any age, archived or not.
 - Verify before you answer. A session's messages are claims as of when it wrote them, and things change after: a PR gets merged or closed, a branch is pushed or deleted, commits land on main, a worktree is removed, CI finishes, a deploy or restart happens. So whenever the person asks about state like that ("is PR 95 merged?", "did it push?", "is it on main?", "is the worktree gone?", "is CI green?"), check it live first with live_state (pass the session_id, project_path and/or pr), and answer from what it returns, not from a session's last message. Never present a session's old claim as current fact. For something live_state can't see (a deploy, a running service, a restart), ask the session to check now with send_to_session and answer once it reports. If you can't verify, say so and give the answer as of the session's last message and when that was ("as of its last message 30m ago, it was waiting on you to merge").
 - You can message any of those sessions with send_to_session, including ones you didn't start. Message a session you didn't start (or one the person has taken over) only when the person asks you to or it's part of the task they gave you, and say who it's from and what you need in the message. It goes now if the session is idle, else after its current turn; sessions that are waiting for the person or open in a terminal can't be messaged. Once you message one, you follow it like a session you started.
-- Follow-ups on finished work ("tweak the site again", "one more fix on that PR"): revive the session that did it rather than starting a new one, since it has the context. Find it with list_sessions (archived: true finds archived ones; query searches titles and projects), then send_to_session: messaging an archived session unarchives it and sends. Start a new session only when no earlier one fits.
+- Follow-ups on finished work ("tweak the site again", "one more fix on that PR"): revive the session that did it rather than starting a new one, since it has the context. Find it with list_sessions (archived: true finds archived ones; query searches titles and projects), or with search_sessions when the person describes it by what it said or did, then send_to_session: messaging an archived session unarchives it and sends. Start a new session only when no earlier one fits.
 - After starting a session, tell the person in one casual sentence what you started and where. Don't poll: Tether sends you a report (a message starting with "[From Tether]") each time a session you started or messaged finishes a turn or needs the person.
 - Tether also watches every other session on this machine for you (unless the person turned off "Watch all sessions"): when sessions you didn't start finish a turn, fail, or start waiting for the person, you get one short report ("[From Tether] Sessions you didn't start: ..."), several at once when they come close together. These aren't yours: don't message them unless the person asked you to. If one failed or is waiting for the person, tell them in one casual sentence which and what it needs. If one just finished, mention it only if the person was waiting on it or asked about it; otherwise reply with a few words at most. Sessions you started still get their own reports: keep those going until the task is done.
 - On a report: if the session stopped early (it asked something you can answer from what the person said, stopped halfway, or says it's done but skipped verification), use send_to_session with a specific instruction to keep it going. If it needs a decision only the person can make, or it keeps failing, tell the person in one sentence and stop.
@@ -1122,6 +1134,18 @@ export class HomeAgent implements HomeEnd {
         run: async (a: ListArgs) => this.listSessions(a),
       },
       {
+        name: "search_sessions",
+        description:
+          "Searches what sessions actually said: the whole transcript of every session on this machine (the person's prompts, the agent's replies, tool calls and their results), of any age, archived or not. Case-insensitive text match. Newest sessions first; each match: id, title, project, state, last active, and up to 3 snippets around the match with which message it was in and when. Use it to find a session by something it said or did (\"find the session that said it couldn't restart the runner\", \"which session touched deploy.sh?\"); list_sessions' query only matches titles and project names.",
+        input: {
+          query: z.string().min(2).max(200).describe("The text to find (any case), e.g. a phrase, an error, a file or branch name. Short and distinctive works best."),
+          archived: z.boolean().optional().describe("true: only archived sessions; false: only ones not archived. Leave out for both."),
+          project: z.string().optional().describe("Only this project: its folder (from list_projects) or the folder's name."),
+          limit: z.number().int().min(1).max(SEARCH_MAX).optional().describe(`How many matching sessions (default ${SEARCH_DEFAULT}, at most ${SEARCH_MAX}).`),
+        },
+        run: async (a: SearchArgs) => this.searchSessions(a),
+      },
+      {
         name: "session_status",
         description:
           "A closer look at any session (an id from list_sessions or start_session): its state, its latest prompt and reply (as of when it was written: check facts in it with live_state), and what it waits on.",
@@ -1301,6 +1325,55 @@ export class HomeAgent implements HomeEnd {
     );
     const more = rows.length > page.length ? `\n(${page.length} of ${rows.length}: filter by state or project, or raise limit)` : "";
     return lines.join("\n") + more;
+  }
+
+  /**
+   * search_sessions: every session but the agent's own chats and subagents, newest first, read until
+   * `limit` of them match (or the time budget runs out, said so).
+   */
+  async searchSessions(a: SearchArgs, budgetMs = SEARCH.budgetMs): Promise<string> {
+    const s = this.ctx.sessions;
+    const query = typeof a.query === "string" ? a.query.replace(/\s+/g, " ").trim() : "";
+    if (query.length < 2) throw new Error("query needs at least 2 characters.");
+    const limit = Math.min(Math.max(1, Math.floor(a.limit ?? SEARCH_DEFAULT)), SEARCH_MAX);
+    const byId = new Map<string, SessionSummary>();
+    const all = s.all ? await s.all() : [...s.list(), ...(await s.archived())];
+    for (const r of all) if (!byId.has(r.id)) byId.set(r.id, r);
+    // The lists' rows carry what's live (state, title) and come first.
+    for (const r of s.list()) byId.set(r.id, { ...byId.get(r.id), ...r });
+    const rows = [...byId.values()]
+      .filter((r) => !r.parentSessionId && !r.sideOf && resolve(r.projectPath) !== resolve(this.folder) && !this.isChat(r.id))
+      .filter((r) => (a.archived === undefined || !!r.archived === a.archived) && (!a.project || inProject(r.projectPath, a.project)))
+      .sort((x, y) => y.updatedAt - x.updatedAt);
+    const end = Date.now() + budgetMs;
+    const late = () => Date.now() > end;
+    const found: { r: SessionSummary; f: Found }[] = [];
+    let read = 0;
+    let dropped = 0;
+    const one = async (r: SessionSummary): Promise<Found> => {
+      const file = await s.storeFile?.(r.id, r.projectPath).catch(() => undefined);
+      if (file && existsSync(file)) return searchFile(file, query, { stop: late }).catch(() => ({ hits: [], more: false }));
+      return searchMsgs(await s.recent(r.id, 500).catch(() => [] as Msg[]), query);
+    };
+    // A few at a time, in order, so the newest matches are the ones kept.
+    for (let i = 0; i < rows.length && found.length < limit && !late(); i += SEARCH.parallel) {
+      const batch = rows.slice(i, i + SEARCH.parallel);
+      const results = await Promise.all(batch.map(one));
+      read += batch.length;
+      for (const [j, f] of results.entries()) if (f.hits.length) found.length < limit ? found.push({ r: batch[j]!, f }) : dropped++;
+    }
+    const unread = rows.length - read;
+    const tail = late() && unread > 0 ? `\n(Ran out of time: ${unread} older session${unread === 1 ? "" : "s"} not searched. Narrow by project or archived to reach them.)` : "";
+    if (!found.length) return `Nothing in ${read}${a.archived === true ? " archived" : a.archived === false ? " unarchived" : ""} session${read === 1 ? "" : "s"}${a.project ? ` in ${a.project}` : ""} says "${query}".${tail}`;
+    const blocks = found.map(({ r, f }) => {
+      const st = stateOf(r, this.ctx.session(r.id)?.state.error);
+      const project = basename(r.projectPath) || r.projectPath;
+      const head = `${r.id} · "${oneLine(r.title || "Untitled", 60)}" · ${project} · ${AGENT_NAMES[r.harness] ?? r.harness} · ${r.archived ? "archived" : STATE_LABELS[st]} · last active ${ago(r.updatedAt)}`;
+      const hits = f.hits.map((h) => `  [${h.where}${h.at ? `, ${ago(h.at)}` : ""}] ${unfence(h.snippet)}`);
+      return [head, ...hits, ...(f.more ? ["  (more matches)"] : [])].join("\n");
+    });
+    const more = dropped || (found.length >= limit && unread > 0 && !late()) ? `\n(Stopped at ${limit} matching sessions; older ones may match too: raise limit or narrow by project or archived.)` : "";
+    return blocks.join("\n") + more + tail;
   }
 
   /**

@@ -11,7 +11,7 @@ import { HARNESS_BINS } from "../detect";
 import { codexAsk } from "./ask";
 import { call } from "./daemon";
 import { CODEX_HOME, DAEMON_SOCKET } from "./rpc";
-import { codexBackgroundRuns, codexHistory, codexNoStore, codexPlan, codexProjects, codexSessionInfo, codexSessions, codexStoredBilling, codexStoredContext, codexSubagents, threadSettings, watchThread } from "./discovery";
+import { codexBackgroundRuns, codexHistory, codexNoStore, codexPlan, codexProjects, codexSessionInfo, codexSessions, codexStoredBilling, codexStoredContext, codexSubagents, readThread, threadSettings, watchThread } from "./discovery";
 import { codexCommandRoute, commandList, enabledSkills } from "./commands";
 import { CodexDriver, codexTools, createThread } from "./driver";
 import { setCodexSetup } from "./setup";
@@ -82,6 +82,11 @@ export const codexAdapter: Adapter = {
   listSubagents: (nativeId) => codexSubagents(nativeId),
   backgroundRuns: codexBackgroundRuns,
   readHistory: fullHistory,
+  // The thread's rollout (a key's private ones too: readThread reads those itself).
+  storeFile: async (nativeId) => {
+    const path = (await readThread(nativeId).catch(() => undefined))?.path;
+    return typeof path === "string" ? path : undefined;
+  },
   storedContext: (nativeId) => codexStoredContext(nativeId),
   planUsage: codexPlan,
   usageStores: () => [{ dir: join(CODEX_HOME, "sessions") }, { dir: join(CODEX_HOME, "archived_sessions") }, { dir: join(DATA_DIR, "codex-keys"), private: true }],
