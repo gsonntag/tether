@@ -299,6 +299,8 @@ export interface Adapter {
   /** a session's stored subagents, as child summaries */
   listSubagents(nativeId: string, projectPath: string): Promise<SessionSummary[]>;
   readHistory(nativeId: string, projectPath: string): Promise<Msg[]>;
+  /** The file the harness keeps the session's transcript in (one JSON entry per line), for reading it raw (search); undefined when there's none. */
+  storeFile?(nativeId: string, projectPath: string): Promise<string | undefined>;
   /** A session whose store holds no conversation, only local commands (/exit, /clear typed in an untouched TUI). */
   neverStarted?(nativeId: string, projectPath: string): Promise<boolean>;
   /**

@@ -192,6 +192,7 @@ export const claudeAdapter: Adapter = {
     return claudeSubagents(splitNative(nativeId).session, projectPath);
   },
   readHistory,
+  storeFile: async (nativeId, projectPath) => (splitNative(nativeId).agent ? undefined : sessionFile(splitNative(nativeId).session, projectPath)),
   planUsage: async () => keptPlan(),
   usageStores: () => [{ dir: projectsDir() }],
   latestStart: (nativeId) => keptStart(splitNative(nativeId).session),

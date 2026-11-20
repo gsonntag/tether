@@ -8,7 +8,7 @@ import { CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { testAzure } from "../adapters/codex/upstream";
 import { PROTOCOL_VERSION, type HarnessInfo, type HomeChatUpdate, type RunnerInfo } from "../../../shared/protocol";
-import { sessionId } from "../../../shared/ids";
+import { parseSessionId, sessionId } from "../../../shared/ids";
 import type { ForkedFrom } from "../../../shared/fork";
 import type { SessionPrefs } from "../config";
 import type { BillingSource } from "../../../shared/credentials";
@@ -289,6 +289,12 @@ export function createRunner(o: RunnerOptions) {
         // Side chats (SPEC §16a) aren't in the lists: they show under their session.
         list: () => core.listed().filter((r) => !r.sideOf),
         archived: async () => (await core.listSessions({ archived: true, limit: 2000 })).sessions,
+        all: async () => (await core.listSessions({ all: true, limit: 2000 })).sessions.filter((r) => !r.sideOf),
+        storeFile: async (id: string, projectPath: string) => {
+          const parsed = parseSessionId(id);
+          const adapter = parsed && core.o.adapters.find((a) => a.id === parsed.harness);
+          return adapter?.storeFile ? adapter.storeFile(parsed!.nativeId, projectPath).catch(() => undefined) : undefined;
+        },
         folder: (path: string) => core.folder(path),
         ask: async (id: string, prompt: string, opts: { system: string; timeoutMs: number }) => {
           const s = await core.open(id);
