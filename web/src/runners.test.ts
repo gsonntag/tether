@@ -1,6 +1,6 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type { RunnerInfo } from "../../shared/protocol";
-import { ago, canPin, mergeRunners, reconnected, type KnownRunner } from "./runners";
+import { ago, canPin, mergeRunners, reconnected, textingDown, type KnownRunner } from "./runners";
 
 const info = (id: string, connectedAt = 1): RunnerInfo => ({ id, name: id, hostname: id, version: "0", protocol: 1, harnesses: [], connectedAt });
 
@@ -34,4 +34,19 @@ test("pin buttons only for a runner that says it takes pinSession", () => {
   expect(canPin(list, "new")).toBe(true);
   expect(canPin(list, "old")).toBe(false);
   expect(canPin(list, "gone")).toBe(false);
+});
+
+describe("texting down", () => {
+  const r = (id: string, o: Partial<KnownRunner> = {}): KnownRunner => ({ id, name: id, hostname: "h", version: "1", protocol: 2, harnesses: [], online: true, lastSeen: 1, ...o });
+  test("no hub: nothing to say; a hub that can text: nothing either", () => {
+    expect(textingDown([r("a"), r("b")])).toBeUndefined();
+    expect(textingDown([r("a"), r("dev", { textingHub: { up: true, images: false } })])).toBeUndefined();
+  });
+  test("the hub offline, or online but not connected, says so", () => {
+    expect(textingDown([r("a"), r("dev", { online: false, textingHub: { up: true, images: false } })])).toBe("Texting is unavailable: dev is offline.");
+    expect(textingDown([r("dev", { textingHub: { up: false, images: false } })])).toBe("Texting is unavailable: dev can't reach its messaging app.");
+  });
+  test("someone else's hub shared with you doesn't count", () => {
+    expect(textingDown([r("theirs", { online: false, access: "drive", textingHub: { up: true, images: false } })])).toBeUndefined();
+  });
 });

@@ -33,6 +33,14 @@
 // see is scaled down (images.ts). Every call to a connector in the queue is bounded (PHOTON.ms): a
 // stalled service is logged and passed by.
 //
+// One number for every computer (SPEC §11 Texting): one of the person's runners is the texting hub
+// (store.hub, Settings → Messaging). Their other runners text through it (hubChannel.ts): it numbers
+// their sessions' texts with its own ("[n] …" for every computer at once), sends them, and hands back
+// the replies its router gives to their sessions (forward → fromHub), files and all (hubWire.ts
+// passes the bytes on). What a reply does there (a request's y/n, words to the agent, a channel
+// claim) happens on the runner that has the session, as it would here. The Home agent stays the
+// hub's: a spoke's own Home agent doesn't text through it.
+//
 // Texts carry what the agent wants and says (the person asked for that over push's lock-screen
 // wording), a request as one "Can I …? y/n" question with no raw command (describe.ts, summary.ts); known secrets
 // are redacted. Tether's own words read like a human's: "[6] ok", one
@@ -53,10 +61,13 @@ import { connectors, type ConnectorDeps } from "./connectors";
 import { clip, readReply, requestText } from "./describe";
 import { IMESSAGE } from "./imessage";
 import { openSpectrum, PHOTON, type OpenLink } from "./link";
-import { HELD_MS, HOME, Router, type About } from "./router";
+import { HELD_MS, HOME, Router, type About, type Decision } from "./router";
 import { heicNote, homeLabel, homeList, PERSON_TEXT_MAX, replyContext } from "../homeLine";
 import { DOWNLOAD, IMAGE_REFUSED, ImageFailures, imagemagick, incomingImage, readOutgoingImage, sniffImage, sweepMagickTemp, type Convert, type OutImage } from "./images";
 import { TextingStore } from "./store";
+import { HUB, HUB_SEND_MS, HUB_VIA, HubChannel, isHubVia, type HubAbout, type HubSent } from "./hubChannel";
+import { HubWire, type WireFile } from "./hubWire";
+import type { HubPort } from "../../core/hubPort";
 import { TEXTS } from "./texts";
 import { replyForPeople } from "../../../../shared/checkIn";
 
@@ -70,7 +81,7 @@ export function asksQuestion(text: string): boolean {
   return /\?(?=["')\]*_]*(\s|$))/.test(last);
 }
 
-type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log" | "runnerId" | "appUrl" | "homeLine" | "links" | "attachmentsDir"> & {
+type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log" | "runnerId" | "appUrl" | "homeLine" | "links" | "attachmentsDir" | "hub"> & {
   sessions: Pick<ModuleContext["sessions"], "tell" | "answer"> & Partial<Pick<ModuleContext["sessions"], "queue">>;
 };
 
@@ -98,6 +109,23 @@ export const FILES_ONLY = "(sent a file)";
 export const TEXTED_WITH_ANSWER = "(files the person sent with their answer)";
 /** A message with only files, while it's routed (no one can type it: NUL is taken out of what they send). */
 const NO_WORDS = "\u0000";
+
+/** How a session on another runner (one the hub texts for) is kept in the hub's router: "\u0001<runner>\u0001<session>". */
+const REMOTE = "\u0001";
+export const remoteKey = (runnerId: string, sessionId: string) => `${REMOTE}${runnerId}${REMOTE}${sessionId}`;
+export function parseRemote(key: string): { runnerId: string; sessionId: string } | undefined {
+  if (!key.startsWith(REMOTE)) return undefined;
+  const i = key.indexOf(REMOTE, 1);
+  return i > 1 ? { runnerId: key.slice(1, i), sessionId: key.slice(i + 1) } : undefined;
+}
+/** How long a reply handed to another runner may take to be taken there. */
+export const FORWARD_MS = 60_000;
+/** A text through the hub, bounded here too (its channel bounds the call itself). */
+const HUB_WAIT_MS = HUB_SEND_MS + 5_000;
+/** How often a hub looks whether it can text, for what its hello says. */
+const HUB_STATE_MS = 5_000;
+/** How many of the person's messages' reactions a hub keeps for the runners it passed them to. */
+const REACTS_MAX = 200;
 
 /** Where an answer goes back: the connector, and the place on it (a Discord DM, or a channel others read: `shared`). */
 export interface Back {
@@ -184,6 +212,14 @@ export class Texter {
 
   /** when each session's link last went out */
   private linked = new Map<string, number>();
+  /** the hub's channel, when this runner can text through one (hubChannel.ts) */
+  readonly hubChannel?: HubChannel;
+  readonly wire?: HubWire;
+  private port?: Pick<HubPort, "hub" | "setState">;
+  /** on a hub: the reactions of messages passed to other runners, by token, newest last */
+  private reacts = new Map<string, (emoji: string) => Promise<void>>();
+  private reactSeq = 0;
+  private hubTimer?: ReturnType<typeof setInterval>;
   /** the ids of the person's texts already taken, newest last */
   private heardIds: string[] = [];
   readonly caps: AgentTextCaps;
@@ -193,7 +229,7 @@ export class Texter {
     readonly store: TextingStore,
     open: OpenLink = openSpectrum,
     private now: () => number = Date.now,
-    deps: { connectors?: ConnectorDeps; list?: Connector[] } = {},
+    deps: { connectors?: ConnectorDeps; list?: Connector[]; wire?: HubWire } = {},
   ) {
     // A hold with files from before a restart keeps its words (its files are gone with that process:
     // the person is told when it's picked, answer()).
@@ -201,6 +237,20 @@ export class Texter {
     this.caps = new AgentTextCaps(now);
     const list = deps.list ?? connectors(store, { ...deps.connectors, [IMESSAGE]: open });
     this.channels = list.map((c) => new Channel(c, (m) => void this.heard(m), ctx.log));
+    if (ctx.hub) {
+      const port = ctx.hub;
+      this.port = port;
+      this.wire = deps.wire ?? new HubWire(port, ctx.log);
+      this.wire.handle((from, op, args, files) => this.hubCall(from, op, args, files));
+      // Last: a connector of this runner's own, when connected, comes first (target).
+      this.hubChannel = new HubChannel(() => port.hub, this.wire);
+      this.channels.push(this.hubChannel);
+    }
+  }
+
+  /** This runner's own connectors (not the hub's channel). */
+  private get own(): Channel[] {
+    return this.channels.filter((c) => c !== this.hubChannel);
   }
 
   // ── the links ──
@@ -208,7 +258,20 @@ export class Texter {
   /** Connects every connector that's on and set; each reconnects after a drop, backing off. */
   async start() {
     this.rearmHeld();
+    this.wire?.start();
+    if (this.port) {
+      this.hubTimer = setInterval(() => this.announce(), HUB_STATE_MS);
+      this.hubTimer.unref?.();
+    }
     await Promise.all(this.channels.map((c) => c.start()));
+    this.announce();
+  }
+
+  /** On a hub, what its hello says: whether texts can go now, and take images. */
+  announce() {
+    if (!this.port) return;
+    const t = this.ownTarget();
+    this.port.setState(this.store.hub ? { up: !!t, images: !!t?.connector.images } : undefined);
   }
 
   /** The held files' timer again, for what's left of HELD_MS (after a restart, or a stop that cleared it). */
@@ -219,6 +282,8 @@ export class Texter {
   async stop() {
     clearTimeout(this.heldTimer);
     this.heldTimer = undefined;
+    clearInterval(this.hubTimer);
+    this.wire?.stop();
     await Promise.all(this.channels.map((c) => c.stop()));
   }
 
@@ -226,9 +291,11 @@ export class Texter {
   async restart(id?: string) {
     this.rearmHeld();
     await Promise.all(this.channels.filter((c) => !id || c.id === id).map((c) => c.restart()));
+    this.announce();
   }
 
   channel(id: string | undefined): Channel | undefined {
+    if (isHubVia(id)) return this.hubChannel;
     return id ? this.channels.find((c) => c.id === id) : undefined;
   }
 
@@ -249,6 +316,13 @@ export class Texter {
       if (c?.connected && c.connector.enabled()) return c;
     }
     return this.channels.find((c) => c.connected && c.connector.enabled());
+  }
+
+  /** Where this runner's own texts go, leaving the hub's channel out (what a hub texts others' on). */
+  private ownTarget(): Channel | undefined {
+    const t = this.target();
+    if (t && t !== this.hubChannel) return t;
+    return this.own.find((c) => c.connected && c.connector.enabled());
   }
 
   /**
@@ -311,13 +385,13 @@ export class Texter {
    * (Photon may give no id). `image`: one image, its own message after the words (where the connector
    * takes images). At most PHOTON.ms each: a send that times out may still have gone (`unsure`).
    */
-  private async send(text: string, back?: Back, image?: OutImage): Promise<{ sent: boolean; id?: string; ids?: string[] }> {
+  private async send(text: string, back?: Back, image?: OutImage, about?: HubAbout): Promise<{ sent: boolean; id?: string; ids?: string[] }> {
     this.unsure = false;
     const { ch, there } = this.channelFor(back);
     if (!ch) return { sent: false };
-    const place = back?.place && ch === there ? { place: back.place, ...(back.shared ? { shared: true } : {}) } : {};
+    const place = { ...(back?.place && ch === there ? { place: back.place, ...(back.shared ? { shared: true } : {}) } : {}), ...this.throughHub(ch, ch === there ? back : undefined, about) };
     try {
-      const ids = await withTimeout(ch.send({ text, ...place }), "a send", PHOTON.ms, ch.connector.service ?? ch.connector.label);
+      const ids = await withTimeout(ch.send({ text, ...place }), "a send", ch === this.hubChannel ? HUB_WAIT_MS : PHOTON.ms, ch.connector.service ?? ch.connector.label);
       this.failed = undefined;
       this.router.noteOut();
       return { sent: true, ...(ids[0] ? { id: ids[0], ids } : {}) };
@@ -331,16 +405,16 @@ export class Texter {
   }
 
   /** An image after a text, on the same channel, threaded like it (a reply to the image goes where a reply to the text would). Whether it went. */
-  private async sendImage(image: OutImage, back: Back | undefined, note: (ids: string[]) => void): Promise<boolean> {
+  private async sendImage(image: OutImage, back: Back | undefined, note: (ids: string[]) => void, about?: HubAbout): Promise<boolean> {
     this.imageUnsure = false;
     const { ch, there } = this.channelFor(back);
     if (!ch?.connector.images) {
       this.failed = "This messaging app can't take images.";
       return false;
     }
-    const place = back?.place && ch === there ? { place: back.place, ...(back.shared ? { shared: true } : {}) } : {};
+    const place = { ...(back?.place && ch === there ? { place: back.place, ...(back.shared ? { shared: true } : {}) } : {}), ...this.throughHub(ch, ch === there ? back : undefined, about && { sessionId: about.sessionId, ...(about.requestId ? { requestId: about.requestId } : {}) }) };
     try {
-      const ids = await withTimeout(ch.send({ text: "", files: [{ name: image.name, mimeType: image.mimeType, data: image.data }], ...place }), "an image", PHOTON.ms, ch.connector.service ?? ch.connector.label);
+      const ids = await withTimeout(ch.send({ text: "", files: [{ name: image.name, mimeType: image.mimeType, data: image.data }], ...place }), "an image", ch === this.hubChannel ? HUB_WAIT_MS : PHOTON.ms, ch.connector.service ?? ch.connector.label);
       note(ids);
       return true;
     } catch (e: any) {
@@ -349,6 +423,12 @@ export class Texter {
       this.ctx.log(`texting: ${this.failed}`);
       return false;
     }
+  }
+
+  /** What a text through the hub carries besides its words: the hub's connector it answers on, and the session it's about (the hub numbers it). */
+  private throughHub(ch: Channel, back: Back | undefined, about: HubAbout | undefined): { via?: string; about?: HubAbout } {
+    if (ch !== this.hubChannel) return {};
+    return { ...(back && isHubVia(back.via) ? { via: back.via } : {}), ...(about ? { about } : {}) };
   }
 
   /** Notes each part of a text that went (a split one has several): a threaded reply to any of them names it. */
@@ -383,7 +463,8 @@ export class Texter {
 
   private async homeSend(body: string, o: { reply?: boolean; answer?: boolean; about?: string; chat?: string }, image?: OutImage): Promise<{ sent: boolean; imageSent?: boolean }> {
     const words = clip(body, HOME_MAX);
-    if (!this.target() || !words) return { sent: false };
+    // A spoke's Home agent doesn't text through the hub: the hub's Home agent is the person's.
+    if (!this.ownTarget() || !words) return { sent: false };
     const home = this.homeOf(o.chat);
     const back = o.reply === false ? undefined : this.backTo(HOME, !!o.answer, this.homeKey(o.chat));
     const r = await this.send(this.router.stampHome(words, o.about, home), back);
@@ -413,19 +494,22 @@ export class Texter {
 
   /** Settings: every connector, never a secret. */
   messaging(): MessagingStatus {
+    const via = this.port?.hub;
     return {
-      connectors: this.channels.map((ch) => {
+      ...(this.store.hub ? { hub: true } : {}),
+      ...(via ? { via: { id: via.id, name: via.name, up: via.up } } : {}),
+      connectors: this.own.map((ch) => {
         const c = ch.connector;
         return { id: c.id, label: c.label, enabled: c.enabled(), configured: c.configured(), connected: ch.connected, ...(ch.lastError ? { lastError: ch.lastError } : {}), about: c.about, forms: c.forms() };
       }),
       ...(this.store.prefer ? { prefer: this.store.prefer } : {}),
-      ...(this.store.lastVia ? { lastUsed: this.store.lastVia } : {}),
+      ...(this.store.lastVia && !isHubVia(this.store.lastVia) ? { lastUsed: this.store.lastVia } : {}),
     };
   }
 
   /** Changes one connector's settings, and reconnects it. */
   async setConnector(a: { id?: unknown; enabled?: unknown; values?: unknown }): Promise<MessagingStatus> {
-    const ch = this.channel(typeof a.id === "string" ? a.id : undefined);
+    const ch = typeof a.id === "string" && !isHubVia(a.id) ? this.channel(a.id) : undefined;
     if (!ch) throw new Error("There's no such connector.");
     const values: Record<string, string> = {};
     if (a.values !== undefined) {
@@ -437,16 +521,28 @@ export class Texter {
     }
     ch.connector.update({ ...(typeof a.enabled === "boolean" ? { enabled: a.enabled } : {}), values });
     await ch.restart();
+    this.announce();
+    return this.messaging();
+  }
+
+  /** Makes this runner the texting hub (or not): its hello says so, and the app sends its owner's other runners' texts here. */
+  setHub(on: unknown): MessagingStatus {
+    if (typeof on !== "boolean") throw new Error("Bad settings.");
+    this.store.hub = on;
+    this.store.save();
+    this.announce();
     return this.messaging();
   }
 
   /** Where Tether's texts go: a connector, or (null) wherever the person last wrote. */
   prefer(id: unknown): MessagingStatus {
     if (id === null || id === undefined || id === "") this.store.prefer = undefined;
+    else if (typeof id === "string" && isHubVia(id)) throw new Error("There's no such connector.");
     else if (typeof id === "string" && this.channel(id)?.connector.enabled()) this.store.prefer = id;
     else if (typeof id === "string" && this.channel(id)) throw new Error("Turn it on first.");
     else throw new Error("There's no such connector.");
     this.store.save();
+    this.announce();
     return this.messaging();
   }
 
@@ -464,21 +560,8 @@ export class Texter {
     }
     const out: Attachment[] = [];
     for (const f of files.slice(0, ATTACH_MAX)) {
-      const max = isImageType(f.mimeType) ? ATTACH_IMAGE_MAX : ATTACH_FILE_MAX;
       try {
-        if (f.size !== undefined && f.size > max) throw new Error("it's too big");
-        // Bounded, whatever the connector does: a stuck download mustn't hold up the texts queue.
-        let data: Uint8Array = await withTimeout(f.read(max), "a download", DOWNLOAD.ms, "The download");
-        if (data.byteLength > max) throw new Error("it's too big");
-        let name = f.name;
-        let mimeType = f.mimeType;
-        // An image is what its bytes say: HEIC made JPEG, one too big to see scaled down; one that
-        // isn't an image after all is kept as a plain file.
-        if (isImageType(mimeType) || sniffImage(data)) {
-          const img = await incomingImage({ name }, Buffer.from(data), this.convert);
-          if (img) ({ name, mimeType, data } = img);
-          else if (isImageType(mimeType)) mimeType = "application/octet-stream";
-        }
+        const { name, mimeType, data } = await this.fetchFile(f);
         // As an upload is stored: a safe name, the session's 2 GB, read-only, never over another file.
         out.push(storeFile(dir, sessionId, { name, mimeType, data }));
       } catch (e: any) {
@@ -487,6 +570,27 @@ export class Texter {
       }
     }
     return out;
+  }
+
+  /**
+   * One of the person's files, fetched and checked: an image is what its bytes say (HEIC made JPEG,
+   * one too big to see scaled down; one that isn't an image after all is a plain file). Throws when
+   * it's too big or won't come.
+   */
+  private async fetchFile(f: InboundFile): Promise<WireFile> {
+    const max = isImageType(f.mimeType) ? ATTACH_IMAGE_MAX : ATTACH_FILE_MAX;
+    if (f.size !== undefined && f.size > max) throw new Error("it's too big");
+    // Bounded, whatever the connector does: a stuck download mustn't hold up the texts queue.
+    let data: Uint8Array = await withTimeout(f.read(max), "a download", DOWNLOAD.ms, "The download");
+    if (data.byteLength > max) throw new Error("it's too big");
+    let name = f.name;
+    let mimeType = f.mimeType;
+    if (isImageType(mimeType) || sniffImage(data)) {
+      const img = await incomingImage({ name }, Buffer.from(data), this.convert);
+      if (img) ({ name, mimeType, data } = img);
+      else if (isImageType(mimeType)) mimeType = "application/octet-stream";
+    }
+    return { name, mimeType, data };
   }
 
   // ── out: what happened ──
@@ -506,7 +610,8 @@ export class Texter {
   async personText(from: string, body: string, o: { image?: string; about?: string; chat?: string } = {}): Promise<{ text: string; isError?: boolean }> {
     const words = clip(body, PERSON_TEXT_MAX);
     if (!words) return { text: "The message is empty.", isError: true };
-    const target = this.target();
+    const target = from === HOME ? this.ownTarget() : this.target();
+    if (!target && from === HOME && this.hubChannel?.connected) return { text: `Texts from this computer go through ${this.hubChannel.connector.label}, whose Home agent texts the person; nothing was sent. Say it in your reply instead.`, isError: true };
     if (!target) return { text: "Texting isn't set up or connected in Tether, so nothing was sent. Say it in your reply instead.", isError: true };
     if (o.image && !target.connector.images) return { text: `${target.connector.label} can't take images from Tether. Nothing was sent.`, isError: true };
     // Taken before an image is checked, and given back if it's refused (below).
@@ -550,10 +655,13 @@ export class Texter {
     // A request's text always has it: the full command is there, not in the text.
     const link = !!o.link || (!quick && at - (this.linked.get(sessionId) ?? -Infinity) >= LINK_EVERY_MS);
     if (link) this.linked.set(sessionId, at);
-    const { text } = this.router.stamp(sessionId, status, link ? `${body}\n${this.url(sessionId)}` : body, requestId);
-    const r = await this.send(text, o.via);
+    const full = link ? `${body}\n${this.url(sessionId)}` : body;
+    const { text } = this.router.stamp(sessionId, status, full, requestId);
+    // Through the hub, it numbers the text itself (`about`): the one number for every computer.
+    const about: HubAbout = { sessionId, status, body: full, ...(requestId ? { requestId } : {}) };
+    const r = await this.send(text, o.via, undefined, about);
     this.noteSent(r, sessionId, requestId);
-    const imageSent = r.sent && o.image ? await this.sendImage(o.image, o.via, (ids) => this.noteSent({ ids }, sessionId, requestId)) : undefined;
+    const imageSent = r.sent && o.image ? await this.sendImage(o.image, o.via, (ids) => this.noteSent({ ids }, sessionId, requestId), about) : undefined;
     this.store.save();
     return { sent: r.sent, ...(imageSent !== undefined ? { imageSent } : {}) };
   }
@@ -615,8 +723,20 @@ export class Texter {
 
   /** The person answered the session (a request, a new turn): it's out of the picker until it texts again. */
   settled(sessionId: string) {
-    this.router.settle(sessionId);
+    this.routerOp("settle", sessionId);
+  }
+
+  /**
+   * A change to a session's slot (answered elsewhere, waiting again, its request closed): here, and
+   * on the hub when this runner texts through one, where its number really is.
+   */
+  private routerOp(op: "settle" | "unsettle" | "closedRequest", sessionId: string, requestId?: string) {
+    if (op === "settle") this.router.settle(sessionId);
+    else if (op === "unsettle") this.router.unsettle(sessionId);
+    else if (requestId) this.router.closedRequest(sessionId, requestId);
     this.store.save();
+    const hub = this.port?.hub;
+    if (hub && this.wire && !this.ownTarget()) void this.wire.call(hub.id, "router", { op, sessionId, ...(requestId ? { requestId } : {}) }).catch(() => {});
   }
 
   /**
@@ -802,9 +922,6 @@ export class Texter {
       this.store.save();
     }
     if (d.kind === "none") return;
-    // Only files, no words: the agent reads that it was sent a file; it never answers a request.
-    const onlyFiles = "text" in d && d.text === NO_WORDS;
-    const words = onlyFiles ? FILES_ONLY : "text" in d ? d.text : "";
     if (d.kind === "reply") {
       await this.say(d.text, back);
       if (mine.length && !heldThis) await this.say(TEXTS.filesNotSent, back);
@@ -820,6 +937,25 @@ export class Texter {
       if (files.length) await this.say(TEXTS.filesNotSent, back);
       return;
     }
+    // A session on another runner: that runner takes it (fromHub), files and all.
+    const remote = d.kind === "deliver" ? parseRemote(d.sessionId) : undefined;
+    if (d.kind === "deliver" && remote) return this.forward(d, remote, m, files, back, elsewhere);
+    await this.act(d, m, files, back, { elsewhere });
+  }
+
+  /**
+   * What the person's message does, once the router has said where it goes: to a session here (a
+   * request's answer, or their words to the agent) or to the Home agent. `back`: where Tether's own
+   * replies to it go; `elsewhere`: a held text picked from another place than it was written (no
+   * channel's answer); `mark`: what starts it for the Home agent (the connector's, when unset).
+   */
+  private async act(d: Extract<Decision, { kind: "deliver" | "home" | "newHome" }>, m: Inbound, files: InboundFile[], back: Back | undefined, o: { elsewhere: boolean; mark?: string }) {
+    const home = this.ctx.homeLine?.home;
+    const via = m.via;
+    const elsewhere = o.elsewhere;
+    // Only files, no words: the agent reads that it was sent a file; it never answers a request.
+    const onlyFiles = d.text === NO_WORDS;
+    const words = onlyFiles ? FILES_ONLY : d.text;
     // Every home answers back the way the person wrote (one replyVia for all of them, HOME); each home
     // has its own channel claim (homeKey: its chat, resolved, and made for h if it's gone).
     const key = d.kind === "deliver" ? d.sessionId : HOME;
@@ -849,7 +985,7 @@ export class Texter {
     };
     /** One more message the session owes an answer to: queued, it's its own turn's; else (a steer, a request answer) the current turn answers it. */
     const owe = (queued: boolean) => this.talking.set(key, queued ? (this.talking.get(key) ?? 0) + 1 : Math.max(1, this.talking.get(key) ?? 0));
-    const mark = this.channel(via)?.connector.mark;
+    const mark = o.mark ?? this.channel(via)?.connector.mark;
     // What failed says so once, with the files if they didn't go either.
     const failed = async (tag: string, e: any) => this.say(files.length ? TEXTS.couldNotSendWithFile(tag, String(e?.message ?? e)) : TEXTS.couldNotSend(tag, String(e?.message ?? e)), back);
     const take = { ...(mark ? { mark } : {}), ...(files.length ? { files: (chat: string) => this.stash(chat, files, back) } : {}) };
@@ -886,8 +1022,7 @@ export class Texter {
       // person hasn't seen yet either.
       const open = d.requestId ? pending.find((r) => r.id === d.requestId) : pending[0];
       if (d.requestId && !open) {
-        this.router.closedRequest(d.sessionId, d.requestId);
-        this.store.save();
+        this.routerOp("closedRequest", d.sessionId, d.requestId);
         await this.say(TEXTS.alreadyAnswered(d.n), back);
         if (files.length) await this.say(TEXTS.filesNotSent, back);
         return;
@@ -920,10 +1055,7 @@ export class Texter {
         // Into the queue: a turn of its own to come. Else it started a turn or went into the running one.
         owe(queued() > before);
         // Only files while a request waits: it's still waiting on the person.
-        if (open && onlyFiles) {
-          this.router.unsettle(d.sessionId);
-          this.store.save();
-        }
+        if (open && onlyFiles) this.routerOp("unsettle", d.sessionId);
       }
       // No "sent" or "allowed" back (texts.ts): the session answers for itself. A ✅ on the
       // person's text says Tether read it and passed it on.
@@ -932,6 +1064,154 @@ export class Texter {
       this.channelTurns.delete(key);
       await failed(tag, e);
     }
+  }
+
+  // ── the texting hub: between this runner and the others it texts for (or the one that texts for it) ──
+
+  /**
+   * On the hub: a reply the router gave to a session on another runner goes there, with its files
+   * (fetched and checked here: HEIC made JPEG) and a way to put the ✅ on it. A runner that can't be
+   * reached means the person hears it didn't go.
+   */
+  private async forward(d: Extract<Decision, { kind: "deliver" }>, remote: { runnerId: string; sessionId: string }, m: Inbound, files: InboundFile[], back: Back | undefined, elsewhere: boolean) {
+    const tag = `[${d.n}]`;
+    const sent: WireFile[] = [];
+    for (const f of files.slice(0, ATTACH_MAX)) {
+      try {
+        sent.push(await this.fetchFile(f));
+      } catch (e: any) {
+        this.ctx.log(`texting: couldn't take ${safeName(f.name)}: ${e?.message ?? e}`);
+        await this.say(TEXTS.fileSkipped(safeName(f.name)), back);
+      }
+    }
+    // Only files, and none of them came: the person was told; there's nothing to pass on.
+    if (d.text === NO_WORDS && !sent.length) return;
+    let react: string | undefined;
+    if (m.react) {
+      react = `r${++this.reactSeq}`;
+      this.reacts.set(react, m.react);
+      while (this.reacts.size > REACTS_MAX) this.reacts.delete(this.reacts.keys().next().value!);
+    }
+    const mark = this.channel(m.via)?.connector.mark;
+    const args = {
+      sessionId: remote.sessionId,
+      n: d.n,
+      text: d.text,
+      ...(d.requestId ? { requestId: d.requestId } : {}),
+      ...(m.via ? { via: m.via } : {}),
+      ...(m.place ? { place: m.place } : {}),
+      ...(m.shared ? { shared: true } : {}),
+      ...(mark ? { mark } : {}),
+      ...(react ? { react } : {}),
+      ...(elsewhere ? { elsewhere: true } : {}),
+    };
+    try {
+      if (!this.wire) throw new Error("This runner can't reach other computers.");
+      await this.wire.call(remote.runnerId, "deliver", args, { files: sent, timeoutMs: FORWARD_MS });
+    } catch (e: any) {
+      if (react) this.reacts.delete(react);
+      await this.say(sent.length ? TEXTS.couldNotSendWithFile(tag, String(e?.message ?? e)) : TEXTS.couldNotSend(tag, String(e?.message ?? e)), back);
+    }
+  }
+
+  /** A call from another runner: its hub's deliveries, or (on a hub) a spoke's texts, slot changes and reactions. */
+  private async hubCall(from: string, op: string, args: unknown, files: WireFile[]): Promise<unknown> {
+    const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
+    if (op === "deliver") {
+      if (this.port?.hub?.id !== from) throw new Error("That computer doesn't text for this one.");
+      return this.fromHub(a, files);
+    }
+    if (!this.store.hub) throw new Error("This computer isn't the texting hub.");
+    const sessionId = typeof a.sessionId === "string" && a.sessionId ? a.sessionId : undefined;
+    switch (op) {
+      case "send":
+        return this.hubSend(from, a, files);
+      case "router": {
+        if (!sessionId) throw new Error("Bad request.");
+        const key = remoteKey(from, sessionId);
+        if (a.op === "settle") this.router.settle(key);
+        else if (a.op === "unsettle") this.router.unsettle(key);
+        else if (a.op === "closedRequest" && typeof a.requestId === "string") this.router.closedRequest(key, a.requestId);
+        this.store.save();
+        return null;
+      }
+      case "react": {
+        const r = typeof a.token === "string" ? this.reacts.get(a.token) : undefined;
+        if (r && typeof a.emoji === "string" && a.emoji.length <= 16) await this.read({ text: "", react: r, via: this.store.lastVia });
+        return null;
+      }
+    }
+    throw new Error(`Unknown texting call: ${op}`);
+  }
+
+  /**
+   * On the hub: a spoke's text. About one of its sessions (`about` with words), it's numbered here
+   * with every other ("[n] …") and noted, so a reply finds the session; an image after a text is
+   * noted the same way. `via` and `place`: the answer goes back where the person wrote.
+   */
+  private async hubSend(from: string, a: Record<string, unknown>, files: WireFile[]): Promise<HubSent> {
+    const str = (v: unknown, max = 4000) => (typeof v === "string" ? v.slice(0, max) : undefined);
+    const via = str(a.via, 100);
+    const place = str(a.place, 200);
+    const back: Back | undefined = via && !isHubVia(via) ? { via, ...(place ? { place } : {}), ...(a.shared === true ? { shared: true } : {}) } : undefined;
+    const ab = a.about && typeof a.about === "object" ? (a.about as Record<string, unknown>) : undefined;
+    const about = ab && typeof ab.sessionId === "string" && ab.sessionId ? { key: remoteKey(from, ab.sessionId), requestId: str(ab.requestId, 200), status: str(ab.status, 200), body: str(ab.body, 8000) } : undefined;
+    if (!this.ownTarget()) return { sent: false, error: "Texting isn't connected on the hub." };
+    if (files.length) {
+      const f = files[0]!;
+      const ok = await this.sendImage({ name: f.name, mimeType: f.mimeType, data: f.data } as OutImage, back, (ids) => about && this.noteSent({ ids }, about.key, about.requestId));
+      this.store.save();
+      return ok ? { sent: true } : { sent: false, error: this.failed ?? "The image didn't go.", ...(this.imageUnsure ? { unsure: true } : {}) };
+    }
+    let text = str(a.text, 8000) ?? "";
+    if (about?.body !== undefined) text = this.router.stamp(about.key, about.status ?? "texted you", about.body, about.requestId).text;
+    if (!text.trim()) return { sent: false, error: "The text is empty." };
+    const r = await this.send(text, back);
+    if (about) this.noteSent(r, about.key, about.requestId);
+    this.store.save();
+    return r.sent ? { sent: true, ...(r.ids ? { ids: r.ids } : {}) } : { sent: false, error: this.lastError ?? "The text didn't go.", ...(this.unsure ? { unsure: true } : {}) };
+  }
+
+  /**
+   * From the hub: the person's message for one of this runner's sessions, as its router decided
+   * (number `n`). It's taken here as if it came by a connector of this runner's: a request's
+   * answer, or their words (and files) to the agent. Tether's own replies about it, and the
+   * session's answer, go back through the hub the way it came ("hub:<connector>").
+   */
+  private fromHub(a: Record<string, unknown>, files: WireFile[]): Promise<null> {
+    const str = (v: unknown, max = 200) => (typeof v === "string" && v ? v.slice(0, max) : undefined);
+    const sessionId = str(a.sessionId, 500);
+    const n = typeof a.n === "number" && Number.isSafeInteger(a.n) ? a.n : 0;
+    const text = typeof a.text === "string" ? a.text : "";
+    if (!sessionId || !text) throw new Error("Bad delivery.");
+    const hub = this.port!.hub!;
+    const via = `${HUB_VIA}${str(a.via, 100) ?? ""}`;
+    const place = str(a.place);
+    const token = str(a.react);
+    const m: Inbound = {
+      text,
+      via,
+      ...(place ? { place } : {}),
+      ...(a.shared === true ? { shared: true } : {}),
+      ...(token && this.wire ? { react: (emoji: string) => this.wire!.call(hub.id, "react", { token, emoji }).then(() => {}) } : {}),
+    };
+    const got: InboundFile[] = files.map((f) => ({
+      name: f.name,
+      mimeType: f.mimeType,
+      size: f.data.byteLength,
+      read: async (max?: number) => {
+        if (max !== undefined && f.data.byteLength > max) throw new Error("it's too big");
+        return f.data;
+      },
+    }));
+    const d: Extract<Decision, { kind: "deliver" }> = { kind: "deliver", sessionId, n, text, ...(str(a.requestId) ? { requestId: str(a.requestId)! } : {}) };
+    const back: Back = { via, ...(place && a.shared !== true ? { place } : {}) };
+    // Tether's texts follow the person to the way they wrote: through the hub.
+    this.store.lastVia = via;
+    // One at a time, as the person's own texts are taken.
+    const done = this.inbox.then(() => this.act(d, m, got, back, { elsewhere: a.elsewhere === true, ...(str(a.mark) ? { mark: str(a.mark)! } : {}) }));
+    this.inbox = done.catch((e) => this.ctx.log(`texting: ${e?.message ?? e}`));
+    return done.then(() => null);
   }
 }
 
@@ -973,6 +1253,7 @@ export const textingModule: Module = {
     ctx.ops.register("setConnector", (a) => t.setConnector(a));
     ctx.ops.register("setMessagingPrefer", (a) => t.prefer(a.prefer));
     ctx.ops.register("testConnector", async (a) => (await t.test(String(a.id)), null));
+    ctx.ops.register("setTextingHub", (a) => t.setHub(a?.on));
     void t.start();
     return () => {
       offs.forEach((f) => f());

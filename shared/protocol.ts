@@ -37,6 +37,7 @@ import type { TokenRates } from "./costs";
 import type { AutoUpdateStatus, HarnessReport } from "./harnessUpdates";
 import type { PartChunk } from "./limits";
 import type { UsageReport } from "./usage";
+import type { HubFrame, TextingHubInfo, TextingHubState } from "./textingHub";
 import type { HarnessId, ModelList, Msg, ProjectInfo, RequestAnswer, SessionEvent, SessionSnapshot, SessionSummary } from "./transcript";
 
 /** Close code the server uses for a runner connection that a newer one with the same id replaced. */
@@ -90,6 +91,8 @@ export interface RunnerInfo {
   pinning?: boolean;
   /** the people its owner shared it with (shared/access.ts); only sent to its owners */
   shared?: RunnerGrant[];
+  /** it's the texting hub (SPEC §11 Texting): it texts for its owner's other runners too, and whether texts can go now */
+  textingHub?: TextingHubState;
   /** set by the server for each browser: what you may do on it. Absent: you own it (shared/access.ts) */
   access?: "drive" | "view";
 }
@@ -392,6 +395,8 @@ export interface Ops {
   setMessagingPrefer: { args: { prefer: string | null }; result: MessagingStatus };
   /** Sends a test message on one connector. */
   testConnector: { args: { id: string }; result: null };
+  /** Makes this runner the texting hub, which texts for its owner's other runners too (or stops it). */
+  setTextingHub: { args: { on: boolean }; result: MessagingStatus };
   /**
    * A `!` command from the composer (SPEC §9 Shell commands): runs `command` now with `$SHELL -c` in
    * the session's folder, whatever the agent is doing. Its card (a message with `shell`, id `id`)
@@ -659,7 +664,11 @@ export type ServerToRunner =
    */
   | { t: "viewers"; sessions: Record<string, string[]> }
   /** answers the runner's keepalive ping */
-  | { t: "pong" };
+  | { t: "pong" }
+  /** the runner that texts for this one (shared/textingHub.ts), sent on connect and whenever it changes; null: none */
+  | { t: "textHub"; hub: TextingHubInfo | null }
+  /** a texting hub frame from runner `from` (this one's hub, or one of its spokes) */
+  | { t: "texting"; from: string; m: HubFrame };
 
 export type RunnerToServer =
   | { t: "hello"; runner: Omit<RunnerInfo, "connectedAt"> }
@@ -670,7 +679,9 @@ export type RunnerToServer =
   | { t: "term"; attachId: string; data: string }
   | { t: "termEnd"; attachId: string; reason?: string }
   /** keepalive; the server answers pong, so a dead connection shows up as silence */
-  | { t: "ping" };
+  | { t: "ping" }
+  /** a texting hub frame for runner `to`: this runner's hub, or one of the runners it's the hub for */
+  | { t: "texting"; to: string; m: HubFrame };
 
 /** One of a connector's settings forms: some inputs saved together. */
 export interface ConnectorForm {
@@ -706,6 +717,10 @@ export interface MessagingStatus {
   prefer?: string;
   /** the one the person last wrote on */
   lastUsed?: string;
+  /** this runner texts for its owner's other runners too (SPEC §11 Texting) */
+  hub?: boolean;
+  /** another runner texts for this one: its name, and whether texts can go now */
+  via?: { id: string; name: string; up: boolean };
 }
 
 /** Texting's settings on a runner, as the web sees them (secrets stay on the runner). */

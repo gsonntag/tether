@@ -18,6 +18,7 @@ import type { Adapter, StartOpts } from "./adapter";
 import { RequestBroker, type PolicyStep } from "./broker";
 import { EventBus } from "./bus";
 import { Connection, type ConnectionOptions } from "./connection";
+import { HubPort } from "./hubPort";
 import type { CoreEvents } from "./events";
 import { LiveControl } from "./live";
 import { OpRegistry } from "./ops";
@@ -97,6 +98,7 @@ export function createRunner(o: RunnerOptions) {
     pinning: true,
     // The relay shows the runner to these people (shared/access.ts) and only its owners see the list.
     ...(prefs.shared().length ? { shared: prefs.shared() } : {}),
+    ...(hubPort.state ? { textingHub: hubPort.state } : {}),
   });
 
   const conn = new Connection({
@@ -111,9 +113,18 @@ export function createRunner(o: RunnerOptions) {
     // anything until browsers subscribe again: the core stops tails on `disconnected`.
     onState: (connected, push) => (connected ? bus.emit("connected", { push }) : bus.emit("disconnected", {})),
     onViewers: (sessions) => bus.emit("viewers", { sessions }),
+    onTextHub: (hub) => hubPort.gotHub(hub),
+    onTexting: (from, m) => hubPort.gotFrame(from, m),
     ...o.connection,
   });
+  // The server forgets this runner's hub with the connection; it says again after the next hello.
+  bus.on("disconnected", () => hubPort.gotHub(null));
 
+  const hubPort: HubPort = new HubPort(
+    (m) => conn.send(m),
+    () => conn.buffered(),
+    () => void helloInfo().then((runner) => conn.send({ t: "hello", runner })),
+  );
   const prefs = new Prefs(o.prefsFile);
   readRunnerSettingsFrom(() => prefs.settings());
   const costs = new CostLedger(o.costsFile);
@@ -227,6 +238,7 @@ export function createRunner(o: RunnerOptions) {
       apiCost: (id: string) => (costs.has(id) ? costs.get(id) : undefined),
       hiddenFolder: (path: string) => core.hidden(path),
       announceHomeChat: (u: HomeChatUpdate) => void conn.send({ t: "homeChat", ...u }),
+      hub: hubPort,
       sessions: {
         adapters: () => o.adapters ?? [],
         open: async (id: string) => lookAt(await core.open(id)),

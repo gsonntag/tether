@@ -31,6 +31,19 @@ export function reconnected(before: KnownRunner[], after: KnownRunner[]): string
   return after.filter((r) => r.online && (!prev.get(r.id)?.online || prev.get(r.id)?.connectedAt !== r.connectedAt)).map((r) => r.id);
 }
 
+/**
+ * Why texting is down, when one of your runners is the texting hub (SPEC §11 Texting) and none can
+ * text now: the hub is offline (as last seen), or can't reach its messaging app. Undefined when a
+ * hub can text, or none was ever seen.
+ */
+export function textingDown(runners: KnownRunner[]): string | undefined {
+  const hubs = runners.filter((r) => r.textingHub && accessOf(r) === "manage");
+  if (!hubs.length || hubs.some((r) => r.online && r.textingHub!.up)) return undefined;
+  const h = hubs.find((r) => r.online) ?? [...hubs].sort((a, b) => b.lastSeen - a.lastSeen)[0]!;
+  const name = h.name || h.id;
+  return h.online ? `Texting is unavailable: ${name} can't reach its messaging app.` : `Texting is unavailable: ${name} is offline.`;
+}
+
 /** What you may do on a runner (shared/access.ts): absent from the server means you own it. */
 export const accessOf = (r: Pick<RunnerInfo, "access"> | undefined): "manage" | "drive" | "view" => r?.access ?? "manage";
 

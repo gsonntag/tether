@@ -8,6 +8,7 @@
 
 import { capEvent, guardFrame } from "../../../shared/limits";
 import { redactValue } from "../credentials";
+import { parseHubFrame, type HubFrame, type TextingHubInfo } from "../../../shared/textingHub";
 import { CLOSE_PROTOCOL, CLOSE_REPLACED, CLOSE_RUNNER_ID, type PushKeys, type RunnerInfo, type RunnerToServer, type ServerToRunner } from "../../../shared/protocol";
 
 export interface ConnectionOptions {
@@ -24,6 +25,10 @@ export interface ConnectionOptions {
   onState?: (connected: boolean, push?: PushKeys) => void;
   /** which devices look at which sessions (presence) */
   onViewers?: (sessions: Record<string, string[]>) => void;
+  /** the runner that texts for this one (shared/textingHub.ts), or none */
+  onTextHub?: (hub: TextingHubInfo | null) => void;
+  /** a texting hub frame from runner `from` */
+  onTexting?: (from: string, m: HubFrame) => void;
   log?: (line: string) => void;
   heartbeatMs?: number;
   /** no frame from the server for this long means the connection is dead */
@@ -38,6 +43,14 @@ export interface ConnectionOptions {
   runnerIdBackoffMs?: number;
   WebSocket?: typeof WebSocket;
   fetch?: typeof fetch;
+}
+
+/** The hub the server named, checked (null: none). */
+function textHubOf(h: unknown): TextingHubInfo | null {
+  if (!h || typeof h !== "object") return null;
+  const v = h as Record<string, unknown>;
+  if (typeof v.id !== "string" || !v.id) return null;
+  return { id: v.id, name: typeof v.name === "string" && v.name ? v.name.slice(0, 200) : v.id, up: v.up === true, images: v.images === true };
 }
 
 /** 1 s, 2 s, 4 s … up to 30 s, each ±20% so a fleet of runners doesn't reconnect in lockstep. */
@@ -169,6 +182,11 @@ export class Connection {
       else if (m.t === "rpc") void this.answer(sock, m.id, m.op, m.args);
       else if (m.t === "detach") this.opts.onDetach?.(m.attachIds);
       else if (m.t === "unwatched") this.opts.onUnwatched?.(m.sessionIds);
+      else if (m.t === "textHub") this.opts.onTextHub?.(textHubOf(m.hub));
+      else if (m.t === "texting") {
+        const f = parseHubFrame(m.m);
+        if (f && typeof m.from === "string") this.opts.onTexting?.(m.from, f);
+      }
     };
 
     sock.onclose = (ev) => {

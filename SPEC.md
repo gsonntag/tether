@@ -1745,6 +1745,34 @@ person's own message (`live.tell`, defanged). A reply passed on gets a ✅ react
 person's phone, and no text back. One runner holds the link; keys live on it
 (`texting.json`, mode 600, or `runner.env`).
 
+*One number for every computer* (the texting hub: `shared/textingHub.ts`, `texting/hubChannel.ts`,
+`texting/hubWire.ts`). A person with several runners turns **Text for all my computers** on for one
+of them in Settings → Messaging (`setTextingHub`, an owner's op; `texting.json` `hub`). That runner's
+hello says so with whether it can text now (`textingHub: {up, images}`, said again when that
+changes). The relay names each runner's hub (`{t: "textHub", hub}` on connect and whenever it
+changes; none for a hub itself): a connected hub of the same person's (the same token, or tokens
+with the same people in TETHER_RUNNER_OWNERS), one that can text first, then the longest connected.
+It passes `{t: "texting"}` frames only between a runner and its hub; a call to anyone else is
+answered "That computer is offline." The other runners (spokes) need no messaging set up: their
+last channel is the hub's (`hubChannel.ts`), used when no connector of their own is connected.
+- Out: a spoke's text goes to the hub with the session it's about; the hub numbers it in its own
+  router (the session kept as `\u0001<runner>\u0001<session>`), so every computer's sessions share
+  one set of numbers and one picker, sends it on its connector, and notes it for threaded replies.
+  An image after a text, a request's text and `text_person` go the same way. Answered on the
+  spoke (in Tether, a new turn, a closed request), its slot changes on the hub too.
+- In: a reply the hub's router gives to a spoke's session goes there (`deliver`), with the ✅
+  handed back and the files the person sent (fetched and checked on the hub: HEIC made JPEG). The
+  spoke takes it as its own connector's message: a request's y/n, or words and files to the agent.
+  What it answers goes back the way the person wrote (`hub:<connector>`, the hub's DM or the
+  channel a message was written in, under the channel rule below).
+- Files travel in 256 KB pieces before the call that carries them, paced so the socket's buffer
+  stays under 2 MB (the relay closes one past 12 MB): up to 25 MB a file, 64 MB half-sent from one
+  runner, dropped 2 minutes after their last piece.
+- The Home agent is the hub's: a spoke's own Home agent doesn't text through it (`text_person`
+  tells it so).
+- The hub down (offline, or no connector connected): no texts go, and the app shows a yellow
+  "Texting is unavailable" banner while it knows of one of your runners as the hub.
+
 *Connectors* (`texting/connector.ts`, listed in `texting/connectors.ts`). Texts travel over
 messaging connectors: iMessage (`imessage.ts`, Photon) and a Discord bot (`discord.ts`, its Gateway
 WebSocket and REST API with no library: identify with GUILD_MESSAGES, DIRECT_MESSAGES and

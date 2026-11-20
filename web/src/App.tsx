@@ -12,6 +12,7 @@ import { ShortLink } from "./components/ShortLink";
 import { Sidebar } from "./components/Sidebar";
 import { useRoute } from "./route";
 import { useStore } from "./store";
+import { textingDown } from "./runners";
 
 export function App() {
   const link = useStore((s) => s.link);
@@ -19,6 +20,7 @@ export function App() {
   const auth = useStore((s) => s.auth);
   const stale = useStore((s) => s.stale);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
+  const texting = useStore((s) => textingDown(s.runners));
   const route = useRoute();
 
   const banner =
@@ -26,6 +28,8 @@ export function App() {
       <Banner status="info" container="section" collapsible={false} title="Tether was updated." endContent={<Button label="Reload" size="sm" onClick={() => location.reload()} />} />
     ) : link !== "open" && everOpen ? (
       <Banner status="error" container="section" collapsible={false} title={navigator.onLine ? "Reconnecting…" : "Offline · reconnecting…"} />
+    ) : texting ? (
+      <Banner status="warning" container="section" collapsible={false} title={texting} />
     ) : undefined;
 
   return (

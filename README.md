@@ -118,6 +118,10 @@ you open the page, which can take a few seconds; after that only what's new is r
 **Texting** (iMessage through [Photon Spectrum](https://photon.codes), or a Discord bot): the runner can text you when
 a session has a request, needs you in the terminal, fails, or ends its turn with a question. Nothing
 is texted for a session you're looking at in Tether. Each text starts with its session's number.
+With several computers, turn on **Text for all my computers** (Settings → Messaging) on the one
+that has messaging set up: it texts for all of them with one set of numbers, and your replies,
+photos and files reach the session on whichever computer it runs. The others need no messaging set
+up. While that computer is offline no texts go out, and the app shows a yellow banner. See SPEC §11.
 
 - **Answering a request:** reply `y` or `n` to a command, edit or plan, or an option's letter to a
   question. Anything else goes to the agent as your words. A reply answers only the request its

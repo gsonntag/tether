@@ -67,6 +67,25 @@ export function TextingSettings({ runnerId }: { runnerId: string }) {
     <p className="t-inline-status">
       Get a message when a session needs you, asks you something or fails (not while you're looking at it in Tether), with what it wants and a link. Reply y or n to a request, or write to the agent: its answer comes back the same way. Each message starts with its session's number, like [2]; start a reply with the number to pick the session. When it isn't clear, Tether sends back a list to choose from.
     </p>
+    {status.via && (
+      <p className="t-inline-status">
+        Texts from this computer go through {status.via.name}, which texts for all your computers{status.via.up ? "." : ", but it can't send texts right now."} A messaging app turned on below comes first.
+      </p>
+    )}
+    {!legacy && (
+      <section className="t-credential-harness" aria-label="Texting hub">
+        <Heading level={3}>Text for all my computers</Heading>
+        <div className="t-credential-slot">
+          <div className="t-credential-title"><span>Texting hub</span><span className="t-credential-status">{status.hub ? "On" : "Off"}</span></div>
+          <div className="t-credential-entry">
+            <Button label={status.hub ? "Turn off" : "Turn on"} variant={status.hub ? "secondary" : "primary"} isDisabled={disabled} onClick={() => void run(() => rpc(runnerId, "setTextingHub", { on: !status.hub }), setError)} />
+          </div>
+        </div>
+        <p className="t-inline-status">
+          This computer texts for every one of your computers through the messaging app set up below: one set of session numbers, and your replies (and the photos and files you send) reach the session on whichever computer it runs. Turn it on for one computer only; the others need no messaging set up. While this computer is offline, no texts go out.
+        </p>
+      </section>
+    )}
     {(on.length > 1 || stale) && (
       <label className="t-field">Send to<select className="t-select" value={status.prefer ?? ""} disabled={disabled} onChange={(e) => void run(() => rpc(runnerId, "setMessagingPrefer", { prefer: e.target.value || null }), setError)}>
         <option value="">Wherever I last wrote{status.lastUsed ? ` (${status.connectors.find((c) => c.id === status.lastUsed)?.label ?? status.lastUsed})` : ""}</option>
