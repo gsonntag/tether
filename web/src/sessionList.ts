@@ -159,7 +159,7 @@ export function mergeRows(a: Row[], b: Row[]): Row[] {
 /** The last part of a path: "/home/me/web" -> "web". */
 export const folderName = (path: string) => path.replace(/\/+$/, "").split("/").pop() || path;
 
-export type InboxKind = "needs" | "failed" | "finished" | "working" | "scheduled";
+export type InboxKind = "needs" | "failed" | "finished" | "working" | "watching" | "scheduled";
 export interface InboxRow extends Row {
   inbox: InboxKind;
 }
@@ -176,10 +176,10 @@ export function inbox(summaries: Record<string, SummaryState>): InboxRow[] {
     // A pinned session its runner can't find is only a saved row: never on Home.
     if (!listed(r) || r.missing) continue;
     const kind: InboxKind | undefined =
-      (r.requests ?? 0) > 0 || r.status === "waiting" || (r.queuePaused && r.status === "idle") ? "needs" : r.unread === "failed" ? "failed" : r.unread === "finished" && !r.backgroundSubagents ? "finished" : r.status === "running" ? "working" : r.scheduledAt !== undefined && !r.archived ? "scheduled" : undefined;
+      (r.requests ?? 0) > 0 || r.status === "waiting" || (r.queuePaused && r.status === "idle") ? "needs" : r.unread === "failed" ? "failed" : r.unread === "finished" && !r.backgroundSubagents && !r.watching ? "finished" : r.status === "running" ? "working" : r.watching && !r.archived ? "watching" : r.scheduledAt !== undefined && !r.archived ? "scheduled" : undefined;
     if (kind) out.push({ ...r, inbox: kind });
   }
-  const rank: Record<InboxKind, number> = { needs: 0, failed: 1, finished: 2, working: 3, scheduled: 4 };
+  const rank: Record<InboxKind, number> = { needs: 0, failed: 1, finished: 2, working: 3, watching: 4, scheduled: 5 };
   // Waiting longest first; scheduled soonest first; the rest newest first.
   return out.sort((a, b) => rank[a.inbox] - rank[b.inbox] || (a.inbox === "needs" ? a.updatedAt - b.updatedAt : a.inbox === "scheduled" ? a.scheduledAt! - b.scheduledAt! : b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
 }

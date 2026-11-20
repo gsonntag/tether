@@ -66,6 +66,7 @@ export function skipReason(row: SessionSummary, look: SessionLook | undefined): 
   if (look.status !== "idle") return "it's running a turn";
   if (look.state.retry) return "it's waiting to retry after a rate limit";
   if (waitingNow(look.state.queue, Date.now()) || look.state.queueHeld) return "it has messages queued";
+  if (look.state.watching?.length) return "it's watching background work that will wake it";
   if (look.busy) return "it has work running";
   return undefined;
 }

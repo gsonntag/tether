@@ -6,6 +6,7 @@ import { HARNESS_LABELS, type Billing, type HarnessId, type RunStatus } from "..
 import { rpc } from "../connection";
 import { openSession } from "../route";
 import { folderName, type Row } from "../sessionList";
+import { watchingChip, watchingTitle } from "../watching";
 import { setArchived as saveArchived, setPinned as savePinned, useStore } from "../store";
 
 /** "now", "5m", "3h", "2d", "Oct 3" */
@@ -187,7 +188,8 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hid
           {archived && <span className="t-archived">· Archived</span>}
           {row.missing && <span className="t-archived">· Not found on this computer</span>}
           {(!!row.requests || row.status === "waiting") && <span className="t-needs">· Needs you</span>}
-          {row.unread && !row.requests && row.status !== "waiting" && !(row.unread === "finished" && row.backgroundSubagents) && <span className={`t-unread ${row.unread}`}>· {row.unread === "failed" ? "Failed" : "Finished"}</span>}
+          {row.unread && !row.requests && row.status !== "waiting" && !(row.unread === "finished" && (row.backgroundSubagents || row.watching)) && <span className={`t-unread ${row.unread}`}>· {row.unread === "failed" ? "Failed" : "Finished"}</span>}
+          {row.watching && row.status === "idle" && !row.requests && <span className="t-watching" title={watchingTitle(row.watching)}>· {watchingChip(row.watching, now)}</span>}
           <StatusDot status={row.status} requests={row.requests} />
         </span>
         {pinnable && (

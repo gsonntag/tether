@@ -89,6 +89,7 @@ test("skipReason leaves busy sessions alone", () => {
   expect(skipReason(row, look({ status: "running" }))).toBe("it's running a turn");
   expect(skipReason(row, look({ requests: ["r"] }))).toBe("it's waiting for the person");
   expect(skipReason(row, look({ busy: true }))).toBe("it has work running");
+  expect(skipReason(row, look({ busy: true }, { watching: [{ kind: "monitor", label: "log" }] }))).toBe("it's watching background work that will wake it");
   expect(skipReason(row, look({}, { queue: [{ id: "q" }] }))).toBe("it has messages queued");
   expect(skipReason({ ...row, mode: "terminal" }, look())).toBe("it's open in a terminal");
   // Waiting to retry a rate limit: its turn isn't over, so its end isn't a check-in answer.

@@ -204,7 +204,7 @@ export function createRunner(o: RunnerOptions) {
     status: s.state.status,
     requests: s.state.requests.map((r) => r.id),
     state: s.state,
-    busy: s.shellsRunning > 0 || s.childRunning || !!s.sending || !!s.starting || !!s.state.backgroundSubagents,
+    busy: s.shellsRunning > 0 || s.childRunning || !!s.sending || !!s.starting || !!s.state.backgroundSubagents || !!s.state.watching?.length,
     background: !!s.driver?.busy(),
   });
 

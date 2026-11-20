@@ -574,6 +574,21 @@ describe("a subagent moved to the background", () => {
     expect(s.state.backgroundSubagents).toBeUndefined();
   });
 
+  test("watchers: the row says what it waits on, and the process exiting clears them", async () => {
+    const { adapter, live, core, driver } = setup();
+    adapter.addStored("s1", []);
+    await live.send("claude:s1", "go");
+    const s = await core.open("claude:s1");
+    const d = driver();
+    d.sink.state({ watching: [{ kind: "monitor", label: "progress.log events" }, { kind: "wakeup", label: "Autonomous loop", at: 5000 }] });
+    expect(s.summary.watching).toEqual({ n: 2, label: "progress.log events", at: 5000 });
+    d.sink.state({ watching: [{ kind: "monitor", label: "progress.log events" }] });
+    expect(s.summary.watching).toEqual({ n: 1, label: "progress.log events" });
+    d.onExit?.();
+    expect(s.state.watching).toBeUndefined();
+    expect(s.summary.watching).toBeUndefined();
+  });
+
   test("a held queue stays held", async () => {
     const { adapter, live, core, driver } = setup();
     adapter.addStored("s1", []);

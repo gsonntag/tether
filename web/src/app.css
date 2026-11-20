@@ -3376,3 +3376,11 @@
 .t-share-list { display: flex; flex-direction: column; gap: 6px; }
 .t-share-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .t-share-email { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+.t-watching {
+  color: var(--color-text-blue, var(--color-accent));
+}
+.t-watching-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
