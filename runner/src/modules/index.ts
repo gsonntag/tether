@@ -16,6 +16,7 @@ import { filesModule } from "./files";
 import { gitModule } from "./git";
 import { homeAgentModule } from "./homeAgent";
 import type { HomeLine } from "./homeLine";
+import type { HubPort } from "../core/hubPort";
 import type { WorktreeRecord } from "../config";
 import type { SetupRun } from "../core/shellRuns";
 import { linksModule } from "./links";
@@ -165,6 +166,8 @@ export interface ModuleContext {
   homeLine?: HomeLine;
   /** short links to sessions (links/store.ts): one for the whole runner */
   links?: ShortLinks;
+  /** the texting hub's wire (core/hubPort.ts): who texts for this runner, and frames to and from it */
+  hub?: HubPort;
 }
 
 export interface Module {

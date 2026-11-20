@@ -34,7 +34,7 @@ export function normalPhone(v: string): string | undefined {
 }
 
 /** The top-level keys this version writes; any other is kept as it was. */
-const KNOWN = new Set(["settings", "router", "connectors", "prefer", "lastVia", "replyVia"]);
+const KNOWN = new Set(["settings", "router", "connectors", "prefer", "lastVia", "replyVia", "hub"]);
 
 export class TextingStore {
   settings: TextingSettings = {};
@@ -45,6 +45,8 @@ export class TextingStore {
   prefer?: string;
   /** the connector the person last wrote on */
   lastVia?: string;
+  /** this runner is the texting hub: it texts for its owner's other runners too (hubChannel.ts) */
+  hub = false;
   /** for each session (and the Home agent) the person wrote, the connector and place it came by: answers go back there */
   replyVia: Record<string, { via: string; place?: string }> = {};
   /** what else the file held (a newer or older Tether's): written back as it was */
@@ -63,6 +65,7 @@ export class TextingStore {
         if (v?.connectors && typeof v.connectors === "object" && !Array.isArray(v.connectors)) this.connectors = v.connectors;
         if (typeof v?.prefer === "string") this.prefer = v.prefer;
         if (typeof v?.lastVia === "string") this.lastVia = v.lastVia;
+        if (v?.hub === true) this.hub = true;
         if (v?.replyVia && typeof v.replyVia === "object" && !Array.isArray(v.replyVia))
           for (const [k, b] of Object.entries(v.replyVia as Record<string, any>))
             if (b && typeof b.via === "string") this.replyVia[k] = { via: b.via, ...(typeof b.place === "string" ? { place: b.place } : {}) };
@@ -137,7 +140,7 @@ export class TextingStore {
     try {
       mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
       const tmp = `${this.file}.${process.pid}.tmp`;
-      const extra = { ...(Object.keys(this.connectors).length ? { connectors: this.connectors } : {}), ...(this.prefer ? { prefer: this.prefer } : {}), ...(this.lastVia ? { lastVia: this.lastVia } : {}), ...(Object.keys(this.replyVia).length ? { replyVia: this.replyVia } : {}) };
+      const extra = { ...(Object.keys(this.connectors).length ? { connectors: this.connectors } : {}), ...(this.prefer ? { prefer: this.prefer } : {}), ...(this.lastVia ? { lastVia: this.lastVia } : {}), ...(Object.keys(this.replyVia).length ? { replyVia: this.replyVia } : {}), ...(this.hub ? { hub: true } : {}) };
       writeFileSync(tmp, JSON.stringify({ ...this.other, settings: this.settings, router: this.router, ...extra }), { mode: 0o600 });
       chmodSync(tmp, 0o600);
       renameSync(tmp, this.file);

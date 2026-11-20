@@ -51,6 +51,8 @@ export interface Outbound {
   place?: string;
   /** the place is shared (a channel): set only for the direct answer to a message written there */
   shared?: boolean;
+  /** the connector `place` is on, when it isn't the channel's own (a text through the texting hub: hubChannel.ts) */
+  via?: string;
 }
 
 /** A send that went partly (a long message split, a later part failed): the parts that went. */

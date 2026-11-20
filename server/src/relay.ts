@@ -118,6 +118,8 @@ export class Relay {
   readonly tickets: Tickets;
   /** the viewers frame last sent to each runner, so only changes go out */
   private viewersSent = new Map<string, string>();
+  /** the textHub frame last sent to each runner, so only changes go out */
+  private hubSent = new Map<string, string>();
   private readonly owners: RunnerOwners | null;
 
   constructor(opts: RelayOptions = {}) {
@@ -397,6 +399,50 @@ export class Relay {
         this.out(at.browser, { t: "termEnd", attachId: m.attachId, reason: m.reason });
         return;
       }
+      case "texting": {
+        // Only between a runner and its texting hub, either way; anything else answers like an offline runner.
+        const from = this.runners.get(runnerId)!;
+        const to = this.runners.get(m.to);
+        if (to && (this.hubOf(from)?.info.id === to.info.id || this.hubOf(to)?.info.id === runnerId)) return this.out(to.sock, { t: "texting", from: runnerId, m: m.m });
+        if (m.m.k === "req") this.out(sock, { t: "texting", from: m.to, m: { k: "res", rid: m.m.rid, ok: false, error: "That computer is offline." } });
+        return;
+      }
+    }
+  }
+
+  /** Whether two runners are one person's: the same token's, or (with an owner map) tokens with the same people. */
+  private sameTenant(a: RunnerConn, b: RunnerConn): boolean {
+    if (!this.owners || a.token === b.token) return true;
+    const x = this.owners.get(a.token);
+    const y = this.owners.get(b.token);
+    return !!x && !!y && x.size === y.size && [...x].every((p) => y.has(p));
+  }
+
+  /**
+   * The runner that texts for this one (SPEC §11 Texting): a connected texting hub of the same
+   * person's, one that can text now first, then the longest connected. None for a hub itself.
+   */
+  private hubOf(r: RunnerConn): RunnerConn | undefined {
+    if (r.info.textingHub) return undefined;
+    let best: RunnerConn | undefined;
+    for (const h of this.runners.values()) {
+      if (h === r || !h.info.textingHub || !this.sameTenant(r, h)) continue;
+      const better = !best || (h.info.textingHub.up !== best.info.textingHub!.up ? h.info.textingHub.up : (h.info.connectedAt ?? 0) !== (best.info.connectedAt ?? 0) ? (h.info.connectedAt ?? 0) < (best.info.connectedAt ?? 0) : h.info.id < best.info.id);
+      if (better) best = h;
+    }
+    return best;
+  }
+
+  /** Tells each runner its texting hub, when that changed (a hub came, went, or can text now or not). */
+  private sendHubs() {
+    for (const [id, r] of this.runners) {
+      const h = this.hubOf(r);
+      // A new connection starts with no hub (the runner forgets it on disconnect): nothing to say yet.
+      if (!h && !this.hubSent.has(id)) continue;
+      const frame = JSON.stringify({ t: "textHub", hub: h ? { id: h.info.id, name: h.info.name, up: h.info.textingHub!.up, images: h.info.textingHub!.images } : null } satisfies ServerToRunner);
+      if (this.hubSent.get(id) === frame) continue;
+      this.hubSent.set(id, frame);
+      this.raw(r.sock, frame);
     }
   }
 
@@ -418,9 +464,11 @@ export class Relay {
     if (!id || this.runners.get(id)?.sock !== sock) return;
     this.runners.delete(id);
     this.viewersSent.delete(id);
+    this.hubSent.delete(id);
     this.forgetRunner(id, "The runner disconnected.");
     this.log(`runner ${logValue(id)} disconnected`);
     this.broadcastRunners();
+    this.sendHubs();
   }
 
   private hello(sock: Socket, info: Omit<RunnerInfo, "connectedAt">) {
@@ -461,6 +509,7 @@ export class Relay {
     const was = this.runnerOf.get(sock);
     if (was && was !== id && this.runners.get(was)?.sock === sock) {
       this.runners.delete(was);
+      this.hubSent.delete(was);
       this.forgetRunner(was, "The runner changed its id.");
     }
     this.runnerOf.set(sock, id);
@@ -472,9 +521,10 @@ export class Relay {
     const now = this.runners.get(id)!;
     for (const [s, b] of [...this.browsers]) this.reconcile(s, b, now);
     this.out(sock, { t: "welcome", ...(this.push ? { push: this.push } : {}) });
-    // A new connection starts with no viewers: tell it all of them.
-    if (prev?.sock !== sock) this.viewersSent.delete(id);
+    // A new connection starts with no viewers and no hub: tell it all of them.
+    if (prev?.sock !== sock) (this.viewersSent.delete(id), this.hubSent.delete(id));
     this.sendViewers(id);
+    this.sendHubs();
     if (prev?.sock !== sock)
       this.log(`runner ${logValue(id)} (${logValue(info.name)}) connected from ${logValue(info.hostname)}; ${info.harnesses.map((h) => `${h.id} ${logValue(h.version, 40)}`).join(", ") || "no harnesses"}`);
     this.broadcastRunners();
