@@ -1620,6 +1620,13 @@ its numbers behind a visible **Show the numbers** button, and tables by harness 
 project (the top 8, the rest as one row, and TETHER_HIDE_PROJECTS folders and the Home agent's as one
 unnamed row). A table's first column stays put while a phone scrolls it sideways.
 
+With more than one runner, the Runner menu's first choice is **All runners**, where Usage starts:
+the browser asks every online runner for its report and adds them up (`combineUsage`,
+`shared/usage.ts`): totals and days summed, models by harness and model, projects by folder and
+re-ranked (top 8, the rest as one row, hidden as one), plan limits named by runner, the scan running
+if any is and read as long ago as the oldest. A **By runner** table follows the chart. A runner that's
+offline or fails is left out and named ("Not included: …"); the rest still show.
+
 A sum that leaves out requests with no price ends in **+** (a tile says how many), a source with
 nothing priced says **no price**, one with no requests **—**, and a dollar bar for such a day has a +
 over it: a partial subtotal is never shown as whole. When some logs couldn't be read (`scan.errors`),

@@ -14,6 +14,9 @@ import { UsageSettings } from "./UsageSettings";
 import { RunnersSettings } from "./RunnersSettings";
 import { accessOf } from "../runners";
 
+/** The Runner menu's "All runners" (Usage only). */
+const ALL = "*all";
+
 type Page = "runners" | "credentials" | "azure" | "texting" | "notifications" | "agents" | "updates" | "usage";
 const labels: Record<CredentialSource, string> = { anthropic: "Anthropic API key", openai: "OpenAI API key", azure: "API key" };
 
@@ -26,6 +29,8 @@ export function Settings({ page: asked }: { page: Page }) {
   const owner = !role || role === "owner" || runners.length > 0;
   const page: Page = owner ? asked : "notifications";
   const [chosen, setChosen] = useState("");
+  // Usage can show every runner together: its first choice, and where it starts.
+  const allRunners = page === "usage" && runners.length > 1 && (chosen === ALL || !chosen);
   const runner = runners.find((r) => r.id === chosen) ?? runners.find((r) => r.online) ?? runners[0];
   return (
     <main className="t-settings-page">
@@ -53,8 +58,8 @@ export function Settings({ page: asked }: { page: Page }) {
       <RunnersSettings />
       </> : page === "updates" ? <HarnessUpdates /> : <>
       <Heading level={2}>{page === "azure" ? "Azure" : page === "texting" ? "Messaging" : page === "agents" ? "Agents" : page === "usage" ? "Usage" : "Credentials"}</Heading>
-      {runners.length > 1 && <label className="t-field">Runner<select className="t-select" value={runner?.id ?? ""} onChange={(e) => setChosen(e.target.value)}>{runners.map((r) => <option key={r.id} value={r.id}>{r.name || r.id}</option>)}</select></label>}
-      {!runner ? <div className="t-inline-status">No runner connected.</div> : !runner.online ? <div className="t-inline-status">Runner offline.</div> : page === "azure" ? <AzureSettings key={runner.id} runnerId={runner.id} /> : page === "texting" ? <TextingSettings key={runner.id} runnerId={runner.id} /> : page === "agents" ? <AgentSettings key={runner.id} runnerId={runner.id} /> : page === "usage" ? <UsageSettings key={runner.id} runnerId={runner.id} /> : <RunnerCredentials key={runner.id} runnerId={runner.id} />}
+      {runners.length > 1 && <label className="t-field">Runner<select className="t-select" value={allRunners ? ALL : runner?.id ?? ""} onChange={(e) => setChosen(e.target.value)}>{page === "usage" && <option value={ALL}>All runners</option>}{runners.map((r) => <option key={r.id} value={r.id}>{r.name || r.id}{page === "usage" && !r.online ? " (offline)" : ""}</option>)}</select></label>}
+      {allRunners ? <UsageSettings key={ALL} runners={runners.map((r) => ({ id: r.id, name: r.name || r.id, online: r.online }))} /> : !runner ? <div className="t-inline-status">No runner connected.</div> : !runner.online ? <div className="t-inline-status">Runner offline.</div> : page === "azure" ? <AzureSettings key={runner.id} runnerId={runner.id} /> : page === "texting" ? <TextingSettings key={runner.id} runnerId={runner.id} /> : page === "agents" ? <AgentSettings key={runner.id} runnerId={runner.id} /> : page === "usage" ? <UsageSettings key={runner.id} runners={[{ id: runner.id, name: runner.name || runner.id, online: true }]} /> : <RunnerCredentials key={runner.id} runnerId={runner.id} />}
       </>}
       </div>
       </div>
