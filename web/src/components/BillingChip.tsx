@@ -3,7 +3,7 @@ import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMe
 import { ChevronDownIcon } from "@heroicons/react/16/solid";
 import { costChip } from "../../../shared/costs";
 import type { BillingSource, SourceChoices } from "../../../shared/credentials";
-import { isApiBilling, planLines, usageChip } from "../../../shared/labels";
+import { isApiBilling, planChip, planLines, usageChip } from "../../../shared/labels";
 import { UNKNOWN_BILLING, type HarnessCapabilities, type HarnessId, type LiveState, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { navigate } from "../route";
@@ -41,18 +41,21 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
   const { choices, refresh } = useSources(runnerId, session.harness, changeable);
   const billing = billingForDisplay(state) ?? UNKNOWN_BILLING;
   const usage = usageChip(billing, state.plan);
+  const limits = billing.kind === "plan" ? planChip(state.plan) : undefined;
   const cost = costChip(state.cost);
   const paid = isApiBilling(billing);
   const showSessionCost = paid || !!state.cost;
   const chip = paid ? { className: "t-chip t-paid-badge", title: billing.label } : { className: "t-chip t-chip-info t-usage-chip", title: usage.detail };
-  const body = paid ? <><span>{billing.label}</span><span className="t-api-cost" title={cost.detail}>{cost.text}</span></> : usage.text;
-  if (!choices) return <span {...chip}>{body}</span>;
+  const body = paid ? <><span>{billing.label}</span><span className="t-api-cost" title={cost.detail}>{cost.text}</span></> : limits ? limits.text : usage.text;
 
-  const menu = sourceMenu(session.harness, state, choices);
-  // The plan's figures whatever the session draws from, by the plan's own name, so a key session sees them before switching.
-  const planName = choices.options.find((o) => o.source === "subscription")?.billing.label;
-  const plan = planName ? planLines(state.plan) : [];
-  const autoKey = standalone || !onAutoKey || session.sideOf ? undefined : autoKeyItem(session.harness, state, choices);
+  const planName = choices?.options.find((o) => o.source === "subscription")?.billing.label ?? (billing.kind === "plan" ? billing.label : "Plan limits");
+  const plan = planLines(state.plan);
+  const hasMenu = !!choices || plan.length > 0 || showSessionCost;
+  if (!hasMenu) return <span {...chip}>{body}</span>;
+
+  const menu = choices ? sourceMenu(session.harness, state, choices) : undefined;
+  const autoKey = choices && (standalone || !onAutoKey || session.sideOf ? undefined : autoKeyItem(session.harness, state, choices));
+  const hasMoreBelowPlan = showSessionCost || (!!menu && (menu.items.length > 0 || menu.addKey));
   return (
     <>
       <DropdownMenu
@@ -63,7 +66,7 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
           void rpc(runnerId, "refreshPlan", { harness: session.harness }).catch(() => {});
         }}
         renderTrigger={(p) => (
-          <button type="button" {...chip} className={`${chip.className} t-source-chip`} {...p} aria-label={`Source: ${paid ? `${billing.label}, ${cost.text}` : usage.text}`}>
+          <button type="button" {...chip} className={`${chip.className} t-source-chip`} {...p} aria-label={`Source: ${paid ? `${billing.label}, ${cost.text}` : limits ? `${billing.label}, ${limits.text}` : usage.text}`}>
             {body}
             <ChevronDownIcon aria-hidden />
           </button>
@@ -74,21 +77,23 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
             {plan.map((line) => <div key={line} className="t-plan-line">{line}</div>)}
           </DropdownMenuGroup>
         )}
-        {plan.length > 0 && <DropdownMenuDivider />}
+        {plan.length > 0 && hasMoreBelowPlan && <DropdownMenuDivider />}
         {showSessionCost && <>
           <SessionApiCostGroup billing={billing} cost={state.cost} />
-          <DropdownMenuDivider />
+          {!!menu && (menu.items.length > 0 || menu.addKey) && <DropdownMenuDivider />}
         </>}
-        <DropdownMenuRadioGroup label="Source" value={menu.value} onChange={(value) => { if (value !== menu.value && value !== CURRENT_SOURCE) onSwitch(value as BillingSource); }}>
-          {menu.items.map((i) => <DropdownMenuRadioItem key={i.value} value={i.value} label={i.label} description={i.reason} isDisabled={!!i.reason} />)}
-        </DropdownMenuRadioGroup>
+        {menu && menu.items.length > 0 && (
+          <DropdownMenuRadioGroup label="Source" value={menu.value} onChange={(value) => { if (value !== menu.value && value !== CURRENT_SOURCE) onSwitch(value as BillingSource); }}>
+            {menu.items.map((i) => <DropdownMenuRadioItem key={i.value} value={i.value} label={i.label} description={i.reason} isDisabled={!!i.reason} />)}
+          </DropdownMenuRadioGroup>
+        )}
         {autoKey && <DropdownMenuDivider />}
         {autoKey && <DropdownMenuCheckboxItem label={autoKey.label} value={!!state.autoKey} onChange={(on) => onAutoKey?.(on)} />}
         {autoKey?.order && <DropdownMenuItem label="Fallback keys…" onClick={() => setEditingFallback(true)} />}
-        {menu.addKey && menu.items.length > 0 && <DropdownMenuDivider />}
-        {menu.addKey && <DropdownMenuItem label="Add API key…" onClick={() => navigate({ page: "credentials" })} />}
+        {menu?.addKey && menu.items.length > 0 && <DropdownMenuDivider />}
+        {menu?.addKey && <DropdownMenuItem label="Add API key…" onClick={() => navigate({ page: "credentials" })} />}
       </DropdownMenu>
-      {editingFallback && <FallbackKeysDialog harness={session.harness} state={state} choices={choices} onClose={() => setEditingFallback(false)} onSave={async (fallbackKeys) => { await rpc(runnerId, "setAutoKey", { sessionId: session.id, fallbackKeys }); }} />}
+      {editingFallback && choices && <FallbackKeysDialog harness={session.harness} state={state} choices={choices} onClose={() => setEditingFallback(false)} onSave={async (fallbackKeys) => { await rpc(runnerId, "setAutoKey", { sessionId: session.id, fallbackKeys }); }} />}
     </>
   );
 }
