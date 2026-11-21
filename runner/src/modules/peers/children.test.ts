@@ -8,8 +8,10 @@ import { peerAction, peerTarget } from "../../../../shared/peers";
 import type { HarnessId, Msg, SessionSummary } from "../../../../shared/transcript";
 import { claudeMove } from "../../adapters/claude/move";
 import { codexMove } from "../../adapters/codex/move";
+import { VIEW_OPS } from "../../../../shared/access";
+import { OpRegistry } from "../../core/ops";
 import { CHILDREN_MAX, DEPTH_MAX, MAX_REPORTS } from "./children";
-import { Peers } from "./index";
+import { Peers, peersModule } from "./index";
 
 const agyMove = {
   modes: [
@@ -249,6 +251,52 @@ describe("tether_start", () => {
       const again = new Peers({ log: () => {}, dataDir: dir, session: () => undefined, sessions: {} } as any);
       expect(again.children.of("claude:c1")).toMatchObject({ parent: "claude:boss", depth: 1, reports: 0 });
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("spawnedFamily", () => {
+  test("a starter lists whom it started, newest first, released ones too; a child names its starter", async () => {
+    const t = setup();
+    await t.start({ harness: "claude", prompt: "x", title: "One" });
+    await t.start({ harness: "codex", prompt: "y", title: "Two" });
+    await t.start({ harness: "antigravity", prompt: "z", title: "Gone" });
+    t.rows.find((r) => r.id === "claude:c1")!.updatedAt = 5;
+    t.rows.find((r) => r.id === "codex:c2")!.updatedAt = 9;
+    t.rows.find((r) => r.id === "antigravity:c3")!.archived = true;
+    // The person takes one over: it stops reporting, but it's still the starter's.
+    t.peers.message("claude:c1", { id: "m", role: "user", ts: 0, parts: [{ type: "text", text: "mine now" }] });
+    expect(t.peers.children.of("claude:c1")?.released).toBe("person");
+    const f = await t.peers.children.family("claude:boss");
+    expect(f.parent).toBeUndefined();
+    expect(f.children.map((c) => [c.id, c.title])).toEqual([["codex:c2", "Two"], ["claude:c1", "One"]]);
+    expect(f.children.every((c) => !c.parentSessionId)).toBe(true);
+    expect(await t.peers.children.family("claude:c1")).toEqual({ parent: { id: "claude:boss", title: "claude:boss" }, children: [] });
+    // Nobody started it, and it started nobody (or an id that isn't a session).
+    expect(await t.peers.children.family("claude:nobody")).toEqual({ children: [] });
+  });
+
+  test("a child that's gone from the runner is left out; an archived starter isn't named", async () => {
+    const t = setup();
+    await t.start({ harness: "claude", prompt: "x" });
+    await t.start({ harness: "claude", prompt: "y" });
+    t.rows.splice(t.rows.findIndex((r) => r.id === "claude:c2"), 1);
+    expect((await t.peers.children.family("claude:boss")).children.map((c) => c.id)).toEqual(["claude:c1"]);
+    t.rows[0]!.archived = true;
+    expect((await t.peers.children.family("claude:c1")).parent).toBeUndefined();
+  });
+
+  test("the module registers it, and viewers may use it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "family-"));
+    const ops = new OpRegistry();
+    const bus = { on: () => () => {} };
+    const stop = await peersModule.start({ log: () => {}, dataDir: dir, ops, bus, session: () => undefined, sessions: { adapters: () => [], list: () => [], open: async () => Promise.reject(new Error("none")) } } as any);
+    try {
+      expect(await ops.handle("spawnedFamily", { sessionId: "claude:a" })).toEqual({ ok: true, data: { children: [] } });
+      expect(VIEW_OPS.has("spawnedFamily")).toBe(true);
+    } finally {
+      if (typeof stop === "function") stop();
       rmSync(dir, { recursive: true, force: true });
     }
   });

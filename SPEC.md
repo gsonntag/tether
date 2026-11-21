@@ -478,6 +478,20 @@ You can open any subagent and see its exact turns (every message, thought, tool 
 order), live while it runs and afterwards. The parent's tool card links to it, and the session shows
 its subagents as children in the sidebar and in the session header.
 
+**In the sidebar**: under the open session's row, one toggle row "▸ N subagents" (a dot and "· k
+running" if any run), closed by default. Open, it shows a few rows (running first, the open one
+always) and "N more" for the rest (a searchable list). Open or closed is kept per device
+(`tether.subagentsOpen`); when the open session is one of the rows, the section shows open so its
+row is in view, until toggled.
+
+**Sessions an agent started** (`tether_start`, §9a) count as its children too, beside its
+subagents, but they're ordinary sessions: no `parentSessionId`, in the lists as well, full header
+controls. The peers module's read-only op `spawnedFamily {sessionId} → {parent?: {id, title},
+children}` (from `children.json`; released children too, never archived ones; runners say
+`RunnerInfo.spawnedFamily`) is fetched for the open session only. Their rows read "<harness glyph>
+started by agent". The header: "← Started by “<title>”" on one, and a **Started** chip on its
+starter listing them (harness, status).
+
 | | Claude Code | Codex |
 |---|---|---|
 | Live turns | SDK frames with `parent_tool_use_id` / `agent_id`; set `forwardSubagentText: true` so text and thinking come through, not only tool calls | each subagent is its own thread (`parentThreadId`); its `item/*` events stream like any thread |
@@ -1023,8 +1037,7 @@ event (with the message's text) and the queued message's id from `SessionActions
   doesn't count; starts side by side reserve their slot at once); a child may start children, a
   grandchild can't; starts count toward the 10-per-10-minutes rate and the hop cap. A start that
   fails gives the rate slot back; one whose prompt couldn't be sent names the idle session it
-  made. Not yet: children shown under their starter in the sidebar and header (the card links to
-  it).
+  made. Children show under their starter in the sidebar and header (§6a), taken over or not.
 - Tool cards read "Asked “<title>”" ("Ask failed" once asked, "Not asked" when it never went),
   "Sent to “<title>”", "Sent to all", "Started “<title>”", with the message, an Open link and the answer. The link goes
   to the session the runner reached: its answer names it as `"<title>" (<id>)` on its first line. Terminal mode: a TUI-driven session can receive (it queues until Back

@@ -10,13 +10,16 @@ import { dirname, join, resolve } from "node:path";
 import { markTitle, parseSessionMessage, sessionMessage, TEXTED_VIA } from "../../../../shared/fromTether";
 import { LEVELS, mapMode, type Level } from "../../../../shared/move";
 import { waitingNow } from "../../../../shared/schedule";
-import { HARNESS_LABELS, type HarnessId, type Msg } from "../../../../shared/transcript";
+import { HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
+import type { SpawnedFamily } from "../../../../shared/protocol";
 import type { WorktreeMade } from "../../../../shared/worktree";
 import { LEVEL_WORDS, levelOf } from "../../core/permissionLevel";
 import type { ModuleContext, SessionLook } from "..";
 import { lastReply } from "../sideChats";
 import type { PeerAnswer } from "./server";
 
+/** The newest children spawnedFamily lists (each older one not in memory is opened to read its summary). */
+export const FAMILY_MAX = 100;
 /** Turns a child reports before the starter stops hearing from it: a loop can't run forever. */
 export const MAX_REPORTS = 20;
 /** Children a session follows at once. */
@@ -88,6 +91,24 @@ export class Children {
   /** The child a session is, if an agent started it. */
   of(id: string): Child | undefined {
     return this.kids[id];
+  }
+
+  /**
+   * Who started a session and whom it started (the spawnedFamily op: the web shows them as its
+   * children, SPEC §6a). Released children too: who started whom doesn't change when the person
+   * takes one over. Archived or gone ones are left out.
+   */
+  async family(id: string): Promise<SpawnedFamily> {
+    const listed = new Map(this.ctx.sessions.list().map((s) => [s.id, s]));
+    const find = async (sid: string): Promise<SessionSummary | undefined> => listed.get(sid) ?? this.ctx.session(sid)?.summary ?? (await this.ctx.sessions.open(sid).catch(() => undefined))?.summary;
+    const mine = this.kids[id];
+    const up = mine && (await find(mine.parent));
+    const ids = Object.entries(this.kids)
+      .filter(([, c]) => c.parent === id)
+      .map(([k]) => k)
+      .slice(-FAMILY_MAX);
+    const children = (await Promise.all(ids.map(find))).filter((s): s is SessionSummary => !!s && !s.archived);
+    return { ...(up && !up.archived ? { parent: { id: up.id, title: up.title } } : {}), children: children.sort((a, b) => b.updatedAt - a.updatedAt) };
   }
 
   /** The sessions `parent` started that still report to it and are still at work (a finished, idle one doesn't count). */

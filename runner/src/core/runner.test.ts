@@ -92,6 +92,7 @@ test("setRunnerName renames in runner.json and says hello again; blank goes back
   const hellos: string[] = [];
   const pinning: unknown[] = [];
   const canText: unknown[] = [];
+  const spawned: unknown[] = [];
   const s = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -99,7 +100,7 @@ test("setRunnerName renames in runner.json and says hello again; blank goes back
     websocket: {
       message(ws, raw) {
         const m = JSON.parse(String(raw));
-        if (m.t === "hello") (hellos.push(m.runner.name), pinning.push(m.runner.pinning), canText.push(m.runner.canText), ws.send(JSON.stringify({ t: "welcome" })));
+        if (m.t === "hello") (hellos.push(m.runner.name), pinning.push(m.runner.pinning), canText.push(m.runner.canText), spawned.push(m.runner.spawnedFamily), ws.send(JSON.stringify({ t: "welcome" })));
       },
     },
   });
@@ -112,6 +113,8 @@ test("setRunnerName renames in runner.json and says hello again; blank goes back
   expect(pinning[0]).toBe(true);
   // and that it takes setCanText (the browser shows the "Session can text me" box only then)
   expect(canText[0]).toBe(true);
+  // and spawnedFamily (sessions an agent started show under their starter)
+  expect(spawned[0]).toBe(process.env.TETHER_PEERS === "0" ? undefined : true);
   expect(await r.ops.handle("setRunnerName", { name: "  Work\nbox  " })).toEqual({ ok: true, data: { name: "Work box" } });
   await until(() => hellos.length === 2);
   expect(hellos[1]).toBe("Work box");

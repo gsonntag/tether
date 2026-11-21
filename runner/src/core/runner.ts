@@ -96,6 +96,8 @@ export function createRunner(o: RunnerOptions) {
     gitActions: true,
     files: true,
     pinning: true,
+    // The peers module's op (off with it).
+    ...(process.env.TETHER_PEERS === "0" ? {} : { spawnedFamily: true }),
     canText: true,
     // The relay shows the runner to these people (shared/access.ts) and only its owners see the list.
     ...(prefs.shared().length ? { shared: prefs.shared() } : {}),

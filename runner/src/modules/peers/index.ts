@@ -454,6 +454,8 @@ export const peersModule: Module = {
         instructions: () => sessionInstructions(runnerSettings()),
       }),
     );
+    // Read only (shared/access.ts VIEW_OPS): the web shows these as the session's children (SPEC §6a).
+    ctx.ops.register("spawnedFamily", ({ sessionId }) => peers.children.family(String(sessionId ?? "")));
     const offs = [
       ctx.bus.on("queueGone", ({ sessionId, msgId, how, text }) => peers.queueGone(sessionId, msgId, how, text)),
       ctx.bus.on("message", ({ sessionId, msg }) => peers.message(sessionId, msg)),

@@ -12,13 +12,14 @@ import { avatarSrc } from "../avatar";
 import { canPin } from "../runners";
 import { useStore } from "../store";
 import { RunnerDot } from "./RunnerStatus";
-import { SessionRow } from "./SessionRow";
+import { SessionRow, StatusDot } from "./SessionRow";
 import { useChildren } from "./useChildren";
-import { bySubagentOrder, SubagentsPopover } from "./SubagentChips";
+import { SubagentsPopover } from "./SubagentChips";
+import { childrenOpen, childrenToggle, fewChildren, loadChildrenOpen, saveChildrenOpen } from "../subagents";
+import { useNow } from "./useNow";
 
 /** Subagent rows shown under a session before "N more". */
 const CHILD_ROWS = 5;
-import { useNow } from "./useNow";
 import { SidebarHandle } from "./WidthHandle";
 
 const PAGE = 40;
@@ -96,16 +97,39 @@ export function Sidebar() {
   const children = useChildren(expanded?.runnerId, expanded?.sessionId);
   const selectedRow = expanded && [...pinned, ...rest.slice(0, shown)].find((r) => r.runnerId === expanded.runnerId && r.id === expanded.sessionId);
   const childRow = (c: Row) => <SessionRow key={c.id} row={c} now={now} selected={!!selected && c.id === selected.sessionId} child />;
+  // Subagents (and sessions its agent started) sit behind one toggle row, open or closed as this
+  // device keeps it; open while one of them is the open session, until toggled.
+  const [savedOpen, setSavedOpen] = useState(loadChildrenOpen);
+  const [toggled, setToggled] = useState<{ for: string; open: boolean }>();
+  const selKey = selected ? `${selected.runnerId}\u0000${selected.sessionId}` : "";
+  const sectionOpen = childrenOpen(savedOpen, children, selected?.sessionId, toggled?.for === selKey ? toggled.open : undefined);
   // A session can have a hundred subagents: a few rows (running first, the open one always), the
   // rest behind "N more", which opens the whole list.
   const childRows = () => {
-    const sorted = bySubagentOrder(children);
-    const few = sorted.slice(0, CHILD_ROWS);
-    const open = selected && sorted.find((c) => c.id === selected.sessionId);
-    if (open && !few.includes(open)) few.push(open);
-    const rest = children.length - few.length;
+    if (!children.length) return null;
+    const { label, running } = childrenToggle(children);
+    const toggle = (
+      <button
+        type="button"
+        className="t-child-toggle"
+        aria-expanded={sectionOpen}
+        onClick={() => {
+          const open = !sectionOpen;
+          saveChildrenOpen(open);
+          setSavedOpen(open);
+          setToggled({ for: selKey, open });
+        }}
+      >
+        <span className="t-child-chev" aria-hidden="true">{sectionOpen ? "▾" : "▸"}</span>
+        <span className="t-child-label">{label}</span>
+        {running > 0 && <StatusDot status="running" />}
+      </button>
+    );
+    if (!sectionOpen) return toggle;
+    const { few, rest } = fewChildren(children, selected?.sessionId, CHILD_ROWS);
     return (
       <>
+        {toggle}
         {few.map(childRow)}
         {rest > 0 && expanded && (
           <SubagentsPopover

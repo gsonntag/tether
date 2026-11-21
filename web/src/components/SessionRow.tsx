@@ -181,7 +181,13 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hid
           )}
         </span>
         <span className="t-row-meta">
-          {child ? <span>{row.agentType ?? "subagent"}</span> : <HarnessGlyph harness={row.harness} />}
+          {child && row.spawned ? (
+            // A session another session's agent started (SPEC §6a): its harness, and who made it.
+            <>
+              <HarnessGlyph harness={row.harness} />
+              <span className="t-spawned">started by agent</span>
+            </>
+          ) : child ? <span>{row.agentType ?? "subagent"}</span> : <HarnessGlyph harness={row.harness} />}
           {!child && !hideProject && <span className="t-proj">{folderName(row.projectPath)}</span>}
           {runnerLabel && <span className="t-proj">{hideProject ? "" : "· "}{runnerLabel}</span>}
           <span>· {shortAgo(row.updatedAt, now)}</span>
