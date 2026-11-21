@@ -1,0 +1,126 @@
+import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { ToolPart } from "../../../../shared/transcript";
+import { AcpTranscript, acpTool } from "../acp/transcript";
+import { modelList } from "./models";
+import { agyScreen } from "./screen";
+
+const fixture = (name: string) => readFileSync(join(import.meta.dir, "fixtures", name), "utf8");
+const lines = (name: string) => fixture(name).trim().split("\n").map((l) => JSON.parse(l));
+const hooks = () => ({ stamp: () => 1000 });
+
+test("a replay becomes one message per prompt and one per turn, its calls classified", () => {
+  const t = new AcpTranscript("m", hooks());
+  for (const l of lines("replay.jsonl")) t.update(l.update);
+  const msgs = t.settled();
+  expect(msgs.map((m) => `${m.id}:${m.role}`)).toEqual(["m0:user", "m1:assistant", "m2:user", "m3:assistant"]);
+  const tools = msgs[1]!.parts.filter((p): p is ToolPart => p.type === "tool");
+  expect(tools.map((p) => [p.name, p.kind, p.status, p.path])).toEqual([
+    ["read_file", "read", "done", "/tmp/agy-fixture/notes.txt"],
+    ["edit_file", "edit", "done", "/tmp/agy-fixture/notes.txt"],
+    ["write_file", "write", "done", "/tmp/agy-fixture/todo.md"],
+  ]);
+  expect((tools[1]!.input as any).edits).toEqual([{ old_string: "line one\nline two\n", new_string: "line one\nline 2\n", path: "/tmp/agy-fixture/notes.txt" }]);
+  expect((tools[2]!.input as any).content).toBe("- a\n");
+  expect(msgs[1]!.parts.at(-1)).toEqual({ type: "text", text: "ok" });
+  const shell = msgs[3]!.parts[0] as ToolPart;
+  expect([shell.kind, shell.command, shell.status]).toEqual(["shell", "sleep 20; echo slept", "error"]);
+});
+
+test("a live session numbers its messages as a replay does, so the stored transcript takes over cleanly", () => {
+  const replay = new AcpTranscript("m", hooks());
+  for (const l of lines("replay.jsonl")) replay.update(l.update);
+  const stored = replay.settled();
+
+  const live = new AcpTranscript("m", hooks());
+  const prompts = stored.filter((m) => m.role === "user");
+  let turn = 0;
+  live.prompt(prompts[turn++]!.parts);
+  for (const l of lines("live.jsonl")) {
+    if (l.update) live.update(l.update);
+    if (l.result) {
+      live.end(undefined, l.result.stopReason === "cancelled");
+      if (turn < prompts.length) live.prompt(prompts[turn++]!.parts);
+    }
+  }
+  const msgs = live.settled();
+  expect(msgs.map((m) => m.id)).toEqual(stored.map((m) => m.id));
+  const shape = (ms: typeof msgs) => ms.map((m) => [m.role, m.parts.map((p) => (p.type === "tool" ? `${p.kind}:${p.status}` : p.type))]);
+  expect(shape(msgs)).toEqual(shape(stored));
+});
+
+test("live events: text streams as deltas, calls as patches, and each new message is announced", () => {
+  const t = new AcpTranscript("m", hooks());
+  t.prompt([{ type: "text", text: "hi" }]);
+  t.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Hel" } });
+  t.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "lo" } });
+  t.update({ sessionUpdate: "tool_call", toolCallId: "c1", name: "run_command", kind: "execute", status: "in_progress", rawInput: { CommandLine: "ls" } });
+  t.update({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "completed", rawOutput: { output: "a.txt" } });
+  t.end();
+  const ev = t.drain();
+  expect(ev.map((e) => e.type)).toEqual(["msg", "msg", "msg", "delta", "msg", "tool", "msg"]);
+  const patch = ev.find((e) => e.type === "tool") as any;
+  expect([patch.patch.status, patch.patch.output, patch.patch.command]).toEqual(["done", "a.txt", "ls"]);
+  const last = (ev.at(-1) as any).msg;
+  expect([last.streaming, last.parts[0].text]).toEqual([false, "Hello"]);
+});
+
+test("a stopped turn settles its running calls as errors, and a failed one carries its error", () => {
+  const t = new AcpTranscript("m", hooks());
+  t.prompt([{ type: "text", text: "go" }]);
+  t.update({ sessionUpdate: "tool_call", toolCallId: "c1", name: "run_command", kind: "execute", status: "in_progress", rawInput: { CommandLine: "sleep 9" } });
+  t.end(undefined, true);
+  expect((t.msgs[1]!.parts[0] as ToolPart).status).toBe("error");
+  t.prompt([{ type: "text", text: "again" }]);
+  t.end("Antigravity: quota exceeded");
+  expect([t.msgs[3]!.role, t.msgs[3]!.error]).toEqual(["assistant", "Antigravity: quota exceeded"]);
+});
+
+test("context, title and settings come through the hooks", () => {
+  const seen: any = {};
+  const t = new AcpTranscript("m", { stamp: () => 0, context: (c) => (seen.context = c), title: (x) => (seen.title = x), mode: (x) => (seen.mode = x) });
+  t.update({ sessionUpdate: "usage_update", used: 10497, size: 1048576 });
+  t.update({ sessionUpdate: "usage_update", used: 0, size: 1048576 });
+  t.update({ sessionUpdate: "session_info_update", title: "Edit Notes" });
+  t.update({ sessionUpdate: "current_mode_update", currentModeId: "plan" });
+  expect(seen).toEqual({ context: { used: 10497, total: 1048576 }, title: "Edit Notes", mode: "plan" });
+});
+
+test("a call's kind comes from ACP's own, a file made whole is a write", () => {
+  expect(acpTool({ sessionUpdate: "tool_call", toolCallId: "a", name: "grep_search", kind: "search", rawInput: { Query: "x" } }).kind).toBe("search");
+  expect(acpTool({ sessionUpdate: "tool_call", toolCallId: "b", name: "write_file", kind: "edit", rawInput: { Content: "x", Path: "/p/f" } }).kind).toBe("write");
+  expect(acpTool({ sessionUpdate: "tool_call", toolCallId: "c", name: "invoke_subagent", kind: "other" }).kind).toBe("other");
+});
+
+test("models and thinking levels are separate settings; modes keep Antigravity's ids", () => {
+  const config = [
+    { id: "model", options: [{ value: "gemini-3.8-flash", name: "Gemini 3.8 Flash" }, { value: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 (Thinking)" }] },
+    { id: "thought_level", options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }] },
+    { id: "mode", options: [{ value: "default", name: "Default", description: "Ask before edits and commands." }, { value: "accept-edits", name: "Accept edits" }, { value: "plan", name: "Plan" }] },
+  ];
+  const l = modelList(config);
+  expect(l.models).toEqual([
+    { id: "default", label: "Default", efforts: ["low", "high"] },
+    { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low", "high"] },
+    { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", efforts: ["low", "high"] },
+  ]);
+  expect(l.permissionModes.map((m) => [m.id, m.label])).toEqual([["default", "Ask first"], ["accept-edits", "Accept edits"], ["plan", "Plan"]]);
+});
+
+test("the TUI's screen: idle, working, asking for permission or trust", () => {
+  expect(agyScreen(fixture("screen-idle.txt"))).toEqual({ state: "idle", input: "", prompt: "normal" });
+  expect(agyScreen(fixture("screen-typed.txt"))).toEqual({ state: "idle", input: "fix the failing test", prompt: "normal" });
+  expect(agyScreen(fixture("screen-busy.txt")).state).toBe("busy");
+  expect(agyScreen(fixture("screen-permission.txt")).state).toBe("asking");
+  expect(agyScreen(fixture("screen-trust.txt")).state).toBe("asking");
+  expect(agyScreen("starting…").state).toBe("unknown");
+  const hint = fixture("screen-typed.txt").replace("> fix the failing test", "> Accept-edits mode: file edits auto-approved (shift+tab to cycle)");
+  expect(agyScreen(hint)).toEqual({ state: "idle", input: "", prompt: "normal" });
+});
+
+test("a command's output loses Antigravity's timing header, but keeps an unclean exit", () => {
+  const out = (output: string) => acpTool({ sessionUpdate: "tool_call_update", toolCallId: "x", kind: "execute", status: "completed", rawOutput: { output } }).output;
+  expect(out("Created At: 2026-11-20T23:02:15Z\nCompleted At: 2026-11-20T23:02:15Z\nCommand exited with code 0.\n\nhello\n")).toBe("hello\n");
+  expect(out("Created At: a\nCompleted At: b\nCommand exited with code 1.\n\noops")).toBe("Command exited with code 1.\n\noops");
+});

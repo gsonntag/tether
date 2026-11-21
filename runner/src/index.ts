@@ -6,6 +6,7 @@ import { join } from "node:path";
 import pkg from "../package.json";
 import { claudeAdapter } from "./adapters/claude";
 import { codexAdapter } from "./adapters/codex";
+import { antigravityAdapter } from "./adapters/antigravity";
 import { detectHarnesses } from "./adapters/detect";
 import { CONFIG_DIR, displayName, loadConfig } from "./config";
 import { CredentialStore, DATA_DIR, registerSecret } from "./credentials";
@@ -42,7 +43,7 @@ const runner = createRunner({
   defaultName: displayName({ ...config, name: undefined }),
   version: pkg.version,
   detectHarnesses: () => detectHarnesses(),
-  adapters: [claudeAdapter, codexAdapter],
+  adapters: [claudeAdapter, codexAdapter, antigravityAdapter],
   noticesFile: join(CONFIG_DIR, "notices.json"),
   attachmentsDir: join(CONFIG_DIR, "attachments"),
   homeFolder,

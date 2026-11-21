@@ -40,6 +40,8 @@ export const effortLabel = (e: string | undefined) => (e ? (EFFORTS[e] ?? cap(e)
 const MODES: Record<string, string> = {
   default: "Ask first",
   acceptEdits: "Accept edits",
+  // Antigravity's (runner/src/adapters/antigravity/modes.ts)
+  "accept-edits": "Accept edits",
   plan: "Plan",
   bypassPermissions: "Bypass permissions",
   auto: "Auto",

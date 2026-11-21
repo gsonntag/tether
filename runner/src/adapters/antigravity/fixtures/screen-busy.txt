@@ -1,0 +1,8 @@
+> Run the shell command: sleep 8; echo zz
+● Running (sleep 8; echo zz) (ctrl+o to expand)
+⣽  Running command...
+└ Tip: Use /cs to search in your codebase.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+esc to cancel                                                                                    Gemini 3.8 Flash · high

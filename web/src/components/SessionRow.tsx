@@ -19,7 +19,7 @@ export function shortAgo(ts: number, now = Date.now()): string {
   return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-const GLYPHS: Record<HarnessId, string> = { claude: "✻", codex: "◎" };
+const GLYPHS: Record<HarnessId, string> = { claude: "✻", codex: "◎", antigravity: "▲" };
 
 export function HarnessGlyph({ harness }: { harness: HarnessId }) {
   return (

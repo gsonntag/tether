@@ -11,6 +11,7 @@ export { parseVersion };
 export const HARNESS_BINS: Record<HarnessId, string> = {
   claude: process.env.CLAUDE_BIN || "claude",
   codex: process.env.CODEX_BIN || "codex",
+  antigravity: process.env.AGY_BIN || "agy",
 };
 
 const TIMED_OUT = Symbol("timed out");

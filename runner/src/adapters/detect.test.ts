@@ -19,8 +19,8 @@ test("a harness counts only when its CLI runs and reports a version", async () =
     chmodSync(p, 0o755);
     return p;
   };
-  const found = await detectHarnesses({ claude: script("claude", 'echo "9.8.7 (Claude Code)"'), codex: join(d, "missing") });
+  const found = await detectHarnesses({ claude: script("claude", 'echo "9.8.7 (Claude Code)"'), codex: join(d, "missing"), antigravity: join(d, "missing-agy") });
   expect(found).toEqual([{ id: "claude", version: "9.8.7" }]);
-  const broken = await detectHarnesses({ claude: script("bad", "exit 1"), codex: script("slow", "sleep 5; echo 1.0.0") }, 200);
+  const broken = await detectHarnesses({ claude: script("bad", "exit 1"), codex: script("slow", "sleep 5; echo 1.0.0"), antigravity: join(d, "missing-agy") }, 200);
   expect(broken).toEqual([]);
 });

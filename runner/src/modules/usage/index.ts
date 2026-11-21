@@ -13,7 +13,7 @@ import { buildReport, type Source, type SourceSpan } from "./report";
 import { UsageScanner, type UsageRoot } from "./scan";
 
 const FRESH_MS = 60_000;
-const PLAN_LABELS: Record<HarnessId, string> = { claude: "Claude plan", codex: "ChatGPT plan" };
+const PLAN_LABELS: Record<HarnessId, string> = { claude: "Claude plan", codex: "ChatGPT plan", antigravity: "Google AI plan" };
 
 /** Every adapter's session logs. */
 export const usageRoots = (adapters: Adapter[]): UsageRoot[] => adapters.flatMap((a) => (a.usageStores?.() ?? []).map((s) => ({ harness: a.id, ...s })));

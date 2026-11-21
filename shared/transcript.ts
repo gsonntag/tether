@@ -8,7 +8,7 @@ import type { BillingSource, CredentialSource } from "./credentials";
 import type { ShellRun } from "./shellRun";
 import type { Watcher, WatchingSummary } from "./watchers";
 
-export type HarnessId = "claude" | "codex";
+export type HarnessId = "claude" | "codex" | "antigravity";
 
 /**
  * What a Claude session runs with when its model or effort isn't known (each on its own): always
@@ -19,12 +19,14 @@ export const CLAUDE_UNSET = { model: "claude-opus-5-5", effort: "medium" };
 export const HARNESS_LABELS: Record<HarnessId, string> = {
   claude: "Claude Code",
   codex: "Codex",
+  antigravity: "Antigravity",
 };
 
 /** The agent as a sentence names it: "Claude is working…", "Codex wants to run a command". */
 export const AGENT_NAMES: Record<HarnessId, string> = {
   claude: "Claude",
   codex: "Codex",
+  antigravity: "Antigravity",
 };
 
 /** The agent's name for a session id (`codex:…` -> "Codex"). */

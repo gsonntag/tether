@@ -47,7 +47,7 @@ export function NewSessionDialog() {
   const projects = useStore((s) => (rid ? (s.projects[rid] ?? NO_PROJECTS) : NO_PROJECTS));
   // The harnesses this runner drives (Claude Code first); a choice only when there are several.
   const offered = (online.find((r) => r.id === rid)?.harnesses ?? []).map((h) => h.id).filter((h): h is HarnessId => h in HARNESS_LABELS);
-  const harnesses: HarnessId[] = offered.length ? (["claude", "codex"] as HarnessId[]).filter((h) => offered.includes(h)) : ["claude"];
+  const harnesses: HarnessId[] = offered.length ? (["claude", "codex", "antigravity"] as HarnessId[]).filter((h) => offered.includes(h)) : ["claude"];
   const [picked, setPicked] = useState<HarnessId>(() => (stored(HARNESS_KEY) as HarnessId) ?? "claude");
   const harness: HarnessId = harnesses.includes(picked) ? picked : harnesses[0]!;
   const models = useStore((s) => (rid ? s.modelLists[modelListKey(rid, harness)] : undefined));

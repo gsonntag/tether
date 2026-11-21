@@ -15,7 +15,7 @@ const str = (v: unknown, what: string): string => {
 };
 const optStr = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 const optNum = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
-const harness = (v: unknown): HarnessId => (v === "codex" ? "codex" : v === "claude" || v === undefined ? "claude" : (str(undefined, "A known harness") as never));
+const harness = (v: unknown): HarnessId => (v === "codex" || v === "antigravity" ? v : v === "claude" || v === undefined ? "claude" : (str(undefined, "A known harness") as never));
 
 export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: LiveControl) {
   ops.register("renameSession", async (a) => {

@@ -17,7 +17,7 @@ harness's real terminal UI for anything Tether doesn't show.
 |---|---|
 | Name | Tether (app slug `tether`, env `TETHER_*`, config `~/.config/tether`) |
 | Repo | `gsonntag/tether`. v1 lives on the `v1` branch and the `v1-final` tag. v2 is fresh history on `main`, the default branch. `master` is deleted. Local checkout `~/tether`. v1 code is referenced and copied over deliberately, never wholesale (§12) |
-| Harnesses in the core | Claude Code and Codex. Others come later through the same adapter interface |
+| Harnesses in the core | Claude Code and Codex. Antigravity (Google's `agy`) came next through the same adapter interface (§6); others can follow |
 | Primary UI | Tether's own unified transcript, the same for every harness |
 | Consistency vs harness strengths | **A harness's own strengths win over identical behavior.** When one harness can do something better (e.g. Codex sharing a live thread with its TUI), use it, behind an adapter capability flag |
 | Harness-specific features | Through the **Terminal** button: the harness's real TUI, mirrored (§8). A plain shell per project is an option in the same panel |
@@ -409,6 +409,43 @@ relay directly.
   `account/rateLimits/updated` on a live connection (sparse). `primary`/`secondary` are placed by
   `windowDurationMins` (300, 10080); `usedPercent`, `resetsAt` in seconds.
 
+### Antigravity
+
+Google's coding agent, through its CLI `agy` (checked on 1.5.13). Everything goes through the
+**Agent Client Protocol** (ACP: JSON-RPC 2.0, a message per line, over stdio) that the hidden
+`agy acp` serves. The client in `adapters/acp/` is generic, so a later ACP harness can reuse it.
+
+- **Drive:** one `agy acp` per live session, which `session/load`s the conversation; each message
+  is a `session/prompt`, Stop is `session/cancel`. **No steering** (`canSteer: false`): a prompt sent
+  during a turn ends that turn's wait and runs after it, so Tether queues instead.
+- **Ids:** Antigravity picks them. `newId` makes the conversation (`session/new`), stored with no
+  prompt (not listed until its first), and the driver loads it. A prompt to an id it didn't make fails.
+- **Permissions:** its modes `default` (asks for edits and commands), `accept-edits` and `plan`
+  (`session/set_mode`). `session/request_permission` goes to the broker; allow and reject map to its
+  `allow_once` and `reject_once` options. A denial carries no reason (`noReason`). A request with
+  other options is a question with them as answers.
+- **Model and effort:** `configOptions`, set with `session/set_config_option`: `model` (a family,
+  "gemini-3.8-flash") and `thought_level` (low, medium, high) as the effort. "Default" leaves the
+  model to Antigravity.
+- **History:** the store is `~/.gemini/antigravity-cli/conversations/<id>.db`, SQLite whose rows are
+  undocumented protobuf, so Tether doesn't parse it. `session/load` replays a conversation as
+  `session/update`s instead; one builder (`acp/transcript.ts`) turns a replay and a live turn into
+  the same messages under the same ids: a prompt is a message, and everything until the next prompt
+  is one assistant message. Antigravity keeps no time per message: one is dated when Tether first sees it.
+  **An exception to "discovery starts no process":** listing and reading start a short-lived
+  `agy acp` per call (about 160 ms to start). A long-lived one would read stale history: a process
+  keeps the conversations it has seen in memory and never sees another process's turns.
+  `watchHistory` polls the `.db` and its `-wal` and replays on a change.
+- **Context:** `usage_update { used, size }`.
+- **Billing:** the plan tier `session/new` and `session/load` name (`_meta.antigravity.tier.name`,
+  "Google AI Pro"). No keys yet, and no plan limits: Antigravity reports none.
+- **Terminal:** `terminal: "handoff"`, `agy --conversation <id>` in the project folder, with `--mode`
+  for `accept-edits` and `plan`. On a resumed conversation the TUI ignores `--model` and `--effort`:
+  its model is its own. No hooks: the screen (`antigravity/screen.ts`) says when a permission prompt
+  or the folder-trust question is up. Quitting is Esc, then Ctrl-C until it exits.
+- **Not yet:** subagents, move, fork, plan review, side chats, Tether's MCP server (ACP's
+  `mcpServers` can carry it), Gemini API keys.
+
 ### Claude's model and effort
 
 There's no "Default" for a Claude session: Tether always tells Claude Code its model and effort, so
@@ -517,7 +554,7 @@ driver ─► broker.decide(request) ─► [policy steps] ─► person (any de
 ### What the button does
 
 The ❯_ **Terminal** button opens a project shell beside the chat (below). The panel's entry named
-after the agent, **Claude Code** or **Codex**, opens the harness's real TUI, mirrored in the browser
+after the agent, **Claude Code**, **Codex** or **Antigravity**, opens the harness's real TUI, mirrored in the browser
 (xterm.js), resumed on the same session. While a handoff TUI drives, the structured view stays
 visible as a **read-only live transcript** (tailed from the store) with a banner: "Driving in the
 terminal".
@@ -527,7 +564,7 @@ terminal".
 The TUI joins the live thread next to Tether. Both can type, both see everything, and nothing changes
 mode. Closing the terminal just detaches.
 
-### Handoff (Claude: live → terminal)
+### Handoff (Claude and Antigravity: live → terminal)
 
 Two processes can't drive the same session at once, so control moves:
 
