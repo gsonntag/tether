@@ -4,7 +4,7 @@ import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { findModel, modelLabel, prettyModel } from "../../../shared/labels";
 import type { BillingSource, SourceChoices } from "../../../shared/credentials";
 import type { ActiveClone, FolderCheck } from "../../../shared/protocol";
-import type { WorkspaceInfo } from "../../../shared/worktree";
+import { worktreeLabel, type WorkspaceInfo, type WorktreeList } from "../../../shared/worktree";
 import { CLAUDE_UNSET, HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { CHECK_DELAY_MS, folderBlocked } from "../folderCheck";
@@ -14,7 +14,7 @@ import { loadModels, loadProjects, modelListKey, useStore } from "../store";
 import { AddProject } from "./AddProject";
 import { focusComposerOf, openTerminalOf } from "./SessionView";
 import { radioKeys } from "../radioKeys";
-import { ago } from "../runners";
+import { ago, canJoinWorktree } from "../runners";
 import { azureDeployments, DeploymentPicker, SourcePicker } from "./SourcePicker";
 
 const MODE_KEY = "tether.newSessionMode";
@@ -29,7 +29,9 @@ const stored = (key: string) => {
 };
 const lastMode = (h: HarnessId) => stored(modeKey(h)) ?? (h === "codex" ? "untrusted" : "default");
 const NO_PROJECTS: never[] = [];
-const WORKSPACES = ["folder", "worktree"] as const;
+const WORKSPACES = ["folder", "worktree", "existing"] as const;
+type Workspace = (typeof WORKSPACES)[number];
+const WORKSPACE_LABELS: Record<Workspace, string> = { folder: "This folder", worktree: "New worktree", existing: "Existing worktree" };
 const FALLBACK_MODES: { id: string; label: string; description?: string }[] = [
   { id: "default", label: "Ask first" },
   { id: "acceptEdits", label: "Accept edits" },
@@ -69,8 +71,14 @@ export function NewSessionDialog() {
   const [resume, setResume] = useState<ActiveClone>();
   /** whether the folder is in git, and what New worktree would make there (SPEC §4); nothing: not offered */
   const [ws, setWs] = useState<WorkspaceInfo>();
-  const [workspace, setWorkspace] = useState<"folder" | "worktree">("folder");
+  /** the folder workspaceInfo last answered (or failed) for: until it's the one typed, a worktree choice can't be acted on */
+  const [wsFor, setWsFor] = useState<string>();
+  const [workspace, setWorkspace] = useState<Workspace>("folder");
   const [branch, setBranch] = useState("");
+  /** the repo's other worktrees, for Existing worktree (a runner that takes listWorktrees); nothing: not asked yet */
+  const [trees, setTrees] = useState<WorktreeList>();
+  /** the existing worktree picked (its path) */
+  const [tree, setTree] = useState<string>();
   const [busy, setBusy] = useState(false);
   /** a create on its way: a second Enter (in any field) doesn't start another */
   const creating = useRef(false);
@@ -131,13 +139,41 @@ export function NewSessionDialog() {
   const existing = check?.state === "exists" ? check.path : undefined;
   useEffect(() => {
     setWs(undefined);
+    setWsFor(undefined);
     if (!open || !rid || !existing) return;
     let gone = false;
     void rpc(rid, "workspaceInfo", { projectPath: existing })
-      .then((w) => !gone && setWs(w))
-      .catch(() => {});
+      .then((w) => {
+        if (gone) return;
+        setWs(w);
+        setWsFor(existing);
+      })
+      .catch(() => !gone && setWsFor(existing));
     return () => void (gone = true);
   }, [open, rid, existing]);
+  // Existing worktree: only where the runner can list and join them.
+  const joinable = !!rid && canJoinWorktree(online, rid);
+  const workspaces = WORKSPACES.filter((w) => w !== "existing" || joinable);
+  // A runner switched to one without it: back to This folder.
+  const shownWs = workspaces.includes(workspace) ? workspace : "folder";
+  const inExisting = shownWs === "existing" && !!ws?.git;
+  // A worktree choice on a folder not looked at yet: Create would otherwise start in the folder itself.
+  const wsPending = shownWs !== "folder" && (!check || (check.state === "exists" && wsFor !== check.path));
+  useEffect(() => {
+    setTrees(undefined);
+    setTree(undefined);
+    if (!open || !rid || !existing || !inExisting) return;
+    let gone = false;
+    void rpc(rid, "listWorktrees", { projectPath: existing })
+      .then((l) => !gone && setTrees(l))
+      .catch((e) => {
+        if (gone) return;
+        setTrees({ worktrees: [] });
+        setError((e as Error).message);
+      });
+    return () => void (gone = true);
+  }, [open, rid, existing, inExisting]);
+  const pickedTree = inExisting ? trees?.worktrees.find((w) => w.path === tree) : undefined;
   const inWorktree = workspace === "worktree" && !!ws?.git;
   // A repo's setup runs before the first message, which its own TUI wouldn't wait for (SPEC §4).
   const noTerminal = inWorktree && !!ws.setup;
@@ -157,14 +193,19 @@ export function NewSessionDialog() {
     setError(undefined);
     try {
       // Enter before the check came back: wait for it, so a missing folder still asks first.
-      if (folderBlocked(check ?? (await checkPath(checkId.current)), createFolder)) return;
+      const checked = check ?? (await checkPath(checkId.current));
+      if (folderBlocked(checked, createFolder)) return;
+      if (shownWs !== "folder" && checked?.state === "exists" && wsFor !== checked.path) return setError("Still looking at this folder. Try again in a moment.");
       // Enter before the sources came back: what's shown first is what starts.
       const billTo = source ?? (await sourcesAsked.current)?.default;
       const common = { harness, projectPath: typed, ...(billTo ? { source: billTo } : {}), ...(deployments ? { model: deployment } : modelOk && model !== "default" ? { model } : {}), permissionMode: validMode, ...(terminal ? { terminal: true } : {}) };
       // The branch shown is the branch made: the placeholder when nothing is typed.
+      if (inExisting && !pickedTree) return setError("Pick a worktree.");
       const { sessionId } = inWorktree
         ? await rpc(rid, "newWorktreeSession", { ...common, branch: branch.trim() || ws.branch, ...(ws.setupId !== undefined ? { expectSetup: ws.setupId } : {}) })
-        : await rpc(rid, "newSession", { ...common, ...(check?.state === "missing" && createFolder ? { createFolder: true } : {}) });
+        : pickedTree
+          ? await rpc(rid, "existingWorktreeSession", { ...common, worktree: pickedTree.path })
+          : await rpc(rid, "newSession", { ...common, ...(check?.state === "missing" && createFolder ? { createFolder: true } : {}) });
       try {
         localStorage.setItem(modeKey(harness), validMode);
         localStorage.setItem(HARNESS_KEY, harness);
@@ -172,6 +213,7 @@ export function NewSessionDialog() {
       close();
       setPath("");
       setBranch("");
+      setTree(undefined);
       setWorkspace("folder");
       if (terminal) openTerminalOf(rid, sessionId);
       else focusComposerOf(rid, sessionId);
@@ -272,13 +314,34 @@ export function NewSessionDialog() {
             <span className="t-field-label" id="t-new-ws">
               Workspace
             </span>
-            <div className="t-seg" role="radiogroup" aria-labelledby="t-new-ws" onKeyDown={radioKeys(WORKSPACES, workspace, setWorkspace)}>
-              {WORKSPACES.map((w) => (
-                <button type="button" role="radio" aria-checked={workspace === w} tabIndex={workspace === w ? 0 : -1} key={w} className={`t-seg-opt${workspace === w ? " on" : ""}`} onClick={() => setWorkspace(w)}>
-                  {w === "folder" ? "This folder" : "New worktree"}
+            <div className="t-seg" role="radiogroup" aria-labelledby="t-new-ws" onKeyDown={radioKeys(workspaces, shownWs, setWorkspace)}>
+              {workspaces.map((w) => (
+                <button type="button" role="radio" aria-checked={shownWs === w} tabIndex={shownWs === w ? 0 : -1} key={w} className={`t-seg-opt${shownWs === w ? " on" : ""}`} onClick={() => setWorkspace(w)}>
+                  {WORKSPACE_LABELS[w]}
                 </button>
               ))}
             </div>
+            {inExisting &&
+              (!trees ? (
+                <span className="t-ws-note">Looking for worktrees…</span>
+              ) : !trees.worktrees.length ? (
+                <span className="t-ws-note">This repo has no worktrees besides its main checkout.</span>
+              ) : (
+                <>
+                  <div className="t-projects" role="listbox" aria-label="Worktrees">
+                    {trees.worktrees.map((w) => (
+                      <button type="button" role="option" aria-selected={w.path === tree} key={w.path} className="t-proj-opt t-wt-opt" onClick={() => setTree(w.path)}>
+                        <span>{w.branch ?? folderName(w.path)}</span>
+                        <span className="t-path">{worktreeLabel(w)}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <span className="t-ws-note">
+                    The session works in that folder as it is: nothing is made and no setup runs.
+                    {pickedTree && (pickedTree.tether ? " Tether made this one: once its work is merged, it's removed after the last session there is done." : " Tether can't tell it made this one, so it never removes it.")}
+                  </span>
+                </>
+              ))}
             {inWorktree && (
               <>
                 <label>
@@ -368,7 +431,7 @@ export function NewSessionDialog() {
         {error && <div className="t-form-error" style={{ whiteSpace: "pre-wrap" }}>{error}</div>}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <Button label="Cancel" variant="secondary" onClick={close} />
-          <Button label={busy ? "Starting…" : "Create"} variant="primary" isDisabled={!rid || !typed || busy || folderBlocked(check, createFolder)} onClick={() => void create()} />
+          <Button label={busy ? "Starting…" : "Create"} variant="primary" isDisabled={!rid || !typed || busy || folderBlocked(check, createFolder) || wsPending || (inExisting && !pickedTree)} onClick={() => void create()} />
         </div>
       </div>
     </Dialog>

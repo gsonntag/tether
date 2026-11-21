@@ -511,7 +511,7 @@ export class LiveControl {
     const kept = this.keptPrefs(s);
     // The pin goes with the conversation: the new thread takes the old one's place in Pinned.
     prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
-    const { forkedFrom, ...state } = kept;
+    const { forkedFrom, worktree: _, ...state } = kept;
     n.setState(state);
     prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
     this.core.moveSides(s.id, n.id);
@@ -560,7 +560,7 @@ export class LiveControl {
       const kept = this.keptPrefs(s);
       const { pinned, pinnedRow } = this.core.o.prefs.get(s.id);
       this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
-      const { forkedFrom, ...state } = kept;
+      const { forkedFrom, worktree: _, ...state } = kept;
       n.setState(state);
       this.core.touch(n, forkedFrom ? { forkedFrom } : {});
       try {
@@ -1601,11 +1601,12 @@ export class LiveControl {
     this.core.o.bus.emit("canTextChanged", { sessionId: id, canText: on });
   }
 
-  /** What a session's successor on another id keeps (a fork's link back too, SPEC §16). */
+  /** What a session's successor on another id keeps (a fork's link back too, SPEC §16; its worktree record, SPEC §4). */
   keptPrefs(s: Session) {
-    const { autoKey, canText, lastKey, fallbackKeys, forkedFrom, sideOf } = this.core.o.prefs.get(s.id);
+    const { autoKey, canText, lastKey, fallbackKeys, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
     // A side chat's successor is one too, read-only (SPEC §16a): failing closed.
-    return { ...(autoKey ? { autoKey } : {}), ...(canText ? { canText } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}) };
+    // The worktree goes on with the conversation: cleanup counts the successor as its user (the old id, moved on, no more).
+    return { ...(autoKey ? { autoKey } : {}), ...(canText ? { canText } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree } : {}) };
   }
 
   /**
