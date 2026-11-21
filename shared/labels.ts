@@ -1,7 +1,7 @@
 // Human labels for model ids, effort levels and permission modes (SPEC §2.6: "Opus 5.5", "High").
 // The runner labels what a harness lists; the browser labels whatever a session reports.
 
-import type { Billing, ModelOption, PlanUsage, PlanWindow } from "./transcript";
+import type { Billing, ModelOption, PlanPool, PlanUsage, PlanWindow } from "./transcript";
 
 const FAMILIES = ["opus", "sonnet", "haiku", "fable"];
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -67,23 +67,47 @@ export const contextDetail = (c: { used: number; total: number }) => `${tokens(c
 
 export const resetTime = (ms: number, week = true) => new Date(ms).toLocaleString(undefined, week ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" } : { hour: "numeric", minute: "2-digit" });
 
+function poolShortName(p: PlanPool): string {
+  const lower = (p.id || p.name).toLowerCase();
+  if (lower.includes("gemini")) return "Gemini";
+  if (lower.includes("claude") || lower.includes("gpt") || lower.includes("other") || lower.includes("3p")) return "Other";
+  return p.name.split(" ")[0] || p.id;
+}
+
+function windowChip(w?: { fiveHour?: PlanWindow; week?: PlanWindow }, now = Date.now()) {
+  const known = (win?: PlanWindow) => (win && (win.resetsAt === undefined || win.resetsAt > now) ? win : undefined);
+  const rows = [
+    { short: "5h", long: "5-hour", w: known(w?.fiveHour), week: false },
+    { short: "Week", long: "Weekly", w: known(w?.week), week: true },
+  ].filter((r): r is { short: string; long: string; w: PlanWindow; week: boolean } => !!r.w);
+  if (!rows.length) return undefined;
+  const weekOut = rows.find((r) => r.week && (r.w.percent >= 100 || r.w.exhausted));
+  const top = weekOut ?? rows[0]!;
+  const detail = rows.map((r) => `${r.long} ${r.w.percent}%${r.w.resetsAt ? `, resets ${resetTime(r.w.resetsAt, r.week)}` : ""}`).join(" · ");
+  return { top, detail };
+}
+
 /**
  * The header's plan chip: the 5-hour window when known ("5h 10%"), the weekly one ("Week 63%") when
  * there's no 5-hour figure or the week is at 100% or reported exhausted; both in the tooltip. A window
- * past its reset is no longer known. Nothing known: undefined.
+ * past its reset is no longer known. Nothing known: undefined. When separate limit pools exist (Gemini
+ * vs Other models), formats each pool's top window.
  */
 export function planChip(plan: PlanUsage | undefined, now = Date.now()): { text: string; detail: string } | undefined {
-  const known = (w?: PlanWindow) => (w && (w.resetsAt === undefined || w.resetsAt > now) ? w : undefined);
-  const rows = [
-    { short: "5h", long: "5-hour", w: known(plan?.fiveHour), week: false },
-    { short: "Week", long: "Weekly", w: known(plan?.week), week: true },
-  ].filter((r) => r.w);
-  if (!rows.length) return undefined;
-  // The 5-hour window, unless the week is the one that's out.
-  const weekOut = rows.find((r) => r.week && (r.w!.percent >= 100 || r.w!.exhausted));
-  const top = weekOut ?? rows[0]!;
-  const detail = rows.map((r) => `${r.long} ${r.w!.percent}%${r.w!.resetsAt ? `, resets ${resetTime(r.w!.resetsAt, r.week)}` : ""}`).join(" · ");
-  return { text: `${top.short} ${top.w!.percent}%`, detail };
+  if (plan?.pools && plan.pools.length > 0) {
+    const chips: { pool: PlanPool; top: { short: string; long: string; w: PlanWindow; week: boolean }; detail: string }[] = [];
+    for (const pool of plan.pools) {
+      const c = windowChip(pool, now);
+      if (c) chips.push({ pool, top: c.top, detail: c.detail });
+    }
+    if (!chips.length) return undefined;
+    const text = chips.map((c) => `${poolShortName(c.pool)} ${c.top.short} ${c.top.w.percent}%`).join(" · ");
+    const detail = chips.map((c) => `${c.pool.name}: ${c.detail}`).join(" · ");
+    return { text, detail };
+  }
+  const c = windowChip(plan, now);
+  if (!c) return undefined;
+  return { text: `${c.top.short} ${c.top.w.percent}%`, detail: c.detail };
 }
 
 const HOUR_MS = 60 * 60_000;
@@ -99,18 +123,49 @@ export function planLines(plan: PlanUsage | undefined, now = Date.now()): string
     const old = w.at !== undefined && now - w.at > HOUR_MS ? ` · ${ago(now - w.at)}` : "";
     return [`${name} ${Math.round(w.percent)}%${w.resetsAt ? ` · resets ${resetTime(w.resetsAt, week)}` : ""}${old}`];
   };
+  if (plan?.pools && plan.pools.length > 0) {
+    const lines: string[] = [];
+    for (const pool of plan.pools) {
+      lines.push(...line(`${pool.name}: Week`, pool.week, true));
+      lines.push(...line(`${pool.name}: 5 hours`, pool.fiveHour, false));
+    }
+    return lines;
+  }
   return [...line("Week", plan?.week, true), ...line("5 hours", plan?.fiveHour, false)];
 }
 
 /** A report's windows, marked with when it came. */
 export function reportedAt(plan: PlanUsage, at = Date.now()): PlanUsage {
-  return { ...(plan.fiveHour ? { fiveHour: { ...plan.fiveHour, at } } : {}), ...(plan.week ? { week: { ...plan.week, at } } : {}), ...(plan.complete ? { complete: true } : {}) };
+  return {
+    ...(plan.fiveHour ? { fiveHour: { ...plan.fiveHour, at } } : {}),
+    ...(plan.week ? { week: { ...plan.week, at } } : {}),
+    ...(plan.complete ? { complete: true } : {}),
+    ...(plan.pools
+      ? {
+          pools: plan.pools.map((p) => ({
+            ...p,
+            ...(p.fiveHour ? { fiveHour: { ...p.fiveHour, at } } : {}),
+            ...(p.week ? { week: { ...p.week, at } } : {}),
+          })),
+        }
+      : {}),
+  };
 }
 
 /** What's known after a report: a complete one replaces it all, a partial one only the windows it names. */
 export function mergePlan(known: PlanUsage | undefined, report: PlanUsage): PlanUsage {
   const { complete, ...windows } = report;
-  return complete ? windows : { ...known, ...windows };
+  if (complete) return windows;
+  let pools = known?.pools;
+  if (windows.pools) {
+    const knownPools = new Map((known?.pools ?? []).map((p) => [p.id, p]));
+    for (const p of windows.pools) {
+      const prev = knownPools.get(p.id);
+      knownPools.set(p.id, prev ? { ...prev, ...p } : p);
+    }
+    pools = Array.from(knownPools.values());
+  }
+  return { ...known, ...windows, ...(pools ? { pools } : {}) };
 }
 
 /** The header's usage chip: what the session draws from, with the plan's limits only if it's a plan. */

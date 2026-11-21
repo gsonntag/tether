@@ -48,7 +48,7 @@ export async function usageReport(ctx: Pick<ModuleContext, "sessions" | "apiCost
   const plans: UsageReport["plans"] = [];
   for (const adapter of adapters) {
     const plan = await adapter.planUsage?.().catch(() => undefined);
-    if (plan && (plan.fiveHour || plan.week)) plans.push({ harness: adapter.id, label: PLAN_LABELS[adapter.id] ?? adapter.id, plan });
+    if (plan && (plan.fiveHour || plan.week || (plan.pools && plan.pools.length > 0))) plans.push({ harness: adapter.id, label: PLAN_LABELS[adapter.id] ?? adapter.id, plan });
   }
   return {
     ...report,

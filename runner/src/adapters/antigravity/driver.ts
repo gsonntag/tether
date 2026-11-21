@@ -10,6 +10,7 @@
 // a few quiet seconds. Subagents (§6a) live in conversations of their own (subagents.ts); this
 // process runs them, so it stays up while they do.
 
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Attachment } from "../../../../shared/attachments";
@@ -22,6 +23,7 @@ import { AcpClient, type AcpUpdate } from "../acp/client";
 import { acpTool, AcpTranscript } from "../acp/transcript";
 import { ToolServerSlot } from "../toolServer";
 import { billingOf, BYPASS } from "./models";
+import { fetchQuota, findLanguageServerPort, keptPlan, registerLanguageServer, unregisterLanguageServer } from "./quota";
 import { acpArgv, agyHome, noteCommands, noteOpened, reader, seenContext, seenSettings, seenTitles, settingsOf, stampOf, storeStamp } from "./store";
 import { childrenOf, matchCalls } from "./subagents";
 
@@ -98,6 +100,8 @@ export class AgyDriver implements Driver {
   private unprompted?: ReturnType<typeof setTimeout>;
   private stopping = false;
   private readOnly = false;
+  private csrfToken!: string;
+  private lsPort?: number;
   /** Bypass permissions (Tether's mode): every request is approved here, Antigravity runs in accept-edits */
   private bypass = false;
   /** Tether's MCP server name, when this session has it: its tools run without asking */
@@ -159,14 +163,18 @@ export class AgyDriver implements Driver {
     this.toolServer = server?.name;
     this.mcpServers = mcpServers;
     const append = this.readOnly ? READ_ONLY_PROMPT : server?.instructions?.();
+    const csrfToken = process.env.ANTIGRAVITY_CSRF_TOKEN || randomUUID();
+    this.csrfToken = csrfToken;
     this.client = new AcpClient({
       argv: acpArgv(),
       cwd: this.projectPath,
+      env: { ANTIGRAVITY_CSRF_TOKEN: csrfToken },
       name: "Antigravity",
       onUpdate: (sid, u) => (sid === this.nativeId ? this.update(u) : this.childUpdate(sid, u)),
       onRequest: (method, params) => this.request(method, params),
       onExit: (error) => this.exited(error),
     });
+    registerLanguageServer(this.client.pid, this.csrfToken);
     try {
       await this.client.initialize();
       // Its history comes as updates, already in the transcript: they only number what follows.
@@ -182,6 +190,7 @@ export class AgyDriver implements Driver {
       if (mode && mode !== this.settings.permissionMode) await this.setPermissionMode(mode);
     } catch (e: any) {
       this.closed = true;
+      unregisterLanguageServer(this.client.pid);
       await this.client.close();
       throw new Error(this.client.why(`Antigravity didn't start: ${e?.message ?? e}`));
     }
@@ -189,6 +198,19 @@ export class AgyDriver implements Driver {
     reader.forget();
     const context = seenContext.get(this.nativeId);
     this.sink.state({ ...this.settings, billing: billingOf(), ...(context ? { context } : {}) });
+    void this.pollQuota();
+  }
+
+  private async pollQuota() {
+    const cached = keptPlan();
+    if (cached) this.sink.plan?.(cached);
+    try {
+      this.lsPort ??= await findLanguageServerPort(this.client.pid, undefined, 2000);
+      if (this.lsPort) {
+        const plan = await fetchQuota(this.lsPort, this.csrfToken);
+        if (plan) this.sink.plan?.(plan);
+      }
+    } catch {}
   }
 
   /**
@@ -336,6 +358,7 @@ export class AgyDriver implements Driver {
     this.flush();
     this.sink.state({ status: "idle", ...(error ? {} : { error: undefined }) });
     if (!error && !stopped) this.offerPlan();
+    void this.pollQuota();
   }
 
   async interrupt() {
@@ -576,6 +599,7 @@ export class AgyDriver implements Driver {
   private exited(error?: string) {
     const was = !this.closed;
     this.closed = true;
+    unregisterLanguageServer(this.client.pid);
     clearTimeout(this.unprompted);
     this.abortAsks();
     this.stopChildren();
@@ -588,6 +612,7 @@ export class AgyDriver implements Driver {
   async close() {
     if (this.closed) return;
     this.closed = true;
+    unregisterLanguageServer(this.client.pid);
     clearTimeout(this.unprompted);
     this.unprompted = undefined;
     this.abortAsks();

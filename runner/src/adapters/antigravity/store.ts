@@ -5,6 +5,7 @@
 // That process starts on first use and quits after a while idle. The files themselves only say
 // whether a conversation exists and when it last changed.
 
+import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,7 @@ import type { ContextUse, Msg } from "../../../../shared/transcript";
 import { AcpClient, type AcpUpdate } from "../acp/client";
 import { AcpTranscript } from "../acp/transcript";
 import { HARNESS_BINS } from "../detect";
+import { registerLanguageServer, unregisterLanguageServer } from "./quota";
 
 /** Antigravity's own folder (read each time, so tests can point it elsewhere). */
 export const agyHome = () => process.env.AGY_HOME || join(homedir(), ".gemini", "antigravity-cli");
@@ -126,9 +128,11 @@ class Reader {
     if (this.running >= MAX_READERS) await new Promise<void>((ok) => this.waiting.push(ok));
     this.running++;
     let handler: ((sid: string, u: AcpUpdate) => void) | undefined;
+    const csrfToken = process.env.ANTIGRAVITY_CSRF_TOKEN || randomUUID();
     const c = new AcpClient({
       argv: acpArgv(),
       cwd: homedir(),
+      env: { ANTIGRAVITY_CSRF_TOKEN: csrfToken },
       name: "Antigravity",
       onUpdate: (sid, u) => {
         handler?.(sid, u);
@@ -138,10 +142,12 @@ class Reader {
       onRequest: async (method) => (method === "session/request_permission" ? { outcome: { outcome: "cancelled" } } : Promise.reject(new Error("Not supported."))),
     });
     this.clients.add(c);
+    registerLanguageServer(c.pid, csrfToken);
     try {
       await c.initialize();
       return await f(c, (h) => (handler = h));
     } finally {
+      unregisterLanguageServer(c.pid);
       this.clients.delete(c);
       await c.close();
       this.running--;
