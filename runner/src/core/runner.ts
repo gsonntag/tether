@@ -269,7 +269,7 @@ export function createRunner(o: RunnerOptions) {
           .sort((a, b) => b.at - a.at)
           .map(({ id, title }) => ({ id, title })),
       viewersOf: (id: string) => live.read.viewersOf(id),
-      apiCost: (id: string) => (costs.has(id) ? costs.get(id) : undefined),
+      apiCost: (id: string) => (costs.has(id) || prefs.get(id).metered ? costs.get(id) : undefined),
       hiddenFolder: (path: string) => core.hidden(path),
       hub: hubPort,
       sessions: {

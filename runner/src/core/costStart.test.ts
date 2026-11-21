@@ -70,6 +70,8 @@ describe("a session whose source becomes a key", () => {
     const s = await idle(t);
     expect(s.state.billing).toEqual(PLAN);
     expect(t.costs.has(s.id)).toBe(false);
+    expect(s.state.cost).toBeUndefined();
+    expect(s.summary.cost).toBeUndefined();
     await t.live.setSource(s.id, "anthropic");
     // Decided at the switch, while the plan is what's confirmed.
     expect(t.costs.get(s.id)).toEqual({ usd: 0, estimated: false, complete: true });
@@ -232,5 +234,46 @@ describe("a source change on a new thread (capabilities.sourceCarry)", () => {
     await t.live.send("claude:one", "plan");
     const n = await idle(t, "claude:carried-1");
     expect(t.costs.get(n.id)).toEqual({ usd: 1, estimated: true, complete: true });
+  });
+});
+
+describe("subscription sessions and API cost history", () => {
+  test("a subscription session that has never used an API key carries no cost in state or summary", async () => {
+    const t = setup({ stored: PLAN });
+    const s = await t.core.open("claude:one");
+    expect(t.costs.has(s.id)).toBe(false);
+    expect(s.state.cost).toBeUndefined();
+    expect(s.summary.cost).toBeUndefined();
+    expect(t.live.read.decorate(s.summary).cost).toBeUndefined();
+  });
+
+  test("a brand new subscription session carries no cost in state or summary", async () => {
+    const t = setup();
+    const { sessionId } = await t.live.newSession({ harness: "claude", projectPath: t.dir, source: "subscription" });
+    const s = await t.core.open(sessionId);
+    expect(t.costs.has(sessionId)).toBe(false);
+    expect(s.state.cost).toBeUndefined();
+    expect(s.summary.cost).toBeUndefined();
+    expect(t.live.read.decorate(s.summary).cost).toBeUndefined();
+  });
+
+  test("a subscription session that had an earlier key period whose entry was lost carries its unknown cost", async () => {
+    const t = setup({ stored: PLAN });
+    t.prefs.set("claude:one", { metered: true }); // costs.json lost it
+    const s = await t.core.open("claude:one");
+    expect(s.state.cost).toEqual({ estimated: true, complete: false, reasons: ["earlier-usage"] });
+    expect(s.summary.cost).toEqual({ estimated: true, complete: false, reasons: ["earlier-usage"] });
+    expect(t.live.read.decorate(s.summary).cost).toEqual({ estimated: true, complete: false, reasons: ["earlier-usage"] });
+  });
+
+  test("a subscription session that retained API spend from an earlier key period carries that cost", async () => {
+    const t = setup({ stored: PLAN });
+    t.costs.begin("claude:one", true);
+    t.costs.report("claude:one", "earlier", { usd: 0.5, estimated: true, complete: true });
+    t.prefs.set("claude:one", { metered: true });
+    const s = await t.core.open("claude:one");
+    expect(s.state.cost).toEqual({ usd: 0.5, estimated: true, complete: true });
+    expect(s.summary.cost).toEqual({ usd: 0.5, estimated: true, complete: true });
+    expect(t.live.read.decorate(s.summary).cost).toEqual({ usd: 0.5, estimated: true, complete: true });
   });
 });
