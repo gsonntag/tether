@@ -16,6 +16,7 @@ import { setHomeFolders } from "./sessionList";
 import { SessionModel, type SessionView, type Verdict } from "./sessionModel";
 import { resubscriber, Subscriptions } from "./subscriptions";
 import { pendingSender, reconcile, type PendingSend } from "./pendingSends";
+import { loadRunnerFilter, saveRunnerFilter } from "./runnerFilter";
 
 /** Messages per `history` page closing a gap (the runner's most). */
 const GAP_PAGE = 200;
@@ -58,6 +59,8 @@ interface State {
   newSessionOpen: boolean;
   /** the sidebar shows only this folder's sessions */
   projectFilter?: string;
+  /** the sidebar shows only this runner's sessions */
+  runnerFilter?: string;
   /** the app's VAPID public key (hello); absent: the server has no push keys */
   pushKey?: string;
   /** the server's git build stamp (hello); absent when outside git or on older servers */
@@ -81,7 +84,19 @@ export const useStore = create<State>(() => ({
   views: {},
   pending: {},
   newSessionOpen: false,
+  runnerFilter: loadRunnerFilter(),
 }));
+
+useStore.subscribe((state, prev) => {
+  if (state.runnerFilter !== prev.runnerFilter) {
+    saveRunnerFilter(state.runnerFilter);
+  }
+});
+
+export function setRunnerFilter(runnerFilter?: string) {
+  saveRunnerFilter(runnerFilter);
+  useStore.setState({ runnerFilter });
+}
 
 const set = useStore.setState;
 const get = useStore.getState;

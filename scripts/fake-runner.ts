@@ -13,6 +13,7 @@ import type { HarnessCapabilities, LiveState, ModelList, Msg, Part, SessionEvent
 
 const url = process.env.TETHER_URL ?? "http://127.0.0.1:8791";
 const runnerId = process.argv[2] ?? "fake";
+const runnerName = process.env.RUNNER_NAME ?? runnerId;
 const epoch = crypto.randomUUID();
 let summarySeq = 0;
 const now = Date.now();
@@ -30,8 +31,9 @@ let n = 0;
 const id = (p: string) => `${p}${++n}`;
 
 function add(summary: Partial<SessionSummary> & { id: string; title: string; projectPath: string }, messages: Msg[], state: Partial<LiveState> = {}) {
+  const prefix = process.env.TITLE_PREFIX ? `${process.env.TITLE_PREFIX} ` : "";
   const s: Sess = {
-    summary: { harness: "claude", nativeId: summary.id.slice(7), mode: "stored", status: "idle", updatedAt: now, ...summary },
+    summary: { harness: "claude", nativeId: summary.id.slice(7), mode: "stored", status: "idle", updatedAt: now, ...summary, title: `${prefix}${summary.title}` },
     messages,
     state: { mode: "stored", status: "idle", model: "haiku", modelResolved: "claude-haiku-5-5", effort: "high", permissionMode: "acceptEdits", requests: [], queue: [], ...state },
     seq: 0,
@@ -189,7 +191,7 @@ add({ id: "claude:empty-1", title: "A session with a very long title that must b
 const conn = new Connection({
   url,
   token: "dev",
-  hello: async () => ({ id: runnerId, name: runnerId, hostname: "fakehost", version: "0.0.0", protocol: PROTOCOL_VERSION, harnesses: [{ id: "claude", version: "2.1.312" }], ...(process.env.NO_PIN ? {} : { pinning: true }), ...(process.env.NO_CANTEXT ? {} : { canText: true }), ...(process.env.NO_SPAWNED ? {} : { spawnedFamily: true }) }),
+  hello: async () => ({ id: runnerId, name: runnerName, hostname: "fakehost", version: "0.0.0", protocol: PROTOCOL_VERSION, harnesses: [{ id: "claude", version: "2.1.312" }], ...(process.env.NO_PIN ? {} : { pinning: true }), ...(process.env.NO_CANTEXT ? {} : { canText: true }), ...(process.env.NO_SPAWNED ? {} : { spawnedFamily: true }) }),
   onRpc: async (op, args) => {
     try {
       return { ok: true, data: await handle(op, args as any) };

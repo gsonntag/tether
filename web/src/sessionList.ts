@@ -3,6 +3,8 @@
 import type { SummaryState } from "../../shared/summary";
 import type { RunStatus, SessionSummary } from "../../shared/transcript";
 
+export { activeRunnerFilter, aggregateProjects, filterRowsByRunner } from "./runnerFilter";
+
 export interface Row extends SessionSummary {
   runnerId: string;
   /** under the open session: one its agent started (tether_start, SPEC §6a), not a subagent (subagents.ts) */
@@ -23,12 +25,14 @@ export function setHomeFolders(runners: { id: string; homeFolder?: string }[]) {
 }
 export const isHomeChat = (runnerId: string, projectPath: string) => homeFolders.get(runnerId) === projectPath;
 
-const rows = (summaries: Record<string, SummaryState>): Row[] =>
-  Object.entries(summaries).flatMap(([runnerId, s]) =>
-    Object.values(s.sessions)
-      .filter((x) => !isHomeChat(runnerId, x.projectPath))
-      .map((x) => ({ ...x, status: shownStatus(x), runnerId })),
-  );
+const rows = (summaries: Record<string, SummaryState>, runnerId?: string): Row[] =>
+  Object.entries(summaries)
+    .filter(([id]) => !runnerId || id === runnerId)
+    .flatMap(([rId, s]) =>
+      Object.values(s.sessions)
+        .filter((x) => !isHomeChat(rId, x.projectPath))
+        .map((x) => ({ ...x, status: shownStatus(x), runnerId: rId })),
+    );
 
 /** A row the lists show: not a subagent (under its parent) nor a side chat (under its session, SPEC §16a). */
 export const listed = (r: Pick<SessionSummary, "parentSessionId" | "sideOf">) => !r.parentSessionId && !r.sideOf;
@@ -36,9 +40,9 @@ export const listed = (r: Pick<SessionSummary, "parentSessionId" | "sideOf">) =>
 const newestFirst = (a: Row, b: Row) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
 
 /** Recent sessions across runners and projects, newest first; subagents are left out (they sit under their parent). */
-export function recentSessions(summaries: Record<string, SummaryState>, query = ""): Row[] {
+export function recentSessions(summaries: Record<string, SummaryState>, query = "", runnerId?: string): Row[] {
   const q = query.trim().toLowerCase();
-  return rows(summaries)
+  return rows(summaries, runnerId)
     .filter((r) => listed(r) && (!r.archived || !!q) && (!q || r.title.toLowerCase().includes(q)))
     .sort(newestFirst);
 }

@@ -43,9 +43,11 @@ const FALLBACK_MODES: { id: string; label: string; description?: string }[] = [
 export function NewSessionDialog() {
   const open = useStore((s) => s.newSessionOpen);
   const runners = useStore((s) => s.runners);
+  const runnerFilter = useStore((s) => s.runnerFilter);
   const online = runners.filter((r) => r.online);
   const [runnerId, setRunnerId] = useState<string>();
-  const rid = runnerId && online.some((r) => r.id === runnerId) ? runnerId : online[0]?.id;
+  const defaultRunnerId = (runnerFilter && online.some((r) => r.id === runnerFilter) ? runnerFilter : undefined) ?? online[0]?.id;
+  const rid = runnerId && online.some((r) => r.id === runnerId) ? runnerId : defaultRunnerId;
   const projects = useStore((s) => (rid ? (s.projects[rid] ?? NO_PROJECTS) : NO_PROJECTS));
   // The harnesses this runner drives (Claude Code first); a choice only when there are several.
   const offered = (online.find((r) => r.id === rid)?.harnesses ?? []).map((h) => h.id).filter((h): h is HarnessId => h in HARNESS_LABELS);
@@ -87,6 +89,10 @@ export function NewSessionDialog() {
   const [sources, setSources] = useState<SourceChoices>();
   const sourcesAsked = useRef<Promise<SourceChoices | undefined>>(undefined);
   const [source, setSource] = useState<BillingSource>();
+
+  useEffect(() => {
+    if (!open) setRunnerId(undefined);
+  }, [open]);
 
   useEffect(() => {
     if (!open || !rid) return;
