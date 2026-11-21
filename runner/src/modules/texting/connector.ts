@@ -1,7 +1,7 @@
 // A messaging connector: one way the person and Tether text each other (iMessage through Photon,
 // a Discord bot, …). Each one is a file implementing Connector: it knows its own settings (and which
 // of them are secrets), opens a link that hears the person's messages and sends Tether's, and nothing
-// else. Who a message is for (session numbers, the picker, y/n answers, the Home agent, threaded
+// else. Who a message is for (session numbers, the picker, y/n answers, threaded
 // replies) is decided above every connector, once, by the Texter (index.ts) and its Router: a new
 // connector gets all of that for free. CONNECTORS (connectors.ts) lists them.
 //
@@ -86,8 +86,6 @@ export interface Connector {
   readonly label: string;
   /** what it connects to, for "Couldn't connect to Photon" (the label when unset) */
   readonly service?: string;
-  /** what starts the person's words when they reach the Home agent ("[From Discord] ", shared/fromTether.ts) */
-  readonly mark: string;
   /** whether it takes images out */
   readonly images?: boolean;
   /** how long a settings change waits for its old link to close before connecting again (Channel's 3 s when unset) */

@@ -150,7 +150,7 @@ describe("sharing runners", () => {
     expect(w.editor.take()).toEqual([]);
   });
 
-  test("viewers can't read the folder or make links; editors can't reconfigure the Home agent", () => {
+  test("viewers can't read the folder or make links; editors can't reconfigure an older runner's Home agent", () => {
     const w = world();
     w.r1.take();
     for (const op of ["readFile", "listDir", "gitDiff", "linkFor"]) w.rpc(w.viewer, op, "box", op, { sessionId: "s", path: ".env" });

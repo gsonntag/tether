@@ -26,6 +26,8 @@ export interface CoreEvents {
    * asks for permission or a choice, SPEC §8): "needs you", for notifications and Home.
    */
   attention: { sessionId: string; message?: string };
+  /** a session was archived or unarchived (the worktrees module removes a merged worktree Tether made) */
+  archived: { sessionId: string; archived: boolean };
   /** the "Session can text me" box changed (texting drops an unticked session's number) */
   canTextChanged: { sessionId: string; canText: boolean };
   error: { sessionId?: string; message: string };

@@ -43,7 +43,7 @@ export interface UsageProject extends UsageTotals {
   /** its folder; absent for the rows that group others */
   path?: string;
   name: string;
-  /** TETHER_HIDE_PROJECTS folders (and the Home agent's), together, unnamed */
+  /** TETHER_HIDE_PROJECTS folders, together, unnamed */
   hidden?: boolean;
   /** the smaller projects, together: how many */
   others?: number;
