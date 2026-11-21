@@ -741,6 +741,14 @@ describe("presence and push keys", () => {
     hi(relay, r, runnerInfo("one"));
     expect(r.take("welcome")[0].push).toEqual(push);
   });
+
+  test("hello carries the server's build stamp when configured", () => {
+    const build = { commit: "abc1234", date: "2026-11-21", dirty: false };
+    const relay = new Relay({ build });
+    const b = new FakeSocket("b");
+    relay.addBrowser(b, { name: "b", email: "b@x" }, 1);
+    expect(b.take("hello")[0].build).toEqual(build);
+  });
 });
 
 describe("runner ids per token", () => {

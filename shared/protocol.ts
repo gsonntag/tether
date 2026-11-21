@@ -66,6 +66,19 @@ export interface HarnessInfo {
   version: string;
 }
 
+export interface RunnerBuild {
+  /** short commit hash, e.g. "30944f6" */
+  commit: string;
+  /** commit date, e.g. "2026-11-21" */
+  date: string;
+  /** branch name, or "detached" */
+  branch?: string;
+  /** whether the checkout has local uncommitted changes */
+  dirty: boolean;
+  /** commits HEAD is behind its upstream; absent when no upstream or check failed */
+  behind?: number;
+}
+
 export interface RunnerInfo {
   /** stable and unique: generated once and kept in runner.json */
   id: string;
@@ -74,6 +87,8 @@ export interface RunnerInfo {
   hostname: string;
   /** the runner's own version */
   version: string;
+  /** the build stamp read from git at startup; absent outside a git checkout or on older runners */
+  build?: RunnerBuild;
   protocol: number;
   /** installed harnesses */
   harnesses: HarnessInfo[];
@@ -654,7 +669,7 @@ export type BrowserToServer =
 
 export type ServerToBrowser =
   /** `push`: the public key to subscribe with; absent when the server has no push keys */
-  | { t: "hello"; user: User; protocol: number; push?: { publicKey: string } }
+  | { t: "hello"; user: User; protocol: number; push?: { publicKey: string }; build?: RunnerBuild }
   /** every connected runner, sent on connect and whenever the set changes */
   | { t: "runners"; runners: RunnerInfo[] }
   | ResultMsg

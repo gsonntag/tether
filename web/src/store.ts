@@ -4,7 +4,7 @@
 import { create } from "zustand";
 import { mergeHomeChat } from "./homeTabs";
 import { checkBuild } from "./build";
-import { PROTOCOL_VERSION, type HomeChatUpdate, type User } from "../../shared/protocol";
+import { PROTOCOL_VERSION, type HomeChatUpdate, type RunnerBuild, type User } from "../../shared/protocol";
 import { applySummary, emptySummary, type SummaryState } from "../../shared/summary";
 import type { HarnessId, ModelList, ProjectInfo } from "../../shared/transcript";
 import { connect, on, onAuth, onLinkState, rpc, type AuthState, type LinkState } from "./connection";
@@ -61,6 +61,8 @@ interface State {
   projectFilter?: string;
   /** the app's VAPID public key (hello); absent: the server has no push keys */
   pushKey?: string;
+  /** the server's git build stamp (hello); absent when outside git or on older servers */
+  serverBuild?: RunnerBuild;
   /** the last archive change made here: the sidebar patches its listSessions copies with it */
   archiveEdit?: { runnerId: string; sessionId: string; archived: boolean };
   /** each runner's Home agent tabs and current chat (none: the next message starts one), newest `rev` wins */
@@ -120,7 +122,7 @@ export function start() {
     const remembered = loadKnown(m.user.email).filter((k) => !before.some((r) => r.id === k.id));
     const runners = sortRunners([...before, ...remembered]);
     setHomeFolders(runners);
-    set((s) => ({ user: m.user, runners, stale: s.stale || m.protocol !== PROTOCOL_VERSION, pushKey: m.push?.publicKey }));
+    set((s) => ({ user: m.user, runners, stale: s.stale || m.protocol !== PROTOCOL_VERSION, pushKey: m.push?.publicKey, serverBuild: m.build }));
     // The server forgot what this device looked at with its old socket.
     tellPresence(true);
     resub.hello();

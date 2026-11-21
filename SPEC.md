@@ -80,7 +80,10 @@ tether/
 **Sharing runners.** The app's owners see and manage every runner. Anyone else the app is shared
 with on Foliation (editor or viewer) may sign in but sees only the runners an owner shared with
 them in Settings → Runners, each "Can drive" or "Can view" (read sessions only); a Foliation viewer
-share only ever views. The list lives on the runner (runner.json `sharedWith`, op
+share only ever views. Settings → Runners shows each runner's version (short git commit, commit date,
+"local changes" if dirty; package.json version fallback), with a quiet note when behind its upstream branch
+("Behind <branch> by N commits: pull and restart the runner to update"); in production the server has no `.git/`,
+so the runner's own `behind` count drives the note, with a server build comparison as fallback in dev mode. The list lives on the runner (runner.json `sharedWith`, op
 `setRunnerAccess`) and the relay enforces it on every frame (shared/access.ts: `VIEW_OPS`, and
 `MANAGE_OPS` that stay the owner's: sharing, name, keys, texting, updates, runner settings, the
 Home agent's settings). View never includes the git or files modules' ops (they read the folder,
@@ -223,6 +226,9 @@ harness's store lacks (`codex-threads.json`, `claude-windows.json`).
 
 Browser → server → runner: `{ t: "rpc", id, runnerId, op, args }`, which gets `{ t: "result", id, ok, data?, error? }`.
 Runner → server → browsers: `{ t: "event", runnerId, sessionId, seq, event }`.
+On connect, the runner sends `{ t: "hello", runner: RunnerInfo }` with its installed harnesses and
+optional `build` (`commit`, `date`, `branch`, `dirty`, `behind`) read from git at startup and hourly; the server sends
+`{ t: "hello", user, protocol, push?, build? }` to browsers.
 
 **Subscriptions.** A browser subscribes to the sessions it has open (`subscribe` / `unsubscribe`
 ops). The server forwards session events only to subscribers, and forwards a small `summary` stream
@@ -1583,7 +1589,7 @@ screens only a pinned row shows it, to unpin), and the session's ⋯ menu has Pi
 sit in a Pinned group above Recent, oldest pin first, across runners (each runner's clock), on every
 device; a search or a folder lists them as usual. The runner keeps when it was pinned in its prefs
 (`pinSession`, carried on the row as `pinned`), past the 90-day pruning, and says so in its hello
-(`RunnerInfo.pinning`: no pin buttons for a runner from before it). A pinned session is listed however
+(`RunnerInfo.pinning`: no pin buttons for a runner from before it; `RunnerInfo.build`: git commit and date). A pinned session is listed however
 old: discovery looks up the old ones in parallel with a short timeout and keeps them (read again when
 the store changes or after a minute); a failed lookup keeps the row. The pin keeps the row as last
 seen (`pinnedRow`): a session the harness can't find is listed from it, dimmed, "Not found on this
