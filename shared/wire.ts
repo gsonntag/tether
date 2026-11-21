@@ -52,7 +52,8 @@ function parseHarness(v: unknown): HarnessInfo | null {
 function parseRunnerBuild(v: unknown): RunnerBuild | undefined {
   if (!isObj(v) || typeof v.commit !== "string" || !v.commit || typeof v.date !== "string" || !v.date || typeof v.dirty !== "boolean") return undefined;
   const branch = typeof v.branch === "string" && v.branch ? v.branch : undefined;
-  return { commit: v.commit, date: v.date, ...(branch ? { branch } : {}), dirty: v.dirty };
+  const behind = typeof v.behind === "number" && Number.isSafeInteger(v.behind) && v.behind >= 0 ? v.behind : undefined;
+  return { commit: v.commit, date: v.date, ...(branch ? { branch } : {}), dirty: v.dirty, ...(behind !== undefined ? { behind } : {}) };
 }
 
 function parseRunnerInfo(v: unknown): Omit<RunnerInfo, "connectedAt"> | null {

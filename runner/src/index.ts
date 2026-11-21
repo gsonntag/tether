@@ -34,7 +34,8 @@ const homeFolder = join(CONFIG_DIR, "modules", "homeAgent", "workspace");
 mkdirSync(homeFolder, { recursive: true, mode: 0o700 });
 const credentials = new CredentialStore();
 CredentialStore.current = credentials;
-const build = await readBuildInfo(join(import.meta.dir, ".."));
+const runnerFolder = join(import.meta.dir, "..");
+const build = await readBuildInfo(runnerFolder);
 const runner = createRunner({
   costsFile: join(DATA_DIR, "costs.json"),
   credentials,
@@ -45,6 +46,7 @@ const runner = createRunner({
   defaultName: displayName({ ...config, name: undefined }),
   version: pkg.version,
   build,
+  detectBuild: () => readBuildInfo(runnerFolder),
   detectHarnesses: () => detectHarnesses(),
   adapters: [claudeAdapter, codexAdapter, antigravityAdapter],
   noticesFile: join(CONFIG_DIR, "notices.json"),

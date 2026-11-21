@@ -7,10 +7,38 @@ test("parses git log, branch, and clean status into build stamp", async () => {
     if (argv[0] === "log") return { code: 0, stdout: "1a2b3c4\x002026-11-21\n" };
     if (argv[0] === "branch") return { code: 0, stdout: "feature/test\n" };
     if (argv[0] === "status") return { code: 0, stdout: "" };
+    if (argv[0] === "rev-parse" && argv[3] === "@{upstream}") return { code: 0, stdout: "origin/feature/test\n" };
+    if (argv[0] === "fetch") return { code: 0, stdout: "" };
+    if (argv[0] === "rev-list") return { code: 0, stdout: "3\n" };
     return { code: 1, stdout: "" };
   };
   const b = await readBuildInfo("/any/path", git);
-  expect(b).toEqual({ commit: "1a2b3c4", date: "2026-11-21", branch: "feature/test", dirty: false });
+  expect(b).toEqual({ commit: "1a2b3c4", date: "2026-11-21", branch: "feature/test", dirty: false, behind: 3 });
+});
+
+test("leaves behind undefined when no upstream branch is configured", async () => {
+  const git: GitRunner = async (argv) => {
+    if (argv[0] === "log") return { code: 0, stdout: "1a2b3c4\x002026-11-21\n" };
+    if (argv[0] === "branch") return { code: 0, stdout: "local-only\n" };
+    if (argv[0] === "status") return { code: 0, stdout: "" };
+    if (argv[0] === "rev-parse" && argv[3] === "@{upstream}") return { code: 1, stdout: "" };
+    return { code: 1, stdout: "" };
+  };
+  const b = await readBuildInfo("/any/path", git);
+  expect(b?.behind).toBeUndefined();
+});
+
+test("leaves behind undefined when git fetch fails", async () => {
+  const git: GitRunner = async (argv) => {
+    if (argv[0] === "log") return { code: 0, stdout: "1a2b3c4\x002026-11-21\n" };
+    if (argv[0] === "branch") return { code: 0, stdout: "main\n" };
+    if (argv[0] === "status") return { code: 0, stdout: "" };
+    if (argv[0] === "rev-parse" && argv[3] === "@{upstream}") return { code: 0, stdout: "origin/main\n" };
+    if (argv[0] === "fetch") return { code: 128, stdout: "fatal: unable to access\n" };
+    return { code: 1, stdout: "" };
+  };
+  const b = await readBuildInfo("/any/path", git);
+  expect(b?.behind).toBeUndefined();
 });
 
 test("marks detached HEAD when branch is empty or fails", async () => {
@@ -22,6 +50,7 @@ test("marks detached HEAD when branch is empty or fails", async () => {
   };
   const b = await readBuildInfo("/any/path", git);
   expect(b?.branch).toBe("detached");
+  expect(b?.behind).toBeUndefined();
 });
 
 test("marks dirty when status outputs uncommitted changes", async () => {

@@ -38,7 +38,13 @@ export function RunnerCard({ runner, serverBuild: propServerBuild }: { runner: K
   const disabled = busy || !linkOpen || !runner.online;
   const build = runner.build;
   const versionText = build ? `${build.commit} · ${build.date}${build.dirty ? " · local changes" : ""}` : runner.version;
-  const differentBuild = !!(serverBuild?.commit && build?.commit && serverBuild.commit !== build.commit);
+  let updateNote: string | undefined;
+  if (build?.behind !== undefined && build.behind > 0) {
+    const branch = build.branch && build.branch !== "detached" ? build.branch : "main";
+    updateNote = `Behind ${branch} by ${build.behind} commit${build.behind === 1 ? "" : "s"}: pull and restart the runner to update`;
+  } else if (build?.behind === undefined && serverBuild?.commit && build?.commit && serverBuild.commit !== build.commit) {
+    updateNote = `Different from the app's build (${serverBuild.commit}): restart the runner to update`;
+  }
 
   const run = async (f: () => Promise<unknown>) => {
     setBusy(true);
@@ -71,7 +77,7 @@ export function RunnerCard({ runner, serverBuild: propServerBuild }: { runner: K
       </Heading>
       <div className="t-usage-note">
         <span>{versionText}</span>
-        {differentBuild && <div>Different from the app's build ({serverBuild!.commit}): restart the runner to update</div>}
+        {updateNote && <div>{updateNote}</div>}
       </div>
       <NameField runner={runner} disabled={disabled} run={run} />
       <div className="t-share-list" role="list" aria-label="Shared with">

@@ -75,6 +75,8 @@ export interface RunnerBuild {
   branch?: string;
   /** whether the checkout has local uncommitted changes */
   dirty: boolean;
+  /** commits HEAD is behind its upstream; absent when no upstream or check failed */
+  behind?: number;
 }
 
 export interface RunnerInfo {

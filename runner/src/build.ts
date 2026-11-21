@@ -4,10 +4,10 @@
 import type { RunnerBuild } from "../../shared/protocol";
 import { childEnv } from "./childEnv";
 
-export type GitRunner = (argv: string[], cwd: string) => Promise<{ code: number; stdout: string }>;
+export type GitRunner = (argv: string[], cwd: string, timeoutMs?: number) => Promise<{ code: number; stdout: string }>;
 
 /** Default git runner using Bun.spawn, stripping secrets from the environment. */
-export const defaultGit: GitRunner = async (argv, cwd) => {
+export const defaultGit: GitRunner = async (argv, cwd, timeoutMs = 15_000) => {
   try {
     const proc = Bun.spawn(["git", ...argv], {
       cwd,
@@ -16,9 +16,15 @@ export const defaultGit: GitRunner = async (argv, cwd) => {
       stderr: "pipe",
       env: childEnv({ GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" }),
     });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill();
+    }, timeoutMs);
     const stdout = await new Response(proc.stdout).text();
     const code = await proc.exited;
-    return { code, stdout };
+    clearTimeout(timer);
+    return { code: timedOut ? -1 : code, stdout };
   } catch {
     return { code: -1, stdout: "" };
   }
@@ -43,5 +49,19 @@ export async function readBuildInfo(cwd: string, git: GitRunner = defaultGit): P
   const status = await git(["status", "--porcelain"], cwd);
   const dirty = status.code === 0 ? status.stdout.trim().length > 0 : false;
 
-  return { commit, date, branch, dirty };
+  let behind: number | undefined;
+  // Compute behind only when the branch has an upstream:
+  const upstreamCheck = await git(["rev-parse", "--verify", "--quiet", "@{upstream}"], cwd);
+  if (upstreamCheck.code === 0) {
+    const fetch = await git(["fetch", "--quiet"], cwd, 20_000);
+    if (fetch.code === 0) {
+      const revList = await git(["rev-list", "--count", "HEAD..@{upstream}"], cwd);
+      if (revList.code === 0) {
+        const count = parseInt(revList.stdout.trim(), 10);
+        if (Number.isSafeInteger(count) && count >= 0) behind = count;
+      }
+    }
+  }
+
+  return { commit, date, branch, dirty, ...(behind !== undefined ? { behind } : {}) };
 }

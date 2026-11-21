@@ -47,6 +47,10 @@ export interface RunnerOptions {
   version: string;
   /** git build stamp read at startup; absent outside a git checkout or on fallback */
   build?: RunnerBuild;
+  /** periodically re-reads the git build stamp (commit, behind, dirty) */
+  detectBuild?: () => Promise<RunnerBuild | undefined>;
+  /** how often to check for git build stamp changes; defaults to 1 hour */
+  buildCheckMs?: number;
   detectHarnesses: () => Promise<HarnessInfo[]>;
   /** how often to look for installed or removed harnesses */
   harnessCheckMs?: number;
@@ -86,12 +90,13 @@ export function createRunner(o: RunnerOptions) {
 
   let harnesses = o.detectHarnesses();
   let name = o.name;
+  let currentBuild: RunnerBuild | undefined = o.build;
   const helloInfo = async (): Promise<Omit<RunnerInfo, "connectedAt">> => ({
     id: o.runnerId,
     name,
     hostname: hostname(),
     version: o.version,
-    ...(o.build ? { build: o.build } : {}),
+    ...(currentBuild ? { build: currentBuild } : {}),
     protocol: PROTOCOL_VERSION,
     harnesses: await harnesses,
     ...(o.homeFolder ? { homeFolder: o.homeFolder } : {}),
@@ -218,6 +223,21 @@ export function createRunner(o: RunnerOptions) {
     if (JSON.stringify(await harnesses) !== before) conn.send({ t: "hello", runner: await helloInfo() });
   }, o.harnessCheckMs ?? 60_000);
   timer.unref?.();
+
+  if (o.detectBuild) {
+    // Refresh at startup and hourly; re-send hello when build changes.
+    const refreshBuild = async () => {
+      const before = JSON.stringify(currentBuild);
+      const next = await o.detectBuild!();
+      if (JSON.stringify(next) !== before) {
+        currentBuild = next;
+        conn.send({ t: "hello", runner: await helloInfo() });
+      }
+    };
+    void refreshBuild();
+    const buildTimer = setInterval(refreshBuild, o.buildCheckMs ?? 3_600_000);
+    buildTimer.unref?.();
+  }
 
   return {
     bus,

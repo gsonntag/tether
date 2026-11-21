@@ -81,8 +81,9 @@ tether/
 with on Foliation (editor or viewer) may sign in but sees only the runners an owner shared with
 them in Settings → Runners, each "Can drive" or "Can view" (read sessions only); a Foliation viewer
 share only ever views. Settings → Runners shows each runner's version (short git commit, commit date,
-"local changes" if dirty; package.json version fallback), with a quiet note if different from the
-server app's build. The list lives on the runner (runner.json `sharedWith`, op
+"local changes" if dirty; package.json version fallback), with a quiet note when behind its upstream branch
+("Behind <branch> by N commits: pull and restart the runner to update"); in production the server has no `.git/`,
+so the runner's own `behind` count drives the note, with a server build comparison as fallback in dev mode. The list lives on the runner (runner.json `sharedWith`, op
 `setRunnerAccess`) and the relay enforces it on every frame (shared/access.ts: `VIEW_OPS`, and
 `MANAGE_OPS` that stay the owner's: sharing, name, keys, texting, updates, runner settings, the
 Home agent's settings). View never includes the git or files modules' ops (they read the folder,
@@ -214,7 +215,7 @@ harness's store lacks (`codex-threads.json`, `claude-windows.json`).
 Browser → server → runner: `{ t: "rpc", id, runnerId, op, args }`, which gets `{ t: "result", id, ok, data?, error? }`.
 Runner → server → browsers: `{ t: "event", runnerId, sessionId, seq, event }`.
 On connect, the runner sends `{ t: "hello", runner: RunnerInfo }` with its installed harnesses and
-optional `build` (`commit`, `date`, `branch`, `dirty`) read from git at startup; the server sends
+optional `build` (`commit`, `date`, `branch`, `dirty`, `behind`) read from git at startup and hourly; the server sends
 `{ t: "hello", user, protocol, push?, build? }` to browsers.
 
 **Subscriptions.** A browser subscribes to the sessions it has open (`subscribe` / `unsubscribe`
