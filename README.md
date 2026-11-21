@@ -71,7 +71,8 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
   fork of the session in a panel beside it (a sheet on a phone) while the session keeps working.
   **Bring back** puts the side chat's summary in the session's box to edit and send; closing it
   stops and archives it, and the header's Side chats reopens it. Side chats stay out of the lists; on
-  Claude Code they have no shell, MCP tools or subagents, on Codex a read-only sandbox with MCP off.
+  Claude Code they have no shell, MCP tools or subagents, on Codex a read-only sandbox with MCP off,
+  and on Antigravity every approval is refused and no MCP server is given.
 
 **Home.** Home has an inbox of sessions that need you, failed, finished or are working. It also has
 the runners and the **Home agent**, a chat that starts sessions in your projects and sees them
@@ -308,6 +309,7 @@ Each script's header says what it needs:
 - `e2e-keys.mjs`: the credentials and billing UI
 - `e2e-cost.ts`: API cost accounting against a fake API, with no model
 - `antigravity-accept.ts`: Antigravity through the real `agy` and Tether's own session core and terminal control, no browser
+- `antigravity-modules-accept.ts`: Antigravity's subagents, plan review, fork, side chats, move and Tether's tools, through the real runner and `agy`
 
 `smoke-p1.ts` is the scripted-browser smoke test. The `check-*.sh` scripts verify the systemd scope
 behaviour. Manual acceptance checks are in [`docs/acceptance/`](docs/acceptance/), one file per phase

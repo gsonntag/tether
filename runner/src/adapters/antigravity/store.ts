@@ -13,8 +13,9 @@ import { AcpClient, type AcpUpdate } from "../acp/client";
 import { AcpTranscript } from "../acp/transcript";
 import { HARNESS_BINS } from "../detect";
 
-export const AGY_HOME = process.env.AGY_HOME || join(homedir(), ".gemini", "antigravity-cli");
-export const conversationFile = (nativeId: string) => join(AGY_HOME, "conversations", `${nativeId}.db`);
+/** Antigravity's own folder (read each time, so tests can point it elsewhere). */
+export const agyHome = () => process.env.AGY_HOME || join(homedir(), ".gemini", "antigravity-cli");
+export const conversationFile = (nativeId: string) => join(agyHome(), "conversations", `${nativeId}.db`);
 
 /** The process Tether starts for ACP: `agy acp`. */
 export const acpArgv = () => [HARNESS_BINS.antigravity, "acp"];

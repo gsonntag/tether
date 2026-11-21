@@ -443,8 +443,11 @@ Google's coding agent, through its CLI `agy` (checked on 1.5.13). Everything goe
   for `accept-edits` and `plan`. On a resumed conversation the TUI ignores `--model` and `--effort`:
   its model is its own. No hooks: the screen (`antigravity/screen.ts`) says when a permission prompt
   or the folder-trust question is up. Quitting is Esc, then Ctrl-C until it exits.
-- **Not yet:** subagents, move, fork, plan review, side chats, Tether's MCP server (ACP's
-  `mcpServers` can carry it), Gemini API keys.
+- **Turns it runs by itself:** when a subagent reports back, the main agent goes on with no prompt:
+  its updates arrive with no `session/prompt` and no end. They show as working, join the last
+  reply (as a replay groups them), and end after 3 quiet seconds (`driver.ts`).
+- **Subagents** (§6a), **plan review** (§7), **Tether's tools** (§9a), **move** (§15), **fork**
+  (§16) and **side chats** (§16a): in those sections. Not yet: Gemini API keys.
 
 ### Claude's model and effort
 
@@ -471,6 +474,19 @@ its subagents as children in the sidebar and in the session header.
 | Past transcript | `~/.claude/projects/<dir>/<session>/subagents/agent-<id>.jsonl` (+ `.meta.json`), or SDK `getSubagentMessages`. Thinking isn't saved there, so past thinking is empty | its rollout file, or `thread/read` / `thread/items/list` on the child thread id |
 | Stop | `stopTask(taskId)` | `turn/interrupt` on the child thread |
 | Steer | via the main agent's `SendMessage` tool (see below) | via the main agent's `send_message` tool (see below): Codex refuses input on a subagent's thread |
+
+**Antigravity's subagents** (checked on agy 1.5.13): `invoke_subagent` makes a conversation of its
+own (its own store, never listed), run inside the main agent's `agy acp` process, which therefore
+stays up while one runs (`Driver.busy`). ACP gives the call no id and sends nothing for the
+subagent, so the driver finds its conversation in the store: its first step is the main agent's
+message, "[Message] … sender=<main id> … content=<prompt>", the one readable line Tether reads from
+that undocumented blob (`antigravity/subagents.ts`), matched to the call by its prompt. Its turns
+are replayed from its conversation into its child session whenever its store changes. It reports
+with `send_message` to the main agent, and is over once its store is quiet for 20 s after that.
+An approval a subagent asks never reaches an ACP client, so a subagent needing one stalls; after 3
+minutes with no change it counts as ended. No Stop of its own (`stop: false`). Steering is
+`via-parent`: the main agent's `send_message` with the subagent's id as `Recipient`. Stored
+subagents come from the same store scan, titled by their `Role`.
 
 **Steering Claude subagents** (decided): the SDK can't address a message to a subagent (tested
 2026-10-29: `parent_tool_use_id`, `agent_id` and `priority` on a pushed user message all go to the main
@@ -539,14 +555,14 @@ driver ─► broker.decide(request) ─► [policy steps] ─► person (any de
 - **UI:** open requests sit just above the composer and never scroll away. Approve, Deny, and
   "Deny with reason". Questions show their options as buttons and also allow free text.
 - **Permission modes** are each harness's own, picked from a menu per session with human labels.
-- **Plans** (Claude's `ExitPlanMode`, Codex's plan item) open as a document (`PlanReview.tsx`).
+- **Plans** (Claude's `ExitPlanMode`, Codex's plan item, the file Antigravity writes in plan mode for review: a `write_file` with `ArtifactMetadata.RequestFeedback`, read at the turn's end) open as a document (`PlanReview.tsx`).
   Select text or click a paragraph to comment; comments sit beside their text (a sheet on phones)
   and stay in the browser until sent. **Send feedback** sends one block per comment in plan order,
   the quote as a `>` blockquote then the comment, then a general comment (`shared/plan.ts`): Claude
-  gets it as the denial's reason and keeps planning; Codex gets it as a message, still in plan mode.
+  gets it as the denial's reason and keeps planning; Codex and Antigravity get it as a message, still in plan mode.
   **Approve** goes back to the mode the session had before Plan (`SessionPrefs.beforePlan`, else
   the harness's own choice), and any comments follow as notes: steered into Claude's turn, or after
-  "Implement the plan." for Codex. A plan whose harness isn't waiting in a turn (`planFollowUp`) is
+  "Implement the plan." for Codex and Antigravity. A plan whose harness isn't waiting in a turn (`planFollowUp`) is
   answered by the runner and passed by when another turn starts.
 
 ## 8. Terminal mode
@@ -899,7 +915,7 @@ Only the owner can run one (the same auth as sending).
 
 ## 9a. Sessions talking to each other
 
-An agent can message or ask another session on its runner, Claude Code or Codex, and send a note
+An agent can message or ask another session on its runner, Claude Code, Codex or Antigravity, and send a note
 to all. Agents can't start sessions. Nothing asks the person; loops are capped. A module
 (`runner/src/modules/peers/`, off with `TETHER_PEERS=0`); the core only gained the `queueGone`
 event (with the message's text) and the queued message's id from `SessionActions.queue`.
@@ -916,7 +932,8 @@ event (with the message's text) and the queued message's id from `SessionActions
   (fire-and-forget, at most 20 sessions, never the sender; the sender's own project unless it
   passes `project`, or `scope: "all"` for every project). `to` is an id or a title only one
   session has. The tools run without a prompt: Claude allows `mcp__tether__*`; Codex gets
-  `default_tools_approval_mode = "approve"`.
+  `default_tools_approval_mode = "approve"`; Antigravity asks for each MCP call, and its driver
+  approves those of `mcp_tether_*` itself.
 - **Transport.** The MCP server posts each call to the runner's Unix socket
   (`<config>/modules/peers/peers.sock`, private, shortened like the hooks socket when too long; an
   ask's request stays open until the answer). Identity: the server's environment carries its
@@ -932,7 +949,9 @@ event (with the message's text) and the queued message's id from `SessionActions
   has loaded keeps what it was loaded with. As a thread's id isn't known before `thread/start`,
   Codex's servers carry `codex:*` and the runner takes the thread from the call's `_meta.threadId`
   (the daemon sets it, not the model). (`dynamicTools` on `thread/start` was the alternative; it
-  can't be added to an existing thread.)
+  can't be added to an existing thread.) **Antigravity** gets it in `session/load`'s `mcpServers`
+  (with its env), and the instructions as `_meta.antigravity.systemPrompt.append`; both checked on
+  agy 1.5.13.
 - **Delivery.** A message goes into the target's queue (§9) and never steers: it waits for a
   running turn, obeys holds, survives restarts and can be cancelled from any device; a peer
   message can't be edited. It starts with `[From session "<title>" (<id>)] ` (`to all]` for a
@@ -943,7 +962,7 @@ event (with the message's text) and the queued message's id from `SessionActions
 - **Stricter to looser is refused.** Each session's permission mode has a level on the scale
   Move uses (`core/permissionLevel.ts`, shared/move.ts `LEVELS`): Claude plan < default <
   acceptEdits < auto < bypassPermissions; Codex read-only < untrusted < auto (workspace-write) <
-  full-access. A send or ask to a session whose level is above the sender's is refused: nothing is
+  full-access; Antigravity plan < default < accept-edits. A send or ask to a session whose level is above the sender's is refused: nothing is
   queued, the tool says the session doesn't have permission (both levels named), and the sender's
   transcript gets a notice. A broadcast leaves such sessions out and lists them. An unknown level
   counts as the loosest for the target and the strictest for the sender; equal or stricter goes
@@ -2106,6 +2125,8 @@ stay until removed by hand: deleting a session doesn't remove them.
 | Into Codex | `thread/inject_items`, the daemon's own call for model-visible history, as `message` items with `input_text`, `input_image`, `output_text`. It persists in the rollout and survives `thread/resume` (daemon 0.166). The daemon's turn lists don't show them, so `importedFrom` reads them back from the rollout (a thread marked in `codex-threads.json`), and the transcript starts with them. `thread/resume { history }` is marked "FOR CODEX CLOUD - DO NOT USE"; writing a rollout is private. Not used |
 | Into Claude Code | Writing `~/.claude/projects/<folder>/<id>.jsonl`, a private format, as there's no import call. The SDK's `SessionStore` takes the same private entries, through an alpha API and a temporary copy, and `claude --resume` wouldn't find the session, so it adds risk and removes nothing. The risk is limited: a plain chain of `user` and `assistant` entries, the smallest shape `resume` reads (2.1.316), read back with the SDK's public `getSessionMessages`, every entry counted, and a mismatch deletes the file and takes the `context` route. Images are real image blocks. The title goes through the SDK's `renameSession`. Replies are model `<moved>`: readers skip it for the session's model and context |
 | From Claude Code | The store's transcript plus each `isCompactSummary` entry's text |
+| Into Antigravity | The `context` route: ACP has no import. Its driver approves reads of the moved history's folder itself |
+| From Antigravity | The replayed transcript (§6 **Antigravity**) and its subagents' |
 | From Codex | The turns (via `thread/turns/list`), what was imported into it, and images a TUI attached by path. Codex's compaction summaries are encrypted, so they can't move; the turns before them stay readable, so nothing is lost |
 
 **Tool calls** don't exist on another harness. They travel as text in their turn, with name, input,
@@ -2213,6 +2234,7 @@ without `capabilities.fork`.
 | Claude Code | The Agent SDK's `forkSession` (a file operation: fresh entry ids, `forkedFrom` on each entry), `upToMessageId` the last entry of the reply's API message (a moved-in `<moved>` reply too; only `<synthetic>` ones aren't replies). Replies keep their message ids, so the fork must read back ending on that id (a whole fork: as many messages), else it's deleted. Across a compaction, as recorded, too |
 | Codex | `thread/fork` with `lastTurnId`, the reply's turn (inclusive), so nothing is rolled back: later turns are never copied. A reply followed by a message steered into its turn isn't a fork point here. Checked on daemon 0.169.1: no turn starts, turn ids are kept, and the fork's rollout holds only its own lines, its `session_meta` pointing at the original's (`forked_from_id`, `forked_from_ordinal_exclusive`). The fork is read back (its last turn) and named, else archived. So a fork reads its history from the original's rollout: archiving the original is safe, Codex refuses to delete an original a fork refers to, and removing its file by hand breaks the fork, whose opening (or history) then says "This fork's original history is gone (its Codex rollout was removed)." (the daemon's `missing source rollout`) |
 | Codex, copied | Copied instead (`Adapter.fork.copyInstead`) with §15's native import of the history through that reply, into a new thread on the same source: a thread on a key's private app-server, which serves one thread; and a thread with history brought in (a move's import, a source change), as its fork wouldn't show that history (Tether reads it from the thread's own rollout head: checked, a fork reads none back). So Fork right after a source change copies it whole. Tool calls travel as text and Tether's opening reads as a move's |
+| Antigravity | No fork call, so a copy of the store under a new id: a consistent snapshot (`VACUUM INTO`, safe while the original runs), the id rewritten wherever it appears (same length, so the protobuf framing holds), cut before the prompt after the fork point (`steps`, `step_type` 14, and the tables keyed by step), the brain folder copied. Checked on 1.5.13: it loads, is listed, continues with only the kept turns, and the original is unchanged. Read back by replay, else deleted (`antigravity/fork.ts`) |
 
 A fork that can't be adopted once made (its settings, its notice) is removed from the store
 (`Adapter.fork.discard`: Claude's file, Codex's thread archived) and its row archived.
@@ -2269,6 +2291,7 @@ undisturbed: a running turn is allowed and never forked. It is a module
 |---|---|---|
 | Claude Code | `default` (Ask first) | A PreToolUse hook (`adapters/claude/readOnly.ts`) denying every tool but a fixed list that only reads: Read, Grep, Glob, LS, NotebookRead, WebSearch, TodoWrite, ToolSearch, AskUserQuestion. No WebFetch (it would send what was read anywhere), no shell at all (a list of "reading" commands doesn't survive quoting and options), no MCP tool (Tether's included), no subagents. It fails closed: anything it can't read is denied. A hook's deny stands over modes, allow rules and the auto classifier. The person's own hooks (settings, plugins: a Stop or PostToolUse hook could write) are off (`disableAllHooks`); the SDK's gate still runs (checked on 2.1.327). A read outside the folder asks, and the core refuses it. Plan mode isn't used: on 2.1.327 it let `echo hello > f` run without asking (the person's default being auto), and ran its turns on Sonnet instead of the session's model. The system prompt says it's a read-only side chat |
 | Codex | `never+read-only` | Codex's read-only sandbox, with no approvals to escape it. MCP servers, apps, plugins and hooks run outside the sandbox, so the thread is made (a fork, or a copy's `thread/start`) and resumed (`adapters/codex/readOnly.ts`) with every server in the person's config turned off by name (`config/read`; a config it can't read fails the start), `features.apps`, `plugins`, `multi_agent` and `hooks` off, and without Tether's own server. After each resume the daemon must say, on every page of `mcpServerStatus/list` for the thread, that each server it knows is `disabled`, `failed` or `cancelled` with no tools (not started or unknown counts as on): a thread another client loaded keeps that client's config, so anything else fails the start. `config/read` takes no thread, so the features turned off at load can't be read back (apps would show as their own server). Checked with a stdio MCP server in a temporary CODEX_HOME: the session starts it, the side chat doesn't and can't call it |
+| Antigravity | `default` | Its default mode asks before every edit, command and MCP call, and the core refuses a side chat's approvals (the driver too, without asking). The fork's process gets no MCP servers and no Tether tools, and `_meta.antigravity.systemPrompt.append` says it's a read-only side chat. A saved Always-allow rule in Antigravity's `settings.json` refuses the side chat. Not gated by Antigravity, checked on 1.5.13: `invoke_subagent` (a subagent inherits the gate, and its approvals never come back, so it can't write either) and `schedule`. An "always allow in this conversation" grant made in its TUI before the fork lives in the copied steps; `--sandbox` stops neither writes nor network, so it isn't used |
 
   WebSearch stays (Claude): a query can carry some of what it read. Read-only holds only inside
   Tether: the side chat's id resumed in the harness's own terminal (`claude --resume`, `codex

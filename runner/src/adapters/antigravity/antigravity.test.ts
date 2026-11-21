@@ -124,3 +124,23 @@ test("a command's output loses Antigravity's timing header, but keeps an unclean
   expect(out("Created At: 2026-11-20T23:02:15Z\nCompleted At: 2026-11-20T23:02:15Z\nCommand exited with code 0.\n\nhello\n")).toBe("hello\n");
   expect(out("Created At: a\nCompleted At: b\nCommand exited with code 1.\n\noops")).toBe("Command exited with code 1.\n\noops");
 });
+
+test("what the agent says after its turn ended, with no prompt between, joins that reply (as a replay groups it)", () => {
+  const t = new AcpTranscript("m", hooks());
+  t.prompt([{ type: "text", text: "start a subagent" }]);
+  t.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Waiting." } });
+  t.end();
+  t.drain();
+  t.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: " It reported." } });
+  expect(t.msgs.map((m) => m.id)).toEqual(["m0", "m1"]);
+  expect((t.msgs[1]!.parts[0] as any).text).toBe("Waiting. It reported.");
+  expect(t.msgs[1]!.streaming).toBe(true);
+  t.prompt([{ type: "text", text: "next" }]);
+  t.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "New." } });
+  expect(t.msgs.map((m) => m.id)).toEqual(["m0", "m1", "m2", "m3"]);
+});
+
+test("Tether's own tools draw as peer cards", () => {
+  expect(acpTool({ sessionUpdate: "tool_call", toolCallId: "p", name: "mcp_tether_tether_send", kind: "other" }).kind).toBe("peer");
+  expect(acpTool({ sessionUpdate: "tool_call", toolCallId: "q", name: "mcp_other_send", kind: "other" }).kind).toBe("other");
+});

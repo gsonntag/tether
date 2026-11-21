@@ -81,3 +81,40 @@ Each phase gets `docs/acceptance/P-antigravity-<n>.md` run against the real `agy
 Credentials are present (Google sign-in). The probes used `gemini-3.8-flash-low`, about 10k
 input tokens per turn, so acceptance runs are cheap. Probe scripts are in `~/agy-scripts/`
 (`acp.ts`: one turn with an approval; `load.ts`: list and replay).
+
+## Phase 4 plan (2026-11-21): subagents, move, fork, plan review, side chats, Tether's tools
+
+Built as planned on 2026-11-21 (SPEC §6, §6a, §7, §9a, §15, §16, §16a); `scripts/antigravity-modules-accept.ts` checks it.
+
+Probed on agy 1.5.13 first; each line is what was found, then what Tether does.
+
+- **Subagents.** `invoke_subagent` makes a separate conversation (its own `.db`, not listed). Its
+  first step reads `[Message] … sender=<parent id> … content=<prompt>`. It runs inside the parent's
+  `agy acp` process and dies with it. It reports with `send_message` to the parent, and the parent
+  then runs a turn on its own: updates with no prompt and no end result. Its approvals never reach
+  an ACP client, so a subagent that needs one stalls.
+  → Child sessions (`subagents: { view: true, stop: false, steer: "via-parent" }`): the driver
+  matches each `invoke_subagent` call to its new conversation (sender and prompt), opens it with
+  `sink.subagent`, and replays it into the child's transcript when its store changes. It ends after
+  its report and a quiet spell, or after 3 minutes without a change (stalled). The process stays up
+  (`busy`) while children run. An unprompted parent turn shows as working and ends after 3 quiet
+  seconds; its text joins the turn's reply, as a replay groups it. Steering goes through the parent's
+  `send_message` to the child's id. Stored children come from a scan of the store for that `sender`.
+- **Move** (§15): ACP has no import, so `move: { import: "context" }`. Levels: `plan` 0, `default` 1,
+  `accept-edits` 2. Reading the moved history (outside the folder) is approved by the driver.
+- **Fork** (§16): there's no fork call. A consistent copy of the `.db` (`VACUUM INTO`), with the
+  id rewritten in every row (same length, so protobuf stays valid), cut before the user input
+  that follows the fork point. It loads, continues with only the kept turns, and leaves the
+  original untouched. The fork is read back (message count), else deleted.
+- **Plan review** (§7): in `plan` mode the plan is a `write_file` to `brain/<id>/…md` with
+  `ArtifactMetadata.RequestFeedback`, and then the turn ends. → After such a turn, a
+  `planFollowUp` request with the file's text, as Codex does.
+- **Side chats** (§16a): `readOnlyMode: "default"`. Default mode asks before every write, command and
+  MCP call, and the core refuses a side chat's approvals. The fork gets no MCP servers and no
+  Tether tools, and its system prompt says it's read-only. Not gated by Antigravity: `invoke_subagent`
+  (a subagent inherits the gate, and its approvals never come back) and `schedule`. `--sandbox`
+  stops neither writes nor network, so it isn't used. A saved Always-allow rule in Antigravity's
+  settings refuses the side chat.
+- **Tether's tools** (§9a): `mcpServers` on `session/load` takes Tether's server with its env. Its
+  tools are `mcp_tether_<tool>`, and they ask, so the driver approves Tether's own. Instructions go
+  in `_meta.antigravity.systemPrompt.append`, which works.

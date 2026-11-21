@@ -32,3 +32,27 @@ It covers the checks marked *(script)*. The rest are in the UI, on a phone too.
 - [ ] A permission prompt in the TUI, or the folder-trust question in a new folder, shows Needs you; it
   clears once the TUI's prompt is back.
 - [ ] Back to Tether while the TUI asks, or with text typed: it still quits.
+
+## Subagents, plans, fork, side chats, move, Tether's tools
+
+`bun scripts/antigravity-modules-accept.ts` runs the real runner (every module) behind a stand-in
+relay and checks the items marked *(script)*; `--only subagent,plan,fork,side,move,peers` picks some.
+The move spends one Claude Haiku turn.
+
+- [ ] *(script)* A subagent the agent starts shows as a child session (in the sidebar and the session
+  header), titled by its role, with its prompt and its own turns; the parent's call links to it. Its
+  report reaches the parent, which goes on by itself (shown as working, then idle).
+- [ ] A message to a running subagent is passed on by the main agent (`send_message`): "Sent via the
+  main agent", then delivered.
+- [ ] A stored session's subagents are listed and open with their transcripts.
+- [ ] *(script)* Plan mode: the plan opens for review; Approve leaves plan mode and the agent carries it
+  out. Send feedback keeps it planning.
+- [ ] *(script)* Fork from here: the fork ends at that reply, says where it came from, and continues
+  knowing only those turns; the original is unchanged. Fork takes the whole session.
+- [ ] *(script)* Side chat: answers from the conversation, in the default mode; a write is refused
+  without asking anyone; Bring back puts its summary in the box. With an Always-allow rule in
+  `~/.gemini/antigravity-cli/settings.json`, it's refused with that reason.
+- [ ] *(script)* Move to Claude Code and back: the context route, and the moved session reads its
+  history file without asking.
+- [ ] *(script)* Tether's tools: `tether_sessions` runs without asking and draws as a peer card. A
+  `tether_send` to another session lands in its queue.
