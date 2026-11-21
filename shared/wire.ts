@@ -61,6 +61,7 @@ function parseRunnerInfo(v: unknown): Omit<RunnerInfo, "connectedAt"> | null {
   // Unknown harnesses (a newer runner) are left out rather than refusing the runner.
   const harnesses = v.harnesses.map(parseHarness).filter((h): h is HarnessInfo => !!h);
   const name = typeof v.name === "string" && v.name.trim() ? v.name : v.hostname || v.id;
+  // An older runner's Home agent folder (its chats stay out of the lists): remove once no runner sends it.
   const homeFolder = typeof v.homeFolder === "string" && v.homeFolder.startsWith("/") && v.homeFolder.length <= 4096 ? v.homeFolder : undefined;
   const shared = cleanGrants(v.shared);
   const textingHub = parseHubState(v.textingHub);
@@ -86,14 +87,6 @@ export function parseRunnerMessage(raw: string | ArrayBuffer | Uint8Array): Runn
     case "summary":
       if (!isObj(m.summary) || !["all", "upsert", "remove"].includes(m.summary.kind as string) || !Number.isSafeInteger(m.summary.seq) || !isId(m.summary.epoch)) return null;
       return { t: "summary", summary: m.summary as unknown as SummaryUpdate };
-    case "homeChat":
-      if (!Number.isSafeInteger(m.rev) || (m.sessionId !== undefined && !isId(m.sessionId))) return null;
-      return {
-        t: "homeChat",
-        rev: m.rev as number,
-        ...(m.sessionId !== undefined ? { sessionId: m.sessionId as string } : {}),
-        ...(Array.isArray(m.chats) && m.chats.length <= 200 && m.chats.every(isId) ? { chats: m.chats as string[] } : {}),
-      };
     case "term":
       return isId(m.attachId) && typeof m.data === "string" ? { t: "term", attachId: m.attachId, data: m.data } : null;
     case "termEnd":

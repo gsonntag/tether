@@ -29,7 +29,6 @@ import { ASKS, CANT_SHOW, cantShow, codexAnswer, codexAsk, codexPlanAsk, DECLINE
 import type { CodexRpc } from "./rpc";
 import { CodexStream } from "./stream";
 import { confirmSubscriptionProvider } from "./billing";
-import { codexResumeExtras, codexStartExtras, codexToolCall } from "./setup";
 import { assertNoMcp, readOnlyLoad } from "./readOnly";
 import { ToolServerSlot } from "../toolServer";
 import { rateLimitHit } from "../../rateLimit";
@@ -81,14 +80,14 @@ export function toolConfig(projectPath: string): { config?: Record<string, unkno
 }
 
 /**
- * A thread's extras (the Home agent's, setup.ts) with Tether's MCP server added to their config, and
- * Tether's session instructions as its developer instructions (on resume too, so a changed setting
- * reaches the thread). The Home agent's folder gets no server, so its own instructions stay.
+ * What thread/start and thread/resume add: Tether's MCP server in the config, and Tether's session
+ * instructions as the thread's developer instructions (on resume too, so a changed setting reaches
+ * the thread).
  */
-export function withTools(extras: Record<string, unknown>, projectPath: string): Record<string, unknown> {
+export function withTools(projectPath: string): Record<string, unknown> {
   const t = toolConfig(projectPath);
-  if (!t.config) return extras;
-  return { ...extras, ...(t.developerInstructions && !extras.developerInstructions ? { developerInstructions: t.developerInstructions } : {}), config: { ...((extras.config as Record<string, unknown>) ?? {}), ...t.config } };
+  if (!t.config) return {};
+  return { ...(t.developerInstructions ? { developerInstructions: t.developerInstructions } : {}), config: t.config };
 }
 
 /** How long Codex has to confirm settings Tether applied. */
@@ -104,7 +103,7 @@ export async function createThread(projectPath: string, opts: StartOpts): Promis
   const { rpc, source } = await newConnection(projectPath, opts.credential);
   try {
     // A side chat's thread (a copy, SPEC §16a) is made the way a read-only one is loaded.
-    const load = opts.readOnly ? await readOnlyLoad((m, p) => rpc.call(m, p), projectPath) : withTools(codexStartExtras(projectPath), projectPath);
+    const load = opts.readOnly ? await readOnlyLoad((m, p) => rpc.call(m, p), projectPath) : withTools(projectPath);
     const started = await rpc.call("thread/start", { cwd: projectPath, ...startSettings(opts), ...(source ? { modelProvider: sourceProvider(source.source) } : {}), ...load });
     const id: string = started.thread.id;
     // Until its first turn writes them to its rollout, they can't be read back (discovery.ts).
@@ -200,7 +199,7 @@ export class CodexDriver implements Driver {
     try {
       // Joined as it is: the daemon ignores settings passed here when another client has the thread
       // loaded (Codex's TUI), so changes are applied after, and checked (started).
-      const load = opts.readOnly ? await readOnlyLoad((m, x) => rpc.call(m, x), projectPath) : withTools(codexResumeExtras(projectPath), projectPath);
+      const load = opts.readOnly ? await readOnlyLoad((m, x) => rpc.call(m, x), projectPath) : withTools(projectPath);
       const r = await rpc.call("thread/resume", { threadId: nativeId, excludeTurns: true, ...load }).catch((e: any) => {
         if (NO_ROLLOUT.test(String(e?.message))) throw new Error("This Codex session never got a message, so there's nothing to reopen. Start a new one.");
         throw forkError(e);
@@ -649,10 +648,8 @@ export class CodexDriver implements Driver {
     // Not about this thread (account, auth, …): another client may answer it; Tether never does.
     const thread: string | undefined = p?.threadId;
     if (!thread) return null;
-    // Tether's own tools (setup.ts), for this thread: answered here, never shown as a request.
-    if (method === "item/tool/call" && thread === this.nativeId) {
-      return codexToolCall(this.projectPath, this.nativeId, p).then((r) => r ?? { contentItems: [{ type: "inputText", text: "Tether has no tools for this session." }], success: false });
-    }
+    // A dynamic tool call (an old Home agent thread's rollout may still list its tools): none are served now.
+    if (method === "item/tool/call" && thread === this.nativeId) return Promise.resolve({ contentItems: [{ type: "inputText", text: "Tether has no tools for this session." }], success: false });
     if (thread === this.nativeId || this.stream.child(thread)) return this.ask(method, p, id, thread);
     // A subagent's, before its spawn was reported: it shows in its own view once that comes, else
     // in the main session's (never lost, never answered on its own).

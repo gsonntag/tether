@@ -11,7 +11,15 @@ import type { CredentialSnapshot } from "../../credentials";
 import { confirmSubscriptionProvider } from "./billing";
 import { connect } from "./daemon";
 import type { CodexRpc } from "./rpc";
-import { AGENT_CONFIG } from "./setup";
+
+/** A side query has no use for Codex's own shell, patch, web, apps and subagent tools: switched off by config. */
+export const AGENT_CONFIG = {
+  "features.shell_tool": false,
+  "features.apps": false,
+  "features.multi_agent": false,
+  include_apply_patch_tool: false,
+  web_search: "disabled",
+} as const;
 
 export async function codexAsk(projectPath: string, prompt: string, opts: { credential?: CredentialSnapshot; system: string; timeoutMs: number }, conn: () => Promise<CodexRpc> = () => connect("tether-ask")): Promise<string> {
   if (opts.credential && opts.credential.source !== "subscription") throw new Error("Generating text isn't available for Codex sessions on an API key.");

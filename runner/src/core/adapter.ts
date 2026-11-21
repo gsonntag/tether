@@ -227,28 +227,6 @@ export interface AdapterBilling {
   recorded?(nativeId: string, projectPath: string): BillingSource | undefined;
 }
 
-/** A tool Tether gives an agent: `input` is a zod shape; `run` answers with text for the model. */
-export interface AgentTool {
-  name: string;
-  description: string;
-  input: Record<string, unknown>;
-  run(args: any): Promise<string>;
-}
-
-/**
- * What sessions in one folder get on top of the harness's own setup (the Home agent's folder):
- * Tether's tools, instructions added to the system prompt, tools allowed without asking and tools
- * taken away.
- */
-export interface AgentSetup {
-  /** the tools' server name: the model sees them as mcp__<server>__<tool> */
-  server: string;
-  tools: AgentTool[];
-  instructions: string;
-  allow?: string[];
-  deny?: string[];
-}
-
 /**
  * Tether's own MCP server for every session's agent (the peers module): a stdio command the harness
  * runs beside the agent. `env` is its environment for one session; a harness that only learns the
@@ -262,8 +240,6 @@ export interface ToolServer {
   env(sessionId: string): Record<string, string>;
   /** how long one call may take (an ask waits for the answer) */
   timeoutMs: number;
-  /** a folder whose sessions don't get it (the Home agent's: it has tools of its own) */
-  skip?(projectPath: string): boolean;
   /** what's added to the system prompt (Claude) or developer instructions (Codex) of each session that gets it, read at each process start */
   instructions?(): string;
 }
@@ -272,11 +248,6 @@ export interface Adapter {
   id: HarnessId;
   /** Gives every session this harness starts from now on Tether's MCP server. Returns the function that takes it away. */
   toolServer?(server: ToolServer): () => void;
-  /**
-   * Gives every session this harness runs in `folder` the setup `make` returns for it (by native
-   * id), from its next process start. Returns the function that takes it away.
-   */
-  agentSetup?(folder: string, make: (nativeId: string) => AgentSetup): () => void;
   capabilities: HarnessCapabilities;
   /** Absent: it has no choice of source, and its sessions are on its own login. */
   billing?: AdapterBilling;

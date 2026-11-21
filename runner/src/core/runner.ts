@@ -8,7 +8,7 @@ import { CredentialStore, redact } from "../credentials";
 import { CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { testAzure } from "../adapters/codex/upstream";
-import { PROTOCOL_VERSION, type HarnessInfo, type HomeChatUpdate, type RunnerBuild, type RunnerInfo } from "../../../shared/protocol";
+import { PROTOCOL_VERSION, type HarnessInfo, type RunnerBuild, type RunnerInfo } from "../../../shared/protocol";
 import { parseSessionId, sessionId } from "../../../shared/ids";
 import type { ForkedFrom } from "../../../shared/fork";
 import type { SessionPrefs } from "../config";
@@ -74,8 +74,6 @@ export interface RunnerOptions {
    * Terminal mode (SPEC §8): Tether's tmux and where hooks report. index.ts turns it on (tmux on
    * TMUX_SOCKET, when installed); absent or false, the runner has no terminals (tests).
    */
-  /** the Home agent's folder: sent with hello so browsers leave its chats out of their lists */
-  homeFolder?: string;
   terminal?: false | { tmux?: Tmux; hookSocket?: string | null; spawn?: SpawnPty; pollMs?: number; quitTimeoutMs?: number; shell?: string };
 }
 
@@ -100,7 +98,6 @@ export function createRunner(o: RunnerOptions) {
     ...(currentBuild ? { build: currentBuild } : {}),
     protocol: PROTOCOL_VERSION,
     harnesses: await harnesses,
-    ...(o.homeFolder ? { homeFolder: o.homeFolder } : {}),
     git: true,
     gitActions: true,
     files: true,
@@ -152,12 +149,11 @@ export function createRunner(o: RunnerOptions) {
     log: o.log,
     discoverMs: o.core?.discoverMs,
     evictMs: o.core?.evictMs,
-    // The Home agent's chats show on Home, not in the lists.
-    hideProjects: [o.core?.hideProjects, o.homeFolder?.replace(/\*/g, "")].filter(Boolean).join(","),
+    hideProjects: o.core?.hideProjects,
   });
   // Open requests are kept in runner.json, so they survive a restart (SPEC §7).
   const broker = new RequestBroker(o.policy, { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (open, closed) => prefs.setRequests(open, closed), log: o.log });
-  const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, maxLive: o.core?.maxLive, homeFolder: o.homeFolder, attachmentsDir: o.attachmentsDir, credentials: o.credentials, costs });
+  const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, maxLive: o.core?.maxLive, attachmentsDir: o.attachmentsDir, credentials: o.credentials, costs });
   if (o.credentials) {
     ops.register("credentials", () => o.credentials!.status());
     ops.register("setCredential", (a) => { const result = o.credentials!.set(a.source, a.key, a.endpoint, a.deployment, a.rates); live.credentialsChanged(); return result; });
@@ -273,10 +269,8 @@ export function createRunner(o: RunnerOptions) {
           .sort((a, b) => b.at - a.at)
           .map(({ id, title }) => ({ id, title })),
       viewersOf: (id: string) => live.read.viewersOf(id),
-      homeFolder: o.homeFolder,
       apiCost: (id: string) => (costs.has(id) ? costs.get(id) : undefined),
       hiddenFolder: (path: string) => core.hidden(path),
-      announceHomeChat: (u: HomeChatUpdate) => void conn.send({ t: "homeChat", ...u }),
       hub: hubPort,
       sessions: {
         adapters: () => o.adapters ?? [],
@@ -324,6 +318,11 @@ export function createRunner(o: RunnerOptions) {
         fork: (id: string, f: ForkOptions = {}) => (forker ? forker(id, f) : Promise.reject(new Error("This runner can't fork sessions."))),
         forker: (f: (id: string, o: ForkOptions) => Promise<string>) => { forker = f; },
         moveSides: (from: string, to: string) => core.moveSides(from, to),
+        sideChatsOf: (id: string) => core.o.prefs.sideChatsOf(id),
+        closeDriver: async (id: string) => {
+          const s = core.sessions.get(id);
+          if (s) await live.release(s);
+        },
         kept: (id: string) => {
           const p = core.o.prefs.get(id);
           return { ...(p.archived ? { archived: true } : {}), ...(p.movedTo ? { movedTo: p.movedTo } : {}) };

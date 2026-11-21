@@ -42,7 +42,7 @@ export interface ReportInput {
   now: number;
   /** what a file's requests drew from (a Codex file's own record decides per request: codexSource) */
   source: (f: FileState) => Source | SourceSpan;
-  /** a folder TETHER_HIDE_PROJECTS (or the Home agent) hides */
+  /** a folder TETHER_HIDE_PROJECTS (or the removed Home agent's old folder) hides */
   hidden?: (path: string) => boolean;
   /** Tether's API cost ledger: whole-session totals by Tether session id */
   ledger?: (sessionId: string) => { usd?: number; complete: boolean } | undefined;

@@ -1,6 +1,5 @@
 // A Discord bot as a connector (connector.ts): the person DMs the bot, or writes in one server
-// channel set here, and it's the same as texting Tether (the Home agent, session numbers, y or n to a
-// request). Only the owner user ids set here drive it: everyone else, other bots, webhooks and the
+// channel set here, and it's the same as texting Tether (session numbers, y or n to a request). Only the owner user ids set here drive it: everyone else, other bots, webhooks and the
 // bot itself are ignored, in DMs and in the channel, without a word. In the channel only a message
 // that starts by mentioning the bot, or replies to one of its messages, is for Tether (a "yes" to a
 // coworker there mustn't approve anything). Tether's messages go to the owner's DMs; only an answer
@@ -22,7 +21,6 @@
 // the bot user) isn't taken: it needs the GUILDS intent to tell that role apart. The settings hint says
 // to mention the bot itself.
 
-import { FROM_DISCORD } from "../../../../shared/fromTether";
 import { cleanMime } from "../../../../shared/attachments";
 import { ATTACH_FILE_MAX } from "../../../../shared/limits";
 import { readOutgoingImage } from "./images";
@@ -206,10 +204,9 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
   return {
     id: DISCORD,
     label: "Discord",
-    mark: FROM_DISCORD,
     images: true,
     about:
-      "Message your Discord bot in a DM (or in one server channel) the same as texting Tether: the Home agent, session numbers, y or n to a request. Only the user IDs set here can drive it; anyone else, and other bots, are ignored. Every ID listed is treated as you and sees everything (they're meant to be your own accounts). Tether writes to your DMs; in the channel it only answers what you wrote there.",
+      "Message your Discord bot in a DM (or in one server channel) the same as texting Tether: session numbers, y or n to a request. Only the user IDs set here can drive it; anyone else, and other bots, are ignored. Every ID listed is treated as you and sees everything (they're meant to be your own accounts). Tether writes to your DMs; in the channel it only answers what you wrote there.",
     notReady: "Set the bot token and your Discord user ID first, and turn Discord on.",
     enabled: () => saved().enabled ?? (!!envToken() && envOwners().length > 0),
     configured: () => !!config(),

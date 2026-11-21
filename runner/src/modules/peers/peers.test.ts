@@ -11,14 +11,14 @@ import { peerTarget } from "../../../../shared/peers";
 import { ASKS_MAX, MAX_HOPS, PeerCaps, RATE_MAX } from "./caps";
 import { answerIn, Peers } from "./index";
 import { IMAGE_REFUSED, ImageFailures, readOutgoingImage } from "../texting/images";
-import { CANT_TEXT } from "../homeLine";
+import { CANT_TEXT } from "../phoneLine";
 import { callerOf, peerSecret, peerToken, PeerSocket } from "./server";
 
 const row = (id: string, title: string, o: Partial<SessionSummary> = {}): SessionSummary => ({ id, harness: id.startsWith("codex") ? "codex" : "claude", nativeId: id.split(":")[1]!, projectPath: "/p/app", title, mode: "live", status: "idle", updatedAt: 0, ...o });
 
 /** Peers over a fake set of sessions (`stored`: older ones the lists leave out); what it queues and notices is recorded. */
 /** `noText`: sessions whose "Session can text me" box is off (every other one is ticked). */
-function setup(rows: SessionSummary[], o: { stored?: SessionSummary[]; home?: string; modes?: Record<string, string | undefined>; noText?: string[] } = {}) {
+function setup(rows: SessionSummary[], o: { stored?: SessionSummary[]; modes?: Record<string, string | undefined>; noText?: string[] } = {}) {
   const queued: { to: string; text: string; id: string }[] = [];
   const notices: { id: string; text: string }[] = [];
   const recent = new Map<string, Msg[]>();
@@ -33,7 +33,6 @@ function setup(rows: SessionSummary[], o: { stored?: SessionSummary[]; home?: st
   };
   const ctx: any = {
     log: () => {},
-    homeFolder: o.home,
     session: look,
     sessions: {
       list: () => rows,
@@ -239,15 +238,15 @@ describe("tools", () => {
     ({ peers, queued } = setup([row("claude:a", "A"), row("codex:c", "C", { projectPath: "/p/other" })]));
     expect((await peers.broadcastFrom("claude:a", "x", {})).text).toMatch(/No other session in this project/);
   });
-  test("the Home agent's chat can't be reached; an older session can, by its id", async () => {
-    const home = "/cfg/modules/homeAgent/workspace";
-    const { peers, queued } = setup([row("claude:a", "A"), row("claude:h", "Home chat", { projectPath: home }), row("claude:b", "B")], { home, stored: [row("claude:old", "Old one"), row("claude:gone", "Archived", { archived: true })] });
-    const list = (await peers.call({ from: "claude:a", tool: "tether_sessions", args: {}, signal: new AbortController().signal })).text;
-    expect(list).not.toContain("claude:h");
+  test("a session in a hidden folder (an old Home agent chat) can't be reached", async () => {
+    const hidden = "/cfg/modules/homeAgent/workspace";
+    const { peers, queued } = setup([row("claude:a", "A"), row("claude:b", "B")], { stored: [row("claude:h", "Home chat", { projectPath: hidden })] });
+    (peers as any).ctx.hiddenFolder = (p: string) => p === hidden;
     expect(await peers.send("claude:a", "claude:h", "x").catch((e) => e.message)).toMatch(/can't be messaged/);
-    expect(await peers.send("claude:a", "Home chat", "x").catch((e) => e.message)).toMatch(/no session/);
-    expect((await peers.broadcastFrom("claude:a", "hi", { scope: "all" })).text).not.toContain("claude:h");
     expect(queued.some((q) => q.to === "claude:h")).toBe(false);
+  });
+  test("an older session can be reached by its id; an archived one can't", async () => {
+    const { peers } = setup([row("claude:a", "A"), row("claude:b", "B")], { stored: [row("claude:old", "Old one"), row("claude:gone", "Archived", { archived: true })] });
     expect((await peers.send("claude:a", "claude:old", "still there?")).text).toMatch(/Sent to "Old one" \(claude:old\)/);
     expect(await peers.send("claude:a", "Old one", "x").catch((e) => e.message)).toMatch(/no session/);
     expect(await peers.send("claude:a", "claude:gone", "x").catch((e) => e.message)).toMatch(/can't be messaged/);
@@ -420,10 +419,7 @@ describe("text_person with an image", () => {
     writeFileSync(join(dir, "key.png"), "-----BEGIN OPENSSH PRIVATE KEY-----");
     writeFileSync(join(dir, "ok.png"), Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(8)]));
     const sent: unknown[][] = [];
-    const relayed: unknown[] = [];
-    let drives = false;
-    (peers as any).ctx.homeLine = {
-      home: { relay: async (...a: unknown[]) => (drives ? (relayed.push(a), "Not texted: it went to the Home agent.") : undefined) },
+    (peers as any).ctx.phoneLine = {
       // Texting reads and checks the image (personText): a bad one comes back refused.
       phone: {
         text: async (...a: unknown[]) => {
@@ -439,32 +435,28 @@ describe("text_person with an image", () => {
     // Refused where it's read; each refusal counts.
     for (let i = 0; i < ImageFailures.MAX; i++) expect((await call({ message: "look", image: "/etc/passwd" })).isError).toBe(true);
     const tries = sent.length;
-    // Past the limit: refused here, before anything goes (even a real image), and never relayed.
-    drives = true;
+    // Past the limit: refused here, before anything goes (even a real image).
     for (const image of [join(dir, "key.png"), join(dir, "ok.png")]) expect(await call({ message: "look", image })).toEqual({ text: `${IMAGE_REFUSED} Nothing was sent.`, isError: true });
     expect(sent.length).toBe(tries);
-    expect(relayed).toEqual([]);
-    // Words alone still go (here, relayed to the Home agent that drives it).
-    expect((await call({ message: "plain" })).text).toContain("Not texted");
-    expect(relayed).toEqual([["claude:a", "plain", undefined]]);
+    // Words alone still go.
+    expect((await call({ message: "plain" })).text).toBe("Texted the person.");
+    expect(sent.at(-1)).toEqual(["claude:a", "plain", {}]);
     rmSync(dir, { recursive: true, force: true });
   });
 });
 
 describe("text_person and the \"Session can text me\" box", () => {
-  test("a session whose box is off texts nothing and is told why; a ticked one and the Home agent's chats text", async () => {
-    const rows = [row("claude:a", "A"), row("claude:b", "B"), row("claude:h", "Home", { projectPath: "/home/agent" }), row("claude:x", "In Home's folder", { projectPath: "/home/agent" }), row("claude:old", "Archived", { archived: true })];
-    const { peers } = setup(rows, { noText: ["claude:a", "claude:h", "claude:x"], home: "/home/agent" });
+  test("a session whose box is off texts nothing and is told why; a ticked one texts", async () => {
+    const rows = [row("claude:a", "A"), row("claude:b", "B"), row("claude:old", "Archived", { archived: true })];
+    const { peers } = setup(rows, { noText: ["claude:a"] });
     const sent: unknown[][] = [];
-    (peers as any).ctx.homeLine = { home: { isTextsChat: () => false, homes: () => [{ n: 0, chat: "claude:h" }] }, phone: { text: async (...a: unknown[]) => (sent.push(a), { text: "Texted the person." }) } };
-    // Only Home's own chats are exempt, not anything in its folder; an archived session doesn't text.
-    expect(await peers.call({ from: "claude:x", tool: "text_person", args: { message: "hi" } } as any)).toEqual({ text: CANT_TEXT, isError: true });
+    (peers as any).ctx.phoneLine = { phone: { text: async (...a: unknown[]) => (sent.push(a), { text: "Texted the person." }) } };
+    // An archived session doesn't text.
     expect(await peers.call({ from: "claude:old", tool: "text_person", args: { message: "hi" } } as any)).toEqual({ text: CANT_TEXT, isError: true });
     const call = (from: string) => peers.call({ from, tool: "text_person", args: { message: "done" } } as any);
     expect(await call("claude:a")).toEqual({ text: CANT_TEXT, isError: true });
     expect(sent).toEqual([]);
     expect((await call("claude:b")).text).toBe("Texted the person.");
-    expect((await call("claude:h")).text).toBe("Texted the person.");
-    expect(sent.map((a) => a[0])).toEqual(["claude:b", "claude:h"]);
+    expect(sent.map((a) => a[0])).toEqual(["claude:b"]);
   });
 });

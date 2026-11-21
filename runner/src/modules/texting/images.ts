@@ -11,7 +11,7 @@
 // failed tries count (texting/index.ts takes a text from the rate cap first; peers counts them with
 // failedImages).
 //
-// In: files the person sends go to the session (or Home agent) the text goes to, as attachments
+// In: files the person sends go to the session the text goes to, as attachments
 // (texting/index.ts stash, like an upload: core/attachments.ts). iMessage's are downloaded within
 // DOWNLOAD.ms and at most their cap (counted as they stream: download). An image is checked by its
 // bytes (one that isn't what it says is kept as a plain file); HEIC is turned into JPEG when
@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { basename, extname, isAbsolute, join } from "node:path";
 import { ATTACH_IMAGE_EDGE, ATTACH_IMAGE_MAX } from "../../../../shared/limits";
 import { NATIVE_IMAGE_MAX } from "../../core/attachments";
-import type { TextedFile } from "../homeLine";
+import type { TextedFile } from "../phoneLine";
 
 /** The biggest image an agent can text. */
 export const OUT_IMAGE_MAX = 10 * 1024 * 1024;

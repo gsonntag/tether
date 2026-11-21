@@ -18,7 +18,7 @@ function setup(maxLive?: number) {
   adapter.addStored("home", [], { projectPath: "/home/t/.config/tether/modules/homeAgent/workspace/chat-1" });
   adapter.addStored("child", [], { parentSessionId: "claude:one" });
   const core = new SessionCore({ adapters: [adapter], bus: new EventBus<CoreEvents>(), send: () => true, prefs: new Prefs("/nonexistent/tether-limit-test/runner.json", 60_000), epoch: "limit", log: () => {} });
-  const live = new LiveControl(core, new RequestBroker(), { idleMs: 60_000, maxLive, homeFolder: "/home/t/.config/tether/modules/homeAgent/workspace" });
+  const live = new LiveControl(core, new RequestBroker(), { idleMs: 60_000, maxLive });
   cleanups.push(() => core.stop());
   return { core, live, adapter };
 }
@@ -33,9 +33,9 @@ describe("live-session limit", () => {
     expect(adapter.drivers).toHaveLength(2);
     // a session already live is never refused
     await live.send("claude:one", "again");
-    // the Home agent's chats and subagents don't count and aren't refused
-    await live.send("claude:home", "hi");
-    expect(adapter.drivers).toHaveLength(3);
+    // an old Home agent chat (its folder is nothing special now) counts like any other
+    await expect(live.send("claude:home", "hi")).rejects.toThrow(/its limit/);
+    expect(adapter.drivers).toHaveLength(2);
   });
 
   test("no limit by default", async () => {

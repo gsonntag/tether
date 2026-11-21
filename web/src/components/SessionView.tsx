@@ -157,7 +157,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
 
   // Fork from here on the replies that end a finished turn (SPEC §16): a main session whose harness forks.
   const forks = !!view?.state && !!summary && canFork(summary, view.capabilities, view.state);
-  const sides = !!view?.state && !!summary && canSideChat(runnerId, summary, view.capabilities, view.state);
+  const sides = !!view?.state && !!summary && canSideChat(summary, view.capabilities, view.state);
   const sideChats = useSideChats(runnerId, sessionId, sides || !!side);
   const forkBusy = view?.state ? forkRunning(view.state, view.capabilities) : false;
   const forkingHere = useForking(sessionId);

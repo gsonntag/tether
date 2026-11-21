@@ -254,9 +254,9 @@ describe("pinned rows past discovery's window", () => {
     expect(asked).toBe(2);
   });
 
-  test("Home agent chats and hidden folders can't be pinned", async () => {
-    const { ops, core, adapter } = setup({ hideProjects: "/home-agent" });
-    adapter.addStored("chat", [], { projectPath: "/home-agent" });
+  test("sessions in hidden folders can't be pinned", async () => {
+    const { ops, core, adapter } = setup({ hideProjects: "/hidden" });
+    adapter.addStored("chat", [], { projectPath: "/hidden" });
     await core.discover();
     expect(await pin(ops, "claude:chat", true)).toMatchObject({ ok: false, error: expect.stringContaining("can't be pinned") });
   });
