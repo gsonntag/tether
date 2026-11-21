@@ -50,7 +50,14 @@ type Kind = "turn" | "subagent";
 export interface BackgroundCommand {
   threadId: string;
   processId: string;
+  /** the commandExecution item that started it (what an approval for input to it names) */
+  itemId?: string;
   eff: Eff;
+}
+
+/** Whether a command has more access than what's shown (or isn't known: fail closed). */
+export function runsLooser({ eff }: BackgroundCommand, current: Eff): boolean {
+  return !eff.mode || eff.mode === CUSTOM_MODE || (eff.mode !== current.mode && looser(eff, current));
 }
 
 export class Running {
@@ -63,7 +70,12 @@ export class Running {
    * means nothing, and one no looser than what's shown needs no word.
    */
   looserCommands(current: Eff): BackgroundCommand[] {
-    return this.commands.filter(({ eff }) => !eff.mode || eff.mode === CUSTOM_MODE || (eff.mode !== current.mode && looser(eff, current)));
+    return this.commands.filter((c) => runsLooser(c, current));
+  }
+
+  /** The command an approval for input names: by the item that started it, else its process id. */
+  command(t: { itemId?: string; processId?: string }): BackgroundCommand | undefined {
+    return (t.itemId && this.commands.find((c) => c.itemId === t.itemId)) || (t.processId ? this.commands.find((c) => c.processId === t.processId) : undefined) || undefined;
   }
 
   set(id: string, kind: Kind, eff: Eff) {
