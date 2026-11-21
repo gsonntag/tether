@@ -417,6 +417,11 @@ export class Router {
     }
     // The open session last texted or answered (a number offered by a picker isn't one till it's picked).
     const live = this.open().filter((s) => !s.offered);
+    // Two or more waiting on a request: a plain "y" could approve the wrong one, so it asks.
+    if (live.filter((s) => s.requestId && !s.answered).length > 1) {
+      this.hold(text);
+      return { kind: "reply", text: this.picker(TEXTS.which, running) };
+    }
     if (live.length) return this.deliver(live.reduce((a, b) => ((b.seq ?? 0) > (a.seq ?? 0) || ((b.seq ?? 0) === (a.seq ?? 0) && b.at > a.at) ? b : a)), text);
     // None: which of the sessions that may text? The Home agent only when none may.
     this.offer(texters ?? []);

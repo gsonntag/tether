@@ -1961,8 +1961,9 @@ chat: if the home is deleted meanwhile (and the tabs renumbered), the person is 
 3. `n text` (and just `n`) goes to session n, as before.
 4. Plain text goes to the home (by its chat) that sent Tether's last text when that was a home's
    (the primary one when no session is open and none is ticked).
-   Otherwise it goes to the open session last texted or answered, or gets the numbered picker of
-   ticked sessions, which ends with a `home:` row.
+   Otherwise it goes to the open session last texted or answered (but with two or more open
+   requests it's held and the picker asks, so a plain "y" can't approve the wrong one), or gets the
+   numbered picker of ticked sessions, which ends with a `home:` row.
 
 *Homes.* (The router is shared, so all of this, the Home/H prefixes and reply threading work the
 same on every connector, Discord included. The way back for private answers, `replyVia`, is kept

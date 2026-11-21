@@ -631,4 +631,17 @@ describe("a \"y\" mustn't approve the wrong request", () => {
     expect(r.route("y", "tB")).toMatchObject({ kind: "deliver", sessionId: "b", requestId: "reqB" });
     expect(casualText(TEXTS.threadNotWaiting)).toBe(true);
   });
+
+  test("a plain y with two requests open asks which, instead of approving the latest", () => {
+    const { r, clock } = setup();
+    r.stamp("a", "wants to run a command", ".", "reqA");
+    clock.tick(1000);
+    r.stamp("b", "wants to edit a file", ".", "reqB");
+    const d = r.route("y");
+    expect(d.kind).toBe("reply");
+    expect((d as { text: string }).text).toContain("[1] wants to run a command");
+    expect((d as { text: string }).text).toContain("[2] wants to edit a file");
+    // The pick then carries the held y to that session's own request.
+    expect(r.route("1")).toMatchObject({ kind: "deliver", sessionId: "a", requestId: "reqA", text: "y" });
+  });
 });
