@@ -358,7 +358,7 @@ async function realSources(p,phone) {
       await open(p,id);
       await p.locator(".t-paid-badge").waitFor({timeout:30000});
       const trust=await tuiStarts(p,id,cfg);
-      await p.locator(".t-chip-term").click();
+      await p.locator(".t-chip-term:not(.t-chip-changes)").click();
       await p.locator(".t-term-agent").waitFor();
       await p.locator(".t-term-agent").click();
       await p.locator(".t-term-api-badge").waitFor({timeout:30000});

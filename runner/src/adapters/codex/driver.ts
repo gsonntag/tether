@@ -683,7 +683,10 @@ export class CodexDriver implements Driver {
         if (child) this.stream.notice(this.stream.child(thread) ?? this.stream.main, "Denied. The reason can't reach a subagent.", "warning");
         else void this.steerTurn(thread!, `${FROM_TETHER}${d.reason}`).catch(() => {});
       }
-      return codexAnswer(method, p, d);
+      // A plain Deny stops the main agent's turn ("cancel"). On a subagent's thread that would end
+      // only the subagent's turn, and the main agent then waits on it with nothing to come (seen on
+      // 0.171): the subagent is told "decline" instead, and reports back.
+      return codexAnswer(method, p, child && !d.allow ? { ...d, interrupt: undefined } : d);
     });
   }
 

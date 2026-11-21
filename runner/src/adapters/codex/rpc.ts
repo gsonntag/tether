@@ -19,7 +19,8 @@ export interface RpcError extends Error {
 
 /**
  * What answers the daemon's requests. undefined: Tether doesn't handle that method (answered with
- * an error); null: left unanswered, for another client (Codex's TUI) to answer.
+ * an error); null: left unanswered, for another client (Codex's TUI) to answer. A connection with
+ * no handler at all (discovery and history's shared one) answers nothing either.
  */
 export type ServerRequestHandler = (method: string, params: any, id: number | string) => Promise<unknown> | undefined | null;
 
@@ -86,8 +87,12 @@ export class CodexRpc {
   }
 
   private serverRequest(m: any) {
+    // A connection that only reads (discovery, history) still hears the requests of threads it
+    // read, a subagent's approval among them. Answering "not handled" there made the daemon reject
+    // the request before the session's own connection could show it: it's left to that one.
+    if (!this.onRequest) return;
     const reply = (body: object) => this.write({ id: m.id, ...body });
-    const p = this.onRequest?.(m.method, m.params ?? {}, m.id);
+    const p = this.onRequest(m.method, m.params ?? {}, m.id);
     if (p === null) return;
     if (!p) return reply({ error: { code: -32601, message: `Tether doesn't handle ${m.method}` } });
     p.then(

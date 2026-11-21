@@ -357,16 +357,20 @@ async function shortDown(mk, out) {
       await p.waitForTimeout(500);
     }
     await p.waitForTimeout(800);
-    const down = { label: "short rows: flings down past the cap", startQ: await firstQ(), flings: 0, writes: 0, shifts: 0, shiftPx: 0, killed: 0, maxRows: 0, travel: 0 };
+    // writes: during a drag or its momentum (each would end an iOS fling). trimWrites: after the
+    // fling came to rest, the trim of rows above keeping the view in place (no fling to end).
+    const down = { label: "short rows: flings down past the cap", startQ: await firstQ(), flings: 0, writes: 0, trimWrites: 0, shifts: 0, shiftPx: 0, killed: 0, maxRows: 0, travel: 0 };
     let bottom = false;
     for (let i = 0; i < 60 && !bottom; i++) {
       await begin(p, "shortdown");
       const killed = await wkFling(p, false, 300, 0.97);
+      const flingWrites = await writesSince(p);
       await settle(p);
       await p.waitForTimeout(400); // the trim, once settled
       const r = await end(p);
       down.flings++;
-      down.writes += r.writes;
+      down.writes += flingWrites;
+      down.trimWrites += r.writes - flingWrites;
       down.shifts += r.shifts;
       down.shiftPx += r.shiftPx;
       down.maxRows = Math.max(down.maxRows, r.maxRows);
