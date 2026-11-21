@@ -1,6 +1,6 @@
 // What Tether adds to the system prompt of every session it runs (SPEC §9a), beside its MCP server:
 // how to reply (Concise replies, a runner setting, on unless turned off) and how to text the person
-// (text_person).
+// (text_person), and to archive the sessions it starts once done with them (tether_archive).
 
 import type { RunnerSettings } from "../../../../shared/protocol";
 import { PEER_SERVER, TEXT_PERSON } from "../../../../shared/peers";
@@ -10,11 +10,14 @@ export const CONCISE_RULE =
 
 export const TEXTING_RULE = `To text the person, use the ${TEXT_PERSON} tool (mcp__${PEER_SERVER}__${TEXT_PERSON}). Their reply comes back to this session as a message. It can send an image after the text (image: an absolute path to a .png, .jpg, .gif, .webp or .heic). Text only when the person asked you to or you're blocked on them. It works only when the person ticked "Session can text me" on this session; otherwise it returns an error: put it in your reply instead.`;
 
+export const STARTED_RULE = "A session you start with tether_start stays in the person's sidebar until you archive it: once you're done with it (its work reported, nothing more to ask), archive it with tether_archive.";
+
 /** The instructions for a session Tether runs, with the runner's settings as they are now. */
 export function sessionInstructions(s: RunnerSettings): string {
   return [
     "This session runs in Tether: the person reads your replies in Tether's app, often on a phone.",
     ...(s.conciseReplies === false ? [] : [CONCISE_RULE]),
     TEXTING_RULE,
+    STARTED_RULE,
   ].join("\n\n");
 }

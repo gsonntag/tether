@@ -23,6 +23,8 @@ test("started sessions are marked, take the live summary where there is one, and
   expect(spawnedRows(undefined, summaries, "a")).toEqual([]);
   // Background subagents running count as working, as elsewhere.
   expect(spawnedRows({ children: [s("k3", 1, { backgroundSubagents: 1 })] }, {}, "a")[0]!.status).toBe("running");
+  // One archived since the op answered (its starter archived it) is gone at once.
+  expect(spawnedRows(family, { a: { epoch: "e", seq: 1, sessions: { k1: s("k1", 9, { archived: true }) } } }, "a").map((x) => x.id)).toEqual(["k2"]);
   const native = [r("sub1", 7, { parentSessionId: "boss", agentType: "Explore" })];
   expect(withSpawned(native, spawned).map((x) => `${x.id}${x.spawned ? "*" : ""}`)).toEqual(["k1*", "sub1", "k2*"]);
 });

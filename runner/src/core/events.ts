@@ -28,6 +28,8 @@ export interface CoreEvents {
   attention: { sessionId: string; message?: string };
   /** a session was archived or unarchived (the worktrees module removes a merged worktree Tether made) */
   archived: { sessionId: string; archived: boolean };
+  /** archiving's worktree cleanup decided (worktrees module): removed, or kept and why; neither: it had none to clean up */
+  worktreeCleaned: { sessionId: string; removed?: boolean; why?: string };
   /** the "Session can text me" box changed (texting drops an unticked session's number) */
   canTextChanged: { sessionId: string; canText: boolean };
   error: { sessionId?: string; message: string };

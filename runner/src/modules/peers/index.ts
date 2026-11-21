@@ -72,7 +72,7 @@ export class Peers {
   private asks: Ask[] = [];
 
   constructor(
-    private ctx: Pick<ModuleContext, "sessions" | "session" | "log" | "phoneLine" | "hiddenFolder"> & { ops?: Pick<ModuleContext["ops"], "call">; dataDir?: string },
+    private ctx: Pick<ModuleContext, "sessions" | "session" | "log" | "phoneLine" | "hiddenFolder"> & { ops?: Pick<ModuleContext["ops"], "call">; dataDir?: string } & Pick<ConstructorParameters<typeof Children>[0], "worktreeCleaned" | "worktreeKeeps">,
     now: () => number = Date.now,
   ) {
     this.caps = new PeerCaps(now);
@@ -143,6 +143,8 @@ export class Peers {
         return this.ask(from, str(a.to), str(a.text), Number(a.timeout_minutes) || ASK_DEFAULT_MIN, c.signal);
       case PEER_TOOLS.start:
         return this.start(from, a);
+      case PEER_TOOLS.archive:
+        return this.children.archive(from, str(a.to));
       case PEER_TOOLS.broadcast:
         return this.broadcastFrom(from, str(a.text), { project: str(a.project), status: str(a.status), scope: str(a.scope) });
       case TEXT_PERSON: {
@@ -426,6 +428,39 @@ export class Peers {
   }
 }
 
+/** How long tether_archive waits for the worktree cleanup's word before answering without it. */
+export const CLEANUP_WAIT_MS = 30_000;
+
+type Cleaned = { removed?: boolean; why?: string };
+
+/** Waits for the worktrees module's worktreeCleaned word on a session archived, "slow" past `ms`. */
+export class CleanupWaits {
+  private waits = new Map<string, ((r: Cleaned) => void)[]>();
+  constructor(private ms = CLEANUP_WAIT_MS) {}
+
+  wait(id: string): Promise<Cleaned | "slow"> {
+    return new Promise((done) => {
+      const got = (r: Cleaned) => {
+        clearTimeout(timer);
+        done(r);
+      };
+      const timer = setTimeout(() => {
+        const left = (this.waits.get(id) ?? []).filter((f) => f !== got);
+        if (left.length) this.waits.set(id, left);
+        else this.waits.delete(id);
+        done("slow");
+      }, this.ms);
+      this.waits.set(id, [...(this.waits.get(id) ?? []), got]);
+    });
+  }
+
+  got(id: string, r: Cleaned) {
+    const waiting = this.waits.get(id);
+    this.waits.delete(id);
+    waiting?.forEach((f) => f(r));
+  }
+}
+
 /** How long an MCP call may run: an ask's longest wait, and a little. */
 const CALL_MS = (ASK_MAX_MIN + 5) * 60_000;
 
@@ -433,7 +468,9 @@ export const peersModule: Module = {
   name: "peers",
   start(ctx) {
     if (process.env.TETHER_PEERS === "0") return;
-    const peers = new Peers(ctx);
+    // tether_archive waits a little for what the worktree cleanup decided, to tell the starter.
+    const cleaned = new CleanupWaits();
+    const peers = new Peers({ ...ctx, worktreeCleaned: (id) => cleaned.wait(id) });
     const secret = peerSecret(ctx.dataDir);
     const socket = new PeerSocket(join(ctx.dataDir, "peers.sock"), secret, (c) => peers.call(c), ctx.log);
     socket.start();
@@ -452,6 +489,11 @@ export const peersModule: Module = {
     const offs = [
       // A Move or a source change: who started whom follows the session to its new id.
       ctx.bus.on("continued", ({ from, to }) => peers.children.continued(from, to)),
+      // An archived starter's idle children go too; a child brought back is the person's.
+      ctx.bus.on("archived", ({ sessionId, archived }) => void peers.children.archived(sessionId, archived).catch((e) => ctx.log(`peers: ${sessionId}: ${(e as Error).message}`))),
+      ctx.bus.on("worktreeCleaned", ({ sessionId, ...r }) => cleaned.got(sessionId, r)),
+      // Taken to its terminal: the person drives it.
+      ctx.bus.on("modeChanged", ({ sessionId, to }) => peers.children.modeChanged(sessionId, to)),
       ctx.bus.on("queueGone", ({ sessionId, msgId, how, text }) => peers.queueGone(sessionId, msgId, how, text)),
       ctx.bus.on("message", ({ sessionId, msg }) => peers.message(sessionId, msg)),
       // A subagent's request is its main session's.
@@ -460,8 +502,16 @@ export const peersModule: Module = {
       // A rate-limit retry is still that turn: its ask stays open for the turn that recovers.
       ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!recovering && peers.turnEnded(sessionId, error, stopped))),
     ];
+    // Children whose starter was archived while they worked, or across a restart: soon after start and hourly.
+    const sweep = () => void peers.children.sweep().catch((e) => ctx.log(`peers: children sweep failed: ${(e as Error).message}`));
+    const first = setTimeout(sweep, 60_000);
+    const every = setInterval(sweep, 60 * 60_000);
+    first.unref?.();
+    every.unref?.();
     ctx.log(`peers: tools for every session, calls on ${socket.socketPath}`);
     return () => {
+      clearTimeout(first);
+      clearInterval(every);
       offs.forEach((off) => off());
       unset.forEach((u) => u?.());
       socket.stop();

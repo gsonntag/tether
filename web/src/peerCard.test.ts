@@ -25,3 +25,12 @@ test("a start card names the session it started", () => {
   expect(peerHead(start("done", out), "Bug fix")).toEqual({ label: "Started", sum: "“Bug fix”" });
   expect(peerHead(start("error", "Nothing was started: harness must be one of claude, codex, antigravity."), undefined).label).toBe("Didn't start");
 });
+
+test("an archive card names the session it archived", () => {
+  const archive = (status: ToolPart["status"], output?: string): ToolPart => ({ type: "tool", id: "t3", name: "mcp__tether__tether_archive", kind: "peer", status, input: { to: "codex:c1" }, ...(output ? { output } : {}) });
+  expect(peerHead(archive("running"), undefined)).toEqual({ label: "Archiving", sum: "codex:c1" });
+  const out = 'Archived "Bug fix" (codex:c1). It\'s out of the person\'s sidebar.';
+  expect(peerTarget(out)).toEqual({ id: "codex:c1", title: "Bug fix" });
+  expect(peerHead(archive("done", out), "Bug fix")).toEqual({ label: "Archived", sum: "“Bug fix”" });
+  expect(peerHead(archive("error", '"Bug fix" (codex:c1) is still working, so it wasn\'t archived.'), "Bug fix").label).toBe("Didn't archive");
+});

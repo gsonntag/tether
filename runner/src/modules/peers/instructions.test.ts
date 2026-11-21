@@ -3,7 +3,7 @@ import type { ToolServer } from "../../core/adapter";
 import { claudeToolServerFor, claudeTools } from "../../adapters/claude/setup";
 import { codexTools, withTools } from "../../adapters/codex/driver";
 import { PhoneLine } from "../phoneLine";
-import { CONCISE_RULE, sessionInstructions, TEXTING_RULE } from "./instructions";
+import { CONCISE_RULE, sessionInstructions, STARTED_RULE, TEXTING_RULE } from "./instructions";
 import { Peers } from "./index";
 import { TOOL_DEFS } from "./tools";
 
@@ -16,6 +16,7 @@ describe("the instructions Tether adds to its sessions", () => {
     for (const s of [sessionInstructions({}), off]) {
       expect(s).toContain(TEXTING_RULE);
       expect(s).toContain("use the text_person tool");
+      expect(s).toContain(STARTED_RULE);
     }
   });
 

@@ -980,8 +980,8 @@ event (with the message's text) and the queued message's id from `SessionActions
   text}` (returns at once), `tether_ask {to, text, timeout_minutes}` (waits for the answer: 15
   minutes by default, 60 at most) and `tether_broadcast {text, project?, scope?, status?}`
   (fire-and-forget, at most 20 sessions, never the sender; the sender's own project unless it
-  passes `project`, or `scope: "all"` for every project). `to` is an id or a title only one
-  session has. The tools run without a prompt: Claude allows `mcp__tether__*`; Codex gets
+  passes `project`, or `scope: "all"` for every project), plus `tether_start` and `tether_archive`
+  (below). `to` is an id or a title only one session has. The tools run without a prompt: Claude allows `mcp__tether__*`; Codex gets
   `default_tools_approval_mode = "approve"`; Antigravity asks for each MCP call, and its driver
   approves those of `mcp_tether_*` itself.
 - **Transport.** The MCP server posts each call to the runner's Unix socket
@@ -1060,8 +1060,32 @@ event (with the message's text) and the queued message's id from `SessionActions
   grandchild can't; starts count toward the 10-per-10-minutes rate and the hop cap. A start that
   fails gives the rate slot back; one whose prompt couldn't be sent names the idle session it
   made. Children show under their starter in the sidebar and header (§6a), taken over or not.
+  The tool's description, its answer, each report's footer and Tether's instructions tell the
+  starter to archive a child once done with it.
+- **Archiving children.** The person's sidebar keeps the sessions they started, and agent-started
+  ones while those work. When unsure, a child isn't archived. `tether_archive {to}` (its id,
+  followed to its successor if it moved, or the exact title, any case, of only one of the caller's
+  children) archives a child of the caller's (a side chat's: its session's) through the core's
+  archive, marks it released (`done`: no more reports), archives its children that may go as a
+  cascade (below), and answers with what the worktree cleanup decided (the worktrees module's
+  `worktreeCleaned` event: removed, or kept and why; waited for 30 s at most). Refused for anything
+  the caller didn't start, while the child has work going (the worktree cleanup's busy checks: a
+  turn or request, a rate-limit retry, its setup, any queued message, scheduled or held, background
+  work: "wait for its report, or tether_send it to stop"), once the person took it over, and when
+  it's pinned. The person takes a child over (released `person`, for good) when they type into it,
+  run a `!` command, text it, press Stop, take it to its terminal, or unarchive it (Unarchive, or a
+  message they send it); whatever it was released for before.
+  **Cascade:** a child whose starter is archived (by the person: the core's `archived` event; done
+  with it: `tether_archive`; at its next report, for one that worked then; and the peers sweep,
+  a minute after start and hourly, for what a restart missed) is archived and marked `cascade`
+  only if it may go: not the person's, not pinned, not in its terminal, no work going, and its own
+  worktree Tether made holds nothing archiving would leave behind (uncommitted changes, commits not
+  in main, ignored files that aren't regenerable: `worktreeKeeps`; a failed check keeps it). One
+  that may not go stays, released `gone`. When the person unarchives a starter, the children its
+  archive took along come back (and theirs), released as they were before. A report rechecks the
+  child after its waits, so one taken over meanwhile isn't reported.
 - Tool cards read "Asked “<title>”" ("Ask failed" once asked, "Not asked" when it never went),
-  "Sent to “<title>”", "Sent to all", "Started “<title>”", with the message, an Open link and the answer. The link goes
+  "Sent to “<title>”", "Sent to all", "Started “<title>”", "Archived “<title>”" ("Didn't archive"), with the message, an Open link and the answer. The link goes
   to the session the runner reached: its answer names it as `"<title>" (<id>)` on its first line. Terminal mode: a TUI-driven session can receive (it queues until Back
   to Tether) but has no tools.
 - **Tether's instructions** (`peers/instructions.ts`): every session that gets the server gets Tether's instructions too, appended to Claude Code's
@@ -1069,7 +1093,8 @@ event (with the message's text) and the queued message's id from `SessionActions
   process start: with **Concise replies** on (a runner setting, Settings → Agents, default on),
   "end each turn with a short reply: 1–3 sentences, outcome first, then a link; details (≤ ~5
   bullets) only for a decision or a failure; no test counts, file lists or recaps unless asked";
-  always, "to text the person, use `text_person`".
+  always, "to text the person, use `text_person`" and "archive a session you started with
+  `tether_archive` once you're done with it".
 - **`text_person(message)`** on the same server texts the person through the texting module (§11
   Texting, "Agents texting the person"), only when the session's **Session can text me** box is
   ticked; otherwise it returns an error saying so (put it in the reply instead), and the rule says so.
