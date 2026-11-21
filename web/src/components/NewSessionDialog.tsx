@@ -330,7 +330,7 @@ export function NewSessionDialog() {
                 <>
                   <div className="t-projects" role="listbox" aria-label="Worktrees">
                     {trees.worktrees.map((w) => (
-                      <button type="button" role="option" aria-selected={w.path === tree} key={w.path} className="t-proj-opt" onClick={() => setTree(w.path)}>
+                      <button type="button" role="option" aria-selected={w.path === tree} key={w.path} className="t-proj-opt t-wt-opt" onClick={() => setTree(w.path)}>
                         <span>{w.branch ?? folderName(w.path)}</span>
                         <span className="t-path">{worktreeLabel(w)}</span>
                       </button>

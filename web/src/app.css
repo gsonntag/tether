@@ -824,6 +824,14 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Existing worktree's picker: the whole "path · branch · used by N sessions", wrapped (its end is the point). */
+.t-wt-opt {
+  flex-shrink: 0;
+}
+.t-wt-opt .t-path {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .t-form {
   max-height: calc(100dvh - 120px);
   box-sizing: border-box;
