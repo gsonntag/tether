@@ -1,14 +1,40 @@
 import { describe, expect, test } from "bun:test";
 import type { RunnerInfo } from "../../shared/protocol";
-import { ago, canPin, mergeRunners, reconnected, textingDown, type KnownRunner } from "./runners";
+import { ago, canPin, loadKnown, mergeRunners, reconnected, saveKnown, textingDown, type KnownRunner } from "./runners";
 
 const info = (id: string, connectedAt = 1): RunnerInfo => ({ id, name: id, hostname: id, version: "0", protocol: 1, harnesses: [], connectedAt });
 
-test("runners that drop off the server's list stay, as disconnected", () => {
+test("runners you own that drop off the server's list stay, as disconnected", () => {
   const first = mergeRunners([], [info("b"), info("a")], 100);
   expect(first.map((r) => [r.id, r.online, r.lastSeen])).toEqual([["a", true, 100], ["b", true, 100]]);
   const second = mergeRunners(first, [info("b")], 200);
   expect(second.map((r) => [r.id, r.online, r.lastSeen])).toEqual([["b", true, 200], ["a", false, 100]]);
+});
+
+test("a runner shared with you that leaves the list is gone: unshared or offline, nothing of it stays", () => {
+  const shared = (id: string): RunnerInfo => ({ ...info(id), access: "drive" });
+  const first = mergeRunners([], [shared("theirs"), info("mine")], 100);
+  expect(first.map((r) => r.id).sort()).toEqual(["mine", "theirs"]);
+  const second = mergeRunners(first, [], 200);
+  expect(second.map((r) => [r.id, r.online])).toEqual([["mine", false]]);
+});
+
+test("remembered runners are kept per person, and only the ones they own", () => {
+  const store = new Map<string, string>();
+  (globalThis as any).localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) };
+  try {
+    // An old list, kept by no one in particular: it goes.
+    store.set("tether.runners", JSON.stringify([{ ...info("old"), online: false, lastSeen: 1 }]));
+    expect(loadKnown("a@x.com")).toEqual([]);
+    expect(store.has("tether.runners")).toBe(false);
+    saveKnown(mergeRunners([], [info("mine"), { ...info("theirs"), access: "view" }], 5), "a@x.com");
+    expect(loadKnown("a@x.com").map((r) => [r.id, r.online])).toEqual([["mine", false]]);
+    // Someone else signed in on this browser sees none of it.
+    expect(loadKnown("b@x.com")).toEqual([]);
+    expect(loadKnown(undefined)).toEqual([]);
+  } finally {
+    delete (globalThis as any).localStorage;
+  }
 });
 
 test("a runner that reconnected, or came online, needs fresh subscriptions", () => {

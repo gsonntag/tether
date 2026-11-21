@@ -69,15 +69,14 @@ interface State {
   homeWatch: Record<string, Watching>;
 }
 
-const known = loadKnown();
-setHomeFolders(known);
+// Nothing is shown from this browser's memory until the server says who's signed in (hello).
 
 export const useStore = create<State>(() => ({
   link: "connecting",
   everOpen: false,
   auth: "ok",
   stale: false,
-  runners: known,
+  runners: [],
   sidebarOpen: false,
   summaries: {},
   projects: {},
@@ -116,7 +115,12 @@ export function start() {
     else location.hash = url.slice(at);
   });
   on("hello", (m) => {
-    set((s) => ({ user: m.user, stale: s.stale || m.protocol !== PROTOCOL_VERSION, pushKey: m.push?.publicKey }));
+    // The runners this person owns that this browser remembers (another person's never show).
+    const before = get().user?.email === m.user.email ? get().runners : [];
+    const remembered = loadKnown(m.user.email).filter((k) => !before.some((r) => r.id === k.id));
+    const runners = sortRunners([...before, ...remembered]);
+    setHomeFolders(runners);
+    set((s) => ({ user: m.user, runners, stale: s.stale || m.protocol !== PROTOCOL_VERSION, pushKey: m.push?.publicKey }));
     // The server forgot what this device looked at with its old socket.
     tellPresence(true);
     resub.hello();
@@ -130,7 +134,7 @@ export function start() {
     resub.runners(back);
     for (const r of runners) if (r.online && (afterHello || back.includes(r.id))) refreshRunner(r.id);
     afterHello = false;
-    saveKnown(runners);
+    saveKnown(runners, get().user?.email);
     setHomeFolders(runners);
     set({ runners });
     // A runner that came online may give the open session its short link now.
@@ -374,7 +378,7 @@ export function noteHomeWatch(runnerId: string, w: Watching) {
 /** Drops a disconnected runner from this browser's list. */
 export function forgetRunner(id: string) {
   const runners = sortRunners(get().runners.filter((r) => r.id !== id || r.online));
-  saveKnown(runners);
+  saveKnown(runners, get().user?.email);
   set({ runners });
 }
 
