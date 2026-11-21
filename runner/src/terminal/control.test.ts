@@ -1092,17 +1092,19 @@ describe("keys reach the program from copy mode", () => {
     const { term, pty } = await shell();
     term.input("a1", keys("x"));
     term.input("a1", keys("\r"));
-    expect(pty.written).toEqual([`${LEAVE}x`, `${LEAVE}\r`]);
+    // Esc too: it reaches the program, so it stops a Claude turn while scrolled back.
+    term.input("a1", keys("\x1b"));
+    expect(pty.written).toEqual([`${LEAVE}x`, `${LEAVE}\r`, `${LEAVE}\x1b`]);
     pty.written.length = 0;
-    for (const k of ["\x1b", "\x1b[A", "\x1b[5~", "\x1b[I", "\x1b[<64;1;1M"]) term.input("a1", keys(k));
-    expect(pty.written).toEqual(["\x1b", "\x1b[A", "\x1b[5~", "\x1b[I", "\x1b[<64;1;1M"]);
+    for (const k of ["\x1b[A", "\x1b[5~", "\x1b[I", "\x1b[<64;1;1M"]) term.input("a1", keys(k));
+    expect(pty.written).toEqual(["\x1b[A", "\x1b[5~", "\x1b[I", "\x1b[<64;1;1M"]);
   });
 
-  test("the key bar says so itself: its arrows leave too, its Esc doesn't need to", async () => {
+  test("the key bar says so itself: its arrows leave too, and so does its Esc", async () => {
     const { term, pty } = await shell();
     term.input("a1", keys("\x1b[A"), { leave: true });
-    term.input("a1", keys("\x1b"), { leave: false });
-    expect(pty.written).toEqual([`${LEAVE}\x1b[A`, "\x1b"]);
+    term.input("a1", keys("\x1b"), { leave: true });
+    expect(pty.written).toEqual([`${LEAVE}\x1b[A`, `${LEAVE}\x1b`]);
   });
 
   test("a swipe's notches go as one-line keys", async () => {

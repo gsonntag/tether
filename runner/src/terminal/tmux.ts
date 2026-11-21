@@ -73,14 +73,15 @@ const swipeBinding = (key: string, report: string, otherwise: string[]) => ["bin
 
 /**
  * Whether keys are meant for the program, not for scrolling, so copy mode must not swallow them:
- * text, Enter, control keys, a paste, Alt with a key, Delete, Shift+Tab. Not Esc alone, which quits
- * copy mode by itself; not arrows and page keys, which scroll there; and not what a terminal says
- * by itself (mouse and focus reports, replies to tmux's queries).
+ * text, Enter, control keys, a paste, Alt with a key, Delete, Shift+Tab, and Esc alone (it stops a
+ * Claude turn: scrolled back, it leaves copy mode and still reaches the program; scrolling back to
+ * the bottom is how to leave without a key). Not arrows and page keys, which scroll there; and not
+ * what a terminal says by itself (mouse and focus reports, replies to tmux's queries).
  */
 export function forProgram(b: Uint8Array): boolean {
   if (!b.length) return false;
   if (b[0] !== 0x1b) return true;
-  if (b.length === 1) return false;
+  if (b.length === 1) return true;
   const s = String.fromCharCode(...b.subarray(0, 6));
   return s.startsWith("\x1b[200~") || s === "\x1b[Z" || s === "\x1b[3~" || /^\x1b[^[\]OP_^X]/.test(s);
 }
