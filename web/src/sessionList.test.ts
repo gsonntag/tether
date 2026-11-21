@@ -15,6 +15,13 @@ test("recent sessions merge runners, newest first, without subagents; search by 
   expect(childrenOf(summaries, "b", "x")).toEqual([]);
 });
 
+test("recent sessions filtered by runner", () => {
+  expect(recentSessions(summaries, "", "a").map((r) => r.id)).toEqual(["y", "x"]);
+  expect(recentSessions(summaries, "", "b").map((r) => r.id)).toEqual(["z"]);
+  expect(recentSessions(summaries, "fix", "a")).toEqual([]);
+  expect(recentSessions(summaries, "fix", "b").map((r) => r.id)).toEqual(["z"]);
+});
+
 test("merging keeps one row per session; folder names", () => {
   const a = [{ ...s("x", 1), runnerId: "a" }];
   const b = [{ ...s("x", 7), runnerId: "a" }, { ...s("y", 2), runnerId: "a" }];
