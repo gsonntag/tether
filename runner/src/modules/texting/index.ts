@@ -244,6 +244,7 @@ export class Texter {
   readonly caps: AgentTextCaps;
   /** sessions the first start ticked (migrate): their numbers stay while that's under way */
   private migrated = new Set<string>();
+  private migrating?: Promise<void>;
   private offHub?: () => void;
 
   constructor(
@@ -687,10 +688,14 @@ export class Texter {
    * Whether a session (a subagent: its main session) may text the person: its "Session can text me"
    * box is ticked. The Home agent's own chats always may (it texts as before).
    */
-  canText(id: string): boolean {
+  canText(id: string, hops = 0): boolean {
     const root = this.root(id);
     if (this.homeChat(root)) return true;
     const look = this.ctx.session(root);
+    // Moved on (Move, a renewed thread): what reaches it goes to its successor, so the successor's box
+    // decides (the old one keeps its own state.canText while it's still in memory).
+    const next = look?.state?.continuedIn;
+    if (typeof next === "string" && next && next !== root) return hops < 5 && this.canText(next, hops + 1);
     // Archived: as runner.json's list has it (texters), it doesn't text.
     if (look) return !!look.state?.canText && !look.summary.archived;
     return !!this.ctx.texters?.().some((t) => t.id === root);
@@ -758,16 +763,24 @@ export class Texter {
    */
   async migrate() {
     if (this.store.canTextMigrated || !this.ctx.ops) return;
-    this.store.canTextMigrated = true;
-    this.store.save();
+    this.migrating ??= this.tickOld(this.ctx.ops).finally(() => (this.migrating = undefined));
+    return this.migrating;
+  }
+
+  private async tickOld(ops: NonNullable<Ctx["ops"]>) {
     const ids = new Set([...this.router.state.slots.map((x) => x.sessionId), ...this.router.state.sent.map((x) => x.sessionId), ...Object.keys(this.store.replyVia)]);
+    // All of them first: a text that comes meanwhile keeps the numbers of the ones not ticked yet too.
+    const roots = new Set<string>();
     for (const id of ids) {
       if (id === HOME || parseRemote(id)) continue;
       const root = this.root(id);
-      if (this.homeChat(root) || this.migrated.has(root)) continue;
-      this.migrated.add(root);
-      await this.ctx.ops.call("setCanText", { sessionId: root, canText: true }).catch(() => this.migrated.delete(root));
+      if (!this.homeChat(root)) roots.add(root);
     }
+    for (const r of roots) this.migrated.add(r);
+    for (const root of roots) await ops.call("setCanText", { sessionId: root, canText: true }).catch(() => this.migrated.delete(root));
+    // Noted only once all are ticked: a crash on the way ticks the rest at the next start (ticking twice is harmless).
+    this.store.canTextMigrated = true;
+    this.store.save();
   }
 
   /** Texts about a session, unless someone is looking at it (or at `also`) in Tether right now (`always`: even then). Whether it went. */

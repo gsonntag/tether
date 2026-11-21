@@ -1393,3 +1393,76 @@ describe("the box: review fixes", () => {
     expect(ticks.length).toBe(2);
   });
 });
+
+describe("the box: second review", () => {
+  test("a session that moved on texts and gets texts by its successor's box, even while it's still in memory", async () => {
+    const { t, texts, told, sessions, hear, ticked } = setup();
+    ticked.push("claude:a");
+    await t.start();
+    await t.turnEnded("claude:a", "boom");
+    expect(texts.length).toBe(1);
+    // Moved: claude:a2 goes on (it keeps the box), the old one still loaded with its state.
+    sessions["claude:a2"] = { summary: { id: "claude:a2", projectPath: "/home/me/web" }, status: "idle", requests: [], state: { requests: [], canText: true } };
+    sessions["claude:a"].state.continuedIn = "claude:a2";
+    expect(t.canText("claude:a")).toBe(true);
+    // The successor's box unticked: nothing reaches it by the old number, nor goes out about the old id.
+    sessions["claude:a2"].state.canText = undefined;
+    t.canTextChanged("claude:a2", false);
+    expect(t.canText("claude:a")).toBe(false);
+    await hear({ text: "1 still there?" });
+    expect(told).toEqual([]);
+    expect(texts.at(-1)).toBe(TEXTS.cantText(1));
+    await t.attention("claude:a");
+    expect(texts.at(-1)).toBe(TEXTS.cantText(1));
+  });
+
+  test("the migration is noted done only once every session is ticked: a crash on the way ticks the rest next start", async () => {
+    const { t, sessions } = setup();
+    sessions["claude:a"].state.canText = undefined;
+    sessions["codex:b"].state.canText = undefined;
+    t.router.stamp("claude:a", "finished", ".");
+    t.router.stamp("codex:b", "finished", ".");
+    const ticks: string[] = [];
+    (t as any).ctx.ops = {
+      // The runner dies while ticking the second one: it never answers.
+      call: async (_op: string, a: { sessionId: string; canText: boolean }) => {
+        if (a.sessionId === "codex:b") return new Promise(() => {});
+        ticks.push(a.sessionId);
+        sessions[a.sessionId].state.canText = a.canText;
+        return null;
+      },
+    };
+    void t.migrate();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(ticks).toEqual(["claude:a"]);
+    expect(t.store.canTextMigrated).toBe(false);
+    // Next start, on what was saved: the rest are ticked, then it's done.
+    const again = new Texter({ ...(t as any).ctx, ops: { call: async (_op: string, a: { sessionId: string }) => void ticks.push(a.sessionId) } }, t.store, async () => ({ send: async () => "z", closed: new Promise(() => {}), stop: async () => {} }), () => 1);
+    await again.migrate();
+    expect(ticks).toEqual(["claude:a", "claude:a", "codex:b"]);
+    expect(t.store.canTextMigrated).toBe(true);
+  });
+
+  test("while the migration is under way, a text keeps every old number, not just the one being ticked", async () => {
+    const { t, told, sessions, hear } = setup();
+    sessions["claude:a"].state.canText = undefined;
+    sessions["codex:b"].state.canText = undefined;
+    t.router.stamp("claude:a", "finished", ".");
+    t.router.stamp("codex:b", "finished", ".");
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    (t as any).ctx.ops = {
+      call: async (_op: string, a: { sessionId: string; canText: boolean }) => {
+        await gate;
+        sessions[a.sessionId].state.canText = a.canText;
+        return null;
+      },
+    };
+    const started = t.start();
+    await new Promise((r) => setTimeout(r, 5));
+    await hear({ text: "2 thanks" });
+    expect(told).toEqual([["codex:b", "thanks"]]);
+    release();
+    await started;
+  });
+});
