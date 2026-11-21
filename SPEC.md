@@ -667,8 +667,9 @@ isn't held, the composer keeps messaging the agent, and no "Driving in the termi
   tries again, up to every 15 s.
 - **Scrolled back.** Scrolling puts tmux in copy mode. What's meant for the program leaves it first
   and is delivered, never swallowed: the phone's line and key bar, and on desktop text, Enter,
-  control keys and a paste, in the same write, so nothing comes between. Scrolling keys stay in
-  copy mode; Esc only leaves.
+  control keys and a paste, in the same write, so nothing comes between. Esc too: it leaves and is
+  delivered, so it stops a Claude turn while scrolled back. Scrolling keys stay in copy mode, and
+  scrolling back to the bottom leaves it without a key.
 - With room the panel sits beside the transcript, and the sidebar's and the panel's inner edges
   drag to change their width (arrow keys too; a double click goes back to the default). The widths
   are kept per device; the transcript never gets narrower than 300 px, the panel 60 columns, and

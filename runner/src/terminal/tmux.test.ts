@@ -159,8 +159,8 @@ test("leaving copy mode: keys reach the program again; outside it, nothing happe
 const bytes = (s: string) => new TextEncoder().encode(s);
 
 test("what's meant for the program, and what stays with copy mode", () => {
-  for (const k of ["a", "ls -l", "\r", "\x03", "\x7f", "\t", "\x1b[Z", "\x1b[3~", "\x1bf", "\x1b\r", "\x1b[200~text\x1b[201~"]) expect([k, forProgram(bytes(k))]).toEqual([k, true]);
-  for (const k of ["", "\x1b", "\x1b[A", "\x1b[B", "\x1bOA", "\x1b[5~", "\x1b[6~", "\x1b[H", "\x1b[1;5A", "\x1b[<64;1;1M", "\x1b[<0;3;4m", "\x1b[I", "\x1b[O", "\x1b[?1;2c", "\x1b[>0;276;0c", "\x1b]11;rgb:1616/1717/1a1a\x1b\\", "\x1bP>|xterm\x1b\\", "\x1b[12;40R"]) expect([k, forProgram(bytes(k))]).toEqual([k, false]);
+  for (const k of ["a", "ls -l", "\r", "\x03", "\x7f", "\t", "\x1b", "\x1b[Z", "\x1b[3~", "\x1bf", "\x1b\r", "\x1b[200~text\x1b[201~"]) expect([k, forProgram(bytes(k))]).toEqual([k, true]);
+  for (const k of ["", "\x1b[A", "\x1b[B", "\x1bOA", "\x1b[5~", "\x1b[6~", "\x1b[H", "\x1b[1;5A", "\x1b[<64;1;1M", "\x1b[<0;3;4m", "\x1b[I", "\x1b[O", "\x1b[?1;2c", "\x1b[>0;276;0c", "\x1b]11;rgb:1616/1717/1a1a\x1b\\", "\x1bP>|xterm\x1b\\", "\x1b[12;40R"]) expect([k, forProgram(bytes(k))]).toEqual([k, false]);
 });
 
 test("through a real attach: a swipe moves line by line, and Tether's leave key quits copy mode ahead of the keys, never reaching the program", async () => {
@@ -199,8 +199,19 @@ test("through a real attach: a swipe moves line by line, and Tether's leave key 
     type(`${older(2)}${LEAVE_KEY}x\r`);
     await until(async () => /\^\[\[<64;1;1M\^\[\[<64;1;1Mx$/m.test(await tmux.capture(name)));
     expect(await tmux.capture(name)).not.toContain("59990");
+    // Esc while scrolled back: it leaves copy mode and reaches the program (it stops a Claude turn).
+    type("\x04");
+    type("printf '\\033[?1000l\\033[?1006l'; echo READY-$((3+3)); cat -v\r");
+    await until(async () => /^READY-6$/m.test(await tmux.capture(name)));
+    await Bun.sleep(100);
+    type(older(3));
+    await until(async () => (await show()).startsWith("1 "));
+    type(`${LEAVE_KEY}\x1b`);
+    type("ESC-SEEN\r");
+    await until(async () => /\^\[ESC-SEEN$/m.test(await tmux.capture(name)));
+    expect((await show()).trim()).toBe("0");
   } finally {
     pty.close();
     await tmux.kill(name);
   }
-});
+}, 20_000);
