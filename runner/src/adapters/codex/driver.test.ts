@@ -226,6 +226,12 @@ test("a subagent's request: its card offers no reason (it takes no input); one g
   expect(daemon.replies(7)).toEqual([{ id: 7, result: { decision: "decline" } }]);
   expect(daemon.calls("turn/steer")).toEqual([]);
   expect(JSON.stringify(child.t.messages)).toContain("The reason can't reach a subagent.");
+  // A plain Deny: "decline", not "cancel" (that would end only the subagent's turn, and leave the
+  // main agent waiting on it).
+  daemon.say({ id: 8, method: "item/commandExecution/requestApproval", params: { threadId: "C", turnId: "ct", itemId: "exec-2", command: "rm y" } });
+  child.asks[1]!.resolve({ allow: false, reason: "The user denied this request. Stop and wait for their next message.", interrupt: true });
+  await Bun.sleep(5);
+  expect(daemon.replies(8)).toEqual([{ id: 8, result: { decision: "decline" } }]);
 });
 
 test("Stop before turn/start answers: remembered, and the turn is interrupted as soon as its id arrives", async () => {

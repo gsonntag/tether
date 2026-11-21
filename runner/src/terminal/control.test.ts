@@ -527,7 +527,9 @@ describe("review round 3", () => {
     await until(() => state(core, "claude:s1").mode === "stored");
     // A's terminal again: a TUI of its own, under another tmux name.
     await term.open({ sessionId: "claude:s1", attachId: "a2", cols: 80, rows: 24 });
-    const own = (adapter.launches.at(-1)!.opts.report as any).tui as string;
+    // The last real launch: a screen read also asks terminalCommand (for its reader, no report),
+    // and the poll's first read can land after this open.
+    const own = (adapter.launches.filter((l) => l.opts.report).at(-1)!.opts.report as any).tui as string;
     expect(own).toStartWith("t-claude-s1-");
     expect(state(core, "claude:s1").mode).toBe("terminal");
     // A's TUI reports (its hooks name the launch session A): A needs you, B doesn't.

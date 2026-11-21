@@ -84,12 +84,15 @@ const tuiName = (id = sessionId()) => `t-${id.replace(/[^A-Za-z0-9_-]/g, "-")}`;
 
 /** The session's live state as the page has it. */
 const liveState = (p) =>
-  p.evaluate(async (store) => {
+  p.evaluate(async ([store, route]) => {
     const { useStore } = await import(eval(store));
-    const id = decodeURIComponent(location.hash.split("/").pop());
+    // The bar shows a session by its short link (#/l/<code>) once the code is known: resolved here.
+    const { parseRoute, resolveRoute } = await import(eval(route));
+    const r = resolveRoute(parseRoute(location.hash));
+    const id = r.page === "session" ? r.sessionId : decodeURIComponent(location.hash.split("/").pop());
     const v = Object.entries(useStore.getState().views).find(([k]) => k.endsWith(`\u0000${id}`))?.[1];
     return v?.state ?? null;
-  }, MOD("store.ts"));
+  }, [MOD("store.ts"), MOD("route.ts")]);
 const waitState = async (p, pred, what, ms = 60_000) => {
   const end = Date.now() + ms;
   let st;
@@ -147,7 +150,7 @@ const waitCapture = async (re, what, ms = 60_000, name = tuiName()) => {
  * list ("Claude Code", "Codex") is what drives the agent from its terminal.
  */
 const pickTerminal = async (p, tap = false) => {
-  const chip = p.locator(".t-chip-term");
+  const chip = p.locator(".t-chip-term:not(.t-chip-changes)");
   if ((await chip.getAttribute("aria-pressed")) !== "true") await (tap ? chip.tap() : chip.click());
   // The panel opens on a project shell; once it's there (a click on the agent's entry while the
   // shell is still opening is taken back when it opens).
@@ -156,7 +159,7 @@ const pickTerminal = async (p, tap = false) => {
   await (tap ? entry.tap() : entry.click());
 };
 const openPanel = async (p) => {
-  const chip = p.locator(".t-chip-term");
+  const chip = p.locator(".t-chip-term:not(.t-chip-changes)");
   void chip;
   await pickTerminal(p);
   await p.locator(".t-term-panel").waitFor();
@@ -555,12 +558,14 @@ const steps = {
     await waitState(p, (s) => s.permissionMode === "auto", "mode Auto");
     await send(p, "Spawn exactly one subagent with your agent tool, with the task: list the files in this folder with `ls` and report their names. Wait for it, then reply with its report in one line.");
     const childOf = () =>
-      p.evaluate(async (store) => {
+      p.evaluate(async ([store, route]) => {
         const { useStore } = await import(eval(store));
-        const id = decodeURIComponent(location.hash.split("/").pop());
+        const { parseRoute, resolveRoute } = await import(eval(route));
+        const r = resolveRoute(parseRoute(location.hash));
+        const id = r.page === "session" ? r.sessionId : decodeURIComponent(location.hash.split("/").pop());
         const v = Object.entries(useStore.getState().views).find(([k]) => k.endsWith(`\u0000${id}`))?.[1];
         return v?.window?.messages.flatMap((m) => m.parts).find((x) => x.type === "tool" && x.childSessionId)?.childSessionId;
-      }, MOD("store.ts"));
+      }, [MOD("store.ts"), MOD("route.ts")]);
     let child;
     for (let i = 0; i < 240 && !(child = await childOf()); i++) await sleep(500);
     if (!child) fail("no subagent card linked to a child session");
@@ -1105,7 +1110,7 @@ const steps = {
     rmSync(scratch("subdeny.txt"), { force: true });
     if ((await rpcVia(p, "setPermissionMode", { sessionId: id, mode: "read-only" })).error) fail("setPermissionMode");
     await waitState(p, (x) => x.permissionMode === "read-only", "Read only", 15_000);
-    await send(p, "Spawn exactly one subagent with your agent tool, with the task: use the shell to run exactly: echo x > subdeny.txt   (request escalated permissions if needed), then report what happened. Wait for it, then reply with its report in one line.");
+    await send(p, "Spawn exactly one new subagent (not the earlier one) with your agent tool, with the task: the folder is read-only, so call your shell tool with sandbox_permissions set to require_escalated (and a one-line justification) to run exactly: echo x > subdeny.txt   Do not try it inside the sandbox first. Then report what happened. Wait for it, then reply with its report in one line.");
     const asking = await runningChild(p, id, (k) => k.status !== "idle");
     if (!asking) return console.log("skip subMessage's card: no subagent ran"), await p.close();
     const d = await page(desktop, sessionUrl(asking.id));

@@ -174,16 +174,17 @@ const steps = {
   async reopen() {
     // Start a turn on desktop, close the tab, open on the phone mid-turn and see it stream.
     const a = await page(desktop, session);
-    await send(a, "Count from 1 to 250, one number per line, no other text.");
+    // Long enough that the phone usually opens mid-turn (Haiku counts to 250 before it does).
+    await send(a, "Count from 1 to 1000, one number per line, no other text.");
     await a.waitForFunction(() => /\b3\b/.test([...document.querySelectorAll(".t-msg.assistant")].at(-1)?.innerText ?? ""), null, { timeout: 60_000 });
     await a.close();
     const b = await page(phone, session);
     await running(b, 15_000).catch(() => console.log("    (the turn ended before the phone opened)"));
     await idle(b);
-    await b.waitForFunction(() => /\b250\b/.test(document.body.innerText), null, { timeout: 30_000 });
+    await b.waitForFunction(() => /\b1000\b/.test(document.body.innerText), null, { timeout: 30_000 });
     const c = await page(desktop, session);
     await idle(c);
-    await c.waitForFunction(() => /\b250\b/.test(document.body.innerText), null, { timeout: 30_000 });
+    await c.waitForFunction(() => /\b1000\b/.test(document.body.innerText), null, { timeout: 30_000 });
     if ((await transcriptText(b)) !== (await transcriptText(c))) fail("phone and reopened desktop differ after the turn");
     ok("closed the desktop tab mid-turn; the phone picked it up and both match after");
     await b.close();
@@ -213,10 +214,12 @@ const steps = {
     await p.waitForFunction(() => /\b5\b/.test([...document.querySelectorAll(".t-msg.assistant")].at(-1)?.innerText ?? ""), null, { timeout: 60_000 });
     // Detached, not waited on: the restarted runner outlives this script.
     spawn("bash", ["-c", RESTART], { detached: true, stdio: "ignore" }).unref();
-    await p.getByText(/runner restarted/).waitFor({ timeout: 30_000 });
-    await idle(p, 30_000);
+    // Since P5 the turn isn't simply stopped: Claude Code from before the restart may still be
+    // running it (only the runner was signalled), so Tether waits for it to finish, or continues it.
+    await p.getByText(/runner restarted|from before the restart/).first().waitFor({ timeout: 30_000 });
+    await idle(p, 120_000);
     await shot(p, "after-restart");
-    ok("runner restarted mid-turn: the page resubscribed and says the turn stopped");
+    ok("runner restarted mid-turn: the page resubscribed and says so (continuing, or waiting for Claude Code from before the restart)");
     await send(p, "Reply with the word 'continued' only.");
     await p.waitForFunction(() => /continued/i.test([...document.querySelectorAll(".t-msg.assistant")].at(-1)?.innerText ?? ""), null, { timeout: 90_000 });
     ok("the next message continues the same session");
@@ -250,7 +253,7 @@ const steps = {
     await composer(p).press("Enter");
     if (!(await composer(p).inputValue()).includes("\n")) fail("Enter on the phone should add a newline");
     await composer(p).fill("Count from 1 to 80, one number per line, no other text.");
-    await p.getByRole("button", { name: "Send" }).click();
+    await p.getByRole("button", { name: "Send", exact: true }).click();
     await running(p);
     const gaps = [];
     for (let i = 0; i < 12; i++) {
@@ -271,7 +274,7 @@ const steps = {
     const p = await page(phone, session);
     await p.locator(".t-msg").first().waitFor();
     await composer(p).fill("Count from 1 to 120, one number per line, no other text.");
-    await p.getByRole("button", { name: "Send" }).click();
+    await p.getByRole("button", { name: "Send", exact: true }).click();
     await p.waitForFunction(() => /\b10\b/.test([...document.querySelectorAll(".t-msg.assistant")].at(-1)?.innerText ?? ""), null, { timeout: 60_000 });
     await wheelUp(p, 400);
     await p.waitForTimeout(300);
@@ -293,7 +296,7 @@ const steps = {
     const p = await page(phone, session);
     await p.locator(".t-msg").first().waitFor();
     await composer(p).fill("Count from 1 to 300, one number per line, no other text.");
-    await p.getByRole("button", { name: "Send" }).click();
+    await p.getByRole("button", { name: "Send", exact: true }).click();
     await p.waitForFunction(() => /\b20\b/.test([...document.querySelectorAll(".t-msg.assistant")].at(-1)?.innerText ?? ""), null, { timeout: 60_000 });
     const box = await p.locator(".t-scroll").boundingBox();
     const cdp = await p.context().newCDPSession(p);
@@ -353,7 +356,10 @@ const steps = {
     // The usage chip: what it draws from (this machine: a login), with limits when a rate_limit_event has them.
     const plan = p.locator(".t-header .t-usage-chip");
     const planText = (await plan.count()) ? `${await plan.innerText()} (${await plan.getAttribute("title")})` : "none reported";
-    if (!/^Claude plan( · (5h|Week) \d+%)?$/.test(await plan.innerText())) fail(`usage chip: ${planText}`);
+    // With limits reported the chip shows only them ("Week 25%"); its label still names the plan.
+    if (!/^(Claude plan|(5h|Week) \d+%)$/.test(await plan.innerText())) fail(`usage chip: ${planText}`);
+    const planLabel = await plan.getAttribute("aria-label");
+    if (planLabel !== null && !/^Source: Claude plan\b/.test(planLabel)) fail(`usage chip's label: ${planLabel}`);
     await shot(p, "context-desktop");
     const narrow = await page(phone, session);
     await composer(narrow).waitFor();

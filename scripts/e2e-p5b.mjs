@@ -103,12 +103,15 @@ const SLOW = "Use the Bash tool to run exactly: timeout 20 tail -f /dev/null; ec
 
 /** The session's live state as the page has it. */
 const liveState = (p) =>
-  p.evaluate(async (store) => {
+  p.evaluate(async ([store, route]) => {
     const { useStore } = await import(eval(store));
-    const id = decodeURIComponent(location.hash.split("/").pop());
+    // The bar shows a session by its short link (#/l/<code>) once the code is known: resolved here.
+    const { parseRoute, resolveRoute } = await import(eval(route));
+    const r = resolveRoute(parseRoute(location.hash));
+    const id = r.page === "session" ? r.sessionId : decodeURIComponent(location.hash.split("/").pop());
     const v = Object.entries(useStore.getState().views).find(([k]) => k.endsWith(`\u0000${id}`))?.[1];
     return v?.state ?? null;
-  }, MOD("store.ts"));
+  }, [MOD("store.ts"), MOD("route.ts")]);
 const waitState = async (p, pred, what, ms = 60_000) => {
   const end = Date.now() + ms;
   let st;
@@ -166,7 +169,7 @@ const waitUntil = async (f, what, ms = 15_000) => {
 };
 /** ❯_: the panel on a project shell, at its prompt; its key. */
 const openShell = async (p, { tap = false } = {}) => {
-  await (tap ? p.locator(".t-chip-term").tap() : p.locator(".t-chip-term").click());
+  await (tap ? p.locator(".t-chip-term:not(.t-chip-changes)").tap() : p.locator(".t-chip-term:not(.t-chip-changes)").click());
   await p.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
   await sleep(300);
   const key = await shellKey(p);
@@ -421,7 +424,7 @@ const steps = {
     const p = await page(desktop, claude);
     await composer(p).waitFor();
     await p.context().grantPermissions(["clipboard-read", "clipboard-write"]).catch(() => {});
-    await p.locator(".t-chip-term").click();
+    await p.locator(".t-chip-term:not(.t-chip-changes)").click();
     await p.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
     const key = await shellKey(p);
     await waitScreen(p, key, /\$ *$|# *$|> *$/m, "a shell prompt");
@@ -469,7 +472,7 @@ const steps = {
     // The phone: Copy, then the sheet's text can be selected natively.
     const ph = await page(phone, claude);
     await composer(ph).waitFor();
-    await ph.locator(".t-chip-term").tap();
+    await ph.locator(".t-chip-term:not(.t-chip-changes)").tap();
     await ph.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
     await waitScreen(ph, key, /NO-CTRL-C/, "the shell on the phone");
     await button(ph.locator(".t-term-panel"), "Copy text").tap();
@@ -846,7 +849,7 @@ const steps = {
 
   async hide() {
     // G11: needs a runner started with TETHER_HIDE_PROJECTS matching SCRATCH, and sessions stored there.
-    if (!process.env.HIDDEN) return ok("hide skipped (no HIDDEN: a stack of its own, P5b.md Setup)");
+    if (!process.env.HIDDEN) return console.log("skip hide (set HIDDEN: a runner of its own with TETHER_HIDE_PROJECTS, P5b.md Setup)");
     const p = await page(desktop);
     const scratchRows = () =>
       p.evaluate(async ([conn, runner, sc]) => {
@@ -914,7 +917,7 @@ const steps = {
       await idle(ph, 120_000);
       // Copy from a shell in Safari: the sheet opens on a tap, its text selectable (a selection made
       // in it holds the shell's text), and the key bar's keys reach the shell on a tap.
-      await ph.locator(".t-chip-term").tap();
+      await ph.locator(".t-chip-term:not(.t-chip-changes)").tap();
       await ph.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
       const key = await shellKey(ph);
       await waitScreen(ph, key, /\$ *$|# *$|> *$/m, "a shell prompt in WebKit");
@@ -1019,7 +1022,7 @@ const steps = {
     await rpcVia(d, "setPermissionMode", { sessionId: id, mode: "default" });
     const ph = await page(phone, claude);
     await composer(ph).waitFor();
-    await ph.locator(".t-chip-term").tap();
+    await ph.locator(".t-chip-term:not(.t-chip-changes)").tap();
     await ph.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
     if (await ph.locator(".t-term-chat .t-dot").count()) fail("a dot with nothing waiting");
     await send(d, "Use the Write tool to create the file needs-p5b.txt containing: hi. Then reply DONE.");
@@ -1046,7 +1049,7 @@ const steps = {
     await send(p, SLOW);
     await running(p);
     await waitState(p, (s) => s.status === "running", "running");
-    await p.evaluate(() => document.querySelector(".t-chip-term").click());
+    await p.evaluate(() => document.querySelector(".t-chip-term:not(.t-chip-changes)").click());
     await p.locator(".t-term-agent").click({ timeout: 5000 });
     await p.locator(".t-term-panel .t-term-ask").waitFor({ timeout: 10_000 });
     await p.locator(".t-term-tab", { hasText: /^Shell \d+/ }).first().waitFor({ timeout: 15_000 });
@@ -1178,7 +1181,7 @@ const steps = {
     const p = await page(desktop, claude);
     await composer(p).waitFor();
     // ❯_ opens a project shell straight away: no menu, no handoff.
-    await p.locator(".t-chip-term").click();
+    await p.locator(".t-chip-term:not(.t-chip-changes)").click();
     await p.locator(".t-term-panel").waitFor();
     if (await p.getByRole("menuitem").count()) fail("❯_ opened a menu");
     await p.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
@@ -1216,7 +1219,7 @@ const steps = {
     // From a shell tab to the agent's tab: the handoff. Back to the shell tab: no hand-back.
     const p = await page(desktop, claude);
     await composer(p).waitFor();
-    await p.locator(".t-chip-term").click();
+    await p.locator(".t-chip-term:not(.t-chip-changes)").click();
     await p.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
     const tuiTab = p.locator(".t-term-tab.t-term-agent");
     if (!/Drives Claude from Claude Code's own terminal UI/.test((await tuiTab.getAttribute("title")) ?? "")) fail("the agent's entry doesn't say it drives Claude");
@@ -1236,7 +1239,7 @@ const steps = {
     await p.locator(".t-term-banner").getByRole("button", { name: "Open Claude Code", exact: true }).waitFor();
     if (!/Waits for Back to Tether/.test((await composer(p).getAttribute("placeholder")) ?? "")) fail("the placeholder doesn't say it waits for Back to Tether");
     // ❯_ again: a shell, still handed off; the agent's entry says driving.
-    await p.locator(".t-chip-term").click();
+    await p.locator(".t-chip-term:not(.t-chip-changes)").click();
     await p.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
     if ((await liveState(p)).mode !== "terminal") fail("❯_ handed back");
     await p.locator(".t-term-tab.t-term-agent").click();
@@ -1292,9 +1295,9 @@ const steps = {
     const ph = await page(phone, claude);
     await composer(ph).waitFor();
     // The ❯_ button: pinned at the header's right edge, wholly on screen.
-    const tb = await ph.locator(".t-chip-term").boundingBox();
+    const tb = await ph.locator(".t-chip-term:not(.t-chip-changes)").boundingBox();
     if (!tb || tb.x < 0 || tb.x + tb.width > 375 || tb.width < 44 || tb.height < 44) fail(`the terminal button at ${JSON.stringify(tb)}`);
-    await ph.locator(".t-chip-term").tap();
+    await ph.locator(".t-chip-term:not(.t-chip-changes)").tap();
     await ph.locator(".t-term-panel").waitFor();
     await ph.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
     const key = await shellKey(ph);
@@ -1347,7 +1350,7 @@ const steps = {
     await waitCard(p, "sent", "Codex sent after the turn", 240_000);
     await idle(p, 240_000);
     // ❯_ opens a shell; the Codex entry joins Codex's TUI (no handoff, no banner).
-    await p.locator(".t-chip-term").click();
+    await p.locator(".t-chip-term:not(.t-chip-changes)").click();
     await p.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
     const entry = p.locator(".t-term-tab.t-term-agent");
     if (!/joined to this session/.test((await entry.getAttribute("title")) ?? "")) fail(`the Codex entry: ${await entry.getAttribute("title")}`);

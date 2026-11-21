@@ -23,15 +23,48 @@ Filed when review rounds ended on 2026-10-31, at 042a217. Nothing here has had a
 - `scripts/e2e-p4.mjs`: the complete default suite passed during the keys build (2026-11-01),
   including `tuiReadOnly`, `tuiSteer` and `tuiAnswerAway`. Luna once replied without attempting the
   write in `tuiReadOnly`; its fixture now explicitly requests the tool and retries a model no-op.
-- `scripts/e2e-p1.mjs`: `reopen` once timed out waiting for Send on the phone during the keys build;
-  the next complete run passed. Cause unconfirmed; failure screens/DOM are now captured.
-- `tuiPermissions` (`e2e-p4.mjs:928`): 2 of 2 since the fix, was 7 of 10; the 10-run check is still open.
-- `subMessage`: the "no Deny with reason" check skipped because the subagent didn't ask. Covered by unit test and daemon probe, not in a browser.
-- `copymode` Enter race in `e2e-p5b.mjs` failed once and hasn't since `closeShells` was added. Cause unconfirmed; check shell leftovers from `copy` first.
-- Runner test `review round 3 > after /clear, the old session's own TUI gets its own hooks` failed once, then passed. Not investigated.
-- `scroll-jank`: `huge-*` not rerun after the rework; `typing-webkit` "selecting all and deleting" didn't run; `lost finger` read 20 and 106 px on WebKit's last sample, unconfirmed; `short rows` recorded one write during a fling on Chromium.
-- `e2e-p5b` `hide` runs only with `HIDDEN=1` and isn't in a plain run.
-- `layout-p3.mjs`: after its check was corrected, only `g5` and `placeholder` were rerun.
+- `scripts/e2e-p1.mjs` `reopen` (settled 2026-11-21): one complete default run passed (with
+  `RESTART_RUNNER`), then `new reopen` 10 of 10. Haiku 5.5 had counted to 250 before the phone
+  opened in 4 of the first 5, so the count is now 1000 and the phone joins mid-turn (5 of 5 since).
+  The timeout didn't reproduce. Stale checks fixed on the way: the usage chip shows only its limits
+  since #102 ("Week 25%"), `restart` also accepts "Waiting for Claude Code from before the restart"
+  (P5), and Send is matched exactly ("More ways to send" also matched).
+- `tuiPermissions` (settled 2026-11-21): 10 of 10 on GPT-6-Luna, daemon 0.171.
+- `subMessage` (settled 2026-11-21, product bug fixed): the subagent did ask once its fixture names
+  `sandbox_permissions: require_escalated` (with the old one Luna mostly didn't try), and its request was
+  rejected at once ("approval request failed"). Cause: every runner connection that hears a
+  thread's requests got the request, including the shared discovery/history one (`tether-catalog`),
+  which has no handler and answered `-32601` "Tether doesn't handle…". Codex took that as the answer
+  before the session's own connection showed the card. Fixed in `codex/rpc.ts`: a connection with
+  no handler answers nothing. Then Deny's "cancel" ended only the subagent's turn, and the main agent
+  waited on it with nothing to come (still in `wait_agent` minutes later): a subagent's Deny is now
+  "decline" (`codex/driver.ts`). After both fixes, 2 of 2 full passes in a browser, card included.
+  A runner without the fix on the same daemon (production, until deployed) can still answer first.
+- `copymode` (settled 2026-11-21): `copy` leaves no shells (the dev tmux socket had none after it).
+  `claude copy copymode` 5 of 5. First fixed: `.t-chip-term` also matched the Changes chip
+  (all scripts now exclude `.t-chip-changes`), and `liveState` read the session id from the bar,
+  which shows `#/l/<code>` since short links (#79): it resolves the code now (e2e-p4 and e2e-p5b).
+- Runner test `review round 3 > after /clear, the old session's own TUI gets its own hooks` (settled
+  2026-11-21, test bug): reproduced 6 of 15 runs of `control.test.ts` with the CPU busy, 0 of 40
+  idle. `readScreen` asks `terminalCommand` for the harness's screen reader (no `report`), and the
+  10 ms poll's first read could land after the second `open`, so `launches.at(-1)` wasn't the
+  launch. It takes the last launch with a `report` now: 0 of 20 under the same load.
+- `scroll-jank` (rerun 2026-11-21, `vite preview` build, fake runner HUGE=1500 SHORT=1000):
+  `huge-webkit`/`huge-chromium` ran to the end: 3000 messages paged in, at most 300 mounted, pages
+  0.6-1.5 s each, Send to Stop 0.2-0.9 s. Chromium's streaming had one 1.2 s frame and RSS 2.3 GB
+  settled, the known GC stall (Scroll below). `typing-webkit` "selecting all and deleting" ran: no
+  off-bottom frame in any typing case. `lost finger` read at most 20 px (one sample each, back to 0,
+  no Jump), one streamed line behind, not 106. `short rows` on Chromium: none of its writes come
+  during a drag or momentum (killed 0); they're the trim's after the fling settles, reported apart
+  now (`trimWrites`, 8 in 8 flings; `writes` 0).
+- `e2e-p5b` `hide` (2026-11-21): passes with `HIDDEN=1` on a runner restarted with
+  `TETHER_HIDE_PROJECTS` set to the scratch folder. A plain run now says it skipped it. Whether a
+  plain run should include it is open (recommendation in the PR: no, it needs another runner setup).
+- `layout-p3.mjs` (settled 2026-11-21, test bug): `sidebar` and `panel` failed and `beside` passed
+  only because it skipped every covered width: since 8d271a2 the agent's own tab always covers the
+  chat. The steps about the panel beside the chat (beside, sidebar, panel, stored, hidden) now put a
+  project shell in front, which still sits beside it, and `beside` fails if no width had room. All
+  nine steps passed.
 
 ## P3 (terminal, Claude)
 
