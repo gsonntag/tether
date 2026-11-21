@@ -105,7 +105,7 @@ test("models and thinking levels are separate settings; modes keep Antigravity's
     { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low", "high"] },
     { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", efforts: ["low", "high"] },
   ]);
-  expect(l.permissionModes.map((m) => [m.id, m.label])).toEqual([["default", "Ask first"], ["accept-edits", "Accept edits"], ["plan", "Plan"]]);
+  expect(l.permissionModes.map((m) => [m.id, m.label])).toEqual([["default", "Ask first"], ["accept-edits", "Accept edits"], ["plan", "Plan"], ["bypassPermissions", "Bypass permissions"]]);
 });
 
 test("the TUI's screen: idle, working, asking for permission or trust", () => {
@@ -123,4 +123,29 @@ test("a command's output loses Antigravity's timing header, but keeps an unclean
   const out = (output: string) => acpTool({ sessionUpdate: "tool_call_update", toolCallId: "x", kind: "execute", status: "completed", rawOutput: { output } }).output;
   expect(out("Created At: 2026-11-20T23:02:15Z\nCompleted At: 2026-11-20T23:02:15Z\nCommand exited with code 0.\n\nhello\n")).toBe("hello\n");
   expect(out("Created At: a\nCompleted At: b\nCommand exited with code 1.\n\noops")).toBe("Command exited with code 1.\n\noops");
+});
+
+test("what the agent says after its turn ended, with no prompt between, joins that reply (as a replay groups it)", () => {
+  const t = new AcpTranscript("m", hooks());
+  t.prompt([{ type: "text", text: "start a subagent" }]);
+  t.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Waiting." } });
+  t.end();
+  t.drain();
+  t.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: " It reported." } });
+  expect(t.msgs.map((m) => m.id)).toEqual(["m0", "m1"]);
+  expect((t.msgs[1]!.parts[0] as any).text).toBe("Waiting. It reported.");
+  expect(t.msgs[1]!.streaming).toBe(true);
+  t.prompt([{ type: "text", text: "next" }]);
+  t.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "New." } });
+  expect(t.msgs.map((m) => m.id)).toEqual(["m0", "m1", "m2", "m3"]);
+});
+
+test("Tether's own tools draw as peer cards", () => {
+  expect(acpTool({ sessionUpdate: "tool_call", toolCallId: "p", name: "mcp_tether_tether_send", kind: "other" }).kind).toBe("peer");
+  expect(acpTool({ sessionUpdate: "tool_call", toolCallId: "q", name: "mcp_other_send", kind: "other" }).kind).toBe("other");
+});
+
+test("a call that failed with nothing to show says so", () => {
+  expect(acpTool({ sessionUpdate: "tool_call_update", toolCallId: "f", name: "run_command", kind: "execute", status: "failed", rawOutput: { output: "" } }).output).toBe("No output: Antigravity didn't say why it failed.");
+  expect(acpTool({ sessionUpdate: "tool_call_update", toolCallId: "g", name: "run_command", kind: "execute", status: "failed", rawOutput: { output: "boom" } }).output).toBe("boom");
 });

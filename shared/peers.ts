@@ -31,7 +31,7 @@ export const TEXT_PERSON = "text_person";
 
 /** A peer tool's action from its full name (mcp__tether__tether_ask, or Codex's), else undefined. */
 export function peerAction(name: string): keyof typeof PEER_TOOLS | undefined {
-  const m = /(?:^|__|\.)tether_(sessions|send|ask|broadcast)$/.exec(name);
+  const m = /(?:^|__|\.|^mcp_[\w-]+?_)tether_(sessions|send|ask|broadcast)$/.exec(name);
   return m ? (m[1] as keyof typeof PEER_TOOLS) : undefined;
 }
 

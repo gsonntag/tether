@@ -17,6 +17,9 @@ const update = (sessionId: string, u: unknown) => out({ jsonrpc: "2.0", method: 
 const waiting = new Map<string, (r: any) => void>();
 let cancel: (() => void) | undefined;
 
+/** What the last session/load carried (MCP servers, _meta), for tests to read back. */
+let loaded: any;
+
 async function prompt(id: number, p: any) {
   const sid = p.sessionId;
   const text: string = p.prompt?.[0]?.text ?? "";
@@ -32,6 +35,37 @@ async function prompt(id: number, p: any) {
     update(sid, { sessionUpdate: "tool_call_update", ...call, status: allowed ? "completed" : "failed", rawOutput: { output: allowed ? "hi" : "denied" } });
     update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: allowed ? "ran it" : "skipped" } });
     return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+  }
+  if (text.includes("loaded?")) {
+    update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: JSON.stringify({ mcpServers: loaded?.mcpServers, _meta: loaded?._meta }) } });
+    return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+  }
+  if (text.includes("tether tool")) {
+    const call = { toolCallId: "call_t", name: "mcp_tether_tether_sessions", kind: "other", title: "Run mcp_tether_tether_sessions", rawInput: {} };
+    update(sid, { sessionUpdate: "tool_call", ...call, status: "pending" });
+    const answer = await new Promise<any>((ok) => {
+      waiting.set("p2", ok);
+      out({ jsonrpc: "2.0", id: "p2", method: "session/request_permission", params: { sessionId: sid, toolCall: call, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] } });
+    });
+    update(sid, { sessionUpdate: "tool_call_update", ...call, status: answer?.outcome?.optionId === "allow" ? "completed" : "failed" });
+    return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+  }
+  if (text.includes("plan it")) {
+    const path = `${process.env.FAKE_AGY_BRAIN ?? "/tmp"}/plan_${sid}.md`;
+    const content = "# Plan\n\n1. Do the thing.\n";
+    await Bun.write(path, content);
+    const call = { toolCallId: "call_plan", name: "write_file", kind: "edit", title: "File plan.md", rawInput: { ArtifactMetadata: { RequestFeedback: true, UserFacing: true }, Content: content, Path: path } };
+    update(sid, { sessionUpdate: "tool_call", ...call, status: "completed" });
+    update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Please review the plan." } });
+    return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+  }
+  if (text.includes("report later")) {
+    // The turn ends; then, as after a subagent's report, the agent goes on by itself.
+    update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Waiting for its report." } });
+    out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+    await Bun.sleep(300);
+    update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: " The report says hi." } });
+    return;
   }
   if (text.includes("wait")) {
     update(sid, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking…" } });
@@ -61,6 +95,7 @@ for await (const chunk of Bun.stdin.stream()) {
         ok({ protocolVersion: 1, agentCapabilities: { loadSession: true }, agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } });
         break;
       case "session/load":
+        loaded = m.params;
         update(m.params.sessionId, { sessionUpdate: "user_message_chunk", content: { type: "text", text: "earlier" } });
         update(m.params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "before" } });
         ok({ sessionId: m.params.sessionId, modes: { currentModeId: mode }, configOptions: config(model, effort, mode), _meta: { antigravity: { tier: { name: "Google AI Pro" } } } });
@@ -74,6 +109,8 @@ for await (const chunk of Bun.stdin.stream()) {
         mode = m.params.modeId;
         update(m.params.sessionId, { sessionUpdate: "current_mode_update", currentModeId: mode });
         ok({});
+        // As the real one can: a settings snapshot after the change, carrying the mode from before it.
+        update(m.params.sessionId, { sessionUpdate: "config_option_update", configOptions: config(model, effort, "default") });
         break;
       case "session/prompt":
         void prompt(m.id, m.params);

@@ -6,6 +6,7 @@
 //
 // The harness keeps no times with its updates: `stamp` dates each message the first time it's seen.
 
+import { peerAction } from "../../../../shared/peers";
 import type { Msg, Part, ToolKind, ToolPart, ToolStatus } from "../../../../shared/transcript";
 import type { TranscriptEvent } from "../../core/adapter";
 import type { AcpUpdate } from "./client";
@@ -50,7 +51,8 @@ export function acpTool(u: AcpUpdate, before?: ToolPart): ToolPart {
   const diffs = diffsOf(u.content);
   const created = diffs.length > 0 && diffs.every((d) => !d.old_string);
   const acpKind = str(u.kind) ?? (before ? undefined : "other");
-  let kind: ToolKind = acpKind ? (KINDS[acpKind] ?? "other") : (before?.kind ?? "other");
+  // Tether's own tools (`mcp_<server>_tether_send`, …) draw as peer cards.
+  let kind: ToolKind = peerAction(name.toLowerCase()) ? "peer" : acpKind ? (KINDS[acpKind] ?? "other") : (before?.kind ?? "other");
   if (kind === "edit" && (created || (!diffs.length && typeof (raw.Content ?? raw.content) === "string" && !raw.Target && !raw.old_string))) kind = "write";
   const command = kind === "shell" ? (str(raw.CommandLine) ?? str(raw.command) ?? str(raw.cmd) ?? before?.command ?? str(u.title)) : undefined;
   const path = str(u.locations?.[0]?.path) ?? str(raw.Path) ?? str(raw.path) ?? str(raw.file_path) ?? before?.path;
@@ -64,8 +66,10 @@ export function acpTool(u: AcpUpdate, before?: ToolPart): ToolPart {
     const content = diffs.length ? diffs[0]!.new_string : (raw.Content ?? raw.content);
     if (typeof content === "string") input.content = content;
   }
-  const out = rawOutput(u);
+  let out = rawOutput(u);
   const status = statusOf(u.status) ?? before?.status ?? "running";
+  // A call that failed with nothing to show (denied, cancelled, or stopped in the background): say so.
+  if (status === "error" && out === undefined && !before?.output) out = "No output: Antigravity didn't say why it failed.";
   return {
     type: "tool",
     id: String(u.toolCallId ?? before?.id),
@@ -112,6 +116,11 @@ export class AcpTranscript {
   readonly msgs: Msg[] = [];
   /** the assistant message of the turn now (undefined after a prompt) */
   private turn?: Msg;
+  /**
+   * The reply of the turn that ended last, while no prompt has followed it: what the agent says next
+   * without a prompt (after a subagent's report) joins it, as a replay groups it.
+   */
+  private last?: Msg;
   /** a prompt's text, while user chunks arrive */
   private user?: Msg;
   private tools = new Map<string, { msg: Msg; part: number }>();
@@ -138,6 +147,7 @@ export class AcpTranscript {
   prompt(parts: Part[]): Msg {
     this.turn = undefined;
     this.user = undefined;
+    this.last = undefined;
     const m = this.newMsg("user");
     m.parts = parts;
     this.emit(m);
@@ -146,14 +156,26 @@ export class AcpTranscript {
 
   /** The agent's message of this turn, made if needed. */
   private agent(): Msg {
+    if (!this.turn && this.last && !this.user) {
+      this.turn = this.last;
+      this.turn.streaming = true;
+      this.emit(this.turn);
+    }
     if (!this.turn) {
       this.user = undefined;
       this.turn = this.newMsg("assistant");
       this.turn.streaming = true;
       this.emit(this.turn);
     }
+    this.last = undefined;
     return this.turn;
   }
+
+  /** A turn the agent runs without a prompt has begun, or will begin with its next update. */
+  get idle() {
+    return !this.turn;
+  }
+
 
   private text(type: "text" | "thinking", text: string) {
     if (!text) return;
@@ -174,6 +196,7 @@ export class AcpTranscript {
         const c = u.content;
         if (!this.user) {
           this.turn = undefined;
+          this.last = undefined;
           this.user = this.newMsg("user");
         }
         const m = this.user;
@@ -198,7 +221,7 @@ export class AcpTranscript {
         const at = this.tools.get(id);
         if (at) {
           const before = at.msg.parts[at.part] as ToolPart;
-          const next = acpTool(u, before);
+          const next = { ...acpTool(u, before), ...(before.childSessionId ? { childSessionId: before.childSessionId } : {}) };
           at.msg.parts[at.part] = next;
           const { type: _t, id: _i, ...patch } = next;
           this.events.push({ type: "tool", msgId: at.msg.id, toolId: id, patch });
@@ -258,6 +281,15 @@ export class AcpTranscript {
     }
     if (error) m.error = error;
     this.emit(m);
+    this.last = m;
+  }
+
+  /** A call that started a subagent: its card links to the subagent's session (SPEC §6a), in later updates too. */
+  link(toolId: string, childSessionId: string) {
+    const at = this.tools.get(toolId);
+    if (!at) return;
+    const p = at.msg.parts[at.part] as ToolPart;
+    at.msg.parts[at.part] = { ...p, childSessionId };
   }
 
   /** Takes the events gathered since the last call. */
