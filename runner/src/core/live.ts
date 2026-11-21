@@ -39,7 +39,6 @@ export const IDLE_CLOSE_MS = 5 * 60_000;
 
 /** What the quiet wait after a restart shows (SPEC §4). */
 export const waitingText = (harness: HarnessId): string => `Waiting for ${AGENT_NAMES[harness]} from before the restart to finish…`;
-export const WAITING_TEXT = waitingText;
 const SETUP_TEXT = "The worktree's setup is still running.";
 const SETUP_FAILED_TEXT = "The worktree's setup failed.";
 const notice = (text: string, level: Msg["level"] = "info"): Msg => ({ id: `n-${randomUUID()}`, role: "notice", level, ts: Date.now(), parts: [{ type: "text", text }] });
