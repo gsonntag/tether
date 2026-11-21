@@ -49,7 +49,7 @@ export function busyReason(looks: SessionLook[]): string | undefined {
   return `"${l.summary.title || "Untitled"}" is ${why}`;
 }
 
-/** The Home agent's one-line report of an auto-update. */
+/** The one-line report of an auto-update (the runner's log). */
 export function reportLine(last: NonNullable<AutoUpdateStatus["last"]>): string {
   const parts = last.results.map((r) => (r.ok ? `Auto-updated ${r.name} ${r.from ?? "?"} → ${r.to ?? "?"}.` : `Auto-update of ${r.name} failed (${r.error ?? "unknown error"}); it stays on ${r.from ?? "its old version"}.`));
   if (last.aborted) parts.push(last.aborted);
@@ -64,8 +64,6 @@ export interface AutoUpdaterOptions {
   file?: string;
   now?: () => number;
   log?: (line: string) => void;
-  /** tells the Home agent what an auto-update did */
-  notify?: (text: string) => Promise<void> | void;
 }
 
 export class AutoUpdater {
@@ -166,13 +164,6 @@ export class AutoUpdater {
     this.saved.last = last;
     this.save();
     this.o.log?.(`auto-update: ${reportLine(last)}`);
-    if (results.length) {
-      try {
-        await this.o.notify?.(reportLine(last));
-      } catch (e) {
-        this.o.log?.(`auto-update: couldn't tell the Home agent: ${(e as Error)?.message ?? e}`);
-      }
-    }
   }
 
   private save() {

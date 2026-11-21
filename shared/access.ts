@@ -22,7 +22,6 @@ export const VIEW_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "fullPart",
   "listProjects",
   "listSessions",
-  "homeAgent",
   // Who started whom (tether_start): titles and statuses, as listSessions shows.
   "spawnedFamily",
   // A short link's session (making one, linkFor, stores a code: not a view op).
@@ -58,18 +57,18 @@ export const MANAGE_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "setCanText",
   "harnessAutoUpdate",
   "harnessUpdate",
-  // The Home agent is the owner's own: what it runs on, texting its replies to their phone, its
-  // check-ins and what it watches. People it's shared with may chat with it, not reconfigure it.
-  "homeAgentSet",
-  "homeAgentReplyByText",
-  "homeAgentCheckIn",
-  "homeAgentWatch",
 ]);
+
+/**
+ * The removed Home agent's owner-only ops: a runner from before still has them, so people it's
+ * shared with still can't reconfigure it there.
+ */
+const OLD_MANAGE_OPS: ReadonlySet<string> = new Set(["homeAgentSet", "homeAgentReplyByText", "homeAgentCheckIn", "homeAgentWatch"]);
 
 /** Whether this access level may use this op. */
 export function accessAllows(access: RunnerAccess, op: OpName): boolean {
   if (access === "manage") return true;
-  if (access === "drive") return !MANAGE_OPS.has(op);
+  if (access === "drive") return !MANAGE_OPS.has(op) && !OLD_MANAGE_OPS.has(op);
   return VIEW_OPS.has(op);
 }
 

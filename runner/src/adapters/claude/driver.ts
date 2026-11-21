@@ -24,7 +24,7 @@ import { claudeAuthSettings, claudeEnv, claudeKeyLease, confirmClaudeBilling } f
 import { claudeAsk, claudeResult } from "./requests";
 import { ClaudeStream, type SessionCron } from "./stream";
 import { ClaudeCostCounter } from "./cost";
-import { claudeSetupFor, claudeToolServerFor } from "./setup";
+import { claudeToolServerFor } from "./setup";
 import { readOnlyOptions } from "./readOnly";
 
 /** The tool that starts a subagent ("Task" before Claude Code 2.1.x renamed it). */
@@ -96,8 +96,6 @@ export class ClaudeDriver implements Driver {
       const ask = claudeAsk(tool, input, o);
       return claudeResult(ask, input, await sink.request(ask, o.signal));
     };
-    // The Home agent's folder: Tether's tools and instructions (setup.ts).
-    const extra = claudeSetupFor(this.projectPath, this.nativeId);
     // The runner setting "Always run subagents in the background": each Agent call goes out with
     // run_in_background, whatever the model asked (read at every launch, so a change applies at once).
     const background: HookCallback = async (input) => {
@@ -113,12 +111,12 @@ export class ClaudeDriver implements Driver {
       if (input.hook_event_name === "Stop" || input.hook_event_name === "SubagentStop") this.stream.setCrons((input as { session_crons?: SessionCron[] }).session_crons);
       return {};
     };
-    // Every other session: Tether's MCP server (sessions talking to each other), its tools allowed.
-    const tools = extra ? undefined : claudeToolServerFor(this.projectPath, this.nativeId);
+    // Tether's MCP server (sessions talking to each other), its tools allowed.
+    const tools = claudeToolServerFor(this.projectPath, this.nativeId);
     // A side chat (SPEC §16a): nothing but reading, whatever the mode, settings and the person's hooks allow.
     const ro = readOnlyOptions(opts.readOnly);
-    const append = [extra ? extra.append : tools?.append, ro.append].filter(Boolean).join("\n\n");
-    const allowed = [...(existsSync(movedDir(`claude:${this.nativeId}`)) ? [movedReadRule(this.nativeId)] : []), ...(extra?.allow ?? []), ...(tools?.allow ?? [])];
+    const append = [tools?.append, ro.append].filter(Boolean).join("\n\n");
+    const allowed = [...(existsSync(movedDir(`claude:${this.nativeId}`)) ? [movedReadRule(this.nativeId)] : []), ...(tools?.allow ?? [])];
     this.q = query({
       prompt: this.input,
       options: {
@@ -135,12 +133,11 @@ export class ClaudeDriver implements Driver {
         perTaskStopAffordance: true,
         // A moved session reads its own history without asking (SPEC §15).
         ...(allowed.length ? { allowedTools: allowed } : {}),
-        ...(extra ? { mcpServers: extra.mcpServers, ...(extra.deny.length ? { disallowedTools: extra.deny } : {}) } : {}),
         ...(tools ? { mcpServers: tools.mcpServers } : {}),
         settingSources: ["user", "project", "local"],
         // A side chat runs none of the person's hooks (they could write); the SDK's gate still runs (checked on 2.1.327).
         settings: { ...claudeAuthSettings(this.lease.helper), ...ro.settings },
-        // Tether's instructions: the Home agent's own, or every other session's (concise replies, texting).
+        // Tether's instructions for every session (concise replies, texting).
         systemPrompt: { type: "preset", preset: "claude_code", ...(append ? { append } : {}) },
         canUseTool,
         hooks: { PreToolUse: [...ro.preToolUse, { matcher: SUBAGENT_TOOLS, hooks: [background] }], Stop: [{ hooks: [crons] }], SubagentStop: [{ hooks: [crons] }] },

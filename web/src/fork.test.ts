@@ -32,7 +32,7 @@ test("Fork from here shows under a reply that ends a turn, and nowhere else", ()
   expect(render(msgs[1]!, points.has("a1"))).toContain("Fork from here");
   // The running turn's reply isn't finished.
   expect(render(msgs[3]!, points.has("a2"))).not.toContain("Fork from here");
-  // A session that can't fork (the Home agent's chat, a subagent) has no fork in its context.
+  // A session that can't fork (a subagent) has no fork in its context.
   expect(render(msgs[1]!, true, false)).not.toContain("Fork from here");
 });
 

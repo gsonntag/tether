@@ -13,9 +13,8 @@ export class ToolServerSlot {
     };
   }
 
-  /** The server for a session in `projectPath`, unless that folder is left out. */
-  for(projectPath: string): ToolServer | undefined {
-    const s = this.current;
-    return s && !s.skip?.(projectPath) ? s : undefined;
+  /** The server for a session (in any folder). */
+  for(_projectPath: string): ToolServer | undefined {
+    return this.current;
   }
 }

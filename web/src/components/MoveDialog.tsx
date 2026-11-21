@@ -21,7 +21,7 @@ export function SessionMenu({ runnerId, session, state, canMove, canFork, onSide
   const [archiveBusy, setArchiveBusy] = useState(false);
   const forking = useForking(session.id);
   const [pinBusy, setPinBusy] = useState(false);
-  const pinLabel = pinMenuLabel(runnerId, session, useStore((s) => canPin(s.runners, runnerId)));
+  const pinLabel = pinMenuLabel(session, useStore((s) => canPin(s.runners, runnerId)));
   const pin = async () => {
     if (pinBusy) return;
     setPinBusy(true);

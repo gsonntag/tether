@@ -12,7 +12,10 @@ export interface Row extends SessionSummary {
 /** Background subagents still running: the session is working, whatever its main agent does. */
 export const shownStatus = <S extends { status: RunStatus; backgroundSubagents?: number }>(s: S): RunStatus => (s.backgroundSubagents && s.status === "idle" ? "running" : s.status);
 
-/** Each runner's Home agent folder (RunnerInfo.homeFolder): its chats show on Home, never in the lists. */
+/**
+ * An older runner's Home agent folder (RunnerInfo.homeFolder): its live chats stay out of the lists,
+ * as they did. Remove once no runner sends it (the Home agent is gone).
+ */
 const homeFolders = new Map<string, string>();
 export function setHomeFolders(runners: { id: string; homeFolder?: string }[]) {
   homeFolders.clear();
@@ -90,10 +93,10 @@ export const recentGroups = (list: Row[], o: { query?: string; filter?: string }
 
 /**
  * The session menu's pin item: "Pin" or "Unpin", or none where pinning isn't offered (a runner from
- * before pinSession, an archived session, a subagent, a side chat, a Home agent chat).
+ * before pinSession, an archived session, a subagent, a side chat).
  */
-export function pinMenuLabel(runnerId: string, s: SessionSummary, canPin: boolean): "Pin" | "Unpin" | undefined {
-  if (!canPin || s.archived || !listed(s) || isHomeChat(runnerId, s.projectPath)) return undefined;
+export function pinMenuLabel(s: SessionSummary, canPin: boolean): "Pin" | "Unpin" | undefined {
+  if (!canPin || s.archived || !listed(s)) return undefined;
   return s.pinned ? "Unpin" : "Pin";
 }
 
@@ -113,36 +116,6 @@ export function waitingOn(summaries: Record<string, SummaryState>, runnerId: str
     .filter((r) => r.runnerId === runnerId && listed(r) && ((r.requests ?? 0) > 0 || (r.mode === "terminal" && r.status === "waiting")))
     .sort((a, b) => a.updatedAt - b.updatedAt);
 }
-
-/** What the Home agent watches: every session ("Watch all sessions"), or only those its chats follow. */
-export interface Watching {
-  watchAll: boolean;
-  /** absent: a runner from before it said */
-  following?: string[];
-}
-
-/** A session that's waiting for a person: an open request, or a TUI asking. */
-const needsPerson = (r: SessionSummary) => (r.requests ?? 0) > 0 || r.status === "waiting";
-
-/**
- * The sessions the Home agent is waiting on, on one runner (its chat's "Waiting for N sessions"):
- * those running a turn or waiting for the person, among every session when it watches all of them,
- * else the ones it follows. Never its own chats, subagents or archived sessions (the watch reports
- * leave them out too). Those waiting for the person first, then oldest first.
- */
-export function awaitedSessions(summaries: Record<string, SummaryState>, runnerId: string, w: Watching): { rows: Row[]; needs: number } {
-  const follows = new Set(w.following ?? []);
-  const out = rows(summaries).filter(
-    (r) => r.runnerId === runnerId && listed(r) && !r.archived && (w.watchAll || follows.has(r.id)) && (r.status === "running" || needsPerson(r)),
-  );
-  out.sort((a, b) => Number(needsPerson(b)) - Number(needsPerson(a)) || a.updatedAt - b.updatedAt || a.id.localeCompare(b.id));
-  return { rows: out, needs: out.filter(needsPerson).length };
-}
-
-export { needsPerson };
-
-/** "Waiting for 3 sessions to finish…" */
-export const waitingLine = (n: number) => `Waiting for ${n} session${n === 1 ? "" : "s"} to finish…`;
 
 /** A session's side chats that the summaries know (SPEC §16a), newest first. */
 export function sideChatsOf(summaries: Record<string, SummaryState>, runnerId: string, sessionId: string): Row[] {

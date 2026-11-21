@@ -177,12 +177,3 @@ test("a which of a path checks it exists", () => {
   expect(realDeps.which(join(d, "missing"))).toBeNull();
   rmSync(d, { recursive: true });
 });
-
-test("the Home agent's check_harness_updates lines", async () => {
-  const { harnessUpdateLines } = await import("../homeAgent");
-  const f = fakeDeps();
-  const text = harnessUpdateLines(await new UpdateChecker(f.deps, [CLAUDE, CODEX, SDK]).report());
-  expect(text).toContain("- Codex: 0.164.0, latest 0.167.1 — Update available (updates with `/n/v22/bin/npm install -g @openai/codex@0.167.1`)");
-  expect(text).toContain("- Claude Agent SDK: 0.3.312, latest 0.3.322 — Needs a Tether release");
-  expect(text).toContain("Settings → Updates");
-});

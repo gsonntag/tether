@@ -31,13 +31,12 @@ export function useSources(runnerId: string, harness: HarnessId, wanted: boolean
 }
 
 /**
- * What the session draws from, loud on a key, and the way to change it. `standalone`: for a choice
- * kept outside a session (the Home agent's): always changeable, and no plan-runs-out switch.
+ * What the session draws from, loud on a key, and the way to change it.
  */
-export function BillingChip({ runnerId, session, state, capabilities, onSwitch, onAutoKey, standalone }: { runnerId: string; session: SessionSummary; state: LiveState; capabilities?: HarnessCapabilities; onSwitch: (source: BillingSource) => void; onAutoKey?: (on: boolean) => void; standalone?: boolean }) {
+export function BillingChip({ runnerId, session, state, capabilities, onSwitch, onAutoKey }: { runnerId: string; session: SessionSummary; state: LiveState; capabilities?: HarnessCapabilities; onSwitch: (source: BillingSource) => void; onAutoKey?: (on: boolean) => void }) {
   const [editingFallback, setEditingFallback] = useState(false);
   // A side chat keeps its session's source (SPEC §16a).
-  const changeable = standalone || (!session.parentSessionId && !session.sideOf && !!capabilities?.sourceSwitch);
+  const changeable = !session.parentSessionId && !session.sideOf && !!capabilities?.sourceSwitch;
   const { choices, refresh } = useSources(runnerId, session.harness, changeable);
   const billing = billingForDisplay(state) ?? UNKNOWN_BILLING;
   const usage = usageChip(billing, state.plan);
@@ -54,7 +53,7 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
   if (!hasMenu) return <span {...chip}>{body}</span>;
 
   const menu = choices ? sourceMenu(session.harness, state, choices) : undefined;
-  const autoKey = choices && (standalone || !onAutoKey || session.sideOf ? undefined : autoKeyItem(session.harness, state, choices));
+  const autoKey = choices && (!onAutoKey || session.sideOf ? undefined : autoKeyItem(session.harness, state, choices));
   const hasMoreBelowPlan = showSessionCost || (!!menu && (menu.items.length > 0 || menu.addKey));
   return (
     <>
