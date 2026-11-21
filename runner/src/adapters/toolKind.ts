@@ -17,7 +17,7 @@ add("read", "read read_file view_file view_image notebookread ls list list_dir")
 add("search", "glob grep find search grep_search codebase_search toolsearch");
 add("fetch", "webfetch web_fetch fetch websearch web_search");
 add("todo", "todowrite todo_write");
-add("task", "task agent");
+add("task", "task agent invoke_subagent");
 
 const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 

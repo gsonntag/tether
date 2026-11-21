@@ -11,6 +11,7 @@ test("tool calls are classified by what they do", () => {
   expect(classifyTool("TodoWrite", { todos: [] }).kind).toBe("todo");
   expect(classifyTool("Agent", { prompt: "x" }).kind).toBe("task");
   expect(classifyTool("Task", { prompt: "x" }).kind).toBe("task");
+  expect(classifyTool("invoke_subagent", { Prompt: "x" }).kind).toBe("task");
   expect(classifyTool("mcp__github__edit", { old_string: "a" }).kind).toBe("other");
   expect(classifyTool("custom_shell_runner", { command: "make" })).toEqual({ kind: "shell", command: "make" });
 });
