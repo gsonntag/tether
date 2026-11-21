@@ -37,7 +37,7 @@ test("leaves behind undefined when git fetch fails", async () => {
     if (argv[0] === "fetch") return { code: 128, stdout: "fatal: unable to access\n" };
     return { code: 1, stdout: "" };
   };
-  const b = await readBuildInfo("/any/path", git);
+  const b = await readBuildInfo("/any/path", git, true);
   expect(b?.behind).toBeUndefined();
 });
 
@@ -82,4 +82,22 @@ test("reads build info from the actual runner checkout", async () => {
   expect(b?.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   expect(typeof b?.branch).toBe("string");
   expect(typeof b?.dirty).toBe("boolean");
+});
+
+test("at startup it doesn't fetch (no network before the runner starts); the refresh does", async () => {
+  const calls: string[] = [];
+  const git: GitRunner = async (argv) => {
+    calls.push(argv[0]!);
+    if (argv[0] === "log") return { code: 0, stdout: "1a2b3c4\x002026-11-21\n" };
+    if (argv[0] === "branch") return { code: 0, stdout: "main\n" };
+    if (argv[0] === "status") return { code: 0, stdout: "" };
+    if (argv[0] === "rev-parse") return { code: 0, stdout: "origin/main\n" };
+    if (argv[0] === "fetch") return { code: 0, stdout: "" };
+    if (argv[0] === "rev-list") return { code: 0, stdout: "2\n" };
+    return { code: 1, stdout: "" };
+  };
+  expect((await readBuildInfo("/p", git))?.behind).toBe(2);
+  expect(calls).not.toContain("fetch");
+  await readBuildInfo("/p", git, true);
+  expect(calls).toContain("fetch");
 });

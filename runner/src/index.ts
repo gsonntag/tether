@@ -46,7 +46,7 @@ const runner = createRunner({
   defaultName: displayName({ ...config, name: undefined }),
   version: pkg.version,
   build,
-  detectBuild: () => readBuildInfo(runnerFolder),
+  detectBuild: () => readBuildInfo(runnerFolder, undefined, true),
   detectHarnesses: () => detectHarnesses(),
   adapters: [claudeAdapter, codexAdapter, antigravityAdapter],
   noticesFile: join(CONFIG_DIR, "notices.json"),

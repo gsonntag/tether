@@ -34,7 +34,7 @@ export const defaultGit: GitRunner = async (argv, cwd, timeoutMs = 15_000) => {
  * Reads the build stamp from git in `cwd` (or its enclosing repo).
  * Returns undefined if there is no .git or git fails.
  */
-export async function readBuildInfo(cwd: string, git: GitRunner = defaultGit): Promise<RunnerBuild | undefined> {
+export async function readBuildInfo(cwd: string, git: GitRunner = defaultGit, fetch = false): Promise<RunnerBuild | undefined> {
   const log = await git(["log", "-1", "--format=%h%x00%cs"], cwd);
   if (log.code !== 0) return undefined;
   const parts = log.stdout.trim().split("\0");
@@ -53,8 +53,10 @@ export async function readBuildInfo(cwd: string, git: GitRunner = defaultGit): P
   // Compute behind only when the branch has an upstream:
   const upstreamCheck = await git(["rev-parse", "--verify", "--quiet", "@{upstream}"], cwd);
   if (upstreamCheck.code === 0) {
-    const fetch = await git(["fetch", "--quiet"], cwd, 20_000);
-    if (fetch.code === 0) {
+    // At startup it compares with the upstream as last fetched (no network before the runner starts);
+    // the hourly refresh fetches first.
+    const fetched = fetch ? (await git(["fetch", "--quiet"], cwd, 20_000)).code === 0 : true;
+    if (fetched) {
       const revList = await git(["rev-list", "--count", "HEAD..@{upstream}"], cwd);
       if (revList.code === 0) {
         const count = parseInt(revList.stdout.trim(), 10);

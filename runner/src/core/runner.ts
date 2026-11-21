@@ -228,8 +228,9 @@ export function createRunner(o: RunnerOptions) {
     // Refresh at startup and hourly; re-send hello when build changes.
     const refreshBuild = async () => {
       const before = JSON.stringify(currentBuild);
-      const next = await o.detectBuild!();
-      if (JSON.stringify(next) !== before) {
+      // A failed read (git busy, offline) keeps what was known.
+      const next = await o.detectBuild!().catch(() => undefined);
+      if (next && JSON.stringify(next) !== before) {
         currentBuild = next;
         conn.send({ t: "hello", runner: await helloInfo() });
       }
