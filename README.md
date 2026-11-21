@@ -1,12 +1,12 @@
 # Tether
 
-Run coding agents (Claude Code and Codex) on your own machines and drive them from any browser,
+Run coding agents (Claude Code, Codex and Google's Antigravity) on your own machines and drive them from any browser,
 desktop or phone. Close the tab and the agent keeps working. Open the same session on several
 devices and they stay in sync. A Home agent can start work across your projects and see it through,
 and Tether can text you when a session needs you. The design is in [SPEC.md](SPEC.md).
 
 ```
-browser ──wss──► server (Foliation app: UI + relay) ◄──wss── runner (your machine) ──► claude / codex
+browser ──wss──► server (Foliation app: UI + relay) ◄──wss── runner (your machine) ──► claude / codex / agy
 ```
 
 - [Features](#features)
@@ -19,8 +19,8 @@ browser ──wss──► server (Foliation app: UI + relay) ◄──wss──
 
 ## Features
 
-**Sessions.** The runner finds your existing Claude Code (`~/.claude/projects`) and Codex sessions
-and shows them all in one transcript format. Nothing starts until you send. The sidebar has Recent
+**Sessions.** The runner finds your existing Claude Code (`~/.claude/projects`), Codex and Antigravity (`agy`)
+sessions and shows them all in one transcript format. Nothing starts until you send. The sidebar has Recent
 (the last 3 days plus every live session, grouped by project) and per-project lists, and search finds the rest. You can
 rename, pin and archive sessions from the sidebar (or a session's ⋯ menu); pinned ones stay at the top on every device. A session goes live when you send and goes back to
 stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–§6a.
@@ -40,6 +40,7 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
 - **Terminal** (SPEC §8): the ❯_ button opens a plain shell for the project, and the harness's own
   TUI is a choice in the same panel. Claude hands the session off to `claude --resume` in tmux and
   takes it back when you click **Back to Tether**. Codex shares the live thread with its TUI.
+  Antigravity hands off to `agy --conversation` the same way Claude does.
   Terminals outlive runner restarts.
 - **Changes** (SPEC §10): the session folder's git diff beside the chat, uncommitted or the whole
   branch. Click lines to comment, then **Send to agent** puts the comments in the composer as one
@@ -103,6 +104,7 @@ when the session is made:
 
 - Claude: the Claude plan, or an Anthropic API key.
 - Codex: the ChatGPT plan, an OpenAI API key, or Azure.
+- Antigravity: the Google account `agy` is signed in with (its plan, e.g. Google AI Pro).
 
 You add keys under **Settings → Credentials** and **Settings → Azure**, and they're stored on the
 runner. New sessions start on the subscription. The header's billing chip shows the source and
@@ -173,15 +175,15 @@ dial out, so your machines need no inbound port. SPEC §3 has the details.
 |---|---|
 | `shared/` | The wire protocol (`protocol.ts`), transcript model (`transcript.ts`), and helpers used by all three: credentials, costs, move, fork, side chats, commands, plan, sync |
 | `server/` | Bun relay on Foliation: identity, RPC forwarding, session subscriptions, summary broadcast, terminal routing (`relay.ts`), Web Push keys (`push.ts`) |
-| `runner/` | Bun runner. `src/core/`: connection, event bus, ops and the session core (`sessions.ts`, `live.ts`, `queue.ts`, `requests.ts`, `transcript.ts`). `src/adapters/claude/` (Agent SDK) and `src/adapters/codex/` (app-server daemon, private hosts for API sources). `src/terminal/`: PTY and tmux. `src/modules/`: `homeAgent`, `peers`, `texting` (its connectors: `imessage.ts`, `discord.ts`), `push`, `move`, `fork`, `sideChats` |
+| `runner/` | Bun runner. `src/core/`: connection, event bus, ops and the session core (`sessions.ts`, `live.ts`, `queue.ts`, `requests.ts`, `transcript.ts`). `src/adapters/claude/` (Agent SDK), `src/adapters/codex/` (app-server daemon, private hosts for API sources), `src/adapters/antigravity/` (`agy acp`) and `src/adapters/acp/` (a generic Agent Client Protocol client). `src/terminal/`: PTY and tmux. `src/modules/`: `homeAgent`, `peers`, `texting` (its connectors: `imessage.ts`, `discord.ts`), `push`, `move`, `fork`, `sideChats` |
 | `web/` | React + Vite + Astryx UI |
 | `scripts/` | End-to-end checks, a fake runner, probes |
 | `docs/` | `acceptance/` manual checks per phase and feature, `notes/`, [`ISSUES.md`](docs/ISSUES.md) backlog |
 
 ## Setup
 
-You need [Bun](https://bun.sh), `tmux` (for terminals), and `claude` and/or `codex` installed and
-logged in on the runner's machine. Install dependencies per package:
+You need [Bun](https://bun.sh), `tmux` (for terminals), and any of `claude`, `codex` and `agy`
+(Antigravity's CLI) installed and logged in on the runner's machine. Install dependencies per package:
 
 ```sh
 for p in shared server runner web; do (cd $p && bun install); done
@@ -198,7 +200,8 @@ Runner (`runner.env` in production, or the shell in dev):
 | `TETHER_DEV` | | `1`: fall back to `http://localhost:8790` and token `dev` when the two above are unset |
 | `TETHER_CONFIG_DIR` | `~/.config/tether` | where `runner.json` (mode 600), prefs, notices and module data live |
 | `TETHER_DATA_DIR` | `TETHER_CONFIG_DIR` | stored keys and private Codex hosts (keep the path short: it holds a Unix socket) |
-| `CLAUDE_BIN`, `CODEX_BIN` | `claude`, `codex` | harness binaries, if not on `PATH` |
+| `CLAUDE_BIN`, `CODEX_BIN`, `AGY_BIN` | `claude`, `codex`, `agy` | harness binaries, if not on `PATH` |
+| `AGY_HOME` | `~/.gemini/antigravity-cli` | Antigravity's store, if elsewhere |
 | `TETHER_TMUX_SOCKET` | `tether` | the tmux socket terminals use (`tmux -L <socket>`). Give a dev runner its own |
 | `TETHER_HIDE_PROJECTS` | | folders to leave out of the session lists |
 | `TETHER_PEERS` | | `0` turns off session-to-session messaging |
@@ -304,6 +307,7 @@ Each script's header says what it needs:
 - `e2e-move.mjs`: change session harness
 - `e2e-keys.mjs`: the credentials and billing UI
 - `e2e-cost.ts`: API cost accounting against a fake API, with no model
+- `antigravity-accept.ts`: Antigravity through the real `agy` and Tether's own session core and terminal control, no browser
 
 `smoke-p1.ts` is the scripted-browser smoke test. The `check-*.sh` scripts verify the systemd scope
 behaviour. Manual acceptance checks are in [`docs/acceptance/`](docs/acceptance/), one file per phase
