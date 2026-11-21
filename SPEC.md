@@ -1832,11 +1832,14 @@ finished, failed), and the Home inbox. After P5, v2 replaces v1 in production.
 request, "needs you", a failed turn, a turn whose last message asks the person something, and the
 agent's answer after the person texted it (a turn that just finishes doesn't text), each with a link
 to the session; skipped while the session is viewed. Only from a session whose **Session can text
-me** box is ticked (a per-session checkbox, off by default, in the header's phone chip for its
-owner: `setCanText`, a manage op; `SessionPrefs.canText` → `LiveState.canText`, kept however old,
-carried to a successor; a subagent goes by its main session's; the Home agent's own chats text as
-before): an unticked session texts nothing, not its requests, not its turns' ends, not its
-`text_person`. A runner without it says nothing (`RunnerInfo.canText`) and shows no box. A request's text is
+me** box is ticked (a per-session checkbox, off by default for new sessions, in the header's phone
+chip for its owner: `setCanText`, a manage op; `SessionPrefs.canText` → `LiveState.canText`, kept
+however old, carried to a successor, a TUI's `/clear` too; a subagent goes by its main session's; an
+archived session doesn't text; the Home agent's own chats, its tabs and Texts chats, text as before):
+an unticked session texts nothing, not its requests, not its turns' ends, not its `text_person`. The
+first start with the box ticks, once, every session that held a number, was among Tether's
+remembered texts or was written by text (`texting.json` `canTextMigrated`), keeping its number. A
+runner without it says nothing (`RunnerInfo.canText`) and shows no box. A request's text is
 one plain question in the agent's voice, under ~100 characters, with the session's link on its own
 line below: "[2] Can I clean up the hide-checkin worktree? y/n", "[3] Can I run the jungle test
 suite? y/n". The words come from the tool call's own `description` (Claude Code's Bash) or a
@@ -1845,7 +1848,9 @@ command text, no harness warning, no explanation: those stay in Tether behind th
 carries its options; a plan asks "Can I go ahead with the plan to …?". Known secrets are redacted. Replies route by number: each text
 starts with its session's number (1-9, kept while the session is open, 30 minutes after its last
 text); `n text` or a threaded reply goes straight there; plain text goes to the open session last
-texted or answered. With none open, plain text is held and answered with a numbered picker of the
+texted or answered. A threaded reply to a text whose session isn't open any more (or to a message
+Tether doesn't know) never goes by plain routing (a "y" mustn't approve another session's
+request): it's held and the picker asks. With none open, plain text is held and answered with a numbered picker of the
 ticked sessions (numbers offered for them, newest activity first, open 30 minutes; plain text never
 goes to an offered number unpicked); with none ticked, "No session can text you". A number that
 isn't open is held the same way, its picker listing only the open sessions still waiting (one
@@ -1876,9 +1881,11 @@ last channel is the hub's (`hubChannel.ts`), used when no connector of their own
   one set of numbers and one picker, sends it on its connector, and notes it for threaded replies.
   An image after a text, a request's text and `text_person` go the same way. Answered on the
   spoke (in Tether, a new turn, a closed request), its slot changes on the hub too. The spoke
-  gates its own sessions' texts by their box; ticking one tells the hub (with its name, for the
-  hub's picker, `texting.json` `remoteTexters`, offered for 7 days after it last texted or was
-  ticked), unticking one drops its number there.
+  gates its own sessions' texts by their box, and turns away a reply the hub hands one that's
+  unticked ("[n] can't text you anymore"). It tells the hub the whole set of its ticked sessions,
+  with names (at start, whenever its hub (re)connects, and when a box changes): the hub's picker
+  offers them (`texting.json` `remoteTexters`, 7 days after last heard), and the numbers of the
+  spoke's other sessions go.
 - In: a reply the hub's router gives to a spoke's session goes there (`deliver`), with the ✅
   handed back and the files the person sent (fetched and checked on the hub: HEIC made JPEG). The
   spoke takes it as its own connector's message: a request's y/n, or words and files to the agent.

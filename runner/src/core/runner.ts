@@ -234,7 +234,16 @@ export function createRunner(o: RunnerOptions) {
         return s ? lookAt(s) : undefined;
       },
       loaded: () => [...core.sessions.values()].map(lookAt),
-      texters: () => prefs.texters(),
+      // From runner.json, not the lists (they hold only recent sessions, and none until discovery).
+      texters: () =>
+        prefs
+          .texters()
+          .map((id) => {
+            const row = core.sessions.get(id)?.summary ?? core.book.get(id);
+            return { id, title: prefs.get(id).title ?? row?.title ?? "", at: row?.updatedAt ?? prefs.get(id).at ?? 0 };
+          })
+          .sort((a, b) => b.at - a.at)
+          .map(({ id, title }) => ({ id, title })),
       viewersOf: (id: string) => live.read.viewersOf(id),
       homeFolder: o.homeFolder,
       apiCost: (id: string) => (costs.has(id) ? costs.get(id) : undefined),

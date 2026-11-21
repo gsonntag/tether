@@ -148,9 +148,9 @@ export interface Ops {
   setSessionSource: { args: { sessionId: string; source: BillingSource }; result: null };
   /** the box in the billing chip's menu (`on`) and/or the session's fallback key order; each alone leaves the other */
   setAutoKey: { args: { sessionId: string; on?: boolean; fallbackKeys?: CredentialSource[] }; result: null };
-  /** asks the harness for its plan limits if it has a cheap read; the answer comes as session state */
   /** the "Session can text me" box: only a ticked session texts the person, or gets plain texts and a place in the picker (SPEC §11 Texting) */
   setCanText: { args: { sessionId: string; canText: boolean }; result: null };
+  /** asks the harness for its plan limits if it has a cheap read; the answer comes as session state */
   refreshPlan: { args: { harness: HarnessId }; result: null };
   renameSession: { args: { sessionId: string; title: string }; result: null };
   /** Keeps a session out of Recent; archived sessions remain searchable. */

@@ -453,9 +453,13 @@ describe("text_person with an image", () => {
 
 describe("text_person and the \"Session can text me\" box", () => {
   test("a session whose box is off texts nothing and is told why; a ticked one and the Home agent's chats text", async () => {
-    const { peers } = setup([row("claude:a", "A"), row("claude:b", "B"), row("claude:h", "Home", { projectPath: "/home/agent" })], { noText: ["claude:a", "claude:h"], home: "/home/agent" });
+    const rows = [row("claude:a", "A"), row("claude:b", "B"), row("claude:h", "Home", { projectPath: "/home/agent" }), row("claude:x", "In Home's folder", { projectPath: "/home/agent" }), row("claude:old", "Archived", { archived: true })];
+    const { peers } = setup(rows, { noText: ["claude:a", "claude:h", "claude:x"], home: "/home/agent" });
     const sent: unknown[][] = [];
-    (peers as any).ctx.homeLine = { phone: { text: async (...a: unknown[]) => (sent.push(a), { text: "Texted the person." }) } };
+    (peers as any).ctx.homeLine = { home: { isTextsChat: () => false, homes: () => [{ n: 0, chat: "claude:h" }] }, phone: { text: async (...a: unknown[]) => (sent.push(a), { text: "Texted the person." }) } };
+    // Only Home's own chats are exempt, not anything in its folder; an archived session doesn't text.
+    expect(await peers.call({ from: "claude:x", tool: "text_person", args: { message: "hi" } } as any)).toEqual({ text: CANT_TEXT, isError: true });
+    expect(await peers.call({ from: "claude:old", tool: "text_person", args: { message: "hi" } } as any)).toEqual({ text: CANT_TEXT, isError: true });
     const call = (from: string) => peers.call({ from, tool: "text_person", args: { message: "done" } } as any);
     expect(await call("claude:a")).toEqual({ text: CANT_TEXT, isError: true });
     expect(sent).toEqual([]);

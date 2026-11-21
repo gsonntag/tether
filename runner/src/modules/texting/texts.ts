@@ -51,6 +51,8 @@ export const TEXTS = {
   cantText: (n: number) => `[${n}] can't text you anymore, tick "Session can text me" on it in Tether first.`,
   /** plain text, nothing open, and no session may text */
   noTexters: "No session can text you, tick \"Session can text me\" on one in Tether.",
+  /** a threaded reply to a text whose session isn't waiting any more (or to a message Tether doesn't know) */
+  threadNotWaiting: "That one isn't waiting on a reply, which session did you mean?",
   notWaiting: (n: number) => `[${n}] isn't waiting on a reply, which one did you mean?`,
   whatToSend: (n: number) => `What should I send to [${n}]?`,
   whatToSendHome: "What should I send to the Home agent?",

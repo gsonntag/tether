@@ -397,6 +397,14 @@ export class Router {
     const aimed = aim && !aim.home && this.state.slots.find((x) => x.n === aim.n);
     if (aimed) return this.deliver(aimed, text);
 
+    // A thread on a text whose session isn't open, or on a message Tether doesn't know: never plain
+    // routing (a "y" there mustn't answer another session's request). Held, and the picker asks.
+    if (replyTo) {
+      if (!this.open().length) this.offer(texters ?? []);
+      if (!this.open().length && !running) return { kind: "reply", text: this.nothing(texters) };
+      this.hold(text);
+      return { kind: "reply", text: this.picker(TEXTS.threadNotWaiting, running) };
+    }
     // Tether's last text was a home's: this answers it (and is about what that text was about).
     if (running && this.state.homeLast) {
       const from = this.state.homeChat;

@@ -128,8 +128,9 @@ describe("replies", () => {
     r.stamp("b", "finished", ".");
     r.noteSent("m2", "b");
     expect(r.route("yes", "m1")).toMatchObject({ kind: "deliver", sessionId: "a" });
-    // unknown target: like plain text (to a, just answered)
-    expect(r.route("yes", "zzz")).toMatchObject({ kind: "deliver", sessionId: "a" });
+    // unknown target: never plain routing (a "y" mustn't approve the wrong request): the picker
+    expect(r.route("yes", "zzz")).toMatchObject({ kind: "reply", text: expect.stringContaining(TEXTS.threadNotWaiting) });
+    expect(r.route("1")).toMatchObject({ kind: "deliver", sessionId: "a", text: "yes" });
   });
 
   test("state is plain data: a new router on it goes on", () => {
@@ -147,8 +148,8 @@ describe("threads", () => {
     r.noteSent("t1", "a");
     r.stamp("b", "finished", ".");
     expect(r.route("yes", "t1")).toMatchObject({ kind: "deliver", sessionId: "a" });
-    // Not one of Tether's texts (gone, or never Tether's): Tether still owns it, as plain text.
-    expect(r.route("yes", "tm1")).toMatchObject({ kind: "deliver", sessionId: "a" });
+    // Not one of Tether's texts (gone, or never Tether's): Tether still owns it and asks which session.
+    expect(r.route("yes", "tm1")).toMatchObject({ kind: "reply" });
   });
 
   test("answered sessions leave the picker; a number still reaches them", () => {
@@ -610,5 +611,24 @@ describe("the \"Session can text me\" box", () => {
     r.drop("a");
     clock.tick(OPEN_MS);
     expect(r.route("1 hi")).toMatchObject({ kind: "reply", text: NOTHING_OPEN });
+  });
+});
+
+describe("a \"y\" mustn't approve the wrong request", () => {
+  test("a threaded y on an expired session's text never goes to the session texted last, nor carries its request", () => {
+    const { r, clock } = setup();
+    r.stamp("a", "wants to run a command", ".", "reqA");
+    r.noteSent("tA", "a", "reqA");
+    clock.tick(OPEN_MS - 1000);
+    r.stamp("b", "wants to run a command", ".", "reqB");
+    r.noteSent("tB", "b", "reqB");
+    clock.tick(2000);
+    // a's slot expired; b's request is open.
+    expect(r.open().map((s) => s.sessionId)).toEqual(["b"]);
+    const d = r.route("y", "tA");
+    expect(d).toEqual({ kind: "reply", text: `${TEXTS.threadNotWaiting}\n[2] wants to run a command, just now` });
+    // Plain y still goes to b (its own request); a thread on b's text too.
+    expect(r.route("y", "tB")).toMatchObject({ kind: "deliver", sessionId: "b", requestId: "reqB" });
+    expect(casualText(TEXTS.threadNotWaiting)).toBe(true);
   });
 });

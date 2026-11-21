@@ -84,12 +84,10 @@ function setup(viewers: Record<string, string[]> = {}, homeLine?: HomeLine) {
       appUrl: "https://tether.example/",
       homeLine,
       attachmentsDir,
-      homeFolder: HOME_FOLDER,
       session: (id) => sessions[id],
       viewersOf: (id) => viewers[id] ?? [],
-      texters: () => ticked,
+      texters: () => ticked.map((id) => ({ id, title: sessions[id]?.summary.title ?? "" })),
       sessions: {
-        list: () => Object.values(sessions).map((x) => ({ title: "", ...x.summary })),
         tell: async (id, text, f) => void (told.push([id, text]), f?.length && toldFiles.push([id, asFiles(f)])),
         answer: async (id, r, a) => void answered.push([id, r, a]),
         queue: async (id, text, f) => (queued.push([id, text, f?.length ? asFiles(f) : undefined]), { id: "q1" }),
@@ -109,9 +107,6 @@ function setup(viewers: Record<string, string[]> = {}, homeLine?: HomeLine) {
   const tickBoth = () => void ticked.push("claude:a", "codex:b");
   return { t, texts, files, told, toldFiles, queued, answered, sessions, say, open: open1, hear: (m: Inbound) => t.heard(m), clock, ticked, tickBoth };
 }
-
-/** The Home agent's folder: its chats text as before, whatever their box. */
-const HOME_FOLDER = "/home/me/.local/share/tether/modules/homeAgent/workspace";
 
 const bash = (id = "r1"): Request => ({ id, sessionId: "claude:a", kind: "approval", tool: "Bash", toolKind: "shell", command: "npm test -- --watch=false", openedAt: 1 });
 
@@ -347,7 +342,7 @@ describe("a reply to a request has exactly one effect", () => {
   /** A setup whose answers close the request, as the broker does, and with the Home agent's tabs as sessions. */
   function real() {
     const s = setup();
-    for (const id of ["claude:home1", "claude:home2"]) s.sessions[id] = { summary: { id, projectPath: "/home/me/.local/share/tether/modules/homeAgent/workspace" }, status: "running", requests: [], state: { requests: [] } };
+    for (const id of ["claude:home1", "claude:home2"]) s.sessions[id] = { summary: { id, projectPath: "/home/me/.local/share/tether/modules/homeAgent/workspace" }, status: "running", requests: [], state: { requests: [], canText: true } };
     const close = (id: string) => {
       s.sessions[id].requests = [];
       s.sessions[id].state.requests = [];
@@ -1018,6 +1013,16 @@ describe("round 3: held photos on every path, unsupported content, restarts", ()
     // Picked, [2] is the one plain text goes to now.
     await again.heard({ text: "make it blue", files: [] });
     expect(s.told).toEqual([["codex:b", "make it blue"]]);
+    // Words held with a lost photo still go; the person is told about the photo.
+    const s2 = await heldPhoto();
+    await s2.hear({ text: "9 make it blue" });
+    expect(s2.t.router.state.held).toMatchObject({ text: "make it blue", images: 1 });
+    const again2 = new Texter((s2.t as any).ctx, s2.t.store, async () => ({ send: async (x: string) => (s2.texts.push(x), "z"), closed: new Promise(() => {}), stop: async () => {} }), () => s2.clock.t);
+    await again2.start();
+    await again2.heard({ text: "2" });
+    expect(s2.told).toEqual([["codex:b", "make it blue"]]);
+    expect(s2.toldFiles).toEqual([]);
+    expect(s2.texts).toContain(TEXTS.filesNotSent);
   });
 
   test("a voice note (or a card, a poll) gets one short text, once per message; words with it still go", async () => {
@@ -1322,5 +1327,69 @@ describe("the \"Session can text me\" box", () => {
     // Nor is it offered: none may text.
     await hear({ text: "hi" });
     expect(texts.at(-1)).toBe(TEXTS.noTexters);
+  });
+});
+
+describe("the box: review fixes", () => {
+  test("only the Home agent's own chats are exempt, not anything in its folder; an archived session doesn't text", async () => {
+    const line = new HomeLine();
+    line.home = fakeHome({ extra: [] });
+    const { t, texts, sessions } = setup({}, line);
+    await t.start();
+    const folder = "/home/me/.local/share/tether/modules/homeAgent/workspace";
+    sessions["claude:home"] = { summary: { id: "claude:home", projectPath: folder }, status: "idle", requests: [], state: { requests: [] } };
+    sessions["claude:other"] = { summary: { id: "claude:other", projectPath: folder }, status: "idle", requests: [], state: { requests: [] } };
+    // (The runner's Home folder is known: being in it isn't being one of Home's chats.)
+    (t as any).ctx.homeFolder = folder;
+    expect(t.canText("claude:home")).toBe(true);
+    expect(t.canText("claude:other")).toBe(false);
+    await t.attention("claude:other");
+    expect(texts).toEqual([]);
+    sessions["claude:a"].summary.archived = true;
+    expect(t.canText("claude:a")).toBe(false);
+    expect((await t.personText("claude:a", "hi")).text).toBe(CANT_TEXT);
+  });
+
+  test("the picker names ticked sessions that aren't loaded, by runner.json's title", async () => {
+    const { t, texts, hear, ticked } = setup();
+    ticked.push("claude:asleep");
+    (t as any).ctx.texters = () => ticked.map((id) => ({ id, title: id === "claude:asleep" ? "nightly build" : "" }));
+    await t.start();
+    await hear({ text: "status?" });
+    expect(texts.at(-1)).toBe("Which session, by number?\n[1] nightly build");
+  });
+
+  test("the first start ticks the sessions that texted before the box, once, keeping their numbers", async () => {
+    const { t, told, sessions, hear } = setup();
+    // From before the box: claude:a texted and holds [1]; codex:b was written lately; neither ticked.
+    sessions["claude:a"].state.canText = undefined;
+    sessions["codex:b"].state.canText = undefined;
+    t.router.stamp("claude:a", "finished", ".");
+    t.store.replyVia["codex:b"] = { via: "imessage" };
+    const ticks: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    (t as any).ctx.ops = {
+      call: async (op: string, a: { sessionId: string; canText: boolean }) => {
+        expect(op).toBe("setCanText");
+        await gate;
+        ticks.push(a.sessionId);
+        sessions[a.sessionId].state.canText = a.canText;
+        return null;
+      },
+    };
+    const started = t.start();
+    await new Promise((r) => setTimeout(r, 5));
+    // Under way: a text to its number still reaches it.
+    await hear({ text: "1 thanks" });
+    expect(told).toEqual([["claude:a", "thanks"]]);
+    release();
+    await started;
+    expect(ticks.sort()).toEqual(["claude:a", "codex:b"]);
+    expect(t.store.canTextMigrated).toBe(true);
+    // Once: a later start ticks nothing again.
+    sessions["claude:a"].state.canText = undefined;
+    await t.migrate();
+    expect(ticks.length).toBe(2);
   });
 });

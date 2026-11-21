@@ -15,7 +15,8 @@
 // an unticked one sends nothing, not its requests, not its turns' ends, not its text_person (canText).
 // Plain text goes to the ticked session last texted or answered; with none open, a picker of the
 // ticked ones asks which (router.ts). Unticking drops its number (canTextChanged). The Home agent's
-// own chats text as before.
+// own chats text as before. The first start with the box ticks every session that held a number or
+// texted lately (migrate), so nothing that texted before goes quiet unasked.
 //
 // An agent can text the person itself with its text_person tool (personText): a short text stamped with its session's
 // number like any other, whose reply comes back to that session (rate-capped: AgentTextCaps), and
@@ -46,8 +47,9 @@
 // passes the bytes on). What a reply does there (a request's y/n, words to the agent, a channel
 // claim) happens on the runner that has the session, as it would here. The Home agent stays the
 // hub's: a spoke's own Home agent doesn't text through it. A spoke knows its own sessions' boxes, so
-// it gates their texts itself, and tells the hub which ones may text (for the hub's picker) and
-// when one is unticked (its number goes there too).
+// it gates their texts (and the replies the hub hands it) itself, and tells the hub which ones may
+// text, the whole set (syncHub: at start, whenever its hub (re)connects, and when a box changes):
+// the hub's picker offers them, and numbers of the rest go there.
 //
 // Texts carry what the agent wants and says (the person asked for that over push's lock-screen
 // wording), a request as one "Can I …? y/n" question with no raw command (describe.ts, summary.ts); known secrets
@@ -89,8 +91,10 @@ export function asksQuestion(text: string): boolean {
   return /\?(?=["')\]*_]*(\s|$))/.test(last);
 }
 
-type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log" | "runnerId" | "appUrl" | "homeLine" | "links" | "attachmentsDir" | "hub" | "texters" | "homeFolder"> & {
-  sessions: Pick<ModuleContext["sessions"], "tell" | "answer"> & Partial<Pick<ModuleContext["sessions"], "queue" | "list">>;
+type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log" | "runnerId" | "appUrl" | "homeLine" | "links" | "attachmentsDir" | "hub" | "texters"> & {
+  sessions: Pick<ModuleContext["sessions"], "tell" | "answer"> & Partial<Pick<ModuleContext["sessions"], "queue">>;
+  /** to tick the box of the sessions that texted before it existed (migrate) */
+  ops?: Pick<ModuleContext["ops"], "call">;
 };
 
 /** How long a hub offers another runner's session in its picker after it last heard it may text. */
@@ -238,6 +242,9 @@ export class Texter {
   /** the ids of the person's texts already taken, newest last */
   private heardIds: string[] = [];
   readonly caps: AgentTextCaps;
+  /** sessions the first start ticked (migrate): their numbers stay while that's under way */
+  private migrated = new Set<string>();
+  private offHub?: () => void;
 
   constructor(
     private ctx: Ctx,
@@ -260,6 +267,8 @@ export class Texter {
       // Last: a connector of this runner's own, when connected, comes first (target).
       this.hubChannel = new HubChannel(() => port.hub, this.wire);
       this.channels.push(this.hubChannel);
+      // A hub (re)connected: it hears again which of this runner's sessions may text.
+      this.offHub = port.onHub((h) => void (h && this.syncHub()));
     }
   }
 
@@ -280,6 +289,8 @@ export class Texter {
     }
     await Promise.all(this.channels.map((c) => c.start()));
     this.announce();
+    await this.migrate().catch((e) => this.ctx.log(`texting: couldn't tick the sessions that texted: ${e?.message ?? e}`));
+    await this.syncHub();
   }
 
   /** On a hub, what its hello says: whether texts can go now, and take images. */
@@ -298,6 +309,7 @@ export class Texter {
     clearTimeout(this.heldTimer);
     this.heldTimer = undefined;
     clearInterval(this.hubTimer);
+    this.offHub?.();
     this.wire?.stop();
     await Promise.all(this.channels.map((c) => c.stop()));
   }
@@ -677,17 +689,28 @@ export class Texter {
    */
   canText(id: string): boolean {
     const root = this.root(id);
+    if (this.homeChat(root)) return true;
     const look = this.ctx.session(root);
-    if (look && this.ctx.homeFolder && look.summary.projectPath === this.ctx.homeFolder) return true;
-    if (look) return !!look.state?.canText;
-    return !!this.ctx.texters?.().includes(root);
+    // Archived: as runner.json's list has it (texters), it doesn't text.
+    if (look) return !!look.state?.canText && !look.summary.archived;
+    return !!this.ctx.texters?.().some((t) => t.id === root);
+  }
+
+  /** One of the Home agent's own chats (its tabs, its Texts chats): not a session the box is for. */
+  private homeChat(id: string): boolean {
+    const home = this.ctx.homeLine?.home;
+    return !!home && (!!home.isTextsChat?.(id) || !!home.homes?.().some((h) => h.chat === id));
+  }
+
+  /** This runner's sessions that may text, most recent first, by name. */
+  private mine(): Ticked[] {
+    return (this.ctx.texters?.() ?? []).map((t) => ({ sessionId: t.id, label: clip(this.ctx.session(t.id)?.summary.title || t.title || "Untitled", LABEL_MAX) }));
   }
 
   /** The sessions that may text, for a picker: this runner's (most recent first), then, on a hub, other runners' it heard of. */
   private ticked(): Ticked[] {
-    const ids = new Set(this.ctx.texters?.() ?? []);
     const name = (t: string) => clip(t || "Untitled", LABEL_MAX);
-    const mine = (this.ctx.sessions.list?.() ?? []).filter((s) => ids.has(s.id) && !s.parentSessionId).map((s) => ({ sessionId: s.id, label: name(s.title) }));
+    const mine = this.mine();
     if (!this.store.hub) return mine;
     const at = this.now();
     const theirs = Object.entries(this.store.remoteTexters)
@@ -713,9 +736,38 @@ export class Texter {
     if (on) this.router.allow(sessionId);
     else this.router.drop(sessionId);
     this.store.save();
+    void this.syncHub();
+  }
+
+  /**
+   * On a spoke: tells the hub the whole set of its sessions that may text (none when it texts on a
+   * connector of its own): the hub's picker offers them, and drops the numbers of any others. A set,
+   * not a change, so one that got lost (the hub away) is mended by the next.
+   */
+  async syncHub() {
     const hub = this.port?.hub;
-    const label = clip(this.ctx.session(sessionId)?.summary.title || "Untitled", LABEL_MAX);
-    if (hub && this.wire && !this.ownTarget()) void this.wire.call(hub.id, "router", { op: "canText", sessionId, on, ...(on ? { label } : {}) }).catch(() => {});
+    if (!hub || !this.wire) return;
+    const sessions = this.ownTarget() ? [] : this.mine().slice(0, REMOTE_TEXTERS_MAX);
+    await this.wire.call(hub.id, "router", { op: "ticked", sessions }).catch(() => {});
+  }
+
+  /**
+   * The first start with the box: every session that held a number or texted lately (its texts
+   * Tether remembers, or one the person wrote) is ticked, once, so it goes on texting as before.
+   * Done is noted in texting.json; their numbers are kept meanwhile.
+   */
+  async migrate() {
+    if (this.store.canTextMigrated || !this.ctx.ops) return;
+    this.store.canTextMigrated = true;
+    this.store.save();
+    const ids = new Set([...this.router.state.slots.map((x) => x.sessionId), ...this.router.state.sent.map((x) => x.sessionId), ...Object.keys(this.store.replyVia)]);
+    for (const id of ids) {
+      if (id === HOME || parseRemote(id)) continue;
+      const root = this.root(id);
+      if (this.homeChat(root) || this.migrated.has(root)) continue;
+      this.migrated.add(root);
+      await this.ctx.ops.call("setCanText", { sessionId: root, canText: true }).catch(() => this.migrated.delete(root));
+    }
   }
 
   /** Texts about a session, unless someone is looking at it (or at `also`) in Tether right now (`always`: even then). Whether it went. */
@@ -958,7 +1010,7 @@ export class Texter {
     if (m.unsupported) await this.say(TEXTS.onlyTextAndFiles, back);
     const mine = m.files ?? [];
     // A number this runner's session kept though its box is off now (from before the box): it goes.
-    for (const s of this.router.state.slots) if (!parseRemote(s.sessionId) && !this.canText(s.sessionId)) this.router.drop(s.sessionId);
+    for (const s of this.router.state.slots) if (!parseRemote(s.sessionId) && !this.migrated.has(this.root(s.sessionId)) && !this.canText(s.sessionId)) this.router.drop(s.sessionId);
     const was = this.router.heldNow();
     const before = was ? { ...was } : undefined;
     const d = this.router.route(!m.text.trim() && mine.length ? NO_WORDS : m.text, m.replyTo, home ? home.homes() : false, mine.length ? { filesOnly: NO_WORDS } : undefined, this.ticked());
@@ -1201,6 +1253,7 @@ export class Texter {
     }
     if (!this.store.hub) throw new Error("This computer isn't the texting hub.");
     const sessionId = typeof a.sessionId === "string" && a.sessionId ? a.sessionId : undefined;
+    if (op === "router" && a.op === "ticked") return this.tickedFrom(from, a.sessions);
     switch (op) {
       case "send":
         return this.hubSend(from, a, files);
@@ -1210,16 +1263,6 @@ export class Texter {
         if (a.op === "settle") this.router.settle(key);
         else if (a.op === "unsettle") this.router.unsettle(key);
         else if (a.op === "closedRequest" && typeof a.requestId === "string") this.router.closedRequest(key, a.requestId);
-        else if (a.op === "canText") {
-          // The spoke's box for its session: the picker offers it, or its number goes.
-          if (a.on === true) {
-            this.remoteTexter(key, typeof a.label === "string" && a.label ? a.label.slice(0, LABEL_MAX) : "Untitled");
-            this.router.allow(key);
-          } else {
-            this.remoteTexter(key, undefined);
-            this.router.drop(key);
-          }
-        }
         this.store.save();
         return null;
       }
@@ -1230,6 +1273,32 @@ export class Texter {
       }
     }
     throw new Error(`Unknown texting call: ${op}`);
+  }
+
+  /**
+   * On the hub: the whole set of a spoke's sessions that may text (syncHub). The picker offers them;
+   * any other of its sessions loses its number and its place in the picker.
+   */
+  private tickedFrom(from: string, list: unknown): null {
+    const set = new Map<string, string>();
+    for (const x of Array.isArray(list) ? list.slice(0, REMOTE_TEXTERS_MAX) : []) {
+      const sid = x && typeof x === "object" && typeof (x as any).sessionId === "string" ? (x as any).sessionId : "";
+      const label = x && typeof (x as any).label === "string" && (x as any).label ? ((x as any).label as string).slice(0, LABEL_MAX) : "Untitled";
+      if (sid && sid.length <= 500) set.set(remoteKey(from, sid), label);
+    }
+    const theirs = (key: string) => parseRemote(key)?.runnerId === from;
+    const keys = new Set([...Object.keys(this.store.remoteTexters), ...this.router.state.slots.map((x) => x.sessionId)].filter(theirs));
+    for (const key of keys)
+      if (!set.has(key)) {
+        this.remoteTexter(key, undefined);
+        this.router.drop(key);
+      }
+    for (const [key, label] of set) {
+      this.remoteTexter(key, label);
+      this.router.allow(key);
+    }
+    this.store.save();
+    return null;
   }
 
   /**
@@ -1298,6 +1367,16 @@ export class Texter {
     const back: Back = { via, ...(place && a.shared !== true ? { place } : {}) };
     // Tether's texts follow the person to the way they wrote: through the hub.
     this.store.lastVia = via;
+    // Its box is off here (unticked, archived, gone), whatever the hub's router thought: the person
+    // hears so through the hub, and the hub hears the set again (its number goes there).
+    if (!this.canText(sessionId)) {
+      const done = this.inbox.then(async () => {
+        await this.say(TEXTS.cantText(n), back);
+        await this.syncHub();
+      });
+      this.inbox = done.catch((e) => this.ctx.log(`texting: ${e?.message ?? e}`));
+      return done.then(() => null);
+    }
     // One at a time, as the person's own texts are taken.
     const done = this.inbox.then(() => this.act(d, m, got, back, { elsewhere: a.elsewhere === true, ...(str(a.mark) ? { mark: str(a.mark)! } : {}) }));
     this.inbox = done.catch((e) => this.ctx.log(`texting: ${e?.message ?? e}`));

@@ -153,9 +153,11 @@ export class Peers {
         // A session the Home agent drives reports to it instead: it texts the person (their PM).
         const relayed = await this.ctx.homeLine?.home?.relay?.(from, str(a.message), image || undefined);
         if (relayed) return { text: relayed };
-        // Only a session whose "Session can text me" box is ticked texts (the Home agent's chats always may).
+        // Only a session whose "Session can text me" box is ticked texts (the Home agent's own chats always may).
+        const home = this.ctx.homeLine?.home;
+        const homeChat = !!home && ((home.isTextsChat?.(from) || !!home.homes?.().some((h) => h.chat === from)));
         const look = this.ctx.session(from);
-        if (look && !look.state?.canText && !(this.ctx.homeFolder && look.summary.projectPath === this.ctx.homeFolder)) return { text: CANT_TEXT, isError: true };
+        if (look && !homeChat && (!look.state?.canText || look.summary.archived)) return { text: CANT_TEXT, isError: true };
         const phone = this.ctx.homeLine?.phone;
         if (!phone) return { text: "Texting is off in Tether, so nothing was sent. Say it in your reply instead.", isError: true };
         const r = await phone.text(from, str(a.message), image ? { image } : {});
