@@ -132,8 +132,8 @@ export interface SessionActions {
   setWorktree?(id: string, worktree: WorktreeRecord): Promise<void>;
   /** the worktree a session works in, if Tether recorded one */
   worktree?(id: string): WorktreeRecord | undefined;
-  /** every session (of any age, not moved on) recorded as working in the worktree at `path`, archived ones marked */
-  worktreeUsers?(path: string): { id: string; worktree: WorktreeRecord; archived?: boolean }[];
+  /** every session (of any age, not moved on to another id) recorded as working in the worktree at `path` (any worktree without it), archived ones marked */
+  worktreeUsers?(path?: string): { id: string; worktree: WorktreeRecord; archived?: boolean }[];
   /**
    * Runs a new worktree's setup in the session's folder as a card (core/shellRuns.ts): until it
    * ends, sends wait held; a failure keeps them held. Answers once it has started.

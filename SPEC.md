@@ -162,9 +162,13 @@ runs whatever the base has) before the main checkout's, runs in
   path, branch, and the sessions working in each (not archived: listed ones whose folder is in it,
   and any of any age whose runner.json `worktree` names it). The picker shows path · branch · used
   by N. `existingWorktreeSession {…, worktree}` (a path or branch) runs `newSession` there: nothing
-  made, no setup rerun. It records `worktree` with `joined`, as another session's record has it
-  (branch, repo), else `handMade` (a person's `git worktree add`: never removed by Tether). Agents:
-  `start_session` and `tether_start` take `worktree: "<path or branch>"` too.
+  made, no setup rerun. It records `worktree` with `joined`, as a live (not archived) user's record
+  on the worktree's current branch has it, else `handMade` (a person's `git worktree add`, or a
+  record that can't be trusted: never removed by Tether). Joining and Archive done's removal of one
+  worktree share a lock; a join re-checks the worktree is there inside it. A session's successor on
+  another id (source change, renewal) keeps the record (the old id stops counting); a Move's new
+  session and a fork (not a side chat) get one too. Agents: `start_session` and `tether_start` take
+  `worktree: "<path or branch>"` too (a path, else a branch, else a folder name only one has).
 - **Session:** `harness` + `nativeId` (the harness's own id) + `projectPath`. Tether's id is
   `${harness}:${nativeId}`. A session is in exactly one **mode** at a time:
 
@@ -1627,7 +1631,8 @@ in the report, never interrupted. At most 40 sessions are asked at a time; each 
 The message asks for one line, `TETHER-CHECK-IN: {"done", "merged", "cleaned_up", "branch",
 "worktree", "note"}`. A session that is done and merged first removes the worktrees it made (`git
 worktree remove` without `--force`, `git branch -d`), never the main checkout, its own folder, or
-any other recent session's folder in the same repo (the message lists those). Tether checks the
+any other recent session's folder in the same repo, nor any worktree a session of any age is
+recorded in (the message lists those). Tether checks the
 answer against git: a named branch, or the session's own separate worktree, must be clean and in
 main (by ancestry or as equal patches, after one `git fetch origin` per repo), and no worktree it
 used may be left. The main checkout's uncommitted changes count as applied. Only a session that is
@@ -1644,8 +1649,8 @@ main, so it can't have moved in between; a branch with work not in main stays. A
 already gone (moved or deleted) is said so, and git's record pruned. One git won't remove keeps the
 session, with why; one another session works in (listed with its folder there, or recorded as using
 it: Existing worktree) stays, and the session is archived: the last one's check-in removes it.
-Sessions of one worktree are judged one at a time, so two sharing it can't each leave it to the
-other. A `handMade` one is never removed.
+Sessions of one worktree are judged one at a time (and never while one joins it), so two sharing
+it can't each leave it to the other. A `handMade` one is never removed.
 
 The answer isn't one of a started session's reports. When all have answered, or after 10 minutes,
 the chat gets one report of what was archived, what wasn't and why, and what wasn't asked. A

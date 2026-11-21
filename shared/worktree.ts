@@ -82,7 +82,8 @@ export function worktreeLabel(w: WorktreeEntry): string {
 
 /**
  * The worktree `wanted` names: its path (`expand` makes a typed path absolute: ~, trailing
- * slashes), else its branch (refs/heads/ optional), else its folder's name. Undefined: none.
+ * slashes), else its branch (refs/heads/ optional), else its folder's name when only one has it.
+ * Undefined: none, or a folder name several share (which one isn't said).
  */
 export function pickWorktree<T extends { path: string; branch?: string }>(list: T[], wanted: string, expand: (p: string) => string = (p) => p): T | undefined {
   const w = wanted.trim();
@@ -90,7 +91,18 @@ export function pickWorktree<T extends { path: string; branch?: string }>(list: 
   const trim = (p: string) => p.replace(/\/+$/, "") || "/";
   const path = trim(expand(w));
   const branch = w.replace(/^refs\/heads\//, "");
-  return list.find((e) => trim(e.path) === path) ?? list.find((e) => e.branch === branch) ?? list.find((e) => trim(e.path).split("/").pop() === w);
+  const exact = list.find((e) => trim(e.path) === path) ?? list.find((e) => e.branch === branch);
+  if (exact) return exact;
+  const named = list.filter((e) => trim(e.path).split("/").pop() === w);
+  return named.length === 1 ? named[0] : undefined;
+}
+
+/** An agent's `worktree` argument: true (a new one), or an existing one's path or branch. A "true" some models send as text is true, a "false" nothing. */
+export function worktreeArg(v: unknown): boolean | string | undefined {
+  if (v === true) return true;
+  const t = typeof v === "string" ? v.trim() : "";
+  if (t === "true") return true;
+  return t && t !== "false" ? t : undefined;
 }
 
 /** A new worktree's setup may run this long; then it's stopped, as failed. */

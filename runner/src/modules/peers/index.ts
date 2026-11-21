@@ -17,6 +17,7 @@ import { runnerSettings } from "../../core/runnerSettings";
 import { sessionInstructions } from "./instructions";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
 import { LEVELS, type Level } from "../../../../shared/move";
+import { worktreeArg } from "../../../../shared/worktree";
 import { LEVEL_WORDS, levelOf } from "../../core/permissionLevel";
 import type { Module, ModuleContext, SessionLook } from "..";
 import { BROADCAST_MAX, PeerCaps } from "./caps";
@@ -465,11 +466,3 @@ export const peersModule: Module = {
     };
   },
 };
-
-/** tether_start's `worktree`: true (a new one), or an existing one's path or branch. A "true" some models send as text is true. */
-export function worktreeArg(v: unknown): boolean | string | undefined {
-  if (v === true) return true;
-  const t = typeof v === "string" ? v.trim() : "";
-  if (t === "true") return true;
-  return t && t !== "false" ? t : undefined;
-}

@@ -9,7 +9,8 @@ import type { HarnessId, Msg, SessionSummary } from "../../../../shared/transcri
 import { claudeMove } from "../../adapters/claude/move";
 import { codexMove } from "../../adapters/codex/move";
 import { CHILDREN_MAX, DEPTH_MAX, MAX_REPORTS } from "./children";
-import { Peers, worktreeArg } from "./index";
+import { Peers } from "./index";
+import { worktreeArg } from "../../../../shared/worktree";
 
 const agyMove = {
   modes: [

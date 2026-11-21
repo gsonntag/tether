@@ -92,6 +92,9 @@ export class Forker {
         throw e;
       }
     }
+    // A fork works in the same folder: in a worktree (SPEC §4) it's one more of its users, so cleanup waits for it too. Not a side chat: read-only, and closed (archived) when done with.
+    const rec = this.ctx.sessions.worktree?.(id);
+    if (rec && !o.sideOf) await this.ctx.sessions.setWorktree?.(forked, { path: rec.path, branch: rec.branch, repo: rec.repo, joined: true, ...(rec.handMade ? { handMade: true } : {}) }).catch((e) => this.ctx.log(`the fork ${forked} isn't recorded in its worktree: ${e?.message ?? e}`));
     this.ctx.log(`forked ${id}${upTo ? ` through ${upTo}` : ""} as ${forked}`);
     return forked;
   }

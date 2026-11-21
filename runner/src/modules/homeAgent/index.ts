@@ -61,6 +61,8 @@ import type { Module, ModuleContext } from "..";
 import { heicNote, HOME_SENDER, homeLabel, MAX_EXTRA_HOMES, PERSON_TEXT_MAX, type Home, type HomeEnd, type HomeTarget, type TakeVia } from "../homeLine";
 import { failureKind } from "../push";
 import { levelOf } from "../move";
+import { lockWorktree } from "../worktrees/git";
+import { worktreeArg } from "../../../../shared/worktree";
 import { CHECKIN_MAX, CHECKIN_WAIT_MS, checkInMessage, judge, parseAnswer, removeOwnWorktree, repoOf, runGit, skipReason, stillRunning, systemProbe, verify, type Git, type Probe } from "./checkIn";
 import type { CheckInRow, CheckInStatus } from "../../../../shared/protocol";
 import { liveDeps, liveState, type LiveDeps } from "./liveState";
@@ -1127,8 +1129,10 @@ export class HomeAgent implements HomeEnd {
           if (resolve(folder) === resolve(this.folder)) throw new Error("That's your own folder, not a project.");
           const source = (await s.sources(harness)).default ?? "subscription";
           const mode = harness === "claude" ? await this.modeFor(harness, SESSION_MODE.claude) : SESSION_MODE[harness];
-          const existing = typeof a.worktree === "string" ? a.worktree.trim() : "";
-          const made = a.worktree === true ? await this.ctx.ops.call("newWorktreeSession", { harness, projectPath: folder, source, permissionMode: mode, ...(a.model ? { model: a.model } : {}), name: a.title || a.prompt }) : undefined;
+          // A "true" sent as text is a new one, "false" none: neither is a branch.
+          const wt = worktreeArg(a.worktree);
+          const existing = typeof wt === "string" ? wt : "";
+          const made = wt === true ? await this.ctx.ops.call("newWorktreeSession", { harness, projectPath: folder, source, permissionMode: mode, ...(a.model ? { model: a.model } : {}), name: a.title || a.prompt }) : undefined;
           const joined = existing ? await this.ctx.ops.call("existingWorktreeSession", { harness, projectPath: folder, worktree: existing, source, permissionMode: mode, ...(a.model ? { model: a.model } : {}) }) : undefined;
           const id = made?.sessionId ?? joined?.sessionId ?? (await s.create({ harness, projectPath: folder, source, permissionMode: mode, ...(a.model ? { model: a.model } : {}) }));
           this.state.children[id] = { chat, reports: 0 };
@@ -1555,8 +1559,9 @@ export class HomeAgent implements HomeEnd {
         e.reason = why;
       } else asked.push(r.id);
     }
-    // Every recent session's folder, by repo: a session asked to clean up must leave the others' alone.
-    const folders = [...new Set(all.map((r) => resolve(r.projectPath)))];
+    // Every recent session's folder, and every worktree a session (of any age, not archived) is recorded in, by repo: a session asked to clean up must leave the others' alone.
+    const recorded = (s.worktreeUsers?.() ?? []).filter((u) => !u.archived).map((u) => u.worktree.path);
+    const folders = [...new Set([...all.map((r) => r.projectPath), ...recorded].map((f) => resolve(f)))];
     const repos = new Map(await Promise.all(folders.map(async (f) => [f, await repoOf(f, this.git)] as const)));
     for (const sid of asked) {
       const own = resolve(entries[sid]!.project);
@@ -1635,8 +1640,8 @@ export class HomeAgent implements HomeEnd {
       }
     };
     if (!own || own.handMade || resolve(own.path) !== resolve(e.project)) return archive();
-    // Removing and archiving, one session of a worktree at a time: two sharing it, judged side by side, would each see the other still there and both leave it.
-    return this.byWorktree(resolve(own.path), async () => {
+    // Removing and archiving, one session of a worktree at a time, and never while one joins it: two sharing it, judged side by side, would each see the other still there and both leave it; one joining meanwhile would lose its folder.
+    return lockWorktree(own.path, async () => {
       // Every other session in it: those listed whose folder is in it, and any recorded as its users (however old).
       const users = this.ctx.sessions.worktreeUsers?.(own.path) ?? [];
       const others = [...this.ctx.sessions.list().filter((r) => r.id !== id && !r.archived).map((r) => r.projectPath), ...users.filter((u) => u.id !== id && !u.archived).map((u) => u.worktree.path)];
@@ -1650,18 +1655,6 @@ export class HomeAgent implements HomeEnd {
     });
   }
 
-  /** check-ins removing a worktree, by its path: one at a time */
-  private worktreeLocks = new Map<string, Promise<unknown>>();
-  private async byWorktree<T>(path: string, f: () => Promise<T>): Promise<T> {
-    const run = (this.worktreeLocks.get(path) ?? Promise.resolve()).catch(() => {}).then(f);
-    const tail = run.catch(() => {});
-    this.worktreeLocks.set(path, tail);
-    try {
-      return await run;
-    } finally {
-      if (this.worktreeLocks.get(path) === tail) this.worktreeLocks.delete(path);
-    }
-  }
 
 
   /** Reports a check-in to its chat and forgets it; those that haven't answered are reported so. */

@@ -71,6 +71,8 @@ export function NewSessionDialog() {
   const [resume, setResume] = useState<ActiveClone>();
   /** whether the folder is in git, and what New worktree would make there (SPEC §4); nothing: not offered */
   const [ws, setWs] = useState<WorkspaceInfo>();
+  /** the folder workspaceInfo last answered (or failed) for: until it's the one typed, a worktree choice can't be acted on */
+  const [wsFor, setWsFor] = useState<string>();
   const [workspace, setWorkspace] = useState<Workspace>("folder");
   const [branch, setBranch] = useState("");
   /** the repo's other worktrees, for Existing worktree (a runner that takes listWorktrees); nothing: not asked yet */
@@ -137,11 +139,16 @@ export function NewSessionDialog() {
   const existing = check?.state === "exists" ? check.path : undefined;
   useEffect(() => {
     setWs(undefined);
+    setWsFor(undefined);
     if (!open || !rid || !existing) return;
     let gone = false;
     void rpc(rid, "workspaceInfo", { projectPath: existing })
-      .then((w) => !gone && setWs(w))
-      .catch(() => {});
+      .then((w) => {
+        if (gone) return;
+        setWs(w);
+        setWsFor(existing);
+      })
+      .catch(() => !gone && setWsFor(existing));
     return () => void (gone = true);
   }, [open, rid, existing]);
   // Existing worktree: only where the runner can list and join them.
@@ -150,6 +157,8 @@ export function NewSessionDialog() {
   // A runner switched to one without it: back to This folder.
   const shownWs = workspaces.includes(workspace) ? workspace : "folder";
   const inExisting = shownWs === "existing" && !!ws?.git;
+  // A worktree choice on a folder not looked at yet: Create would otherwise start in the folder itself.
+  const wsPending = shownWs !== "folder" && (!check || (check.state === "exists" && wsFor !== check.path));
   useEffect(() => {
     setTrees(undefined);
     setTree(undefined);
@@ -184,7 +193,9 @@ export function NewSessionDialog() {
     setError(undefined);
     try {
       // Enter before the check came back: wait for it, so a missing folder still asks first.
-      if (folderBlocked(check ?? (await checkPath(checkId.current)), createFolder)) return;
+      const checked = check ?? (await checkPath(checkId.current));
+      if (folderBlocked(checked, createFolder)) return;
+      if (shownWs !== "folder" && checked?.state === "exists" && wsFor !== checked.path) return setError("Still looking at this folder. Try again in a moment.");
       // Enter before the sources came back: what's shown first is what starts.
       const billTo = source ?? (await sourcesAsked.current)?.default;
       const common = { harness, projectPath: typed, ...(billTo ? { source: billTo } : {}), ...(deployments ? { model: deployment } : modelOk && model !== "default" ? { model } : {}), permissionMode: validMode, ...(terminal ? { terminal: true } : {}) };
@@ -327,7 +338,7 @@ export function NewSessionDialog() {
                   </div>
                   <span className="t-ws-note">
                     The session works in that folder as it is: nothing is made and no setup runs.
-                    {pickedTree && !pickedTree.tether ? " Tether didn't make this one, so it never removes it." : " Once its work is merged, Tether removes it after the last session there is done."}
+                    {pickedTree && (pickedTree.tether ? " Tether made this one: once its work is merged, it's removed after the last session there is done." : " Tether can't tell it made this one, so it never removes it.")}
                   </span>
                 </>
               ))}
@@ -420,7 +431,7 @@ export function NewSessionDialog() {
         {error && <div className="t-form-error" style={{ whiteSpace: "pre-wrap" }}>{error}</div>}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <Button label="Cancel" variant="secondary" onClick={close} />
-          <Button label={busy ? "Starting…" : "Create"} variant="primary" isDisabled={!rid || !typed || busy || folderBlocked(check, createFolder) || (inExisting && !pickedTree)} onClick={() => void create()} />
+          <Button label={busy ? "Starting…" : "Create"} variant="primary" isDisabled={!rid || !typed || busy || folderBlocked(check, createFolder) || wsPending || (inExisting && !pickedTree)} onClick={() => void create()} />
         </div>
       </div>
     </Dialog>

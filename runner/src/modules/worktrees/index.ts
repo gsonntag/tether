@@ -14,7 +14,8 @@
 // files there once it was set up) is what makes the worktree the session's own: the summary carries
 // the main checkout as `worktreeOf`, and the Home agent's check-in (Archive done) removes it, and its
 // branch, once the session is done and merged and no other session uses it (one with a record there,
-// or whose folder is in it). One made by hand is recorded too (`handMade`), but never removed. The
+// or whose folder is in it). One made by hand is recorded too (`handMade`), but never removed; so is
+// one whose only records are archived or name another branch (it may have been made again by hand). The
 // setup (`.tether/setup`, or `.tether/config.json`'s "setup") runs in the new worktree as a card in
 // the session; until it succeeds what you send waits, held (core/queue.ts setupStarted/setupEnded).
 // It gets TETHER_WORKTREE, TETHER_REPO (the main checkout, to copy a .env from, say) and
@@ -27,7 +28,7 @@ import { resolve } from "node:path";
 import type { WorkspaceInfo, WorktreeJoined, WorktreeList, WorktreeMade } from "../../../../shared/worktree";
 import { pickWorktree, SETUP_MAX_MS } from "../../../../shared/worktree";
 import type { WorktreeRecord } from "../../config";
-import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, gitWorktrees, ignoredFiles, lastFetched, repoOf, runGit, setupAt, shaOf, undoAdd, worktreePath, type Git, type IgnoredFiles, type Setup, sameStamp } from "./git";
+import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, gitWorktrees, ignoredFiles, lockWorktree, lastFetched, repoOf, runGit, setupAt, shaOf, undoAdd, worktreePath, type Git, type IgnoredFiles, type Setup, sameStamp } from "./git";
 
 /** At most this many ignored files are remembered as there after setup (more: the rest count as new). */
 const KNOWN_MAX = 5000;
@@ -201,17 +202,27 @@ export class Worktrees {
     return {
       repo: repo.main,
       worktrees: trees.map((w) => {
-        const made = (this.o.sessions.worktreeUsers?.(w.path) ?? []).some((u) => !u.worktree.handMade);
-        return { path: w.path, ...(w.branch ? { branch: w.branch } : {}), sessions: this.users(w.path), ...(made ? { tether: true } : {}) };
+        const made = this.trusted(w.path, w.branch);
+        return { path: w.path, ...(w.branch ? { branch: w.branch } : {}), sessions: this.users(w.path), ...(made && !made.handMade ? { tether: true } : {}) };
       }),
     };
   }
 
   /**
+   * The record to go by for the worktree at `path`, now on `branch`: a user's still at work there
+   * (not archived) on that same branch, one Tether made first. An archived user's, or one on another
+   * branch, may be about a worktree long removed and made again by hand at that path: not trusted.
+   */
+  private trusted(path: string, branch: string | undefined): WorktreeRecord | undefined {
+    const live = (this.o.sessions.worktreeUsers?.(path) ?? []).filter((u) => !u.archived && !!branch && u.worktree.branch === branch);
+    return (live.find((u) => !u.worktree.handMade) ?? live[0])?.worktree;
+  }
+
+  /**
    * Starts a session in an existing worktree of the folder's repo (its path or branch), and records
-   * it as one of the worktree's users: as Tether's record of it says (branch, and whether Tether made
-   * it) when another session has one, else as one made by hand (never removed by Tether). Nothing is
-   * made and the setup doesn't run again.
+   * it as one of the worktree's users: as a trusted record of it says (whether Tether made it), else
+   * as one made by hand (never removed by Tether). Nothing is made and the setup doesn't run again.
+   * Under the worktree's lock, which Archive done's removal takes too: it can't go meanwhile.
    */
   async join(args: OpArgs<"existingWorktreeSession">): Promise<WorktreeJoined> {
     const { worktree: wanted, ...rest } = args;
@@ -228,18 +239,20 @@ export class Worktrees {
         return resolve(p.replace(/^~(?=\/|$)/, process.env.HOME ?? "~"));
       }
     };
-    const w = pickWorktree((await gitWorktrees(repo.main, this.git)).filter((x) => !x.bare), typed, expand);
-    if (!w) throw new Error(`${typed} isn't one of ${repo.main}'s worktrees (git worktree list names them).`);
-    if (w.path === repo.main) throw new Error(`${w.path} is the repo's main checkout, not a worktree: start in This folder.`);
-    if (w.prunable || !existsSync(w.path)) throw new Error(`${w.path}'s folder is gone (git worktree prune would drop it).`);
-    const { sessionId } = await this.o.newSession({ ...rest, projectPath: w.path });
-    // Another session's record says what Tether knows of it: one Tether made first.
-    const users = this.o.sessions.worktreeUsers?.(w.path) ?? [];
-    const from = (users.find((u) => !u.worktree.handMade) ?? users[0])?.worktree;
-    const rec: WorktreeRecord = from ? { path: w.path, branch: from.branch, repo: from.repo, joined: true, ...(from.handMade ? { handMade: true } : {}) } : { path: w.path, branch: w.branch ?? "", repo: repo.main, joined: true, handMade: true };
-    await this.o.sessions.setWorktree?.(sessionId, rec);
-    this.o.log?.(`${sessionId}: joined worktree ${w.path}${w.branch ? ` on ${w.branch}` : ""}${rec.handMade ? " (made by hand: never removed by Tether)" : ""}`);
-    return { sessionId, path: w.path, ...(w.branch ? { branch: w.branch } : {}), ...(rec.handMade ? {} : { tether: true }) };
+    const found = pickWorktree((await gitWorktrees(repo.main, this.git)).filter((x) => !x.bare), typed, expand);
+    if (!found) throw new Error(`${typed} isn't one of ${repo.main}'s worktrees (git worktree list names them; a folder name several share doesn't say which).`);
+    if (found.path === repo.main) throw new Error(`${found.path} is the repo's main checkout, not a worktree: start in This folder.`);
+    return lockWorktree(found.path, async () => {
+      // As git has it now: a removal may have finished while this waited.
+      const w = (await gitWorktrees(repo.main, this.git)).find((x) => x.path === found.path);
+      if (!w || w.prunable || !existsSync(w.path)) throw new Error(`${found.path} isn't there any more${w ? " (its folder is gone)" : ""}.`);
+      const { sessionId } = await this.o.newSession({ ...rest, projectPath: w.path });
+      const from = this.trusted(w.path, w.branch);
+      const rec: WorktreeRecord = from ? { path: w.path, branch: from.branch, repo: from.repo, joined: true, ...(from.handMade ? { handMade: true } : {}) } : { path: w.path, branch: w.branch ?? "", repo: repo.main, joined: true, handMade: true };
+      await this.o.sessions.setWorktree?.(sessionId, rec);
+      this.o.log?.(`${sessionId}: joined worktree ${w.path}${w.branch ? ` on ${w.branch}` : ""}${rec.handMade ? " (not one Tether is sure it made: never removed by Tether)" : ""}`);
+      return { sessionId, path: w.path, ...(w.branch ? { branch: w.branch } : {}), ...(rec.handMade ? {} : { tether: true }) };
+    });
   }
 
   /** Re-run setup, after it failed (or a restart cut it off). */

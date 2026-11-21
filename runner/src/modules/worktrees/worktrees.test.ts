@@ -11,7 +11,7 @@ import { saveConfig } from "../../config";
 import { FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
 import { Worktrees } from ".";
-import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredFiles, precious, IGNORED_MAX, removeWorktree, repoOf, runGit, setupAt, taken, undoAdd, worktreesDir, type Git } from "./git";
+import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredFiles, lockWorktree, precious, IGNORED_MAX, removeWorktree, repoOf, runGit, setupAt, taken, undoAdd, worktreesDir, type Git } from "./git";
 import { removeOwnWorktree } from "../homeAgent/checkIn";
 
 const cleanups: (() => void)[] = [];
@@ -777,6 +777,54 @@ describe("New worktree", () => {
 });
 
 describe("Existing worktree", () => {
+  test("a session going on under another id (a source change, a renewal) takes its worktree record along; the old id stops counting", async () => {
+    const t = runnerFor();
+    const r = repo();
+    const made = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/moving" });
+    const old = await t.runner.core.open(made.sessionId);
+    expect(t.runner.live.keptPrefs(old).worktree).toEqual(t.runner.look.sessions.worktree!(made.sessionId));
+    // As replaceWith and renew leave it: the old id moved on, the successor with what it kept.
+    const next = await t.runner.look.sessions.create({ harness: "claude", projectPath: made.path, source: "subscription" });
+    t.runner.core.o.prefs.set(next, { ...t.runner.live.keptPrefs(old) });
+    t.runner.core.o.prefs.set(made.sessionId, { movedTo: next });
+    expect(t.runner.look.sessions.worktreeUsers!(made.path).map((u) => u.id)).toEqual([next]);
+    // The worktree is still Tether's: one joining now is recorded as such.
+    const joined = await t.w.join({ harness: "claude", projectPath: r.dir, worktree: "tether/moving" });
+    expect(joined.tether).toBe(true);
+  });
+
+  test("only a live user's record on the worktree's current branch is trusted: an archived one's, or one on another branch, means made by hand", async () => {
+    const t = runnerFor();
+    const r = repo();
+    const made = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/old" });
+    await t.runner.look.sessions.setArchived(made.sessionId, true);
+    const a = await t.w.join({ harness: "claude", projectPath: r.dir, worktree: "tether/old" });
+    expect(a.tether).toBeUndefined();
+    expect(t.runner.look.sessions.worktree!(a.sessionId)).toMatchObject({ handMade: true });
+    const other = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/two" });
+    sh(other.path, "switch", "-qc", "elsewhere");
+    expect((await t.w.join({ harness: "claude", projectPath: r.dir, worktree: "elsewhere" })).tether).toBeUndefined();
+    expect((await t.w.list(r.dir)).worktrees.find((w) => w.path === other.path)!.tether).toBeUndefined();
+  });
+
+  test("joining waits for a removal under way on that worktree, then finds it gone", async () => {
+    const t = runnerFor();
+    const r = repo();
+    const made = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/going" });
+    let release!: () => void;
+    const held = lockWorktree(made.path, async () => {
+      await new Promise<void>((done) => (release = done));
+      sh(r.dir, "worktree", "remove", "--force", made.path);
+    });
+    const joining = t.w.join({ harness: "claude", projectPath: r.dir, worktree: "tether/going" });
+    await Bun.sleep(50);
+    const n = t.adapter.drivers.length;
+    release();
+    await held;
+    await expect(joining).rejects.toThrow("isn't there any more");
+    expect(t.adapter.drivers.length).toBe(n);
+  });
+
   test("pickWorktree: by path (typed loosely), else branch, else folder name", () => {
     const list = [{ path: "/r/app-worktrees/fix", branch: "tether/fix" }, { path: "/r/hand", branch: "gavin/hand" }, { path: "/r/detached" }];
     expect(pickWorktree(list, "/r/hand/")?.path).toBe("/r/hand");
@@ -786,6 +834,11 @@ describe("Existing worktree", () => {
     expect(pickWorktree(list, "detached")?.path).toBe("/r/detached");
     expect(pickWorktree(list, "nope")).toBeUndefined();
     expect(pickWorktree(list, " ")).toBeUndefined();
+    // A folder name two share says neither; a path or branch always wins over one.
+    const two = [...list, { path: "/s/hand", branch: "other" }, { path: "/r/x", branch: "hand" }];
+    expect(pickWorktree(two.slice(0, 4), "hand")).toBeUndefined();
+    expect(pickWorktree(two, "hand")?.path).toBe("/r/x");
+
   });
 
   test("lists the repo's worktrees (not the main checkout) with who works in each; joining runs no setup and records the session as a user", async () => {

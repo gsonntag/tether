@@ -218,6 +218,25 @@ export async function worktreeOn(main: string, path: string, git: Git = runGit):
   return undefined;
 }
 
+/** Work on one worktree (joining it, removing it), by its path: one at a time, runner-wide. */
+const worktreeLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * `f` once earlier work on the worktree at `path` is done. Joining and Archive done's removal share
+ * it: a session can't join one while it's being removed, and a removal sees a join that came first.
+ */
+export async function lockWorktree<T>(path: string, f: () => Promise<T>): Promise<T> {
+  const key = resolve(path);
+  const run = (worktreeLocks.get(key) ?? Promise.resolve()).catch(() => {}).then(f);
+  const tail = run.catch(() => {});
+  worktreeLocks.set(key, tail);
+  try {
+    return await run;
+  } finally {
+    if (worktreeLocks.get(key) === tail) worktreeLocks.delete(key);
+  }
+}
+
 /** One entry of `git worktree list --porcelain`. */
 export interface GitWorktree {
   path: string;

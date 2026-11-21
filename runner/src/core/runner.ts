@@ -326,9 +326,10 @@ export function createRunner(o: RunnerOptions) {
         setArchived: async (id: string, archived: boolean) => core.setArchived(await core.open(id), archived),
         setWorktree: async (id: string, worktree: WorktreeRecord) => core.setWorktree(await core.open(id), worktree),
         worktree: (id: string) => prefs.get(id).worktree,
-        worktreeUsers: (path: string) =>
+        // A session that went on under another id (a source change, a renewal) isn't one: its successor has the record.
+        worktreeUsers: (path?: string) =>
           prefs
-            .ids((p) => !p.carried && !!p.worktree && resolve(p.worktree.path) === resolve(path))
+            .ids((p) => !p.carried && !p.movedTo && !!p.worktree && (path === undefined || resolve(p.worktree.path) === resolve(path)))
             .map((id) => ({ id, worktree: prefs.get(id).worktree!, ...(prefs.get(id).archived ? { archived: true } : {}) })),
         setup: async (id: string, command: string, { beforeRelease, ...run }: Omit<SetupRun, "done"> & { beforeRelease?: () => void | Promise<void> } = {}) => {
           const s = await core.open(id);
