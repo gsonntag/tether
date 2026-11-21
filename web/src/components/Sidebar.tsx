@@ -15,7 +15,7 @@ import { RunnerDot } from "./RunnerStatus";
 import { SessionRow, StatusDot } from "./SessionRow";
 import { useChildren } from "./useChildren";
 import { SubagentsPopover } from "./SubagentChips";
-import { childrenOpen, childrenToggle, fewChildren, loadChildrenOpen, saveChildrenOpen } from "../subagents";
+import { childrenOpen, childrenToggle, fewChildren, loadChildrenOpen, moreLabel, saveChildrenOpen } from "../subagents";
 import { useNow } from "./useNow";
 
 /** Subagent rows shown under a session before "N more". */
@@ -107,12 +107,14 @@ export function Sidebar() {
   // rest behind "N more", which opens the whole list.
   const childRows = () => {
     if (!children.length) return null;
-    const { label, running } = childrenToggle(children);
+    const { label, running, said } = childrenToggle(children);
     const toggle = (
       <button
         type="button"
         className="t-child-toggle"
         aria-expanded={sectionOpen}
+        aria-label={said}
+        title={said}
         onClick={() => {
           const open = !sectionOpen;
           saveChildrenOpen(open);
@@ -122,7 +124,12 @@ export function Sidebar() {
       >
         <span className="t-child-chev" aria-hidden="true">{sectionOpen ? "▾" : "▸"}</span>
         <span className="t-child-label">{label}</span>
-        {running > 0 && <StatusDot status="running" />}
+        {running > 0 && (
+          <span className="t-child-running" aria-hidden="true">
+            <StatusDot status="running" />
+            {running}
+          </span>
+        )}
       </button>
     );
     if (!sectionOpen) return toggle;
@@ -131,14 +138,14 @@ export function Sidebar() {
       <>
         {toggle}
         {few.map(childRow)}
-        {rest > 0 && expanded && (
+        {rest.length > 0 && expanded && (
           <SubagentsPopover
             runnerId={expanded.runnerId}
             children={children}
             onPick={() => useStore.setState({ sidebarOpen: false })}
             trigger={
               <button type="button" className="t-more t-child-more">
-                {rest} more subagent{rest === 1 ? "" : "s"}
+                {moreLabel(rest)}
               </button>
             }
           />

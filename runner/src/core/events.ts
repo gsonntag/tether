@@ -19,6 +19,8 @@ export interface CoreEvents {
   /** `source`: who decided ("person", or a policy step's source such as "judge" or "rule") */
   requestClosed: { sessionId: string; requestId: string; outcome: RequestOutcome; source?: string; reason?: string };
   modeChanged: { sessionId: string; from: SessionMode; to: SessionMode };
+  /** a session went on under a new id (a Move, a source change's new thread, a renewed id): what follows it moves to `to` */
+  continued: { from: string; to: string };
   /**
    * The harness waits on the person outside Tether's requests (in terminal mode, Claude's TUI
    * asks for permission or a choice, SPEC §8): "needs you", for notifications and Home.

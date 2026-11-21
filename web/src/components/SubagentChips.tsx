@@ -4,7 +4,7 @@ import { Popover } from "@astryxdesign/core/Popover";
 import { HARNESS_LABELS } from "../../../shared/transcript";
 import { openSession } from "../route";
 import type { Row } from "../sessionList";
-import { byChildOrder } from "../subagents";
+import { byChildOrder, kindCount } from "../subagents";
 import { StatusDot } from "./SessionRow";
 import "./SubagentChips.css";
 
@@ -29,11 +29,13 @@ export function SubagentsPopover({ runnerId, children, trigger, onPick }: { runn
   const [query, setQuery] = useState("");
   const sorted = useMemo(() => bySubagentOrder(children), [children]);
   const q = query.trim().toLowerCase();
+  const started = children.some((c) => c.spawned);
   const shown = q ? sorted.filter((c) => `${label(c)} ${childKind(c) ?? ""}`.toLowerCase().includes(q)) : sorted;
   const list = (
     <div className="t-sub-pop">
+      <div className="t-sub-head">{kindCount(children)}</div>
       {children.length > SEARCH_FROM && (
-        <input className="t-search t-sub-search" type="search" placeholder="Search subagents" aria-label="Search subagents" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <input className="t-search t-sub-search" type="search" placeholder={started ? "Search" : "Search subagents"} aria-label={started ? "Search subagents and started sessions" : "Search subagents"} value={query} onChange={(e) => setQuery(e.target.value)} />
       )}
       <div className="t-sub-list" role="list">
         {shown.map((c) => (
@@ -56,12 +58,12 @@ export function SubagentsPopover({ runnerId, children, trigger, onPick }: { runn
             {childKind(c) && <span className="t-sub-item-type">{childKind(c)}</span>}
           </button>
         ))}
-        {!shown.length && <div className="t-sub-empty">No subagent matches.</div>}
+        {!shown.length && <div className="t-sub-empty">Nothing matches.</div>}
       </div>
     </div>
   );
   return (
-    <Popover content={list} isOpen={open} onOpenChange={(o) => (setOpen(o), o || setQuery(""))} width={380} padding={0} label="Subagents" placement="below" alignment="start">
+    <Popover content={list} isOpen={open} onOpenChange={(o) => (setOpen(o), o || setQuery(""))} width={380} padding={0} label={kindCount(children)} placement="below" alignment="start">
       {trigger}
     </Popover>
   );

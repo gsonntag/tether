@@ -478,8 +478,8 @@ You can open any subagent and see its exact turns (every message, thought, tool 
 order), live while it runs and afterwards. The parent's tool card links to it, and the session shows
 its subagents as children in the sidebar and in the session header.
 
-**In the sidebar**: under the open session's row, one toggle row "▸ N subagents" (a dot and "· k
-running" if any run), closed by default. Open, it shows a few rows (running first, the open one
+**In the sidebar**: under the open session's row, one toggle row "▸ 2 subagents · 3 started" (each
+kind counted; a dot and "· k running" if any run), closed by default. Open, it shows a few rows (running first, the open one
 always) and "N more" for the rest (a searchable list). Open or closed is kept per device
 (`tether.subagentsOpen`); when the open session is one of the rows, the section shows open so its
 row is in view, until toggled.
@@ -487,8 +487,13 @@ row is in view, until toggled.
 **Sessions an agent started** (`tether_start`, §9a) count as its children too, beside its
 subagents, but they're ordinary sessions: no `parentSessionId`, in the lists as well, full header
 controls. The peers module's read-only op `spawnedFamily {sessionId} → {parent?: {id, title},
-children}` (from `children.json`; released children too, never archived ones; runners say
-`RunnerInfo.spawnedFamily`) is fetched for the open session only. Their rows read "<harness glyph>
+children}` (from `children.json`; released children too, never archived ones or ones in a hidden
+folder; one that went on under a new id is its successor; at most 8 opened at once; runners say
+`RunnerInfo.spawnedFamily`) is asked for the open session only, one answer shared by the sidebar
+and header, again when the session's or its family's status or archived mark changes or a main
+session appears. A Move or source change (the core's `continued` event) re-keys who started whom,
+as child and as starter, so reports and the links follow the new id. A side chat's starts are its
+session's. Their rows read "<harness glyph>
 started by agent". The header: "← Started by “<title>”" on one, and a **Started** chip on its
 starter listing them (harness, status).
 

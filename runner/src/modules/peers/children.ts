@@ -20,6 +20,22 @@ import type { PeerAnswer } from "./server";
 
 /** The newest children spawnedFamily lists (each older one not in memory is opened to read its summary). */
 export const FAMILY_MAX = 100;
+/** How many of them it opens at once. */
+export const FAMILY_OPENS = 8;
+
+/** `f` over `items`, at most `n` at once, results in order. */
+async function pooled<T, R>(items: T[], n: number, f: (t: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const work = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await f(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, work));
+  return out;
+}
 /** Turns a child reports before the starter stops hearing from it: a loop can't run forever. */
 export const MAX_REPORTS = 20;
 /** Children a session follows at once. */
@@ -58,7 +74,7 @@ export interface StartArgs {
   worktree?: boolean;
 }
 
-type Ctx = Pick<ModuleContext, "sessions" | "session" | "log" | "homeFolder"> & { ops?: Pick<ModuleContext["ops"], "call">; dataDir?: string };
+type Ctx = Pick<ModuleContext, "sessions" | "session" | "log" | "homeFolder" | "hiddenFolder"> & { ops?: Pick<ModuleContext["ops"], "call">; dataDir?: string };
 
 export class Children {
   private kids: Record<string, Child> = {};
@@ -70,7 +86,11 @@ export class Children {
     if (ctx.dataDir) {
       this.file = join(ctx.dataDir, "children.json");
       try {
-        if (existsSync(this.file)) this.kids = JSON.parse(readFileSync(this.file, "utf8"));
+        if (existsSync(this.file)) {
+          const v = JSON.parse(readFileSync(this.file, "utf8"));
+          if (v && typeof v === "object" && !Array.isArray(v)) this.kids = v;
+          else ctx.log(`peers: ${this.file} isn't an object; starting with no children`);
+        }
       } catch (e) {
         ctx.log(`peers: couldn't read ${this.file}: ${(e as Error).message}`);
       }
@@ -96,19 +116,73 @@ export class Children {
   /**
    * Who started a session and whom it started (the spawnedFamily op: the web shows them as its
    * children, SPEC §6a). Released children too: who started whom doesn't change when the person
-   * takes one over. Archived or gone ones are left out.
+   * takes one over. Archived ones, and ones in a folder the lists hide, are left out; one that went
+   * on under another id is its successor.
    */
   async family(id: string): Promise<SpawnedFamily> {
     const listed = new Map(this.ctx.sessions.list().map((s) => [s.id, s]));
-    const find = async (sid: string): Promise<SessionSummary | undefined> => listed.get(sid) ?? this.ctx.session(sid)?.summary ?? (await this.ctx.sessions.open(sid).catch(() => undefined))?.summary;
+    const find = async (sid: string): Promise<SessionSummary | undefined> => {
+      for (let hop = 0; hop < 5; hop++) {
+        const shown = listed.get(sid);
+        if (shown) return shown.archived ? undefined : shown;
+        // What's kept says archived or gone on without opening it.
+        const kept = this.ctx.sessions.kept?.(sid);
+        if (kept?.archived) return undefined;
+        if (kept?.movedTo) {
+          sid = kept.movedTo;
+          continue;
+        }
+        const look = this.ctx.session(sid) ?? (await this.ctx.sessions.open(sid).catch(() => undefined));
+        if (!look) return undefined;
+        if (look.state.continuedIn) {
+          sid = look.state.continuedIn;
+          continue;
+        }
+        const s = look.summary;
+        return s.archived || this.ctx.hiddenFolder?.(s.projectPath) ? undefined : s;
+      }
+      return undefined;
+    };
     const mine = this.kids[id];
     const up = mine && (await find(mine.parent));
     const ids = Object.entries(this.kids)
       .filter(([, c]) => c.parent === id)
       .map(([k]) => k)
       .slice(-FAMILY_MAX);
-    const children = (await Promise.all(ids.map(find))).filter((s): s is SessionSummary => !!s && !s.archived);
-    return { ...(up && !up.archived ? { parent: { id: up.id, title: up.title } } : {}), children: children.sort((a, b) => b.updatedAt - a.updatedAt) };
+    const found = await pooled(ids, FAMILY_OPENS, find);
+    const seen = new Set<string>();
+    const children = found.filter((s): s is SessionSummary => !!s && !seen.has(s.id) && !!seen.add(s.id));
+    return { ...(up ? { parent: { id: up.id, title: up.title } } : {}), children: children.sort((a, b) => b.updatedAt - a.updatedAt) };
+  }
+
+  /** The session a start from `from` belongs to: a side chat's starts are its session's (SPEC §16a). */
+  ownerOf(from: string): string {
+    return this.ctx.session(from)?.summary.sideOf ?? from;
+  }
+
+  /**
+   * A session went on under a new id (a Move, a source change): it's the child, and the parent of
+   * its children, from now on, so reports, the family and "Started by" follow it.
+   */
+  continued(from: string, to: string) {
+    if (!from || !to || from === to) return;
+    let changed = false;
+    if (this.kids[from]) {
+      this.kids[to] = this.kids[from]!;
+      delete this.kids[from];
+      changed = true;
+    }
+    for (const c of Object.values(this.kids))
+      if (c.parent === from) {
+        c.parent = to;
+        changed = true;
+      }
+    const n = this.pending.get(from);
+    if (n) {
+      this.pending.delete(from);
+      this.pending.set(to, (this.pending.get(to) ?? 0) + n);
+    }
+    if (changed) this.save();
   }
 
   /** The sessions `parent` started that still report to it and are still at work (a finished, idle one doesn't count). */
@@ -150,15 +224,16 @@ export class Children {
    * when nothing started).
    */
   async start(from: string, a: StartArgs, hops: number, undo: () => void): Promise<PeerAnswer> {
+    const owner = this.ownerOf(from);
     try {
       return await this.make(from, a, hops);
     } catch (e) {
       undo();
       return { text: `Nothing was started: ${(e as Error).message}`, isError: true };
     } finally {
-      const n = (this.pending.get(from) ?? 1) - 1;
-      if (n > 0) this.pending.set(from, n);
-      else this.pending.delete(from);
+      const n = (this.pending.get(owner) ?? 1) - 1;
+      if (n > 0) this.pending.set(owner, n);
+      else this.pending.delete(owner);
     }
   }
 
@@ -166,7 +241,8 @@ export class Children {
    * Why `from` can't start a child now, if it can't. Otherwise a slot is reserved at once (so starts
    * side by side can't all pass); start() gives it back.
    */
-  refusal(from: string): string | undefined {
+  refusal(caller: string): string | undefined {
+    const from = this.ownerOf(caller);
     const depth = (this.kids[from]?.depth ?? 0) + 1;
     if (depth > DEPTH_MAX) return `This session was itself started by another session's agent, ${DEPTH_MAX - 1} level${DEPTH_MAX === 2 ? "" : "s"} down; sessions that deep can't start more. Do it here, or tell whoever started you.`;
     const n = this.following(from).length + (this.pending.get(from) ?? 0);
@@ -184,7 +260,9 @@ export class Children {
     if (!s.adapters().some((x) => x.id === harness)) throw new Error(`${HARNESS_LABELS[harness]} isn't available on this runner.`);
     const me = await this.look(from);
     if (!me) throw new Error("Tether can't find this session.");
+    // The caller's own level (a side chat's is read only), but its session is the starter.
     const level = this.level(me) ?? LEVELS.readOnly;
+    const starter = me.summary.sideOf ?? from;
     const own = me.summary.projectPath;
     const folder = a.project?.trim() ? s.folder(a.project.trim()) : own;
     if (this.ctx.homeFolder && resolve(folder) === resolve(this.ctx.homeFolder)) throw new Error("that's the Home agent's folder, not a project.");
@@ -207,10 +285,10 @@ export class Children {
       made = await this.ctx.ops.call("newWorktreeSession", { harness, projectPath: folder, source, permissionMode: mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}), name: title || prompt });
     }
     const id = made?.sessionId ?? (await s.create({ harness, projectPath: folder, source, permissionMode: mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}) }));
-    this.kids[id] = { parent: from, depth: (this.kids[from]?.depth ?? 0) + 1, reports: 0, hops };
+    this.kids[id] = { parent: starter, depth: (this.kids[starter]?.depth ?? 0) + 1, reports: 0, hops };
     this.save();
     if (title) await s.rename(id, title).catch(() => {});
-    const sender = { id: from, title: me.summary.title || "Untitled" };
+    const sender = { id: starter, title: (starter === from ? me : this.ctx.session(starter))?.summary.title || "Untitled" };
     const hint = `a session's agent started you, not the person. Your final reply each turn goes back to it automatically; it may follow up. The starter's permissions: ${LEVEL_WORDS[level]}.`;
     try {
       await s.send(id, sessionMessage(sender, prompt, hint, false, hops));
