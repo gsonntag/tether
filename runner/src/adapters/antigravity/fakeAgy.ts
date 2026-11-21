@@ -109,6 +109,8 @@ for await (const chunk of Bun.stdin.stream()) {
         mode = m.params.modeId;
         update(m.params.sessionId, { sessionUpdate: "current_mode_update", currentModeId: mode });
         ok({});
+        // As the real one can: a settings snapshot after the change, carrying the mode from before it.
+        update(m.params.sessionId, { sessionUpdate: "config_option_update", configOptions: config(model, effort, "default") });
         break;
       case "session/prompt":
         void prompt(m.id, m.params);

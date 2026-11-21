@@ -105,7 +105,7 @@ test("models and thinking levels are separate settings; modes keep Antigravity's
     { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", efforts: ["low", "high"] },
     { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", efforts: ["low", "high"] },
   ]);
-  expect(l.permissionModes.map((m) => [m.id, m.label])).toEqual([["default", "Ask first"], ["accept-edits", "Accept edits"], ["plan", "Plan"]]);
+  expect(l.permissionModes.map((m) => [m.id, m.label])).toEqual([["default", "Ask first"], ["accept-edits", "Accept edits"], ["plan", "Plan"], ["bypassPermissions", "Bypass permissions"]]);
 });
 
 test("the TUI's screen: idle, working, asking for permission or trust", () => {
@@ -143,4 +143,9 @@ test("what the agent says after its turn ended, with no prompt between, joins th
 test("Tether's own tools draw as peer cards", () => {
   expect(acpTool({ sessionUpdate: "tool_call", toolCallId: "p", name: "mcp_tether_tether_send", kind: "other" }).kind).toBe("peer");
   expect(acpTool({ sessionUpdate: "tool_call", toolCallId: "q", name: "mcp_other_send", kind: "other" }).kind).toBe("other");
+});
+
+test("a call that failed with nothing to show says so", () => {
+  expect(acpTool({ sessionUpdate: "tool_call_update", toolCallId: "f", name: "run_command", kind: "execute", status: "failed", rawOutput: { output: "" } }).output).toBe("No output: Antigravity didn't say why it failed.");
+  expect(acpTool({ sessionUpdate: "tool_call_update", toolCallId: "g", name: "run_command", kind: "execute", status: "failed", rawOutput: { output: "boom" } }).output).toBe("boom");
 });

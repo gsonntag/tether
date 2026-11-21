@@ -84,7 +84,7 @@ input tokens per turn, so acceptance runs are cheap. Probe scripts are in `~/agy
 
 ## Phase 4 plan (2026-11-21): subagents, move, fork, plan review, side chats, Tether's tools
 
-Built as planned on 2026-11-21 (SPEC §6, §6a, §7, §9a, §15, §16, §16a); `scripts/antigravity-modules-accept.ts` checks it.
+Built as planned on 2026-11-21 (SPEC §6, §6a, §7, §9a, §15, §16, §16a); `scripts/antigravity-modules-accept.ts` checks it. Changed since: subagents are loaded into the main agent's process, so their approvals reach you and Stop works (the stall below is gone); Bypass permissions was added as Tether's own mode.
 
 Probed on agy 1.5.13 first; each line is what was found, then what Tether does.
 
@@ -118,3 +118,17 @@ Probed on agy 1.5.13 first; each line is what was found, then what Tether does.
 - **Tether's tools** (§9a): `mcpServers` on `session/load` takes Tether's server with its env. Its
   tools are `mcp_tether_<tool>`, and they ask, so the driver approves Tether's own. Instructions go
   in `_meta.antigravity.systemPrompt.append`, which works.
+
+## Future work (not planned yet)
+
+- **Gemini API key as a billing source.** Antigravity's ACP server offers a `gemini-api-key` auth
+  method (`initialize.authMethods`), and `~/.gemini/antigravity-acp/settings.json` can name it. It
+  would join Settings → Credentials like the Anthropic and OpenAI keys, with the same billing safety
+  (confirmed source, never a key by surprise). Left out on purpose until asked for.
+- **Usage for Antigravity.** Settings → Usage doesn't count Antigravity yet (no `usageStores`).
+  Tokens are reported per turn (`session/prompt`'s `usage`: input, output, cached, thought), and the
+  store keeps per-step generation metadata, but in undocumented protobuf.
+- **Antigravity's own Auto mode.** Its TUI has `--mode auto`; over ACP it's refused on 1.5.13
+  ("needs the OS terminal sandbox and may not be rolled out to you yet"). Offer it once
+  `session/set_mode` accepts it.
+- **Tether auto mode.** A Tether-wide auto mode, for any harness. Future scope only; not planned.

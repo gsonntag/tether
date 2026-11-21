@@ -11,7 +11,7 @@ import type { Adapter, StartOpts } from "../../core/adapter";
 import { HARNESS_BINS } from "../detect";
 import { agyTools, AgyDriver } from "./driver";
 import { agyFork } from "./fork";
-import { billingOf, modelList } from "./models";
+import { billingOf, BYPASS, modelList } from "./models";
 import { AGY_EXIT, AGY_QUIT, agyScreen } from "./screen";
 import { hasStore, lastCommands, reader, seenContext, seenSettings, seenTitles, stampOf, storeStamp, type AgySession } from "./store";
 import { childInfo, childrenOf, matchCalls } from "./subagents";
@@ -101,7 +101,7 @@ async function history(nativeId: string, projectPath: string): Promise<Msg[]> {
 
 export const antigravityAdapter: Adapter = {
   id: "antigravity",
-  capabilities: { canSteer: false, terminal: "handoff", subagents: { view: true, stop: false, steer: "via-parent" }, commands: true, move: { import: "context" }, fork: true, readOnlyMode: "default" },
+  capabilities: { canSteer: false, terminal: "handoff", subagents: { view: true, stop: true, steer: "via-parent" }, commands: true, move: { import: "context" }, fork: true, readOnlyMode: "default" },
   fork: agyFork,
   toolServer: (server) => agyTools.set(server),
   move: {
@@ -110,6 +110,7 @@ export const antigravityAdapter: Adapter = {
       { mode: "plan", level: LEVELS.readOnly },
       { mode: "default", level: LEVELS.ask },
       { mode: "accept-edits", level: LEVELS.edits },
+      { mode: BYPASS, level: LEVELS.full },
     ],
     contextWindow: async () => [...seenContext.values()].at(-1)?.total ?? 1_048_576,
   },
@@ -223,6 +224,8 @@ export const antigravityAdapter: Adapter = {
   terminalCommand(nativeId, _projectPath, opts) {
     const argv = [HARNESS_BINS.antigravity, "--conversation", nativeId];
     if (opts.permissionMode === "accept-edits" || opts.permissionMode === "plan") argv.push("--mode", opts.permissionMode);
+    // Bypass permissions in the TUI: its own switch for it.
+    if (opts.permissionMode === BYPASS) argv.push("--dangerously-skip-permissions");
     return { argv, quit: AGY_QUIT, quitAtPrompt: AGY_EXIT, screen: agyScreen };
   },
 };

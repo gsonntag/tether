@@ -4,7 +4,7 @@
 // calls its ops the way the app does. Spends a few small turns of the signed-in Google account, and
 // one Claude Haiku turn for the move.
 //
-//   bun scripts/antigravity-modules-accept.ts [--only subagent,plan,fork,side,move,peers]
+//   bun scripts/antigravity-modules-accept.ts [--only subagent,stop,bypass,plan,fork,side,move,peers]
 
 import { mkdirSync, mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -91,7 +91,7 @@ const approver = (ids: () => string[]) => {
       for (const r of s?.state.requests ?? []) {
         if (done.has(r.id) || r.plan !== undefined || r.kind !== "approval") continue;
         done.add(r.id);
-        asked.set(id, [...(asked.get(id) ?? []), `${r.tool ?? ""} ${r.path ?? r.command ?? ""}`]);
+        asked.set(id, [...(asked.get(id) ?? []), `${r.agent ? `[${r.agent}] ` : ""}${r.tool ?? ""} ${r.path ?? r.command ?? ""}`]);
         await rpc("answerRequest", { sessionId: id, requestId: r.id, allow: true }).catch(() => {});
       }
     }
@@ -178,20 +178,52 @@ try {
   }
 
   if (want("subagent")) {
-    const id = await newSession("accept-edits");
+    // In default mode, so the subagent's command needs an approval: it must reach Tether.
+    const id = await newSession("default");
     live.push(id);
-    await rpc("send", { sessionId: id, text: "Use the invoke_subagent tool (TypeName self) to start one subagent whose task is: read notes.txt with read_file and report its contents to you with send_message. Then wait for its report and tell me what it found." });
+    await rpc("send", { sessionId: id, text: "Use the invoke_subagent tool (TypeName self) to start one subagent whose task is: run the shell command 'echo from-child > child-proof.txt' with run_command, then report done to you with send_message. Then wait for its report and tell me what it said." });
     await until(async () => (await rpc<any>("listSessions", { parentSessionId: id })).sessions.length > 0, 120_000);
     const kid = (await rpc<any>("listSessions", { parentSessionId: id })).sessions[0];
     live.push(kid.id);
     check("Subagents: the subagent shows as a child session", !!kid?.parentSessionId, kid?.title);
-    await until(async () => (await snap(kid.id)).messages.some((m) => m.parts.some((p: any) => p.type === "tool" && p.kind === "read")), 120_000);
+    await until(() => existsSync(join(folder, "child-proof.txt")), 120_000);
+    const before = (await lastText(id)).length;
+    const fromKid = [...asked.values()].flat().filter((a) => a.includes("run_command") && a.includes("child-proof"));
+    check("…its approval request reaches Tether, and approving it lets it run", fromKid.length > 0, fromKid.join(", "));
     const ks = await snap(kid.id);
-    check("…its transcript shows its prompt and its read", ks.messages[0]?.role === "user" && ks.messages.length >= 2);
+    check("…its transcript shows its prompt and its command", ks.messages[0]?.role === "user" && ks.messages.some((m) => m.parts.some((p: any) => p.type === "tool" && p.kind === "shell")));
     const card = (await snap(id)).messages.flatMap((m) => m.parts).find((p: any) => p.type === "tool" && p.name === "invoke_subagent") as any;
     check("…the parent's call links to it", card?.childSessionId === kid.id);
-    await until(async () => (await lastText(id)).includes("line one") && (await idle(id)), 240_000, 2000);
-    check("…its report reaches the parent, which goes on by itself", true);
+    // The report comes back after the parent's turn ended: the parent says more, by itself.
+    await until(async () => (await lastText(id)).length > before && (await idle(id)), 240_000, 2000);
+    check("…it reports back and the parent goes on by itself", true, (await lastText(id)).slice(before, before + 80).replace(/\n/g, " "));
+    await until(async () => !(await rpc<any>("listSessions", { parentSessionId: id })).sessions.some((s: any) => s.status !== "idle"), 60_000, 2000);
+    check("…and the subagent ends", true);
+  }
+
+  if (want("bypass")) {
+    const id = await newSession("bypassPermissions");
+    await rpc("send", { sessionId: id, text: "Run the shell command 'echo bypass > bypass-proof.txt' with run_command. Then use the invoke_subagent tool (TypeName self) to start one subagent whose task is: run the shell command 'echo kid > bypass-kid.txt' with run_command, then report done to you with send_message. Wait for its report." });
+    // No approver on this one: anything that asked would wait for ever.
+    await until(() => existsSync(join(folder, "bypass-proof.txt")) && existsSync(join(folder, "bypass-kid.txt")), 240_000);
+    const s = await snap(id);
+    check("Bypass permissions: the agent's and its subagent's commands ran, nobody asked", !s.state.requests.length, s.state.permissionMode);
+  }
+
+  if (want("stop")) {
+    const id = await newSession("default");
+    live.push(id);
+    await rpc("send", { sessionId: id, text: "Use the invoke_subagent tool (TypeName self) to start one subagent whose task is: run the shell command 'sleep 30; echo late > stop-proof.txt' with run_command and WaitMsBeforeAsync 60000, then report to you with send_message. Then wait." });
+    await until(async () => (await rpc<any>("listSessions", { parentSessionId: id })).sessions.length > 0, 120_000);
+    const kid = (await rpc<any>("listSessions", { parentSessionId: id })).sessions[0];
+    live.push(kid.id);
+    await until(async () => (await snap(kid.id)).messages.some((m) => m.parts.some((p: any) => p.type === "tool" && p.kind === "shell" && p.status === "running")), 120_000);
+    await rpc("interrupt", { sessionId: kid.id });
+    await until(async () => (await snap(kid.id)).state.status === "idle", 30_000);
+    const shell = (await snap(kid.id)).messages.flatMap((m) => m.parts).find((p: any) => p.type === "tool" && p.kind === "shell") as any;
+    check("Stop on a subagent stops it, and its command", shell?.status === "error", shell?.status);
+    await Bun.sleep(35_000);
+    check("…the command never finished", !existsSync(join(folder, "stop-proof.txt")));
   }
 
   if (want("move")) {

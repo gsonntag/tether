@@ -21,7 +21,7 @@ import { movedDir } from "../../core/moved";
 import { AcpClient, type AcpUpdate } from "../acp/client";
 import { acpTool, AcpTranscript } from "../acp/transcript";
 import { ToolServerSlot } from "../toolServer";
-import { billingOf } from "./models";
+import { billingOf, BYPASS } from "./models";
 import { acpArgv, agyHome, noteCommands, noteOpened, reader, seenContext, seenSettings, seenTitles, settingsOf, stampOf, storeStamp } from "./store";
 import { childrenOf, matchCalls } from "./subagents";
 
@@ -33,9 +33,9 @@ export const timing = {
   /** How often running subagents are looked at. */
   childPollMs: 1000,
   /** A subagent that reported back is done once its store has been quiet this long. */
-  childDoneMs: 20_000,
-  /** A subagent whose store hasn't changed in this long is stalled (an approval it asked can't reach Tether). */
-  childStalledMs: 3 * 60_000,
+  childDoneMs: 5000,
+  /** A subagent with nothing new and nothing asked in this long counts as ended. */
+  childStalledMs: 10 * 60_000,
   /** A subagent call whose conversation hasn't appeared in this long is let go. */
   childFindMs: 60_000,
 };
@@ -62,6 +62,8 @@ export function savedAllowRules(file = join(agyHome(), "settings.json")): string
 }
 
 interface SubagentCall {
+  /** the session that made the call: this one, or one of its subagents */
+  from: string;
   toolId: string;
   prompt: string;
   role?: string;
@@ -70,10 +72,18 @@ interface SubagentCall {
 }
 
 interface RunningChild {
+  /** the session that started it (this one, or a subagent of it) */
+  parent: string;
   sink: Sink;
-  rev: string;
+  /** its updates, from its load in this process: numbered as a replay numbers it */
+  t: AcpTranscript;
+  /** loaded here: its updates and requests come to this process (else its store is polled) */
+  loaded: boolean;
   changedAt: number;
   reported: boolean;
+  asks: Set<AbortController>;
+  /** fallback (not loaded): its store as last read */
+  rev: string;
   shown: Map<string, string>;
   reading?: boolean;
 }
@@ -88,6 +98,8 @@ export class AgyDriver implements Driver {
   private unprompted?: ReturnType<typeof setTimeout>;
   private stopping = false;
   private readOnly = false;
+  /** Bypass permissions (Tether's mode): every request is approved here, Antigravity runs in accept-edits */
+  private bypass = false;
   /** Tether's MCP server name, when this session has it: its tools run without asking */
   private toolServer?: string;
   /** open permission requests, aborted when the turn ends */
@@ -97,6 +109,8 @@ export class AgyDriver implements Driver {
   /** the plan file this turn wrote for review (plan mode) */
   private plan?: { path: string; toolId: string; content?: string };
   private calls: SubagentCall[] = [];
+  /** what this session was loaded with; its subagents get the same (their Tether tools speak for it) */
+  private mcpServers: unknown[] = [];
   private children = new Map<string, RunningChild>();
   private poll?: ReturnType<typeof setInterval>;
   onExit?: (error?: string) => void;
@@ -121,7 +135,7 @@ export class AgyDriver implements Driver {
         reader.forget();
       },
       mode: (mode) => this.note({ permissionMode: mode }),
-      config: (options) => this.note(settingsOf(options)),
+      config: (options) => this.noteConfig(options),
     });
   }
 
@@ -143,12 +157,13 @@ export class AgyDriver implements Driver {
     const env = server ? Object.entries(server.env(`antigravity:${this.nativeId}`)).map(([name, value]) => ({ name, value })) : [];
     const mcpServers = server ? [{ name: server.name, command: server.command, args: server.args, env }] : [];
     this.toolServer = server?.name;
+    this.mcpServers = mcpServers;
     const append = this.readOnly ? READ_ONLY_PROMPT : server?.instructions?.();
     this.client = new AcpClient({
       argv: acpArgv(),
       cwd: this.projectPath,
       name: "Antigravity",
-      onUpdate: (sid, u) => sid === this.nativeId && this.update(u),
+      onUpdate: (sid, u) => (sid === this.nativeId ? this.update(u) : this.childUpdate(sid, u)),
       onRequest: (method, params) => this.request(method, params),
       onExit: (error) => this.exited(error),
     });
@@ -176,8 +191,23 @@ export class AgyDriver implements Driver {
     this.sink.state({ ...this.settings, billing: billingOf(), ...(context ? { context } : {}) });
   }
 
+  /**
+   * Model and effort from a settings snapshot. Not the mode: a snapshot can arrive after a mode
+   * change and carry the old one (checked on 1.5.13), so the mode comes only from
+   * `current_mode_update` and from what Tether sets.
+   */
+  private noteConfig(options: any[] | undefined) {
+    const { permissionMode: _, ...rest } = settingsOf(options);
+    this.note(rest);
+  }
+
   /** Settings as Antigravity reports them: what the session shows. */
   private note(s: { model?: string; effort?: string; permissionMode?: string }) {
+    // Under Bypass permissions Antigravity reports accept-edits; any other mode it reports ends the bypass.
+    if (s.permissionMode !== undefined && this.bypass) {
+      if (s.permissionMode === "accept-edits" || s.permissionMode === BYPASS) s = { ...s, permissionMode: BYPASS };
+      else this.bypass = false;
+    }
     const changed = (Object.keys(s) as (keyof typeof s)[]).filter((k) => s[k] !== undefined && s[k] !== this.settings[k]);
     if (!changed.length) return;
     this.settings = { ...this.settings, ...s };
@@ -226,6 +256,10 @@ export class AgyDriver implements Driver {
 
   private async request(method: string, params: any): Promise<unknown> {
     if (method !== "session/request_permission") throw Object.assign(new Error("Not supported."), { code: -32601 });
+    // A subagent's request (it comes here once its conversation is loaded): it asks in its own session.
+    const child = typeof params?.sessionId === "string" && params.sessionId !== this.nativeId ? this.children.get(params.sessionId) : undefined;
+    const sink = child?.sink ?? this.sink;
+    const asks = child?.asks ?? this.asks;
     const options: { optionId: string; name?: string; kind?: string }[] = Array.isArray(params?.options) ? params.options : [];
     const call = params?.toolCall ?? {};
     const tool = acpTool({ sessionUpdate: "tool_call", ...call });
@@ -235,6 +269,8 @@ export class AgyDriver implements Driver {
     if (approval) {
       // A side chat changes nothing: refused here as well as by the core, without asking anyone.
       if (this.readOnly) return answer(pick(REJECT));
+      // Bypass permissions: approved without asking anyone, the subagents' requests too.
+      if (this.bypass) return answer(pick(ALLOW));
       // Tether's own tools run without asking, as on the other harnesses.
       if (this.toolServer && tool.name.startsWith(`mcp_${this.toolServer}_`)) return answer(pick(ALLOW));
       // A moved session reads the history it was moved with (SPEC §15) without asking.
@@ -245,19 +281,21 @@ export class AgyDriver implements Driver {
       ? { kind: "approval", tool: tool.name, input: call.rawInput ?? call.args ?? {}, toolKind: tool.kind, toolId: tool.id, noReason: true, ...(tool.command ? { command: tool.command } : {}), ...(tool.path ? { path: tool.path } : {}), ...(title ? { title } : {}) }
       : questionAsk(title ?? "Antigravity asks", options, tool.id);
     const abort = new AbortController();
-    this.asks.add(abort);
+    asks.add(abort);
+    if (child) child.changedAt = Date.now();
     let d: Decision;
     try {
-      d = await this.sink.request(ask, abort.signal);
+      d = await sink.request(ask, abort.signal);
     } finally {
-      this.asks.delete(abort);
+      asks.delete(abort);
+      if (child) child.changedAt = Date.now();
     }
     if (abort.signal.aborted) return answer(undefined);
     let chosen: { optionId: string } | undefined;
     if (approval) chosen = d.allow ? pick(ALLOW) : pick(REJECT);
     else if (d.allow) chosen = options.find((o) => (o.name ?? o.optionId) === d.answers?.[0]) ?? options.find((o) => o.optionId === d.answers?.[0]);
-    // A plain Deny stops the turn, as declining in Antigravity's own UI does.
-    if (!d.allow && d.interrupt) setTimeout(() => void this.interrupt(), 0);
+    // A plain Deny stops the turn (the subagent, for its own), as declining in Antigravity's own UI does.
+    if (!d.allow && d.interrupt) setTimeout(() => void (child ? this.stopSubagent(params.sessionId) : this.interrupt()), 0);
     return answer(chosen);
   }
 
@@ -319,11 +357,12 @@ export class AgyDriver implements Driver {
 
   // ---------- plan review (SPEC §7) ----------
 
-  /** A file the agent wrote for review: in plan mode, the plan. */
-  private noteCall(u: AcpUpdate) {
+  /** A subagent started; a file the agent wrote for review (in plan mode, the plan). */
+  private noteCall(u: AcpUpdate, from = this.nativeId) {
     const raw = (u.rawInput ?? u.args) as Record<string, any> | undefined;
     const name = typeof u.name === "string" ? u.name : undefined;
-    if (name === "invoke_subagent" && u.sessionUpdate === "tool_call" && raw && typeof raw.Prompt === "string") this.subagentCalled(String(u.toolCallId), raw);
+    if (name === "invoke_subagent" && u.sessionUpdate === "tool_call" && raw && typeof raw.Prompt === "string") this.subagentCalled(from, String(u.toolCallId), raw);
+    if (from !== this.nativeId) return;
     if (!raw?.ArtifactMetadata?.RequestFeedback || typeof (raw.Path ?? raw.path) !== "string") return;
     this.plan = { path: raw.Path ?? raw.path, toolId: String(u.toolCallId), ...(typeof raw.Content === "string" ? { content: raw.Content } : {}) };
   }
@@ -346,9 +385,9 @@ export class AgyDriver implements Driver {
 
   // ---------- subagents (SPEC §6a) ----------
 
-  private subagentCalled(toolId: string, raw: Record<string, any>) {
+  private subagentCalled(from: string, toolId: string, raw: Record<string, any>) {
     if (this.calls.some((c) => c.toolId === toolId)) return;
-    this.calls.push({ toolId, prompt: raw.Prompt, ...(typeof raw.Role === "string" ? { role: raw.Role } : {}), ...(typeof raw.TypeName === "string" ? { type: raw.TypeName } : {}), at: Date.now() });
+    this.calls.push({ from, toolId, prompt: raw.Prompt, ...(typeof raw.Role === "string" ? { role: raw.Role } : {}), ...(typeof raw.TypeName === "string" ? { type: raw.TypeName } : {}), at: Date.now() });
     this.watchChildren();
   }
 
@@ -361,30 +400,22 @@ export class AgyDriver implements Driver {
   private async childTick() {
     const now = Date.now();
     // Subagents still to be found: their conversations appear a moment after the call.
-    if (this.calls.length) {
-      const since = Math.min(...this.calls.map((c) => c.at)) - 5000;
-      const fresh = childrenOf(this.nativeId, since).filter((c) => !this.children.has(c.nativeId));
-      for (const [child, call] of matchCalls(fresh, this.calls)) {
+    for (const from of new Set(this.calls.map((c) => c.from))) {
+      const calls = this.calls.filter((c) => c.from === from);
+      const since = Math.min(...calls.map((c) => c.at)) - 5000;
+      const fresh = childrenOf(from, since).filter((c) => !this.children.has(c.nativeId));
+      for (const [child, call] of matchCalls(fresh, calls)) {
         this.calls = this.calls.filter((c) => c !== call);
-        this.t.link(call.toolId, `antigravity:${child}`);
-        const sink = this.sink.subagent({ nativeId: child, parentToolId: call.toolId, title: call.role || "Subagent", ...(call.type ? { agentType: call.type } : {}), prompt: call.prompt });
-        this.children.set(child, { sink, rev: "", changedAt: now, reported: false, shown: new Map() });
+        this.startChild(child, call);
       }
-      this.calls = this.calls.filter((c) => now - c.at < timing.childFindMs);
     }
+    this.calls = this.calls.filter((c) => now - c.at < timing.childFindMs);
     for (const [id, c] of this.children) {
-      const rev = storeStamp(id)?.rev ?? "";
-      if (rev !== c.rev && !c.reading) {
-        c.rev = rev;
-        c.changedAt = now;
-        c.reading = true;
-        void this.readChild(id, c).finally(() => (c.reading = false));
-      }
+      if (!c.loaded) this.pollChild(id, c, now);
+      // Over once it reported back and went quiet; or stalled a long while with nothing asked.
       const quiet = now - c.changedAt;
-      if ((c.reported && quiet > timing.childDoneMs) || quiet > timing.childStalledMs) {
-        this.children.delete(id);
-        c.sink.ended?.();
-      }
+      if (c.asks.size) continue;
+      if ((c.reported && quiet > timing.childDoneMs) || quiet > timing.childStalledMs) this.endChild(id, c);
     }
     if (!this.calls.length && !this.children.size) {
       clearInterval(this.poll);
@@ -392,16 +423,95 @@ export class AgyDriver implements Driver {
     }
   }
 
-  /** A subagent's conversation as it is now, into its own transcript. */
-  private async readChild(id: string, c: RunningChild) {
-    const { msgs } = await reader.replay(id, this.projectPath).catch(() => ({ msgs: [] as Msg[] }));
-    for (const m of msgs) {
-      const json = JSON.stringify(m);
-      if (c.shown.get(m.id) === json) continue;
-      c.shown.set(m.id, json);
-      c.sink.event({ type: "msg", msg: m });
-      if (m.parts.some((p) => p.type === "tool" && p.name === "send_message" && (p.input as any)?.raw?.Recipient === this.nativeId)) c.reported = true;
+  /**
+   * A subagent found: its session opens, and its conversation is loaded into this process, the one
+   * running it. Only then does Antigravity send its updates and its permission requests here
+   * (checked on 1.5.13: a request it was already waiting on arrives with the load, and approving it
+   * lets it go on). If the load fails, its store is polled instead, and its requests can't be answered.
+   */
+  private startChild(child: string, call: SubagentCall) {
+    const parentSink = call.from === this.nativeId ? this.sink : this.children.get(call.from)?.sink;
+    if (!parentSink) return;
+    if (call.from === this.nativeId) this.t.link(call.toolId, `antigravity:${child}`);
+    else this.children.get(call.from)?.t.link(call.toolId, `antigravity:${child}`);
+    const sink = parentSink.subagent({ nativeId: child, parentToolId: call.toolId, title: call.role || "Subagent", ...(call.type ? { agentType: call.type } : {}), prompt: call.prompt });
+    const c: RunningChild = { parent: call.from, sink, t: new AcpTranscript("m", { stamp: stampOf(child, () => Date.now()) }), loaded: false, changedAt: Date.now(), reported: false, asks: new Set(), rev: "", shown: new Map() };
+    this.children.set(child, c);
+    void this.client
+      .call("session/load", { sessionId: child, cwd: this.projectPath, mcpServers: this.mcpServers }, START_TIMEOUT_MS)
+      .then(() => {
+        if (this.children.get(child) !== c) return;
+        // What it did before the load came as a replay: all of it into its transcript, then live.
+        c.loaded = true;
+        c.t.drain();
+        for (const m of c.t.msgs) sink.event({ type: "msg", msg: structuredClone(m) });
+      })
+      .catch((e) => console.error(`antigravity ${this.nativeId}: couldn't load subagent ${child}: ${e?.message ?? e}`));
+  }
+
+  /** A loaded subagent's update. */
+  private childUpdate(id: string, u: AcpUpdate) {
+    const c = this.children.get(id);
+    if (!c) return;
+    c.t.update(u);
+    c.changedAt = Date.now();
+    if (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") {
+      this.noteCall(u, id);
+      const raw = (u.rawInput ?? u.args) as Record<string, unknown> | undefined;
+      if (u.name === "send_message" && raw?.Recipient === c.parent) c.reported = true;
     }
+    if (!c.loaded) return; // its replay: shown whole once the load answers
+    for (const e of c.t.drain()) c.sink.event(e);
+  }
+
+  /** Fallback for a subagent that couldn't be loaded: its store, replayed when it changes. */
+  private pollChild(id: string, c: RunningChild, now: number) {
+    const rev = storeStamp(id)?.rev ?? "";
+    if (rev === c.rev || c.reading) return;
+    c.rev = rev;
+    c.changedAt = now;
+    c.reading = true;
+    void reader
+      .replay(id, this.projectPath)
+      .then(({ msgs }) => {
+        if (c.loaded || this.children.get(id) !== c) return;
+        for (const m of msgs) {
+          const json = JSON.stringify(m);
+          if (c.shown.get(m.id) === json) continue;
+          c.shown.set(m.id, json);
+          c.sink.event({ type: "msg", msg: m });
+          if (m.parts.some((p) => p.type === "tool" && p.name === "send_message" && (p.input as any)?.raw?.Recipient === c.parent)) c.reported = true;
+        }
+      })
+      .catch(() => {})
+      .finally(() => (c.reading = false));
+  }
+
+  private endChild(id: string, c: RunningChild) {
+    if (this.children.get(id) !== c) return;
+    this.children.delete(id);
+    for (const a of c.asks) a.abort();
+    c.asks.clear();
+    if (c.loaded) {
+      c.t.end();
+      for (const e of c.t.drain()) c.sink.event(e);
+    }
+    c.sink.ended?.();
+    // Its own subagents end with it.
+    for (const [k, x] of this.children) if (x.parent === id) this.endChild(k, x);
+  }
+
+  /** Stops one subagent (capabilities.subagents.stop): `session/cancel` on its loaded conversation (checked on 1.5.13: a command it runs is killed). */
+  async stopSubagent(nativeId: string) {
+    const c = this.children.get(nativeId);
+    if (!c) return;
+    for (const a of c.asks) a.abort();
+    if (c.loaded) {
+      this.client.notify("session/cancel", { sessionId: nativeId });
+      c.t.end(undefined, true);
+      for (const e of c.t.drain()) c.sink.event(e);
+    }
+    this.endChild(nativeId, c);
   }
 
   /** Asking the main agent to pass a message on to a subagent (subagents.steer "via-parent"). */
@@ -422,17 +532,24 @@ export class AgyDriver implements Driver {
   async setModel(model: string) {
     if (model === "default") return;
     const r: any = await this.client.call("session/set_config_option", { sessionId: this.nativeId, configId: "model", value: model });
-    this.note(settingsOf(r?.configOptions));
+    this.noteConfig(r?.configOptions);
   }
 
   async setEffort(effort: string) {
     const r: any = await this.client.call("session/set_config_option", { sessionId: this.nativeId, configId: "thought_level", value: effort });
-    this.note(settingsOf(r?.configOptions));
+    this.noteConfig(r?.configOptions);
   }
 
   async setPermissionMode(mode: string) {
     if (this.readOnly && mode !== "default") throw new Error("A side chat stays read-only.");
-    await this.client.call("session/set_mode", { sessionId: this.nativeId, modeId: mode });
+    const was = this.bypass;
+    this.bypass = mode === BYPASS;
+    try {
+      await this.client.call("session/set_mode", { sessionId: this.nativeId, modeId: this.bypass ? "accept-edits" : mode });
+    } catch (e) {
+      this.bypass = was;
+      throw e;
+    }
     this.note({ permissionMode: mode });
   }
 
@@ -453,8 +570,7 @@ export class AgyDriver implements Driver {
     clearInterval(this.poll);
     this.poll = undefined;
     this.calls = [];
-    for (const c of this.children.values()) c.sink.ended?.();
-    this.children.clear();
+    for (const [id, c] of [...this.children]) this.endChild(id, c);
   }
 
   private exited(error?: string) {

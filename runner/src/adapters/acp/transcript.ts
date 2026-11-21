@@ -66,8 +66,10 @@ export function acpTool(u: AcpUpdate, before?: ToolPart): ToolPart {
     const content = diffs.length ? diffs[0]!.new_string : (raw.Content ?? raw.content);
     if (typeof content === "string") input.content = content;
   }
-  const out = rawOutput(u);
+  let out = rawOutput(u);
   const status = statusOf(u.status) ?? before?.status ?? "running";
+  // A call that failed with nothing to show (denied, cancelled, or stopped in the background): say so.
+  if (status === "error" && out === undefined && !before?.output) out = "No output: Antigravity didn't say why it failed.";
   return {
     type: "tool",
     id: String(u.toolCallId ?? before?.id),

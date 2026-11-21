@@ -11,6 +11,12 @@ const options = (config: any[], id: string): { value: string; name: string; desc
     .map((x: any) => ({ value: x.value, name: typeof x.name === "string" ? x.name : x.value, ...(typeof x.description === "string" ? { description: x.description } : {}) }));
 };
 
+/**
+ * Tether's own mode, not one of Antigravity's: Antigravity runs in `accept-edits` and the driver
+ * approves every request itself (a subagent's too), so nothing asks. Questions still come to you.
+ */
+export const BYPASS = "bypassPermissions";
+
 export function modelList(config: any[]): ModelList {
   const efforts = options(config, "thought_level").map((e) => ({ id: e.value, label: e.name }));
   const takes = efforts.length ? { efforts: efforts.map((e) => e.id) } : {};
@@ -19,7 +25,9 @@ export function modelList(config: any[]): ModelList {
     // "Default": whatever Antigravity picks itself (its own setting, as its TUI shows it).
     models: models.length ? [{ id: "default", label: "Default", ...takes }, ...models] : [],
     efforts,
-    permissionModes: options(config, "mode").map((m) => ({ id: m.value, label: m.value === "default" ? "Ask first" : m.name, ...(m.description ? { description: m.description } : {}) })),
+    permissionModes: ((modes) => (modes.length ? [...modes, { id: BYPASS, label: "Bypass permissions", description: "Tether approves every request itself: nothing asks." }] : modes))(
+      options(config, "mode").map((m) => ({ id: m.value, label: m.value === "default" ? "Ask first" : m.name, ...(m.description ? { description: m.description } : {}) })),
+    ),
   };
 }
 

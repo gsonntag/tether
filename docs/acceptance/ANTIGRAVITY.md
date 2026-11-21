@@ -42,6 +42,11 @@ The move spends one Claude Haiku turn.
 - [ ] *(script)* A subagent the agent starts shows as a child session (in the sidebar and the session
   header), titled by its role, with its prompt and its own turns; the parent's call links to it. Its
   report reaches the parent, which goes on by itself (shown as working, then idle).
+- [ ] *(script)* A subagent's approval request asks in its session (and the parent's), marked with its
+  name; approving it lets it go on.
+- [ ] *(script)* Stop on a running subagent stops it, and a command it runs.
+- [ ] *(script)* Bypass permissions: nothing asks, the subagents' requests included; questions still
+  come to you; a side chat stays read-only.
 - [ ] A message to a running subagent is passed on by the main agent (`send_message`): "Sent via the
   main agent", then delivered.
 - [ ] A stored session's subagents are listed and open with their transcripts.

@@ -421,7 +421,13 @@ Google's coding agent, through its CLI `agy` (checked on 1.5.13). Everything goe
 - **Ids:** Antigravity picks them. `newId` makes the conversation (`session/new`), stored with no
   prompt (not listed until its first), and the driver loads it. A prompt to an id it didn't make fails.
 - **Permissions:** its modes `default` (asks for edits and commands), `accept-edits` and `plan`
-  (`session/set_mode`). `session/request_permission` goes to the broker; allow and reject map to its
+  (`session/set_mode`), and Tether's own **Bypass permissions** (`bypassPermissions`): Antigravity
+  runs in `accept-edits` and the driver approves every request itself, a subagent's too, so nothing
+  asks; questions still come to you, and a side chat never bypasses. In the TUI it's
+  `--dangerously-skip-permissions`. Antigravity's own `auto` mode is refused over ACP on 1.5.13 ("needs
+  the OS terminal sandbox and may not be rolled out to you yet", `--sandbox` or not). The mode comes
+  only from `current_mode_update` and what Tether sets: a settings snapshot can arrive after a mode
+  change carrying the old one. `session/request_permission` goes to the broker; allow and reject map to its
   `allow_once` and `reject_once` options. A denial carries no reason (`noReason`). A request with
   other options is a question with them as answers.
 - **Model and effort:** `configOptions`, set with `session/set_config_option`: `model` (a family,
@@ -477,14 +483,18 @@ its subagents as children in the sidebar and in the session header.
 
 **Antigravity's subagents** (checked on agy 1.5.13): `invoke_subagent` makes a conversation of its
 own (its own store, never listed), run inside the main agent's `agy acp` process, which therefore
-stays up while one runs (`Driver.busy`). ACP gives the call no id and sends nothing for the
-subagent, so the driver finds its conversation in the store: its first step is the main agent's
-message, "[Message] … sender=<main id> … content=<prompt>", the one readable line Tether reads from
-that undocumented blob (`antigravity/subagents.ts`), matched to the call by its prompt. Its turns
-are replayed from its conversation into its child session whenever its store changes. It reports
-with `send_message` to the main agent, and is over once its store is quiet for 20 s after that.
-An approval a subagent asks never reaches an ACP client, so a subagent needing one stalls; after 3
-minutes with no change it counts as ended. No Stop of its own (`stop: false`). Steering is
+stays up while one runs (`Driver.busy`). ACP gives the call no id, so the driver finds its
+conversation in the store: its first step is the main agent's message, "[Message] … sender=<main
+id> … content=<prompt>", the one readable line Tether reads from that undocumented blob
+(`antigravity/subagents.ts`), matched to the call by its prompt. Then the driver **loads it into the
+same process** (`session/load` with the subagent's id): only a process that has a subagent loaded
+gets its updates and its permission requests. A request it was already waiting on arrives with the
+load, and answering it lets it go on. So its turns stream into its child session as they happen, and
+its requests ask in its session (and its parent's) like any other. Its own subagents are found the
+same way. It reports with `send_message` to whoever started it, and is over 5 s after that with
+nothing new and nothing asked. With nothing new and nothing asked for 10 minutes it counts as ended
+too. **Stop** on it is `session/cancel` with its id, which kills a command it runs. If a load fails,
+its store is replayed when it changes instead, and its requests can't be answered. Steering is
 `via-parent`: the main agent's `send_message` with the subagent's id as `Recipient`. Stored
 subagents come from the same store scan, titled by their `Role`.
 
@@ -962,7 +972,7 @@ event (with the message's text) and the queued message's id from `SessionActions
 - **Stricter to looser is refused.** Each session's permission mode has a level on the scale
   Move uses (`core/permissionLevel.ts`, shared/move.ts `LEVELS`): Claude plan < default <
   acceptEdits < auto < bypassPermissions; Codex read-only < untrusted < auto (workspace-write) <
-  full-access; Antigravity plan < default < accept-edits. A send or ask to a session whose level is above the sender's is refused: nothing is
+  full-access; Antigravity plan < default < accept-edits < bypassPermissions. A send or ask to a session whose level is above the sender's is refused: nothing is
   queued, the tool says the session doesn't have permission (both levels named), and the sender's
   transcript gets a notice. A broadcast leaves such sessions out and lists them. An unknown level
   counts as the loosest for the target and the strictest for the sender; equal or stricter goes

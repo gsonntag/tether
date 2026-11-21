@@ -220,3 +220,34 @@ test("a late update to the last turn's call doesn't start a turn of its own", as
     await d.close();
   }
 });
+
+test("Bypass permissions: Antigravity runs in accept-edits, every request is approved without asking, and it can be turned off", async () => {
+  const sink = new TestSink();
+  const d = await AgyDriver.open("t8", dir, { permissionMode: "bypassPermissions" }, sink);
+  try {
+    expect(sink.lastWith("permissionMode")?.permissionMode).toBe("bypassPermissions");
+    await d.send("needs permission");
+    await until(() => sink.status === "idle" && sink.t.messages.length >= 2);
+    expect(sink.asks.length).toBe(0);
+    expect((sink.t.messages[1]!.parts[0] as ToolPart).status).toBe("done");
+    await d.setPermissionMode("default");
+    expect(sink.lastWith("permissionMode")?.permissionMode).toBe("default");
+    await d.send("needs permission");
+    await until(() => sink.asks.length === 1);
+    sink.asks[0]!.resolve({ allow: false, reason: "no" });
+    await until(() => sink.status === "idle");
+  } finally {
+    await d.close();
+  }
+});
+
+test("a side chat can't bypass", async () => {
+  const sink = new TestSink();
+  const d = await AgyDriver.open("t9", dir, { readOnly: true, permissionMode: "bypassPermissions" }, sink);
+  try {
+    expect(sink.lastWith("permissionMode")?.permissionMode).toBe("default");
+    await expect(d.setPermissionMode("bypassPermissions")).rejects.toThrow("read-only");
+  } finally {
+    await d.close();
+  }
+});
