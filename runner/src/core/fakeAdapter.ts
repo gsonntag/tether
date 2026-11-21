@@ -1,7 +1,7 @@
 // A fake harness for core tests: stored sessions are in memory, and its driver replays a scripted
 // stream of sink calls on each send, so sync, paging and subagent tests are deterministic.
 
-import type { HarnessCapabilities, ModelList, Msg, ProjectInfo, SessionSummary } from "../../../shared/transcript";
+import type { HarnessCapabilities, HarnessId, ModelList, Msg, ProjectInfo, SessionSummary } from "../../../shared/transcript";
 import type { Adapter, AdapterBilling, Decision, Driver, Sink, StartOpts, TerminalLaunch, TerminalOpts } from "./adapter";
 import { createHash } from "node:crypto";
 
@@ -122,7 +122,7 @@ export const subagentEnds = (nativeId: string): Step => (_s, d) => d.children.ge
 // ---------- the adapter ----------
 
 export class FakeAdapter implements Adapter {
-  id = "claude" as const;
+  id: HarnessId;
   capabilities = FAKE_CAPS;
   listCommands?: Adapter["listCommands"];
   commandRoute?: Adapter["commandRoute"];
@@ -147,8 +147,12 @@ export class FakeAdapter implements Adapter {
   startGate?: Promise<void>;
   private next = 0;
 
+  constructor(id: HarnessId = "claude") {
+    this.id = id;
+  }
+
   addStored(nativeId: string, msgs: Msg[], over: Partial<SessionSummary> = {}) {
-    const summary: SessionSummary = { id: `claude:${nativeId}`, harness: "claude", nativeId, projectPath: "/p", title: `Session ${nativeId}`, mode: "stored", status: "idle", updatedAt: Date.now(), ...over };
+    const summary: SessionSummary = { id: `${this.id}:${nativeId}`, harness: this.id, nativeId, projectPath: "/p", title: `Session ${nativeId}`, mode: "stored", status: "idle", updatedAt: Date.now(), ...over };
     this.stored.set(nativeId, { summary, msgs });
     return summary;
   }
@@ -163,7 +167,7 @@ export class FakeAdapter implements Adapter {
     return true;
   }
   async listProjects(): Promise<ProjectInfo[]> {
-    return [{ path: "/p", name: "p", harnesses: ["claude"], updatedAt: 1, sessions: this.stored.size }];
+    return [{ path: "/p", name: "p", harnesses: [this.id], updatedAt: 1, sessions: this.stored.size }];
   }
   async listSessions(o: { projectPath?: string; since?: number } = {}) {
     return [...this.stored.values()].map((x) => x.summary).filter((s) => (!o.projectPath || s.projectPath === o.projectPath) && (!o.since || s.updatedAt >= o.since));
@@ -172,7 +176,7 @@ export class FakeAdapter implements Adapter {
     return this.stored.get(nativeId)?.summary;
   }
   async listSubagents(nativeId: string) {
-    return [...this.stored.values()].map((x) => x.summary).filter((s) => s.parentSessionId === `claude:${nativeId}`);
+    return [...this.stored.values()].map((x) => x.summary).filter((s) => s.parentSessionId === `${this.id}:${nativeId}`);
   }
   async readHistory(nativeId: string) {
     return structuredClone(this.stored.get(nativeId)?.msgs ?? []);
