@@ -47,7 +47,7 @@ export class TextingStore {
   lastVia?: string;
   /** this runner is the texting hub: it texts for its owner's other runners too (hubChannel.ts) */
   hub = false;
-  /** for each session (and the Home agent) the person wrote, the connector and place it came by: answers go back there */
+  /** for each session the person wrote, the connector and place it came by: answers go back there */
   replyVia: Record<string, { via: string; place?: string }> = {};
   /** on a hub: other runners' sessions that may text (their "Session can text me" box), by router key, with a name and when it was last heard of: the picker offers them */
   remoteTexters: Record<string, { label: string; at: number }> = {};

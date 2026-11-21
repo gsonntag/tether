@@ -123,8 +123,6 @@ export class LiveControl {
       idleMs?: number;
       /** the most sessions live at once (TETHER_MAX_LIVE_SESSIONS); absent or 0: no limit */
       maxLive?: number;
-      /** the Home agent's folder: its chats are never refused by maxLive, so Home always answers */
-      homeFolder?: string;
       attachmentsDir?: string; credentials?: CredentialStore; costs?: CostLedger } = {},
   ) {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
@@ -178,7 +176,7 @@ export class LiveControl {
 
   /**
    * Ends a retry chain before it recovers. A waiting chain's turn already ended as "recovering",
-   * which listeners (peers, Home agent, texting) skipped: its real end is now, as a stop. A Tether
+   * which listeners (peers, texting) skipped: its real end is now, as a stop. A Tether
    * send that replaces the chain neither holds the queue nor ends the turn: its own turn's end does.
    */
   private cancelRetrySession(s: Session, o: { tether?: boolean; due?: "stopped" } = {}) {
@@ -1286,7 +1284,7 @@ export class LiveControl {
 
   /**
    * Why this session may not go live now (the runner's live-session limit is reached), or
-   * undefined. Subagents and the Home agent's chats don't count and are never refused.
+   * undefined. Subagents don't count and are never refused.
    */
   private overLiveLimit(s: Session): string | undefined {
     const max = this.opts.maxLive ?? 0;
@@ -1298,9 +1296,7 @@ export class LiveControl {
   }
 
   private exemptFromLimit(s: Session): boolean {
-    const home = this.opts.homeFolder;
-    const path = s.summary.projectPath;
-    return !!s.summary.parentSessionId || (!!home && (path === home || path.startsWith(`${home}/`)));
+    return !!s.summary.parentSessionId;
   }
 
   /** The session's driver, starting or resuming the harness when it isn't live. */

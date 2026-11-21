@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { HOME_COMMANDS, isHomeReset, menuMatches, menuPick, menuQuery, parseCommand, settingRoute, type HarnessCommand } from "./commands";
+import { menuMatches, menuPick, menuQuery, parseCommand, settingRoute, type HarnessCommand } from "./commands";
 
 const list: HarnessCommand[] = [
   { name: "posthog:compact-thing", description: "" },
@@ -50,14 +50,14 @@ describe("the menu", () => {
   });
 });
 
-describe("Home's /new and /clear", () => {
-  test("either alone resets; anything more is a message", () => {
-    for (const t of ["/new", "/clear", " /NEW ", "/Clear\n"]) expect(isHomeReset(t)).toBe(true);
-    for (const t of ["/new chat", "new", "/newer", "/clear all", "please /clear", "/compact"]) expect(isHomeReset(t)).toBe(false);
-  });
-  test("the menu offers both", () => {
-    expect(menuMatches(HOME_COMMANDS, "").map((c) => c.name)).toEqual(["new", "clear"]);
-    expect(menuMatches(HOME_COMMANDS, "cl").map((c) => c.name)).toEqual(["clear"]);
-    expect(menuPick(HOME_COMMANDS[0]!, "/new", "Enter")).toBe("send");
+describe("a short command list", () => {
+  const COMMANDS: HarnessCommand[] = [
+    { name: "new", description: "Start a new chat" },
+    { name: "clear", description: "Clear the chat and start over" },
+  ];
+  test("the menu offers both, filtered as typed; one without args sends on Enter", () => {
+    expect(menuMatches(COMMANDS, "").map((c) => c.name)).toEqual(["new", "clear"]);
+    expect(menuMatches(COMMANDS, "cl").map((c) => c.name)).toEqual(["clear"]);
+    expect(menuPick(COMMANDS[0]!, "/new", "Enter")).toBe("send");
   });
 });

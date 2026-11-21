@@ -23,7 +23,7 @@ import { claudeModels } from "./models";
 import { claudeCommandRoute, claudeCommands } from "./commands";
 import { projectsDir, sessionFile, splitNative, storedSubagents } from "./paths";
 import { hookSettings } from "../../terminal/hooks";
-import { claudeTools, setClaudeSetup } from "./setup";
+import { claudeTools } from "./setup";
 
 /**
  * Quitting Claude's TUI whatever it shows: Esc closes a dialog (denying a permission prompt) or stops
@@ -252,7 +252,6 @@ export const claudeAdapter: Adapter = {
     return { ...(nativeId ? await storedSettings(nativeId, projectPath).catch(() => ({})) : {}), ...(typeof mode === "string" ? { permissionMode: mode } : {}) };
   },
 
-  agentSetup: setClaudeSetup,
   toolServer: (server) => claudeTools.set(server),
 
   start: (projectPath, nativeId, opts, sink) => ClaudeDriver.open(nativeId, projectPath, opts, sink, false),

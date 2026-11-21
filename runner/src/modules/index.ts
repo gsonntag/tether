@@ -7,15 +7,13 @@ import type { CoreEvents } from "../core/events";
 import type { OpRegistry } from "../core/ops";
 import type { Adapter, StartOpts } from "../core/adapter";
 import type { BillingSource, CredentialSource, SourceChoices } from "../../../shared/credentials";
-import type { HomeChatUpdate } from "../../../shared/protocol";
 import type { ForkedFrom } from "../../../shared/fork";
 import type { Attachment } from "../../../shared/attachments";
 import type { SessionCost } from "../../../shared/costs";
 import type { HarnessId, LiveState, Msg, ProjectInfo, RequestAnswer, RunStatus, SessionSummary } from "../../../shared/transcript";
 import { filesModule } from "./files";
 import { gitModule } from "./git";
-import { homeAgentModule } from "./homeAgent";
-import type { HomeLine } from "./homeLine";
+import type { PhoneLine } from "./phoneLine";
 import type { HubPort } from "../core/hubPort";
 import type { WorktreeRecord } from "../config";
 import type { SetupRun } from "../core/shellRuns";
@@ -162,16 +160,12 @@ export interface ModuleContext {
   appUrl: string;
   /** where attachments are kept (CONFIG_DIR/attachments) */
   attachmentsDir?: string;
-  /** the Home agent's folder (RunnerOptions.homeFolder); its sessions are left out of the lists */
-  homeFolder?: string;
   /** what Tether's API cost ledger holds for a session (undefined: no entry) */
   apiCost?(sessionId: string): SessionCost | undefined;
-  /** a folder the lists hide (TETHER_HIDE_PROJECTS, the Home agent's) */
+  /** a folder the lists hide (TETHER_HIDE_PROJECTS) */
   hiddenFolder?(path: string): boolean;
-  /** tells every browser the Home agent's current chat changed (dropped while disconnected: browsers ask again on reconnect) */
-  announceHomeChat?: (u: HomeChatUpdate) => void;
-  /** texting ↔ the Home agent (homeLine.ts): one for the whole runner */
-  homeLine?: HomeLine;
+  /** texting ↔ the agents' text_person (phoneLine.ts): one for the whole runner */
+  phoneLine?: PhoneLine;
   /** short links to sessions (links/store.ts): one for the whole runner */
   links?: ShortLinks;
   /** the texting hub's wire (core/hubPort.ts): who texts for this runner, and frames to and from it */
@@ -185,7 +179,7 @@ export interface Module {
 }
 
 /** The modules this runner loads, in order. */
-export const MODULES: Module[] = [pushModule, textingModule, moveModule, forkModule, sideChatsModule, worktreesModule, homeAgentModule, peersModule, updatesModule, linksModule, usageModule, gitModule, filesModule];
+export const MODULES: Module[] = [pushModule, textingModule, moveModule, forkModule, sideChatsModule, worktreesModule, peersModule, updatesModule, linksModule, usageModule, gitModule, filesModule];
 
 export async function startModules(modules: Module[], ctx: (m: Module) => ModuleContext): Promise<() => void> {
   const stops: (() => void)[] = [];

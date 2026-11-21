@@ -154,7 +154,7 @@ export interface Msg {
    * user: a turn the harness added that you didn't type (another session's message, a channel,
    * a subagent's report): who it's from. The UI shows it apart from your own messages.
    */
-  origin?: { kind: string; name?: string; sessionId?: string; all?: boolean; purpose?: "checkIn" };
+  origin?: { kind: string; name?: string; sessionId?: string; all?: boolean };
   /** user: a slash command as the harness stored it, not a prompt (which may start with "/" too) */
   localCommand?: boolean;
   /** user: the browser's id for the send that made it (protocol send `clientId`); only while the runner holds it in memory */

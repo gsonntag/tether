@@ -12,7 +12,7 @@ import { CONFIG_DIR, displayName, loadConfig } from "./config";
 import { CredentialStore, DATA_DIR, registerSecret } from "./credentials";
 import { createRunner } from "./core/runner";
 import { MODULES, startModules } from "./modules";
-import { HomeLine } from "./modules/homeLine";
+import { PhoneLine } from "./modules/phoneLine";
 import { ShortLinks } from "./modules/links/store";
 
 // No silent defaults outside dev: a runner that quietly dialled localhost with token "dev" would
@@ -28,9 +28,6 @@ if (!url || !token) {
 registerSecret(token);
 
 const config = loadConfig();
-// Where the Home agent's chats run (modules/homeAgent): made here, so the core can hide it.
-const homeFolder = join(CONFIG_DIR, "modules", "homeAgent", "workspace");
-mkdirSync(homeFolder, { recursive: true, mode: 0o700 });
 const credentials = new CredentialStore();
 CredentialStore.current = credentials;
 const runner = createRunner({
@@ -46,9 +43,9 @@ const runner = createRunner({
   adapters: [claudeAdapter, codexAdapter, antigravityAdapter],
   noticesFile: join(CONFIG_DIR, "notices.json"),
   attachmentsDir: join(CONFIG_DIR, "attachments"),
-  homeFolder,
   core: {
-    hideProjects: process.env.TETHER_HIDE_PROJECTS,
+    // The removed Home agent's old chats (in its folder) stay out of the lists, as they always were.
+    hideProjects: [process.env.TETHER_HIDE_PROJECTS, join(CONFIG_DIR, "modules", "homeAgent", "workspace")].filter(Boolean).join(","),
     // Dev stacks shorten these to see what comes after.
     ...(process.env.TETHER_EVICT_MS ? { evictMs: Number(process.env.TETHER_EVICT_MS) } : {}),
     ...(process.env.TETHER_IDLE_MS ? { idleMs: Number(process.env.TETHER_IDLE_MS) } : {}),
@@ -62,12 +59,12 @@ const runner = createRunner({
 mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
 // Private: it holds runner.json and the terminal hooks' socket.
 chmodSync(CONFIG_DIR, 0o700);
-const homeLine = new HomeLine();
+const phoneLine = new PhoneLine();
 const links = new ShortLinks(join(CONFIG_DIR, "modules", "links", "links.json"), Date.now, undefined, (line) => console.log(`[links] ${line}`));
 const stopModules = await startModules(MODULES, (m) => {
   const dataDir = join(CONFIG_DIR, "modules", m.name);
   mkdirSync(dataDir, { recursive: true });
-  return { bus: runner.bus, ops: runner.ops, dataDir, log: (line) => console.log(`[${m.name}] ${line}`), runnerId: config.runnerId, appUrl: url, attachmentsDir: join(CONFIG_DIR, "attachments"), homeLine, links, ...runner.look };
+  return { bus: runner.bus, ops: runner.ops, dataDir, log: (line) => console.log(`[${m.name}] ${line}`), runnerId: config.runnerId, appUrl: url, attachmentsDir: join(CONFIG_DIR, "attachments"), phoneLine, links, ...runner.look };
 });
 
 console.log(`Tether runner ${pkg.version}: ${displayName(config)} (${config.runnerId}), config in ${CONFIG_DIR}`);

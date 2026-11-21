@@ -11,8 +11,7 @@ import { saveConfig } from "../../config";
 import { FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
 import { Worktrees } from ".";
-import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredFiles, lockWorktree, precious, IGNORED_MAX, removeWorktree, repoOf, runGit, setupAt, taken, undoAdd, worktreesDir, type Git } from "./git";
-import { removeOwnWorktree } from "../homeAgent/checkIn";
+import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredFiles, lockWorktree, outsideUsers, precious, IGNORED_MAX, removeOwnWorktree, removeWorktree, repoOf, runGit, setupAt, taken, undoAdd, worktreesDir, type Git } from "./git";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((f) => f()));
@@ -189,7 +188,7 @@ describe("git", () => {
   });
 });
 
-function runnerFor(o: { dir?: string; setupMs?: number } = {}) {
+function runnerFor(o: { dir?: string; setupMs?: number; usersOf?: (dir: string) => number } = {}) {
   const dir = o.dir ?? scratch();
   const prefsFile = join(dir, "runner.json");
   if (!existsSync(prefsFile)) saveConfig({ runnerId: "t" }, prefsFile);
@@ -198,7 +197,7 @@ function runnerFor(o: { dir?: string; setupMs?: number } = {}) {
   const runner = createRunner({ url: "http://x", token: "t", runnerId: "t", name: "t", version: "0", detectHarnesses: async () => [], adapters: [adapter], prefsFile, noticesFile: join(dir, "notices.json"), core: { evictMs: 60_000 } });
   cleanups.push(() => (void runner.shellRuns.stopAll(0), runner.core.stop()));
   const logs: string[] = [];
-  const w = new Worktrees({ sessions: runner.look.sessions, newSession: (a) => runner.ops.call("newSession", a), log: (l) => logs.push(l), ...(o.setupMs ? { setupMs: o.setupMs } : {}) });
+  const w = new Worktrees({ sessions: runner.look.sessions, newSession: (a) => runner.ops.call("newSession", a), log: (l) => logs.push(l), usersOf: o.usersOf ?? (() => 0), ...(o.setupMs ? { setupMs: o.setupMs } : {}) });
   const state = (id: string) => runner.core.sessions.get(id)!.state;
   const cards = (id: string) => (runner.core.sessions.get(id)!.transcript?.messages ?? []).filter((m) => m.shell);
   return { runner, adapter, w, prefsFile, logs, state, cards, dir };
@@ -518,7 +517,7 @@ describe("New worktree", () => {
     expect(again.setupText).toContain("pretend-evil");
     const made = await t.w.create({ harness: "claude", projectPath: c.dir, branch: "tether/seen", expectSetup: again.setupId });
     expect(made.setup).toBe(".tether/setup");
-    // The setup going away counts as a change too; no expectSetup (the Home agent): whatever the base has.
+    // The setup going away counts as a change too; no expectSetup (tether_start): whatever the base has.
     sh(up, "rm", "-q", "-r", ".tether");
     sh(up, "commit", "-qm", "no setup");
     await expect(t.w.create({ harness: "claude", projectPath: c.dir, branch: "tether/gone", expectSetup: again.setupId })).rejects.toThrow("there's none now");
@@ -634,7 +633,7 @@ describe("New worktree", () => {
     expect(precious((await ignoredFiles(made.path))!, rec.known)).toEqual([".env"]);
   });
 
-  test("Archive done: a branch with work not in main is never deleted, even when HEAD moved to merged work", async () => {
+  test("removal: a branch with work not in main is never deleted, even when HEAD moved to merged work", async () => {
     const r = repo();
     const path = await addWorktree(r.dir, "tether/wip", "main");
     writeFileSync(join(path, "wip.txt"), "unmerged work");
@@ -888,5 +887,145 @@ describe("Existing worktree", () => {
     await expect(t.w.join({ harness: "claude", projectPath: r.dir, worktree: "tether/nope" })).rejects.toThrow("isn't one of");
     await expect(t.w.join({ harness: "claude", projectPath: scratch(), worktree: "x" })).rejects.toThrow("isn't in a git repository");
     expect(t.adapter.drivers.length).toBe(n);
+  });
+});
+
+describe("Cleanup on archive", () => {
+  /** A session in a new worktree whose work is committed there and fast-forwarded into main. */
+  async function merged(t: ReturnType<typeof runnerFor>, dir: string, branch: string) {
+    const made = await t.w.create({ harness: "claude", projectPath: dir, branch });
+    writeFileSync(join(made.path, `${folderForBranch(branch)}.txt`), "x");
+    sh(made.path, "add", ".");
+    sh(made.path, "commit", "-qm", branch);
+    sh(dir, "merge", "-q", "--ff-only", branch);
+    return made;
+  }
+  const archive = (t: ReturnType<typeof runnerFor>, id: string) => t.runner.look.sessions.setArchived(id, true);
+  const notices = (t: ReturnType<typeof runnerFor>, id: string) => (t.runner.core.sessions.get(id)?.transcript?.messages ?? []).filter((m) => m.role === "notice" && m.id.startsWith("n-worktree-")).map((m) => (m.parts[0] as { text: string }).text);
+
+  test("merged: the worktree Tether made goes with its branch, and the session says so; unmerged work keeps it, with why", async () => {
+    const t = runnerFor();
+    const r = repo();
+    const done = await merged(t, r.dir, "tether/done");
+    await archive(t, done.sessionId);
+    expect(await t.w.cleanUp(done.sessionId)).toEqual({ removed: true });
+    expect(existsSync(done.path)).toBe(false);
+    expect(sh(r.dir, "branch", "--list", "tether/done")).toBe("");
+    expect(notices(t, done.sessionId)).toEqual([`Archived: everything was merged. Tether removed its worktree ${done.path} and branch tether/done.`]);
+    // A commit only on its branch: kept, and said why.
+    const open = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/open" });
+    writeFileSync(join(open.path, "g.txt"), "x");
+    sh(open.path, "add", ".");
+    sh(open.path, "commit", "-qm", "wip");
+    await archive(t, open.sessionId);
+    expect((await t.w.cleanUp(open.sessionId))?.why).toContain("aren't in main");
+    expect(existsSync(open.path)).toBe(true);
+    expect(notices(t, open.sessionId)[0]).toContain(`Tether kept its worktree ${open.path}: its worktree ${open.path} has commits that aren't in main`);
+    // Merged but with uncommitted changes: git's own non-forced remove refuses, so it stays.
+    const dirty = await merged(t, r.dir, "tether/dirty");
+    writeFileSync(join(dirty.path, "README.md"), "changed\n");
+    await archive(t, dirty.sessionId);
+    expect((await t.w.cleanUp(dirty.sessionId))?.removed).toBe(false);
+    expect(existsSync(join(dirty.path, "README.md"))).toBe(true);
+  });
+
+  test("a worktree several sessions share goes only with the last of them; one made by hand never does", async () => {
+    const t = runnerFor();
+    const r = repo();
+    const made = await merged(t, r.dir, "tether/shared");
+    const guest = await t.w.join({ harness: "claude", projectPath: r.dir, worktree: "tether/shared" });
+    await archive(t, made.sessionId);
+    expect(await t.w.cleanUp(made.sessionId)).toEqual({ removed: false, why: `another session works in ${made.path}` });
+    expect(existsSync(made.path)).toBe(true);
+    // Quietly: the other session is still at work there.
+    expect(notices(t, made.sessionId)).toEqual([]);
+    await archive(t, guest.sessionId);
+    expect(await t.w.cleanUp(guest.sessionId)).toEqual({ removed: true });
+    expect(existsSync(made.path)).toBe(false);
+    // A session in the worktree's folder with no record counts too.
+    const two = await merged(t, r.dir, "tether/two");
+    const plain = (await t.runner.ops.call("newSession", { harness: "claude", projectPath: two.path })) as { sessionId: string };
+    await t.runner.live.send(plain.sessionId, "hi");
+    await until(() => t.runner.look.sessions.list().some((x) => x.id === plain.sessionId));
+    await archive(t, two.sessionId);
+    expect((await t.w.cleanUp(two.sessionId))?.why).toContain("another session works in");
+    // By hand: recorded, never removed.
+    const hand = join(r.root, "hand");
+    sh(r.dir, "worktree", "add", "-qb", "gavin/hand", hand);
+    const byHand = await t.w.join({ harness: "claude", projectPath: r.dir, worktree: hand });
+    await archive(t, byHand.sessionId);
+    expect(await t.w.cleanUp(byHand.sessionId)).toBeUndefined();
+    expect(existsSync(hand)).toBe(true);
+  });
+
+  test("a removal waits for a join under way on that worktree, and then sees the new user", async () => {
+    const t = runnerFor();
+    const r = repo();
+    const made = await merged(t, r.dir, "tether/racing");
+    let release!: () => void;
+    const joining = lockWorktree(made.path, async () => {
+      await new Promise<void>((done) => (release = done));
+      const guest = await t.runner.look.sessions.create({ harness: "claude", projectPath: r.root, source: "subscription" });
+      await t.runner.look.sessions.setWorktree!(guest, { path: made.path, branch: "tether/racing", repo: r.dir, joined: true });
+    });
+    await archive(t, made.sessionId);
+    const cleaning = t.w.cleanUp(made.sessionId);
+    await Bun.sleep(200);
+    expect(existsSync(made.path)).toBe(true);
+    release();
+    await joining;
+    expect((await cleaning)?.why).toContain(`another session works in ${made.path}`);
+    expect(existsSync(made.path)).toBe(true);
+  });
+
+  test("never while the session has work going, a process outside Tether works there, or it was unarchived", async () => {
+    let outside = 1;
+    const t = runnerFor({ usersOf: () => outside });
+    const r = repo();
+    const made = await merged(t, r.dir, "tether/busy");
+    await archive(t, made.sessionId);
+    expect((await t.w.cleanUp(made.sessionId))?.why).toBe("1 process outside Tether works in it (a tmux session or a server, say)");
+    expect(existsSync(made.path)).toBe(true);
+    outside = 0;
+    // Unarchived again before the removal: it's in use.
+    await t.runner.look.sessions.setArchived(made.sessionId, false);
+    expect((await t.w.cleanUp(made.sessionId))?.removed).toBe(false);
+    expect(existsSync(made.path)).toBe(true);
+    // A message waiting in its queue: kept.
+    t.runner.core.sessions.get(made.sessionId)!.state.queue.push({ id: "q1", text: "later", at: Date.now() + 60_000 } as never);
+    await archive(t, made.sessionId);
+    expect((await t.w.cleanUp(made.sessionId))?.why).toBe("it has messages waiting");
+    expect(existsSync(made.path)).toBe(true);
+  });
+
+  test("through the module: archiving a session removes its merged worktree", async () => {
+    const t = runnerFor();
+    const { worktreesModule } = await import(".");
+    const stop = await worktreesModule.start({ ...t.runner.look, bus: t.runner.bus, ops: t.runner.ops, dataDir: scratch(), log: () => {}, runnerId: "t", appUrl: "http://x" } as never);
+    if (stop) cleanups.push(stop);
+    const r = repo();
+    const made = await merged(t, r.dir, "tether/evented");
+    await t.runner.ops.call("setSessionArchived", { sessionId: made.sessionId, archived: true });
+    await until(() => !existsSync(made.path) && sh(r.dir, "branch", "--list", "tether/evented") === "");
+  });
+
+  test("outsideUsers counts a process working in the folder that this runner didn't start", async () => {
+    const d = scratch();
+    expect(outsideUsers(d)).toBe(0);
+    // Detached, as a tmux server is: once its shell exits it's no longer this process's descendant.
+    const p = Bun.spawn(["sh", "-c", "setsid sleep 30 </dev/null >/dev/null 2>&1 & echo $!"], { cwd: d, stdout: "pipe" });
+    const pid = Number((await new Response(p.stdout).text()).trim());
+    await p.exited;
+    cleanups.push(() => {
+      try {
+        process.kill(pid);
+      } catch {}
+    });
+    await until(() => outsideUsers(d) === 1);
+    // One this process started and still parents isn't counted.
+    const own = Bun.spawn(["sleep", "30"], { cwd: d });
+    cleanups.push(() => own.kill());
+    await Bun.sleep(50);
+    expect(outsideUsers(d)).toBe(1);
   });
 });

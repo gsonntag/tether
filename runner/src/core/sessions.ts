@@ -218,7 +218,7 @@ export class SessionCore {
     return !!p.carrying || !!(p.carried && p.movedTo);
   }
 
-  /** A folder TETHER_HIDE_PROJECTS (or the Home agent's) names. */
+  /** A folder TETHER_HIDE_PROJECTS names. */
   hidden(path: string): boolean {
     return !!this.hide?.test(path);
   }
@@ -250,7 +250,7 @@ export class SessionCore {
     });
   }
 
-  /** `archived`: only the archived ones (the Home agent finds a finished session to revive). `all`: every stored one, of any age, archived or not (the Home agent's search). */
+  /** `archived`: only the archived ones. `all`: every stored one, of any age, archived or not. */
   async listSessions(args: { projectPath?: string; parentSessionId?: string; sideOf?: string; query?: string; limit?: number; archived?: boolean; all?: boolean }): Promise<{ sessions: SessionSummary[]; epoch?: string; seq?: number }> {
     const limit = Math.max(1, Math.min(args.limit ?? 500, 2000));
     if (args.sideOf) {
@@ -590,6 +590,7 @@ export class SessionCore {
     this.o.prefs.flush();
     this.touch(s);
     await this.discover();
+    this.o.bus.emit("archived", { sessionId: s.id, archived });
   }
 
   /** Records the worktree a session works in as its own (New or Existing worktree, SPEC §4): saved at once. */
@@ -606,7 +607,7 @@ export class SessionCore {
     // A side chat (SPEC §16a) isn't in the lists: it shows under its session.
     if (pinned && (s.summary.sideOf || this.o.prefs.get(s.id).sideOf)) throw new Error("A side chat can't be pinned: it shows under its session.");
     if (pinned && this.o.prefs.get(s.id).archived) throw new Error("Unarchive the session to pin it.");
-    // The Home agent's chats and TETHER_HIDE_PROJECTS folders are never in the lists.
+    // TETHER_HIDE_PROJECTS folders are never in the lists.
     if (pinned && this.hide?.test(s.summary.projectPath)) throw new Error("Sessions in this folder aren't listed, so they can't be pinned.");
     const { title, projectPath, updatedAt } = s.summary;
     this.o.prefs.set(s.id, { projectPath, pinned: pinned ? this.now() : undefined, pinnedRow: pinned ? { title, projectPath, updatedAt } : undefined });
@@ -634,7 +635,7 @@ export class SessionCore {
 
   /**
    * The rows the lists show, without those listed only because they are pinned: what the modules
-   * see (the Home agent's check-in and its list, tether_sessions), so a pin doesn't widen it.
+   * see (tether_sessions, the worktrees' users), so a pin doesn't widen it.
    */
   listed(): SessionSummary[] {
     return this.book.list().filter((r) => !r.missing && (!r.pinned || this.recent(r) || this.owned(r.id) || this.watched.has(r.id)));

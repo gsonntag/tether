@@ -6,7 +6,7 @@
 // capped instead (caps.ts).
 //
 // The same server carries text_person (the texting module texts the person for the session, through
-// homeLine.ts, only when its "Session can text me" box is ticked), and with it Tether's instructions for every session it runs (instructions.ts: concise
+// phoneLine.ts, only when its "Session can text me" box is ticked), and with it Tether's instructions for every session it runs (instructions.ts: concise
 // replies, texting only through text_person).
 
 import { join } from "node:path";
@@ -25,7 +25,7 @@ import { peerSecret, peerToken, PeerSocket, type PeerAnswer, type PeerCall } fro
 import { ASK_DEFAULT_MIN, ASK_MAX_MIN } from "./tools";
 import { Children } from "./children";
 import { IMAGE_REFUSED, ImageFailures } from "../texting/images";
-import { CANT_TEXT } from "../homeLine";
+import { CANT_TEXT } from "../phoneLine";
 
 /** How much of an answer an ask returns. */
 export const ANSWER_MAX = 20_000;
@@ -72,7 +72,7 @@ export class Peers {
   private asks: Ask[] = [];
 
   constructor(
-    private ctx: Pick<ModuleContext, "sessions" | "session" | "log" | "homeFolder" | "homeLine"> & { ops?: Pick<ModuleContext["ops"], "call">; dataDir?: string },
+    private ctx: Pick<ModuleContext, "sessions" | "session" | "log" | "phoneLine"> & { ops?: Pick<ModuleContext["ops"], "call">; dataDir?: string },
     now: () => number = Date.now,
   ) {
     this.caps = new PeerCaps(now);
@@ -146,20 +146,14 @@ export class Peers {
       case PEER_TOOLS.broadcast:
         return this.broadcastFrom(from, str(a.text), { project: str(a.project), status: str(a.status), scope: str(a.scope) });
       case TEXT_PERSON: {
-        // The image is read and checked once, where it's sent (texting's personText, or the Home
-        // agent's text_person for a relayed one). Refusals count here: past a few, every image is
-        // refused (no probing the machine's paths).
+        // The image is read and checked once, where it's sent (texting's personText). Refusals
+        // count here: past a few, every image is refused (no probing the machine's paths).
         const image = str(a.image).trim();
         if (image && !this.imageFails.allowed(from)) return { text: `${IMAGE_REFUSED} Nothing was sent.`, isError: true };
-        // A session the Home agent drives reports to it instead: it texts the person (their PM).
-        const relayed = await this.ctx.homeLine?.home?.relay?.(from, str(a.message), image || undefined);
-        if (relayed) return { text: relayed };
-        // Only a session whose "Session can text me" box is ticked texts (the Home agent's own chats always may).
-        const home = this.ctx.homeLine?.home;
-        const homeChat = !!home && ((home.isTextsChat?.(from) || !!home.homes?.().some((h) => h.chat === from)));
+        // Only a session whose "Session can text me" box is ticked texts.
         const look = this.ctx.session(from);
-        if (look && !homeChat && (!look.state?.canText || look.summary.archived)) return { text: CANT_TEXT, isError: true };
-        const phone = this.ctx.homeLine?.phone;
+        if (look && (!look.state?.canText || look.summary.archived)) return { text: CANT_TEXT, isError: true };
+        const phone = this.ctx.phoneLine?.phone;
         if (!phone) return { text: "Texting is off in Tether, so nothing was sent. Say it in your reply instead.", isError: true };
         const r = await phone.text(from, str(a.message), image ? { image } : {});
         if (image && r.isError && r.text.startsWith(IMAGE_REFUSED)) this.imageFails.failed(from);
@@ -197,10 +191,10 @@ export class Peers {
     return `"${markTitle(title)}" (${id})`;
   }
 
-  /** Whether a message can reach `s`: listed, not archived, not a subagent, not the Home agent's chat. */
+  /** Whether a message can reach `s`: listed, not archived, not a subagent. */
   private reaches(s: SessionSummary) {
     // A side chat (SPEC §16a) is reached through its session's panel only.
-    return reachable(s) && !s.sideOf && !(this.ctx.homeFolder && s.projectPath === this.ctx.homeFolder);
+    return reachable(s) && !s.sideOf;
   }
 
   /** The sessions the lists show (recent ones and every live one) that `from` can message. */
@@ -236,7 +230,7 @@ export class Peers {
     if (/^[a-z]+:[\w.-]+$/.test(t)) {
       const s = (await this.ctx.sessions.open(t).catch(() => undefined))?.summary;
       if (s && this.reaches(s)) return s;
-      if (s) throw new Error(`Session ${t} can't be messaged (archived sessions, subagents and the Home agent can't be).`);
+      if (s) throw new Error(`Session ${t} can't be messaged (archived sessions and subagents can't be).`);
     }
     const lower = t.toLowerCase();
     for (const pick of [(s: SessionSummary) => s.title.toLowerCase() === lower, (s: SessionSummary) => s.title.toLowerCase().includes(lower)]) {
@@ -442,7 +436,6 @@ export const peersModule: Module = {
     const secret = peerSecret(ctx.dataDir);
     const socket = new PeerSocket(join(ctx.dataDir, "peers.sock"), secret, (c) => peers.call(c), ctx.log);
     socket.start();
-    const home = ctx.homeFolder;
     const unset = ctx.sessions.adapters().map((a) =>
       a.toolServer?.({
         name: PEER_SERVER,
@@ -450,8 +443,6 @@ export const peersModule: Module = {
         args: [join(import.meta.dir, "mcp.ts")],
         env: (id) => ({ TETHER_PEERS_SOCKET: socket.socketPath, TETHER_PEERS_ID: id, TETHER_PEERS_TOKEN: peerToken(secret, id) }),
         timeoutMs: CALL_MS,
-        // The Home agent has tools (and instructions) of its own.
-        skip: (p) => !!home && p === home,
         instructions: () => sessionInstructions(runnerSettings()),
       }),
     );

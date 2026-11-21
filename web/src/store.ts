@@ -2,9 +2,8 @@
 // session lists and projects, and the sessions this page has open.
 
 import { create } from "zustand";
-import { mergeHomeChat } from "./homeTabs";
 import { checkBuild } from "./build";
-import { PROTOCOL_VERSION, type HomeChatUpdate, type User } from "../../shared/protocol";
+import { PROTOCOL_VERSION, type User } from "../../shared/protocol";
 import { applySummary, emptySummary, type SummaryState } from "../../shared/summary";
 import type { HarnessId, ModelList, ProjectInfo } from "../../shared/transcript";
 import { connect, on, onAuth, onLinkState, rpc, type AuthState, type LinkState } from "./connection";
@@ -13,7 +12,6 @@ import { startPresence, tellPresence } from "./presence";
 import { openSession, parseRoute, shortenHash, startShortUrls } from "./route";
 import { registerWorker, syncPush } from "./push";
 import { loadKnown, mergeRunners, reconnected, saveKnown, sortRunners, type KnownRunner } from "./runners";
-import { setHomeFolders, type Watching } from "./sessionList";
 import { SessionModel, type SessionView, type Verdict } from "./sessionModel";
 import { resubscriber, Subscriptions } from "./subscriptions";
 import { pendingSender, reconcile, type PendingSend } from "./pendingSends";
@@ -63,10 +61,6 @@ interface State {
   pushKey?: string;
   /** the last archive change made here: the sidebar patches its listSessions copies with it */
   archiveEdit?: { runnerId: string; sessionId: string; archived: boolean };
-  /** each runner's Home agent tabs and current chat (none: the next message starts one), newest `rev` wins */
-  homeChats: Record<string, HomeChatUpdate>;
-  /** each runner's "Watch all sessions" and the sessions its Home agent follows (homeAgentWatch) */
-  homeWatch: Record<string, Watching>;
 }
 
 // Nothing is shown from this browser's memory until the server says who's signed in (hello).
@@ -84,8 +78,6 @@ export const useStore = create<State>(() => ({
   views: {},
   pending: {},
   newSessionOpen: false,
-  homeChats: {},
-  homeWatch: {},
 }));
 
 const set = useStore.setState;
@@ -119,7 +111,6 @@ export function start() {
     const before = get().user?.email === m.user.email ? get().runners : [];
     const remembered = loadKnown(m.user.email).filter((k) => !before.some((r) => r.id === k.id));
     const runners = sortRunners([...before, ...remembered]);
-    setHomeFolders(runners);
     set((s) => ({ user: m.user, runners, stale: s.stale || m.protocol !== PROTOCOL_VERSION, pushKey: m.push?.publicKey }));
     // The server forgot what this device looked at with its old socket.
     tellPresence(true);
@@ -135,7 +126,6 @@ export function start() {
     for (const r of runners) if (r.online && (afterHello || back.includes(r.id))) refreshRunner(r.id);
     afterHello = false;
     saveKnown(runners, get().user?.email);
-    setHomeFolders(runners);
     set({ runners });
     // A runner that came online may give the open session its short link now.
     if (runners.some((r) => r.online && !before.find((b) => b.id === r.id)?.online)) {
@@ -159,15 +149,6 @@ export function start() {
           publish(m.runnerId, sum.id);
         }
       }
-  });
-  // Another device started a Home chat or cleared it (/new): this one's Home follows.
-  on("homeChat", ({ runnerId, sessionId, chats, labels, rev }) => {
-    noteHomeChat(runnerId, { sessionId, rev, ...(chats ? { chats } : {}), ...(labels ? { labels } : {}) });
-    // A server from before tabs passes no list on: the runner is asked for it.
-    if (!chats)
-      void rpc(runnerId, "homeAgent", {})
-        .then((r) => noteHomeChat(runnerId, { sessionId: r.sessionId, rev: r.rev ?? 0, ...(r.chats ? { chats: r.chats } : {}), ...(r.labels ? { labels: r.labels } : {}) }))
-        .catch(() => {});
   });
   on("event", (m) => {
     const entry = models.get(key(m.runnerId, m.sessionId));
@@ -361,18 +342,6 @@ export async function setArchived(runnerId: string, sessionId: string, archived:
 /** Pins or unpins a session (SPEC §10 Pinning); throws the runner's error. The row's change comes as a summary. */
 export async function setPinned(runnerId: string, sessionId: string, pinned: boolean) {
   await rpc(runnerId, "pinSession", { sessionId, pinned });
-}
-
-/** A runner's Home agent tabs and current chat, from an rpc's answer or a broadcast: only a newer one replaces what's here. */
-export function noteHomeChat(runnerId: string, u: HomeChatUpdate) {
-  const next = mergeHomeChat(get().homeChats[runnerId], u);
-  if (next) set((s) => ({ homeChats: { ...s.homeChats, [runnerId]: next } }));
-}
-
-
-/** What a runner's Home agent watches (a homeAgentWatch answer). */
-export function noteHomeWatch(runnerId: string, w: Watching) {
-  set((s) => ({ homeWatch: { ...s.homeWatch, [runnerId]: { watchAll: w.watchAll, ...(w.following ? { following: w.following } : {}) } } }));
 }
 
 /** Drops a disconnected runner from this browser's list. */

@@ -1,23 +1,18 @@
 import { expect, test } from "bun:test";
 import type { HarnessCapabilities, SessionSummary } from "../../shared/transcript";
 import { btwQuestion, canSideChat, withBtw } from "./sideChat";
-import { awaitedSessions, inbox, recentSessions, setHomeFolders, sideChatsOf, waitingOn } from "./sessionList";
+import { inbox, recentSessions, sideChatsOf, waitingOn } from "./sessionList";
 import { canFork } from "./fork";
 
 const caps = (over: Partial<HarnessCapabilities> = {}): HarnessCapabilities => ({ canSteer: true, terminal: "handoff", subagents: { view: true, stop: true, steer: false }, fork: true, readOnlyMode: "plan", ...over });
 
 test("side chats are offered on a main session that forks, on a harness with a read-only mode", () => {
-  expect(canSideChat("r", { projectPath: "/p" }, caps(), {})).toBe(true);
-  expect(canSideChat("r", { projectPath: "/p", sideOf: "claude:a" }, caps(), {})).toBe(false);
-  expect(canSideChat("r", { projectPath: "/p", parentSessionId: "claude:a" }, caps(), {})).toBe(false);
-  expect(canSideChat("r", { projectPath: "/p" }, caps({ readOnlyMode: undefined }), {})).toBe(false);
-  expect(canSideChat("r", { projectPath: "/p" }, caps({ fork: undefined }), {})).toBe(false);
-  expect(canSideChat("r", { projectPath: "/p" }, caps(), { nextBilling: { kind: "plan", label: "Claude plan" } })).toBe(false);
-  // Not on the Home agent's chats.
-  setHomeFolders([{ id: "r", homeFolder: "/home-agent" }]);
-  expect(canSideChat("r", { projectPath: "/home-agent" }, caps(), {})).toBe(false);
-  expect(canSideChat("other", { projectPath: "/home-agent" }, caps(), {})).toBe(true);
-  setHomeFolders([]);
+  expect(canSideChat({}, caps(), {})).toBe(true);
+  expect(canSideChat({ sideOf: "claude:a" }, caps(), {})).toBe(false);
+  expect(canSideChat({ parentSessionId: "claude:a" }, caps(), {})).toBe(false);
+  expect(canSideChat({}, caps({ readOnlyMode: undefined }), {})).toBe(false);
+  expect(canSideChat({}, caps({ fork: undefined }), {})).toBe(false);
+  expect(canSideChat({}, caps(), { nextBilling: { kind: "plan", label: "Claude plan" } })).toBe(false);
   // A side chat isn't forked either.
   expect(canFork({ sideOf: "claude:a" }, caps(), {})).toBe(false);
 });
@@ -42,7 +37,6 @@ test("side chats stay out of every list, and show under their session", () => {
   expect(recentSessions(summaries, "b").map((r) => r.id)).toEqual([]);
   expect(waitingOn(summaries, "r")).toEqual([]);
   expect(inbox(summaries).map((r) => r.id)).toEqual(["a"]);
-  expect(awaitedSessions(summaries, "r", { watchAll: true }).rows.map((r) => r.id)).toEqual(["a"]);
   expect(sideChatsOf(summaries, "r", "a").map((r) => r.id)).toEqual(["b"]);
   expect(sideChatsOf(summaries, "x", "a")).toEqual([]);
 });

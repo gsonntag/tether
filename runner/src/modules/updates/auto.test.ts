@@ -27,7 +27,7 @@ function setup(o: { rows?: HarnessVersion[]; looks?: () => SessionLook[]; fail?:
       return { state: "done", startedAt: now, output: "ok", command: "x", from: r.installed, to: r.latest };
     },
   };
-  const a = new AutoUpdater({ checker, looks: o.looks ?? (() => [idle()]), file: o.file, now: () => now, notify: (t) => void told.push(t) });
+  const a = new AutoUpdater({ checker, looks: o.looks ?? (() => [idle()]), file: o.file, now: () => now, log: (l) => void (l.startsWith("auto-update: Auto-") && told.push(l.slice("auto-update: ".length))) });
   return { a, updated, told, tick: (ms: number) => (now += ms), reports: () => reports };
 }
 

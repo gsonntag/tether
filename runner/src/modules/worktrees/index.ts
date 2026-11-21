@@ -1,5 +1,5 @@
-// A worktree per session (SPEC §4). New session's "New worktree" (and the Home agent's start_session
-// with worktree: true) makes a git worktree beside the folder's repo, on a new branch from the
+// A worktree per session (SPEC §4). New session's "New worktree" (and tether_start with a
+// worktree) makes a git worktree beside the folder's repo, on a new branch from the
 // default branch (fetched first, best effort), and starts the session there. "Existing worktree"
 // starts one in a worktree that's already there (made for another session, or by hand):
 //
@@ -9,12 +9,12 @@
 //   listWorktrees           the repo's other worktrees (git worktree list), and who works in each
 //   existingWorktreeSession newSession in one of them -> recorded as one of its users (no setup)
 //   rerunSetup              the setup again, after it failed or a restart cut it off
+//   (archived event)        cleanUp: archiving a session removes the worktree Tether made, once safe
 //
 // The record (runner.json's `worktree` on the session: path, branch, main checkout, and the ignored
 // files there once it was set up) is what makes the worktree the session's own: the summary carries
-// the main checkout as `worktreeOf`, and the Home agent's check-in (Archive done) removes it, and its
-// branch, once the session is done and merged and no other session uses it (one with a record there,
-// or whose folder is in it). One made by hand is recorded too (`handMade`), but never removed; so is
+// the main checkout as `worktreeOf`, and archiving the session removes it, and its branch, once it's
+// merged and clean and no other session uses it (one with a record there, or whose folder is in it). One made by hand is recorded too (`handMade`), but never removed; so is
 // one whose only records are archived or name another branch (it may have been made again by hand). The
 // setup (`.tether/setup`, or `.tether/config.json`'s "setup") runs in the new worktree as a card in
 // the session; until it succeeds what you send waits, held (core/queue.ts setupStarted/setupEnded).
@@ -28,7 +28,7 @@ import { resolve } from "node:path";
 import type { WorkspaceInfo, WorktreeJoined, WorktreeList, WorktreeMade } from "../../../../shared/worktree";
 import { pickWorktree, SETUP_MAX_MS } from "../../../../shared/worktree";
 import type { WorktreeRecord } from "../../config";
-import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, gitWorktrees, ignoredFiles, lockWorktree, lastFetched, repoOf, runGit, setupAt, shaOf, undoAdd, worktreePath, type Git, type IgnoredFiles, type Setup, sameStamp } from "./git";
+import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, gitWorktrees, ignoredFiles, lockWorktree, lastFetched, outsideUsers, removeOwnWorktree, repoOf, runGit, setupAt, shaOf, undoAdd, worktreePath, type Git, type IgnoredFiles, type Setup, sameStamp } from "./git";
 
 /** At most this many ignored files are remembered as there after setup (more: the rest count as new). */
 const KNOWN_MAX = 5000;
@@ -59,6 +59,8 @@ export class Worktrees {
       git?: Git;
       /** a setup's time limit (tests shorten it) */
       setupMs?: number;
+      /** how many processes outside this runner work in a folder (tests stub it) */
+      usersOf?: (dir: string) => number;
     },
   ) {}
 
@@ -133,7 +135,7 @@ export class Worktrees {
       return { base, branch, path, sha, ...(fetched !== undefined ? { fetched } : {}) };
     });
     const { base, branch, path, sha } = made;
-    // What's ignored there before anyone works in it (a hook's output, say): Archive done may delete it while unchanged.
+    // What's ignored there before anyone works in it (a hook's output, say): removal on archive may delete it while unchanged.
     const known = await ignoredFiles(path, this.git);
     let sessionId: string;
     try {
@@ -222,7 +224,7 @@ export class Worktrees {
    * Starts a session in an existing worktree of the folder's repo (its path or branch), and records
    * it as one of the worktree's users: as a trusted record of it says (whether Tether made it), else
    * as one made by hand (never removed by Tether). Nothing is made and the setup doesn't run again.
-   * Under the worktree's lock, which Archive done's removal takes too: it can't go meanwhile.
+   * Under the worktree's lock, which the removal on archive takes too: it can't go meanwhile.
    */
   async join(args: OpArgs<"existingWorktreeSession">): Promise<WorktreeJoined> {
     const { worktree: wanted, ...rest } = args;
@@ -275,6 +277,62 @@ export class Worktrees {
 
   /** sessions whose Re-run setup is on its way (until the setup has started) */
   private rerunning = new Set<string>();
+
+  /**
+   * A session was archived: the worktree Tether made for it (or another, that it joined) goes, with
+   * its branch, once that's safe, and a notice in the session says so. Never one made by hand, nor
+   * while the session still has work going (a turn, queued messages, background work, a terminal),
+   * another session that isn't archived works there, a process outside this runner (a tmux session,
+   * a dev server) has its folder there, or git can't confirm everything is in main and the tree is
+   * clean (removeOwnWorktree). When it stays for a reason other than another session, the notice
+   * says why. Unsure: it stays. Undefined: nothing to do.
+   */
+  async cleanUp(sessionId: string): Promise<{ removed: boolean; why?: string } | undefined> {
+    const own = this.o.sessions.worktree?.(sessionId);
+    if (!own || own.handMade || !own.branch) return undefined;
+    const look = await this.o.sessions.open(sessionId).catch(() => undefined);
+    // Only the session whose folder it is (one moved elsewhere since doesn't own it any more).
+    if (!look || resolve(look.summary.projectPath) !== resolve(own.path)) return undefined;
+    const busy = look.state.terminal || look.summary.mode === "terminal" ? "it's open in a terminal" : look.status !== "idle" || look.requests.length ? "it was still running a turn" : look.state.queue.length || look.state.queueHeld ? "it has messages waiting" : look.busy || look.background || look.state.watching?.length ? "it still has work running" : undefined;
+    if (busy) return this.kept(sessionId, own.path, busy);
+    // Merged on the remote since the last fetch (a PR merged on the website): fetched first, best effort.
+    const base = await defaultBase(own.repo, this.git).catch(() => "HEAD");
+    if (base.startsWith("origin/")) await fetchBase(own.repo, base, this.git).catch(() => false);
+    // One session of a worktree at a time, and never while one joins it.
+    const r = await lockWorktree(own.path, async () => {
+      const users = this.o.sessions.worktreeUsers?.(own.path) ?? [];
+      // Unarchived meanwhile: it's in use again.
+      if (!users.find((u) => u.id === sessionId)?.archived) return { removed: false, why: "it was unarchived", quiet: true };
+      const others = [...this.o.sessions.list().filter((r) => r.id !== sessionId && !r.archived).map((r) => r.projectPath), ...users.filter((u) => u.id !== sessionId && !u.archived).map((u) => u.worktree.path)];
+      const outside = existsSync(own.path) ? (this.o.usersOf ?? outsideUsers)(own.path) : 0;
+      if (outside) return { removed: false, why: `${outside} process${outside === 1 ? "" : "es"} outside Tether ${outside === 1 ? "works" : "work"} in it (a tmux session or a server, say)` };
+      // What each session's setup left there (the one that made it ran it): files unchanged since may go.
+      const known = Object.assign({}, ...users.map((u) => (u.worktree.known && !Array.isArray(u.worktree.known) ? u.worktree.known : {})), own.known && !Array.isArray(own.known) ? own.known : {});
+      return removeOwnWorktree({ ...own, known }, others, this.git).catch((e) => ({ removed: false, why: (e as Error).message }));
+    });
+    if (!r.removed) {
+      if ("quiet" in r || /^another session/.test(r.why ?? "")) {
+        this.o.log?.(`${sessionId}: archived; its worktree ${own.path} stays: ${r.why}`);
+        return { removed: false, ...(r.why ? { why: r.why } : {}) };
+      }
+      return this.kept(sessionId, own.path, r.why ?? "git couldn't confirm it's safe to remove");
+    }
+    const what = "gone" in r && r.gone ? `Its worktree folder ${own.path} was already gone, so Tether pruned git's record of it` : `Tether removed its worktree ${own.path}`;
+    const branch = "branchKept" in r && r.branchKept ? ` (its branch stays: ${r.branchKept})` : ` and branch ${own.branch}`;
+    await this.notify(sessionId, `Archived: everything was merged. ${what}${branch}.`, "info");
+    this.o.log?.(`${sessionId}: archived; removed its worktree ${own.path}`);
+    return { removed: true };
+  }
+
+  private async kept(sessionId: string, path: string, why: string) {
+    this.o.log?.(`${sessionId}: archived; its worktree ${path} stays: ${why}`);
+    await this.notify(sessionId, `Archived. Tether kept its worktree ${path}: ${why}.`, "info");
+    return { removed: false, why };
+  }
+
+  private notify(sessionId: string, text: string, level: "info" | "warning") {
+    return this.o.sessions.notice(sessionId, { id: `n-worktree-${Date.now().toString(36)}`, role: "notice", level, ts: Date.now(), parts: [{ type: "text", text }] }).catch(() => {});
+  }
 }
 
 export const worktreesModule: Module = {
@@ -286,5 +344,8 @@ export const worktreesModule: Module = {
     ctx.ops.register("listWorktrees", (a) => w.list(String(a?.projectPath ?? "")));
     ctx.ops.register("existingWorktreeSession", (a) => w.join(a));
     ctx.ops.register("rerunSetup", async (a) => (await w.rerun(String(a?.sessionId ?? "")), null));
+    return ctx.bus.on("archived", ({ sessionId, archived }) => {
+      if (archived) void w.cleanUp(sessionId).catch((e) => ctx.log(`${sessionId}: worktree cleanup failed: ${(e as Error).message}`));
+    });
   },
 };

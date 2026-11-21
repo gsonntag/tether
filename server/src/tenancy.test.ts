@@ -26,7 +26,7 @@ class FakeSocket implements Socket {
 }
 
 const OWNERS = '{"runner-alice":["Alice@Example.com"],"runner-bob":["bob@example.com","u-bob-2"],"runner":["ops@example.com"]}';
-const info = (id: string): Omit<RunnerInfo, "connectedAt"> => ({ id, name: id, hostname: "h", version: "0", protocol: PROTOCOL_VERSION, harnesses: [], homeFolder: "/home/x/.tether-home" });
+const info = (id: string): Omit<RunnerInfo, "connectedAt"> => ({ id, name: id, hostname: "h", version: "0", protocol: PROTOCOL_VERSION, harnesses: [] });
 
 function world() {
   const relay = new Relay({ rpcTimeoutMs: 1000, owners: parseRunnerOwners(OWNERS) });
@@ -114,11 +114,10 @@ describe("relay with several tenants", () => {
     expect(ops.take()).toEqual([]);
   });
 
-  test("summaries, Home chats and session events from a runner reach only its owner's browsers", () => {
+  test("summaries and session events from a runner reach only its owner's browsers", () => {
     const { relay, rpc, alice, bob, ops, stranger, aliceR, bobR } = world();
     relay.onRunnerMessage(aliceR, { t: "summary", summary: { seq: 1, full: true, sessions: [] } } as any);
-    relay.onRunnerMessage(aliceR, { t: "homeChat", rev: 1, chats: [] } as any);
-    expect(alice.take().map((m) => m.t)).toEqual(["summary", "homeChat"]);
+    expect(alice.take().map((m) => m.t)).toEqual(["summary"]);
     for (const s of [bob, ops, stranger]) expect(s.take()).toEqual([]);
     relay.onRunnerMessage(bobR, { t: "summary", summary: { seq: 1, full: true, sessions: [] } } as any);
     expect(bob.take().map((m) => m.t)).toEqual(["summary"]);

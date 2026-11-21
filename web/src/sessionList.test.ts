@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { SessionSummary } from "../../shared/transcript";
-import { childrenOf, folderName, groupByProject, mergeRows, recentGroups, pinMenuLabel, recentSessions, setHomeFolders, splitPinned, waitingOn , inbox } from "./sessionList";
+import { childrenOf, folderName, groupByProject, mergeRows, recentGroups, pinMenuLabel, recentSessions, splitPinned, waitingOn , inbox } from "./sessionList";
 
 const s = (id: string, updatedAt: number, extra: Partial<SessionSummary> = {}): SessionSummary => ({ id, harness: "claude", nativeId: id, projectPath: "/p/web", title: `T ${id}`, mode: "stored", status: "idle", updatedAt, ...extra });
 const summaries = {
@@ -69,15 +69,12 @@ test("pinned sessions: their own group in pin order across runners, out of the r
 });
 
 test("the session menu's pin item: only for a main, listed session on a runner that pins", () => {
-  setHomeFolders([{ id: "a", homeFolder: "/home/agent" }]);
-  expect(pinMenuLabel("a", s("x", 1), true)).toBe("Pin");
-  expect(pinMenuLabel("a", s("x", 1, { pinned: 3 }), true)).toBe("Unpin");
-  expect(pinMenuLabel("a", s("x", 1), false)).toBeUndefined();
-  expect(pinMenuLabel("a", s("x", 1, { archived: true }), true)).toBeUndefined();
-  expect(pinMenuLabel("a", s("x", 1, { parentSessionId: "y" }), true)).toBeUndefined();
-  expect(pinMenuLabel("a", s("x", 1, { sideOf: "y" }), true)).toBeUndefined();
-  expect(pinMenuLabel("a", s("x", 1, { projectPath: "/home/agent" }), true)).toBeUndefined();
-  setHomeFolders([]);
+  expect(pinMenuLabel(s("x", 1), true)).toBe("Pin");
+  expect(pinMenuLabel(s("x", 1, { pinned: 3 }), true)).toBe("Unpin");
+  expect(pinMenuLabel(s("x", 1), false)).toBeUndefined();
+  expect(pinMenuLabel(s("x", 1, { archived: true }), true)).toBeUndefined();
+  expect(pinMenuLabel(s("x", 1, { parentSessionId: "y" }), true)).toBeUndefined();
+  expect(pinMenuLabel(s("x", 1, { sideOf: "y" }), true)).toBeUndefined();
 });
 
 test("a pinned session its runner can't find never shows on Home", () => {

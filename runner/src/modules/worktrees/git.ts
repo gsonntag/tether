@@ -12,7 +12,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { accessSync, constants, existsSync, readdirSync, readFileSync, rmdirSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, readdirSync, readFileSync, readlinkSync, rmdirSync, statSync } from "node:fs";
+import type { WorktreeRecord } from "../../config";
 import { basename, dirname, join, resolve } from "node:path";
 import { childEnv } from "../../childEnv";
 import { folderForBranch, hashSlug, randomSlug, slugOf, WORKTREE_BRANCH_PREFIX } from "../../../../shared/worktree";
@@ -222,7 +223,7 @@ export async function worktreeOn(main: string, path: string, git: Git = runGit):
 const worktreeLocks = new Map<string, Promise<unknown>>();
 
 /**
- * `f` once earlier work on the worktree at `path` is done. Joining and Archive done's removal share
+ * `f` once earlier work on the worktree at `path` is done. Joining and cleanup on archive share
  * it: a session can't join one while it's being removed, and a removal sees a join that came first.
  */
 export async function lockWorktree<T>(path: string, f: () => Promise<T>): Promise<T> {
@@ -265,7 +266,7 @@ function rmEmpty(dir: string) {
   } catch {}
 }
 
-/** Ignored folders that only hold what a build or an install makes again: Archive done may delete them. */
+/** Ignored folders that only hold what a build or an install makes again: cleanup on archive may delete them. */
 export const REGENERABLE = new Set(["node_modules", "dist", "build", "target", ".venv", "venv", "__pycache__", ".next", ".turbo", "coverage", ".cache"]);
 
 /** An ignored file as it was: its size, modification time and, up to HASH_MAX bytes, a hash of its content. */
@@ -341,7 +342,7 @@ export function precious(now: IgnoredFiles, known: IgnoredFiles = {}): string[] 
 }
 
 /**
- * Removes a worktree and its branch. Without `force` (Archive done): only a clean worktree goes
+ * Removes a worktree and its branch. Without `force` (cleanup on archive): only a clean worktree goes
  * (`git worktree remove` refuses one with changes or untracked files), and its branch only as
  * `branchAt` says: deleted when it still points at that commit (checked against main by the caller),
  * else kept. With `force`: one Tether just made and nobody has used (a session that didn't start).
@@ -359,6 +360,105 @@ export async function removeWorktree(main: string, path: string, branch: string,
   if (!o.branchAt) return { ok: true, branchKept: "its commits aren't all in main", ...(gone ? { gone } : {}) };
   const d = await git(main, ["update-ref", "-d", `refs/heads/${branch}`, o.branchAt]);
   return { ok: true, ...(d.ok ? {} : { branchKept: "it moved while Tether checked it" }), ...(gone ? { gone } : {}) };
+}
+
+const MAIN_NAMES = ["main", "master", "trunk"];
+
+/** The repo's main branch refs that exist here: origin's default, then local and remote main/master/trunk. */
+async function mainRefs(git: Git, cwd: string): Promise<string[]> {
+  const out: string[] = [];
+  const head = await git(cwd, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]);
+  if (head.ok && head.out) out.push(head.out);
+  for (const n of MAIN_NAMES) for (const r of [n, `origin/${n}`]) if (!out.includes(r) && (await exists(git, cwd, r))) out.push(r);
+  return out;
+}
+
+/** Whether every commit of `ref` is in one of `mains`, by ancestry or as an equal patch (a rebase merge; a squash of several commits may not match). */
+async function inMain(git: Git, cwd: string, ref: string, mains: string[]): Promise<boolean> {
+  for (const m of mains) {
+    if ((await git(cwd, ["merge-base", "--is-ancestor", ref, m])).ok) return true;
+    const cherry = await git(cwd, ["cherry", m, ref]);
+    if (cherry.ok && cherry.out.split("\n").every((l) => !l.startsWith("+"))) return true;
+  }
+  return false;
+}
+
+/**
+ * Removes the worktree Tether made for a session (cleanup on archive), with its branch: never while
+ * another session's folder is in it (`others`: their folders, and the worktree itself for each other
+ * session recorded as using it), and only as git allows (a clean worktree: `git worktree remove`
+ * without --force). Its HEAD must be in main (by ancestry or as equal patches, which a rebase merge
+ * keeps; a squash of several commits may not match). Ignored files it would delete must be in
+ * regenerable folders (node_modules, dist, …) or be unchanged since it was made and set up; others
+ * (a .env, a local database, one added or edited since) keep it. Its branch goes only when that
+ * branch, too, is in main, by `update-ref -d` at the commit checked, so it can't have moved in
+ * between. Not removed: why.
+ */
+export async function removeOwnWorktree(own: WorktreeRecord, others: string[], git: Git = runGit): Promise<{ removed: boolean; why?: string; branchKept?: string; gone?: boolean }> {
+  const path = resolve(own.path);
+  const user = others.map((f) => resolve(f)).find((f) => f === path || f.startsWith(`${path}/`));
+  if (user) return { removed: false, why: `another session works in ${user}` };
+  const mains = await mainRefs(git, own.repo);
+  const branchSha = await shaOf(git, own.repo, `refs/heads/${own.branch}`);
+  const branchMerged = !!branchSha && mains.length > 0 && (await inMain(git, own.repo, branchSha, mains));
+  if (existsSync(path)) {
+    const head = await git(path, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    const onBranch = head.ok && head.out === own.branch;
+    const headMerged = onBranch ? branchMerged : mains.length > 0 && (await inMain(git, path, "HEAD", mains));
+    if (!headMerged) {
+      const at = await git(path, ["rev-parse", "--abbrev-ref", "HEAD"]);
+      return { removed: false, why: `its worktree ${path} has commits that aren't in main (it's on ${at.ok && at.out ? at.out : "an unknown commit"})` };
+    }
+    const ignored = await ignoredFiles(path, git);
+    if (!ignored) return { removed: false, why: `Tether couldn't list the ignored files in its worktree ${path} (or there are too many to check)` };
+    const lost = precious(ignored, own.known && !Array.isArray(own.known) ? own.known : {});
+    if (lost.length) return { removed: false, why: `removing its worktree ${path} would delete ignored files: ${lost.slice(0, 5).join(", ")}${lost.length > 5 ? ` and ${lost.length - 5} more` : ""}` };
+  }
+  const r = await removeWorktree(own.repo, path, own.branch, branchMerged ? { branchAt: branchSha } : {}, git);
+  if (!r.ok) return { removed: false, why: `Tether couldn't remove its worktree ${path}: ${r.why}` };
+  return { removed: true, ...(r.gone ? { gone: true } : {}), ...(r.branchKept ? { branchKept: `${own.branch} (${r.branchKept})` } : {}) };
+}
+
+/**
+ * How many processes (not this one, nor any it started) have their working folder in `dir`: a tmux
+ * session, a dev server or a container's shell left there. Read from /proc; 0 where there's none.
+ */
+export function outsideUsers(dir: string): number {
+  const root = resolve(dir);
+  let pids: string[];
+  try {
+    pids = readdirSync("/proc").filter((p) => /^\d+$/.test(p));
+  } catch {
+    return 0;
+  }
+  const parent = new Map<number, number>();
+  const ppid = (pid: number) => {
+    if (!parent.has(pid)) {
+      try {
+        // "pid (comm) state ppid …": comm may hold spaces or parentheses, so read after the last ")".
+        const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+        parent.set(pid, Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]));
+      } catch {
+        parent.set(pid, 0);
+      }
+    }
+    return parent.get(pid)!;
+  };
+  const ours = (pid: number) => {
+    for (let p = pid, n = 0; p > 1 && n < 64; p = ppid(p), n++) if (p === process.pid) return true;
+    return false;
+  };
+  let n = 0;
+  for (const pid of pids) {
+    let cwd: string;
+    try {
+      cwd = readlinkSync(`/proc/${pid}/cwd`);
+    } catch {
+      continue;
+    }
+    if ((cwd === root || cwd.startsWith(`${root}/`)) && !ours(Number(pid))) n++;
+  }
+  return n;
 }
 
 const lastLines = (s: string) => s.split("\n").filter(Boolean).slice(-3).join(" ").slice(0, 400);
