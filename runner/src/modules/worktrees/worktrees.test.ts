@@ -1113,6 +1113,96 @@ describe("Cleanup on archive", () => {
     expect(existsSync(made.path)).toBe(true);
   });
 
+  test("a session in the folder idle for days (out of Recent, not recorded, not in memory) keeps it", async () => {
+    const t = runnerFor();
+    const r = repo();
+    const made = await merged(t, r.dir, "tether/old-guest");
+    t.adapter.addStored("old-guest", [], { projectPath: made.path, updatedAt: Date.now() - 10 * 86_400_000 });
+    await t.runner.core.discover();
+    expect(t.runner.look.sessions.list().some((x) => x.id === "claude:old-guest")).toBe(false);
+    await archive(t, made.sessionId);
+    expect((await t.w.cleanUp(made.sessionId))?.why).toBe(`another session works in ${made.path}`);
+    expect(existsSync(made.path)).toBe(true);
+  });
+
+  test("checked again right before git removes it: unarchived while the ignored files were read, it stays", async () => {
+    const t = runnerFor();
+    const r = repo();
+    const made = await merged(t, r.dir, "tether/last-word");
+    await archive(t, made.sessionId);
+    // The ignored-file listing is the last git call before the removal: the session comes back meanwhile.
+    const git: Git = async (cwd, args, ms, env) => {
+      if (args[0] === "ls-files") t.runner.core.o.prefs.set(made.sessionId, { archived: undefined });
+      return runGit(cwd, args, ms, env);
+    };
+    const w = new Worktrees({ sessions: t.runner.look.sessions, newSession: (a) => t.runner.ops.call("newSession", a), usersOf: () => 0, git });
+    expect((await w.cleanUp(made.sessionId))?.why).toBe("it was unarchived");
+    expect(existsSync(made.path)).toBe(true);
+  });
+
+  test("a send that unarchives a session waits for its worktree's lock; a removed worktree's driver is closed", async () => {
+    const t = runnerFor();
+    const r = repo();
+    const made = await merged(t, r.dir, "tether/locked-send");
+    await t.runner.live.send(made.sessionId, "hi");
+    await until(() => t.state(made.sessionId).status === "idle" && !!t.runner.core.sessions.get(made.sessionId)!.driver);
+    await archive(t, made.sessionId);
+    let release!: () => void;
+    const held = lockWorktree(made.path, () => new Promise<void>((done) => (release = done)));
+    const sending = t.runner.live.send(made.sessionId, "again");
+    await Bun.sleep(50);
+    expect(t.adapter.drivers.at(-1)!.sent).not.toContain("again");
+    expect(t.runner.core.o.prefs.get(made.sessionId).archived).toBe(true);
+    release();
+    await held;
+    await sending;
+    expect(t.runner.core.o.prefs.get(made.sessionId).archived).toBeUndefined();
+    // Archived again and idle: removed, and its harness process closed with it.
+    await until(() => t.state(made.sessionId).status === "idle");
+    await archive(t, made.sessionId);
+    expect(await t.w.cleanUp(made.sessionId)).toEqual({ removed: true });
+    expect(t.runner.core.sessions.get(made.sessionId)!.driver).toBeUndefined();
+  });
+
+  test("unarchive on send: not on a refused send, not a closed side chat, not the old id of a moved session", async () => {
+    const t = runnerFor();
+    const r = repo();
+    const made = await merged(t, r.dir, "tether/refused");
+    await archive(t, made.sessionId);
+    await expect(t.runner.live.send(made.sessionId, "   ")).rejects.toThrow();
+    expect(t.runner.core.o.prefs.get(made.sessionId).archived).toBe(true);
+    t.adapter.addStored("side-2", [], { projectPath: "/p" });
+    t.runner.core.o.prefs.set("claude:side-2", { projectPath: "/p", sideOf: made.sessionId });
+    await archive(t, "claude:side-2");
+    await t.runner.live.send("claude:side-2", "still there?").catch(() => {});
+    expect(t.runner.core.o.prefs.get("claude:side-2").archived).toBe(true);
+    // Moved on: the message goes to its successor, which is what comes back.
+    t.adapter.addStored("old", [], { projectPath: "/p" });
+    t.adapter.addStored("new", [], { projectPath: "/p" });
+    await archive(t, "claude:old");
+    await archive(t, "claude:new");
+    t.runner.core.o.prefs.set("claude:old", { movedTo: "claude:new" });
+    t.runner.core.sessions.get("claude:old")!.movedTo = "claude:new";
+    await t.runner.live.send("claude:old", "carry on");
+    expect(t.runner.core.o.prefs.get("claude:old").archived).toBe(true);
+    expect(t.runner.core.o.prefs.get("claude:new").archived).toBeUndefined();
+  });
+
+  test("the sweep tries every record of a worktree until one decides", async () => {
+    const t = runnerFor();
+    const r = repo();
+    const made = await merged(t, r.dir, "tether/two-records");
+    await archive(t, made.sessionId);
+    // A record from a session that moved to another folder since, listed first: it decides nothing.
+    t.adapter.addStored("away", [], { projectPath: r.root });
+    t.runner.core.o.prefs.set("claude:away", { projectPath: r.root, archived: true, worktree: { path: made.path, branch: "tether/two-records", repo: r.dir, joined: true } });
+    const sessions = { ...t.runner.look.sessions, worktreeUsers: (p?: string) => [...t.runner.look.sessions.worktreeUsers!(p)].sort((a) => (a.id === "claude:away" ? -1 : 1)) };
+    const w = new Worktrees({ sessions, newSession: (a) => t.runner.ops.call("newSession", a), usersOf: () => 0 });
+    expect(sessions.worktreeUsers().map((u) => u.id)[0]).toBe("claude:away");
+    await w.sweep();
+    expect(existsSync(made.path)).toBe(false);
+  });
+
   test("through the module: archiving a session removes its merged worktree", async () => {
     const t = runnerFor();
     const { worktreesModule } = await import(".");
@@ -1124,7 +1214,7 @@ describe("Cleanup on archive", () => {
     await until(() => !existsSync(made.path) && sh(r.dir, "branch", "--list", "tether/evented") === "");
   });
 
-  test("outsideUsers counts a process working in the folder that this runner didn't start", async () => {
+  test("outsideUsers counts every process working in the folder but this one", async () => {
     const d = scratch();
     // A worktree's .git file says when it was made: older processes that hide their folder (systemd --user) weren't started there.
     writeFileSync(join(d, ".git"), "gitdir: x\n");
@@ -1139,10 +1229,10 @@ describe("Cleanup on archive", () => {
       } catch {}
     });
     await until(() => outsideUsers(d) === 1);
-    // One this process started and still parents isn't counted.
+    // One this runner started counts too (cleanup closes the drivers it checked before it looks).
     const own = Bun.spawn(["sleep", "30"], { cwd: d });
     cleanups.push(() => own.kill());
     await Bun.sleep(50);
-    expect(outsideUsers(d)).toBe(1);
+    expect(outsideUsers(d)).toBe(2);
   });
 });

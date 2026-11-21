@@ -75,6 +75,8 @@ export interface SessionActions {
   carrier(make: (id: string, source: BillingSource) => Promise<string>): void;
   /** a fork of a session (SPEC §16): a new stored session with its conversation, through `messageId` when given. Its id */
   fork(id: string, o?: ForkOptions): Promise<string>;
+  /** closes a session's harness process if it has one (it starts again at its next send) */
+  closeDriver?(id: string): Promise<void>;
   /** a session's side chats (SPEC §16a), archived (closed) ones too */
   sideChatsOf?(id: string): string[];
   /** a session went on under another id (a Move): its side chats (SPEC §16a) are beside that one now */

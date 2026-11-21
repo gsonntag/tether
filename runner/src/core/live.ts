@@ -33,6 +33,10 @@ import { Session } from "./session";
 import { chosenOf, type SessionCore } from "./sessions";
 import { Transcript } from "./transcript";
 import { RetryControl } from "./retryControl";
+import { lockWorktree } from "./worktreeLock";
+
+/** How a message is sent (LiveControl.send). */
+type SendOpts = { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string; clientId?: string };
 
 /** Idle this long, a live session's process closes. */
 export const IDLE_CLOSE_MS = 5 * 60_000;
@@ -269,14 +273,28 @@ export class LiveControl {
    * `tether`: sent on your behalf, which releases nothing; `continued`: the continue after a restart,
    * the one send that ends the quiet wait). During the wait everything else queues.
    */
-  async send(id: string, text: string, attachments: Attachment[] = [], o: { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string; clientId?: string } = {}) {
+  async send(id: string, text: string, attachments: Attachment[] = [], o: SendOpts = {}) {
+    const prefs = this.core.o.prefs.get(id);
+    // A message you send to an archived session brings it back into the lists once it's taken (SPEC
+    // §10 Archiving): it's in use again. Not a closed side chat (it stays closed), nor the queue's own
+    // sends. Under its worktree's lock (core/worktreeLock.ts): never while cleanup on archive removes
+    // that worktree, and cleanup sees it unarchived after. A session that went on under another id
+    // sends to that one, whose own send does this.
+    if (o.queued || o.retryId || o.continued || !prefs.archived || prefs.sideOf) return this.sendNow(id, text, attachments, o);
+    const s = await this.core.open(id);
+    if (s.summary.parentSessionId || s.rebuilt || s.movedTo) return this.sendNow(id, text, attachments, o);
+    const go = async () => {
+      await this.sendNow(id, text, attachments, o);
+      if (this.core.o.prefs.get(id).archived) await this.core.setArchived(s, false);
+    };
+    return prefs.worktree?.path ? lockWorktree(prefs.worktree.path, go) : go();
+  }
+
+  private async sendNow(id: string, text: string, attachments: Attachment[] = [], o: SendOpts = {}) {
     if (!text?.trim() && !attachments.length) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     this.sideCommand(id, text);
     const s = await this.core.open(id);
-    // A message you send to an archived session brings it back into the lists (SPEC §10 Archiving):
-    // it's in use again (and its worktree mustn't go, modules/worktrees cleanUp).
-    if (!o.queued && !o.retryId && !o.continued && this.core.o.prefs.get(id).archived && !s.summary.parentSessionId) await this.core.setArchived(s, false);
     if (o.retryId && (s.retry?.id !== o.retryId || s.retry.phase !== "sending")) throw new SendCancelled();
     if (!o.retryId && (s.retry || this.core.o.prefs.get(id).retry)) {
       if (o.queued) throw new Error("A rate limit retry is waiting.");

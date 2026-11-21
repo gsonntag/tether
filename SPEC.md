@@ -1578,21 +1578,27 @@ The flag is saved in the runner's prefs (`setSessionArchived`), so it survives r
 the row from the Sidebar until the next click or key or a few seconds.
 
 **Sending unarchives.** A message you send to an archived session (`send`, not the queue's own
-sends: a scheduled message firing stays as it is) unarchives it first: it's in use again.
+sends: a scheduled message firing stays as it is) unarchives it once the send is taken (a refused one
+leaves it archived), under its worktree's lock (§4), so never while cleanup removes that worktree. A
+session that went on under another id sends to that one, which is what comes back; a closed side
+chat stays closed.
 
 **Worktree cleanup.** Archiving a session, any way (`setSessionArchived`), removes the worktree Tether
 made for it (§4, runner.json's `worktree`) and its branch, once that's safe (`modules/worktrees`
 cleanUp, on the `archived` event). Never one made by hand (`handMade`); never while another session
-that isn't archived works there (listed with its folder there, or recorded as using it: Existing
-worktree; the last one archived removes it); never while any session that uses it, archived or not
+that isn't archived works there (any stored session of any age with its folder there, or one recorded
+as using it: Existing worktree, a fork, a Move; the last one archived removes it); never while any session that uses it, archived or not
 (each recorded user, every session in memory whose folder is in it, and each one's side chats), has
 work going (a turn or a request, queued or held messages, a rate-limit retry waiting, a setup
 running, background work or watchers, a terminal) or an open side chat; never while a process
 outside the runner (a tmux session, a dev server) has its folder there, or Tether can't tell (no
 `/proc`, as on macOS, or one of the runner user's processes that started after the worktree was made
-hides its folder; other users' processes aren't seen). The session's own work is checked first, then
-the base branch is fetched (best effort, as New worktree does), and everything is checked again
-under the worktree's lock, right before the removal. Its HEAD must be in main (by ancestry or as
+hides its folder; other users' processes aren't seen). Before that count, the harness processes of
+the sessions checked (idle, all archived) are closed, so any process left in the folder, the runner's
+own children too, keeps it; a session whose worktree went starts again at its next send. The
+session's own work is checked first, then the base branch is fetched (best effort, as New worktree
+does), and everything is checked again under the worktree's lock, and once more right before `git
+worktree remove`. Its HEAD must be in main (by ancestry or as
 equal patches: a rebase merge counts, a squash of several commits may not). Ignored files it would
 delete, file by file, must be in regenerable folders (`node_modules`, `dist`, `build`, `target`,
 `.venv`, `venv`, `__pycache__`, `.next`, `.turbo`, `coverage`, `.cache`) or `known` and unchanged (same

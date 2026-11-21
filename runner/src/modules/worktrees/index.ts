@@ -304,21 +304,20 @@ export class Worktrees {
     if (base.startsWith("origin/")) await fetchBase(own.repo, base, this.git).catch(() => false);
     // One session of a worktree at a time, and never while one joins it.
     const r = await lockWorktree(own.path, async (): Promise<{ removed: boolean; why?: string; quiet?: boolean; gone?: boolean; branchKept?: string }> => {
-      const users = this.o.sessions.worktreeUsers?.(own.path) ?? [];
-      // Unarchived meanwhile: it's in use again.
-      if (!users.find((u) => u.id === sessionId)?.archived) return { removed: false, why: "it was unarchived", quiet: true };
-      const others = [...this.o.sessions.list().filter((r) => r.id !== sessionId && !r.archived).map((r) => r.projectPath), ...users.filter((u) => u.id !== sessionId && !u.archived).map((u) => u.worktree.path)];
-      const user = others.map((f) => resolve(f)).find((f) => f === resolve(own.path) || f.startsWith(`${resolve(own.path)}/`));
-      if (user) return { removed: false, why: `another session works in ${user}`, quiet: true };
-      // Every session that uses it, archived or not, as it is now: none may have work going.
-      const working = await this.atWork(own.path, [sessionId, ...users.map((u) => u.id)]);
-      if (working) return { removed: false, why: working };
-      const outside = existsSync(own.path) ? (this.o.usersOf ?? outsideUsers)(own.path) : 0;
+      const first = await this.inUse(sessionId, own.path);
+      if (first.why) return { removed: false, why: first.why, ...(first.quiet ? { quiet: true } : {}) };
+      // The checked sessions' harness processes (idle, all archived) close: none runs in a folder
+      // that's going, and what's still working there after is someone else's.
+      for (const id of first.ids) await this.o.sessions.closeDriver?.(id).catch(() => {});
+      const outside = existsSync(own.path) ? await this.outside(own.path) : 0;
       if (outside === undefined) return { removed: false, why: "Tether can't tell whether a process outside it works there" };
       if (outside) return { removed: false, why: `${outside} process${outside === 1 ? "" : "es"} outside Tether ${outside === 1 ? "works" : "work"} in it (a tmux session or a server, say)` };
       // What each session's setup left there (the one that made it ran it): files unchanged since may go.
+      const users = this.o.sessions.worktreeUsers?.(own.path) ?? [];
       const known = Object.assign({}, ...users.map((u) => (u.worktree.known && !Array.isArray(u.worktree.known) ? u.worktree.known : {})), own.known && !Array.isArray(own.known) ? own.known : {});
-      return removeOwnWorktree({ ...own, known }, [], this.git).catch((e) => ({ removed: false, why: (e as Error).message }));
+      // Everything again right before git removes it: the ignored files took a while.
+      const last = async () => (await this.inUse(sessionId, own.path)).why;
+      return removeOwnWorktree({ ...own, known }, [], this.git, { beforeRemove: last }).catch((e) => ({ removed: false, why: (e as Error).message }));
     });
     if (!r.removed) {
       if (r.quiet) {
@@ -335,29 +334,62 @@ export class Worktrees {
   }
 
   /**
-   * Why a worktree can't go yet because of the sessions in it: each of `ids` (opened as it is now),
-   * any session in memory whose folder is in it, and the side chats of each. Undefined: none is at
-   * work. A session that can't be opened counts as unsure.
+   * Whether the worktree at `path` is in use, as things are now: `sessionId` unarchived (quiet);
+   * another session not archived works there (quiet): recorded as its user, or with its folder in
+   * it, of any age (SessionActions.all); or any session that uses it has work going or a side chat
+   * open (atWork). `ids`: the sessions checked.
    */
-  private async atWork(path: string, ids: string[]): Promise<string | undefined> {
+  private async inUse(sessionId: string, path: string): Promise<{ why?: string; quiet?: boolean; ids: string[] }> {
+    const root = resolve(path);
+    const inside = (f: string) => resolve(f) === root || resolve(f).startsWith(`${root}/`);
+    const users = this.o.sessions.worktreeUsers?.(path) ?? [];
+    if (!users.find((u) => u.id === sessionId)?.archived) return { why: "it was unarchived", quiet: true, ids: [] };
+    const stored = this.o.sessions.all ? await this.o.sessions.all() : this.o.sessions.list();
+    const others = [...stored, ...this.o.sessions.list()].filter((r) => r.id !== sessionId && !r.archived && !r.parentSessionId).map((r) => r.projectPath);
+    const user = [...others, ...users.filter((u) => u.id !== sessionId && !u.archived).map((u) => u.worktree.path)].find(inside);
+    if (user) return { why: `another session works in ${resolve(user)}`, quiet: true, ids: [] };
+    // Every session that uses it, archived or not, as it is now: none may have work going.
+    const ids = [sessionId, ...users.map((u) => u.id), ...stored.filter((r) => inside(r.projectPath)).map((r) => r.id)];
+    const work = await this.atWork(path, [...new Set(ids)]);
+    return { ...(work.why ? { why: work.why } : {}), ids: work.ids };
+  }
+
+  /**
+   * Why a worktree can't go yet because of the sessions in it: each of `ids` (opened as it is now),
+   * any session in memory whose folder is in it, and the side chats of each. No why: none is at
+   * work. A session that can't be opened while it's in memory counts as unsure. `ids`: all checked.
+   */
+  private async atWork(path: string, ids: string[]): Promise<{ why?: string; ids: string[] }> {
     const root = resolve(path);
     const inside = (f: string) => resolve(f) === root || resolve(f).startsWith(`${root}/`);
     const all = new Set(ids);
     for (const l of this.o.loaded?.() ?? []) if (inside(l.summary.projectPath)) all.add(l.summary.id);
     for (const id of [...all]) for (const side of this.o.sessions.sideChatsOf?.(id) ?? []) all.add(side);
-    for (const id of all) {
+    const checked = [...all];
+    for (const id of checked) {
       const look = await this.o.sessions.open(id).catch(() => undefined);
       if (!look) {
         // Gone from its harness's store: nothing runs it. Still in memory: unsure.
-        if (this.o.loaded?.().some((l) => l.summary.id === id)) return `Tether couldn't check session ${id}`;
+        if (this.o.loaded?.().some((l) => l.summary.id === id)) return { why: `Tether couldn't check session ${id}`, ids: checked };
         continue;
       }
       const who = id === ids[0] ? "it" : look.summary.sideOf ? `its side chat ${id}` : `session ${id}`;
       const why = busyWhy(look);
-      if (why) return `${who === "it" ? "" : `${who}: `}${why}`;
-      if (look.summary.sideOf && !look.summary.archived) return `${who} is open`;
+      if (why) return { why: `${who === "it" ? "" : `${who}: `}${why}`, ids: checked };
+      if (look.summary.sideOf && !look.summary.archived) return { why: `${who} is open`, ids: checked };
     }
-    return undefined;
+    return { ids: checked };
+  }
+
+  /** Processes outside Tether in `path` (outsideUsers), given a moment for the drivers just closed to exit. */
+  private async outside(path: string): Promise<number | undefined> {
+    const count = this.o.usersOf ?? outsideUsers;
+    let n = count(path);
+    for (let i = 0; i < 30 && n; i++) {
+      await Bun.sleep(100);
+      n = count(path);
+    }
+    return n;
   }
 
   /**
@@ -373,8 +405,9 @@ export class Worktrees {
       if (!u.archived || u.worktree.handMade || !u.worktree.branch || seen.has(path) || !existsSync(path)) continue;
       const w = (await gitWorktrees(u.worktree.repo, this.git)).find((x) => x.path === path);
       if (!w || w.branch !== u.worktree.branch) continue;
-      seen.add(path);
-      await this.cleanUp(u.id, { quiet: true }).catch((e) => this.o.log?.(`${u.id}: worktree cleanup failed: ${(e as Error).message}`));
+      // Seen once a record decided for it (one that isn't the session's own folder any more doesn't): the others' checks are the same.
+      const r = await this.cleanUp(u.id, { quiet: true }).catch((e) => void this.o.log?.(`${u.id}: worktree cleanup failed: ${(e as Error).message}`));
+      if (r) seen.add(path);
     }
   }
 

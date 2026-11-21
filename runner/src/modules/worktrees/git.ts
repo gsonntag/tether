@@ -219,24 +219,8 @@ export async function worktreeOn(main: string, path: string, git: Git = runGit):
   return undefined;
 }
 
-/** Work on one worktree (joining it, removing it), by its path: one at a time, runner-wide. */
-const worktreeLocks = new Map<string, Promise<unknown>>();
-
-/**
- * `f` once earlier work on the worktree at `path` is done. Joining and cleanup on archive share
- * it: a session can't join one while it's being removed, and a removal sees a join that came first.
- */
-export async function lockWorktree<T>(path: string, f: () => Promise<T>): Promise<T> {
-  const key = resolve(path);
-  const run = (worktreeLocks.get(key) ?? Promise.resolve()).catch(() => {}).then(f);
-  const tail = run.catch(() => {});
-  worktreeLocks.set(key, tail);
-  try {
-    return await run;
-  } finally {
-    if (worktreeLocks.get(key) === tail) worktreeLocks.delete(key);
-  }
-}
+// Work on one worktree (joining it, removing it, a send that unarchives one of its sessions), one at a time: core/worktreeLock.ts.
+export { lockWorktree } from "../../core/worktreeLock";
 
 /** One entry of `git worktree list --porcelain`. */
 export interface GitWorktree {
@@ -394,7 +378,7 @@ async function inMain(git: Git, cwd: string, ref: string, mains: string[]): Prom
  * branch, too, is in main, by `update-ref -d` at the commit checked, so it can't have moved in
  * between. Not removed: why.
  */
-export async function removeOwnWorktree(own: WorktreeRecord, others: string[], git: Git = runGit): Promise<{ removed: boolean; why?: string; branchKept?: string; gone?: boolean }> {
+export async function removeOwnWorktree(own: WorktreeRecord, others: string[], git: Git = runGit, o: { beforeRemove?: () => Promise<string | undefined> } = {}): Promise<{ removed: boolean; why?: string; branchKept?: string; gone?: boolean }> {
   const path = resolve(own.path);
   const user = others.map((f) => resolve(f)).find((f) => f === path || f.startsWith(`${path}/`));
   if (user) return { removed: false, why: `another session works in ${user}` };
@@ -414,14 +398,18 @@ export async function removeOwnWorktree(own: WorktreeRecord, others: string[], g
     const lost = precious(ignored, own.known && !Array.isArray(own.known) ? own.known : {});
     if (lost.length) return { removed: false, why: `removing its worktree ${path} would delete ignored files: ${lost.slice(0, 5).join(", ")}${lost.length > 5 ? ` and ${lost.length - 5} more` : ""}` };
   }
+  // The last word, right before git removes it (the checks above take a while).
+  const stop = await o.beforeRemove?.();
+  if (stop) return { removed: false, why: stop };
   const r = await removeWorktree(own.repo, path, own.branch, branchMerged ? { branchAt: branchSha } : {}, git);
   if (!r.ok) return { removed: false, why: `Tether couldn't remove its worktree ${path}: ${r.why}` };
   return { removed: true, ...(r.gone ? { gone: true } : {}), ...(r.branchKept ? { branchKept: `${own.branch} (${r.branchKept})` } : {}) };
 }
 
 /**
- * How many processes (not this one, nor any it started) have their working folder in `dir`: a tmux
- * session, a dev server or a container's shell left there. Read from /proc. Undefined: Tether can't
+ * How many processes (other than this one) have their working folder in `dir`: a tmux session, a dev
+ * server, a container's shell, or a harness process this runner started (cleanup closes the drivers
+ * of the sessions it checked first). Read from /proc. Undefined: Tether can't
  * tell (no /proc, as on macOS; or one of this user's processes that started after the worktree was
  * made hides its folder), so the worktree is kept. Other users' processes are out of sight (their
  * folders can't be read) and not counted.
@@ -455,23 +443,6 @@ export function outsideUsers(dir: string, proc = "/proc"): number | undefined {
       return undefined;
     }
   };
-  const parent = new Map<number, number>();
-  const ppid = (pid: number) => {
-    if (!parent.has(pid)) {
-      try {
-        // "pid (comm) state ppid …": comm may hold spaces or parentheses, so read after the last ")".
-        const stat = readFileSync(`${proc}/${pid}/stat`, "utf8");
-        parent.set(pid, Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]));
-      } catch {
-        parent.set(pid, 0);
-      }
-    }
-    return parent.get(pid)!;
-  };
-  const ours = (pid: number) => {
-    for (let p = pid, n = 0; p > 1 && n < 64; p = ppid(p), n++) if (p === process.pid) return true;
-    return false;
-  };
   let n = 0;
   for (const pid of pids) {
     let cwd: string;
@@ -491,7 +462,7 @@ export function outsideUsers(dir: string, proc = "/proc"): number | undefined {
       if (!made || at === undefined || at >= made) return undefined;
       continue;
     }
-    if ((cwd === root || cwd.startsWith(`${root}/`)) && !ours(Number(pid))) n++;
+    if ((cwd === root || cwd.startsWith(`${root}/`)) && Number(pid) !== process.pid) n++;
   }
   return n;
 }

@@ -317,6 +317,10 @@ export function createRunner(o: RunnerOptions) {
         forker: (f: (id: string, o: ForkOptions) => Promise<string>) => { forker = f; },
         moveSides: (from: string, to: string) => core.moveSides(from, to),
         sideChatsOf: (id: string) => core.o.prefs.sideChatsOf(id),
+        closeDriver: async (id: string) => {
+          const s = core.sessions.get(id);
+          if (s) await live.release(s);
+        },
         projects: () => core.listProjects(),
         // Side chats (SPEC §16a) aren't in the lists: they show under their session.
         list: () => core.listed().filter((r) => !r.sideOf),
