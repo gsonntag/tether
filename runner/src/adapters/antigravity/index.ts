@@ -12,6 +12,7 @@ import { HARNESS_BINS } from "../detect";
 import { agyTools, AgyDriver } from "./driver";
 import { agyFork } from "./fork";
 import { billingOf, BYPASS, modelList } from "./models";
+import { refreshAntigravityQuota } from "./quota";
 import { AGY_EXIT, AGY_QUIT, agyScreen } from "./screen";
 import { hasStore, lastCommands, reader, seenContext, seenSettings, seenTitles, stampOf, storeStamp, type AgySession } from "./store";
 import { childInfo, childrenOf, matchCalls } from "./subagents";
@@ -207,6 +208,8 @@ export const antigravityAdapter: Adapter = {
   async listModels() {
     return modelList(await reader.config().catch(() => []));
   },
+
+  planUsage: async () => refreshAntigravityQuota(),
 
   async listCommands(_projectPath, driver) {
     const list = driver instanceof AgyDriver ? driver.commands() : (lastCommands ?? []);

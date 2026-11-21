@@ -310,6 +310,14 @@ export interface PlanWindow {
   exhausted?: boolean;
 }
 
+/** A single pool of plan limits when an account has separate limit pools (e.g. Gemini vs Other Models). */
+export interface PlanPool {
+  id: string;
+  name: string;
+  fiveHour?: PlanWindow;
+  week?: PlanWindow;
+}
+
 /** The account's plan limits as the harness last reported them, the same for all its sessions (SPEC §5). */
 export interface PlanUsage {
   fiveHour?: PlanWindow;
@@ -319,6 +327,8 @@ export interface PlanUsage {
    * switched to one without it). Absent: it may name just some, the rest stand.
    */
   complete?: boolean;
+  /** Separate limit pools when the harness divides models into pools (e.g. Gemini vs Other Models). */
+  pools?: PlanPool[];
 }
 
 /**

@@ -78,6 +78,10 @@ export class AcpClient {
     return !this.exited && !this.closing;
   }
 
+  get pid(): number {
+    return this.proc.pid;
+  }
+
   call<T = any>(method: string, params: unknown, timeoutMs = CALL_TIMEOUT_MS): Promise<T> {
     if (!this.alive) return Promise.reject(new AcpError(`${this.o.name ?? "The harness"} isn't running.`));
     const id = this.nextId++;

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { modelIdProblem, MODEL_ID_MAX, planLines, reportedAt, isApiBilling, contextDetail, contextPercent, planChip, usageChip, effortLabel, findModel, modelLabel, permissionModeLabel, prettyModel } from "./labels";
+import { modelIdProblem, MODEL_ID_MAX, planLines, reportedAt, mergePlan, isApiBilling, contextDetail, contextPercent, planChip, usageChip, effortLabel, findModel, modelLabel, permissionModeLabel, prettyModel } from "./labels";
 import { keyTarget, keyTargets } from "./credentials";
 
 test("model ids read as people say them", () => {
@@ -102,6 +102,85 @@ test("the billing menu's plan lines: what's known, with its reset and, past an h
   expect(planLines(undefined, now)).toEqual([]);
   expect(planLines({}, now)).toEqual([]);
   expect(reportedAt({ week: { percent: 1 } }, 5)).toEqual({ week: { percent: 1, at: 5 } });
+});
+
+test("multi-pool plan chip formats separate limit pools and reports their details", () => {
+  const at = Date.UTC(2026, 10, 1);
+  const geminiPool = {
+    id: "gemini",
+    name: "Gemini Models",
+    fiveHour: { percent: 8, resetsAt: at + 3_600_000 },
+    week: { percent: 4, resetsAt: at + 86_400_000 },
+  };
+  const otherPool = {
+    id: "other",
+    name: "Claude and GPT models",
+    fiveHour: { percent: 100, resetsAt: at + 7_200_000, exhausted: true },
+    week: { percent: 53, resetsAt: at + 86_400_000 },
+  };
+  const plan = { pools: [geminiPool, otherPool] };
+  const chip = planChip(plan, at);
+  expect(chip?.text).toBe("Gemini 5h 8% · Other 5h 100%");
+  expect(chip?.detail).toContain("Gemini Models: 5-hour 8%");
+  expect(chip?.detail).toContain("Claude and GPT models: 5-hour 100%");
+
+  // If one pool is past reset, only the active one appears
+  const pastReset = {
+    pools: [
+      { id: "gemini", name: "Gemini Models", fiveHour: { percent: 5, resetsAt: at - 1 } },
+      otherPool,
+    ],
+  };
+  expect(planChip(pastReset, at)?.text).toBe("Other 5h 100%");
+});
+
+test("multi-pool plan lines and merging", () => {
+  const now = Date.UTC(2026, 10, 1, 12);
+  const plan = {
+    pools: [
+      {
+        id: "gemini",
+        name: "Gemini Models",
+        week: { percent: 4, resetsAt: now + 86_400_000 },
+        fiveHour: { percent: 8, resetsAt: now + 3_600_000 },
+      },
+      {
+        id: "other",
+        name: "Claude and GPT models",
+        fiveHour: { percent: 100, resetsAt: now + 7_200_000 },
+      },
+    ],
+  };
+  const lines = planLines(plan, now);
+  expect(lines.length).toBe(3);
+  expect(lines[0]).toMatch(/^Gemini Models: Week 4% · resets .+$/);
+  expect(lines[1]).toMatch(/^Gemini Models: 5 hours 8% · resets .+$/);
+  expect(lines[2]).toMatch(/^Claude and GPT models: 5 hours 100% · resets .+$/);
+
+  const reported = reportedAt(plan, 12345);
+  expect(reported.pools?.[0]?.fiveHour?.at).toBe(12345);
+  expect(reported.pools?.[0]?.week?.at).toBe(12345);
+
+  // Partial merge updates only specified pools
+  const update = {
+    pools: [
+      { id: "gemini", name: "Gemini Models", fiveHour: { percent: 15 } },
+    ],
+  };
+  const merged = mergePlan(plan, update);
+  expect(merged.pools?.find((p) => p.id === "gemini")?.fiveHour?.percent).toBe(15);
+  expect(merged.pools?.find((p) => p.id === "other")?.fiveHour?.percent).toBe(100);
+
+  // Complete report replaces all pools
+  const fresh = {
+    complete: true,
+    pools: [
+      { id: "other", name: "Claude and GPT models", fiveHour: { percent: 0 } },
+    ],
+  };
+  const replaced = mergePlan(plan, fresh);
+  expect(replaced.pools?.length).toBe(1);
+  expect(replaced.pools?.[0]?.id).toBe("other");
 });
 
 test("the key a plan session goes to: its last used, else the first set", () => {

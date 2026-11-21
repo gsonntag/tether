@@ -6,6 +6,7 @@ import type { ToolPart } from "../../../../shared/transcript";
 import { HARNESS_BINS } from "../detect";
 import { TestSink } from "../codex/testSink";
 import { AgyDriver } from "./driver";
+import { keepPlan } from "./quota";
 
 const dir = mkdtempSync(join(tmpdir(), "tether-agy-"));
 // Antigravity's own folder is a throwaway one: no saved rules, no stores of the person's.
@@ -247,6 +248,31 @@ test("a side chat can't bypass", async () => {
   try {
     expect(sink.lastWith("permissionMode")?.permissionMode).toBe("default");
     await expect(d.setPermissionMode("bypassPermissions")).rejects.toThrow("read-only");
+  } finally {
+    await d.close();
+  }
+});
+
+test("AgyDriver reports plan to sink when keptPlan is present", async () => {
+  const mockPlan = {
+    complete: true,
+    pools: [
+      { id: "gemini", name: "Gemini Models", fiveHour: { percent: 8 } },
+      { id: "other", name: "Claude and GPT models", fiveHour: { percent: 100, exhausted: true } },
+    ],
+  };
+  keepPlan(mockPlan);
+  const sink = new TestSink();
+  let reportedPlan: any;
+  sink.plan = (p) => {
+    reportedPlan = p;
+  };
+  const d = await AgyDriver.open("s-plan", dir, {}, sink);
+  try {
+    await until(() => !!reportedPlan);
+    expect(reportedPlan.pools?.length).toBe(2);
+    expect(reportedPlan.pools[0].id).toBe("gemini");
+    expect(reportedPlan.pools[1].id).toBe("other");
   } finally {
     await d.close();
   }
