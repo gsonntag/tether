@@ -193,8 +193,8 @@ with the session's settings, as any send; the transcript shows it as Tether's, a
 Tether runner restarted mid-turn; continuing."). Waiting messages follow that turn as usual.
 - **Never two processes on one session.** A runner killed without closing its harness (kill -9, a
   crash, outside systemd) can leave Claude Code running the turn. Before continuing, Tether waits for
-  the session's store (its .jsonl) to be unchanged for 15 s ("Waiting for Claude Code from before the
-  restart to finish…", the queue held); it never inspects or signals processes. Then, if the store
+  the session's store (its .jsonl) to be unchanged for 15 s ("Waiting for Claude from before the
+  restart to finish…", naming the harness, the queue held); it never inspects or signals processes. Then, if the store
   shows the turn finished (the agent's answer after the last prompt), nothing is continued and the
   queue goes on; otherwise it continues once. After 10 minutes of writes it gives up: Failed on Home,
   the queue held, "Send a message to carry on." During the wait nothing starts Claude: a message you
