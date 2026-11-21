@@ -93,7 +93,7 @@ const WATCH_REPLY_MAX = 280;
  * below, as modeFor maps it), and for Codex its nearest equivalent, the auto preset (edits and
  * commands inside the folder) with Codex's own reviewer answering what it would ask.
  */
-export const SESSION_MODE: Record<HarnessId, string> = { claude: "auto", codex: "auto@codex-reviews" };
+export const SESSION_MODE: Record<HarnessId, string> = { claude: "auto", codex: "auto@codex-reviews", antigravity: "accept-edits" };
 /*
  * The agent's own chats run in the mode the person picks (HomeAgentSettings.mode), auto unless they
  * pick another. Whatever the mode, Claude's tools that touch anything are taken away
@@ -1082,12 +1082,12 @@ export class HomeAgent implements HomeEnd {
           project_path: z.string().describe("The project's folder (from list_projects)."),
           prompt: z.string().min(1).describe("The complete brief for the session."),
           title: z.string().max(80).optional().describe("A short title for the session, as the sidebar shows it."),
-          harness: z.enum(["claude", "codex"]).optional().describe("claude (Claude Code, the default) or codex."),
+          harness: z.enum(["claude", "codex", "antigravity"]).optional().describe("claude (Claude Code, the default), codex, or antigravity."),
           model: z.string().optional().describe("Only when the person names a model."),
           worktree: z.boolean().optional().describe("true: the session works in a new git worktree of the project (its own folder beside the repo, on a new branch tether/<slug> from the default branch), so it doesn't touch the main checkout or other sessions' work. Tether makes it, runs the repo's setup there first, and removes it once the work is merged. Only for a git repo."),
         },
         run: async (a: { project_path: string; prompt: string; title?: string; harness?: HarnessId; model?: string; worktree?: boolean }) => {
-          const harness: HarnessId = a.harness === "codex" ? "codex" : "claude";
+          const harness: HarnessId = a.harness === "codex" || a.harness === "antigravity" ? a.harness : "claude";
           if (!s.adapters().some((x) => x.id === harness)) throw new Error(`${HARNESS_LABELS[harness]} isn't available on this runner.`);
           const folder = s.folder(a.project_path);
           if (resolve(folder) === resolve(this.folder)) throw new Error("That's your own folder, not a project.");

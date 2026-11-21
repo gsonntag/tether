@@ -4,7 +4,7 @@ import type { AzureType } from "./azureRates";
 import type { Billing, HarnessId } from "./transcript";
 export type CredentialSource = "anthropic" | "openai" | "azure";
 /** The keys each harness can use. */
-export const HARNESS_KEYS: Record<HarnessId, CredentialSource[]> = { claude: ["anthropic"], codex: ["openai", "azure"] };
+export const HARNESS_KEYS: Record<HarnessId, CredentialSource[]> = { claude: ["anthropic"], codex: ["openai", "azure"], antigravity: [] };
 /**
  * One Azure deployment: the name requests use as their model, the model it runs and its type, which
  * find its rates in Tether's Azure table, and `rates`: the owner's own, used instead (Override).

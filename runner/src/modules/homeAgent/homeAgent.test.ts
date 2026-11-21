@@ -677,7 +677,7 @@ test("the chat and the sessions it starts run in auto mode; never full bypass, o
   expect(runner.core.sessions.get(chat)!.state.permissionMode).toBe("auto");
   const child = /session (\S+) in/.exec(await tools(chat).start_session!({ project_path: project, prompt: "Go." }))![1]!;
   expect(runner.core.sessions.get(child)!.state.permissionMode).toBe("auto");
-  expect(SESSION_MODE).toEqual({ claude: "auto", codex: "auto@codex-reviews" });
+  expect(SESSION_MODE).toEqual({ claude: "auto", codex: "auto@codex-reviews", antigravity: "accept-edits" });
 });
 
 test("a session started on a Claude Code without auto gets its nearest mode below, not bypass", async () => {
