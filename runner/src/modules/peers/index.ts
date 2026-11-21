@@ -6,7 +6,7 @@
 // capped instead (caps.ts).
 //
 // The same server carries text_person (the texting module texts the person for the session, through
-// homeLine.ts), and with it Tether's instructions for every session it runs (instructions.ts: concise
+// homeLine.ts, only when its "Session can text me" box is ticked), and with it Tether's instructions for every session it runs (instructions.ts: concise
 // replies, texting only through text_person).
 
 import { join } from "node:path";
@@ -17,6 +17,7 @@ import { runnerSettings } from "../../core/runnerSettings";
 import { sessionInstructions } from "./instructions";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
 import { LEVELS, type Level } from "../../../../shared/move";
+import { worktreeArg } from "../../../../shared/worktree";
 import { LEVEL_WORDS, levelOf } from "../../core/permissionLevel";
 import type { Module, ModuleContext, SessionLook } from "..";
 import { BROADCAST_MAX, PeerCaps } from "./caps";
@@ -24,6 +25,7 @@ import { peerSecret, peerToken, PeerSocket, type PeerAnswer, type PeerCall } fro
 import { ASK_DEFAULT_MIN, ASK_MAX_MIN } from "./tools";
 import { Children } from "./children";
 import { IMAGE_REFUSED, ImageFailures } from "../texting/images";
+import { CANT_TEXT } from "../homeLine";
 
 /** How much of an answer an ask returns. */
 export const ANSWER_MAX = 20_000;
@@ -152,6 +154,11 @@ export class Peers {
         // A session the Home agent drives reports to it instead: it texts the person (their PM).
         const relayed = await this.ctx.homeLine?.home?.relay?.(from, str(a.message), image || undefined);
         if (relayed) return { text: relayed };
+        // Only a session whose "Session can text me" box is ticked texts (the Home agent's own chats always may).
+        const home = this.ctx.homeLine?.home;
+        const homeChat = !!home && ((home.isTextsChat?.(from) || !!home.homes?.().some((h) => h.chat === from)));
+        const look = this.ctx.session(from);
+        if (look && !homeChat && (!look.state?.canText || look.summary.archived)) return { text: CANT_TEXT, isError: true };
         const phone = this.ctx.homeLine?.phone;
         if (!phone) return { text: "Texting is off in Tether, so nothing was sent. Say it in your reply instead.", isError: true };
         const r = await phone.text(from, str(a.message), image ? { image } : {});
@@ -379,7 +386,7 @@ export class Peers {
     if (why) return this.refused(from, why, "a new session");
     const hops = this.caps.hopsFrom(from);
     const undo = this.caps.count(from);
-    return this.children.start(from, { harness: str(a.harness), prompt: str(a.prompt), model: str(a.model), effort: str(a.effort), title: str(a.title), project: str(a.project), worktree: a.worktree === true }, hops, undo);
+    return this.children.start(from, { harness: str(a.harness), prompt: str(a.prompt), model: str(a.model), effort: str(a.effort), title: str(a.title), project: str(a.project), worktree: worktreeArg(a.worktree) }, hops, undo);
   }
 
   /**

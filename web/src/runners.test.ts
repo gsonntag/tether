@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { RunnerInfo } from "../../shared/protocol";
-import { ago, canPin, loadKnown, mergeRunners, reconnected, saveKnown, textingDown, type KnownRunner } from "./runners";
+import { ago, canJoinWorktree, canPin, loadKnown, offersCanText, mergeRunners, reconnected, saveKnown, textingDown, type KnownRunner } from "./runners";
+import { worktreeLabel } from "../../shared/worktree";
 
 const info = (id: string, connectedAt = 1): RunnerInfo => ({ id, name: id, hostname: id, version: "0", protocol: 1, harnesses: [], connectedAt });
 
@@ -60,6 +61,28 @@ test("pin buttons only for a runner that says it takes pinSession", () => {
   expect(canPin(list, "new")).toBe(true);
   expect(canPin(list, "old")).toBe(false);
   expect(canPin(list, "gone")).toBe(false);
+});
+
+test("Existing worktree only for a runner that takes listWorktrees, each shown as path · branch · used by N", () => {
+  const r = (id: string, extra: object = {}) => ({ id, name: id, hostname: "h", version: "1", protocol: 2, harnesses: [], ...extra });
+  const list = [r("new", { existingWorktrees: true }), r("old")];
+  expect(canJoinWorktree(list, "new")).toBe(true);
+  expect(canJoinWorktree(list, "old")).toBe(false);
+  expect(worktreeLabel({ path: "/r/app-worktrees/fix", branch: "tether/fix", sessions: [{ id: "a" }, { id: "b" }] })).toBe("/r/app-worktrees/fix · tether/fix · used by 2 sessions");
+  expect(worktreeLabel({ path: "/r/x", sessions: [{ id: "a" }] })).toBe("/r/x · detached HEAD · used by 1 session");
+  expect(worktreeLabel({ path: "/r/y", branch: "y", sessions: [] })).toBe("/r/y · y · unused");
+});
+
+test("the \"Session can text me\" box: a runner that takes it, its owner, a main session", () => {
+  const r = (extra: object = {}) => ({ id: "a", name: "a", hostname: "h", version: "1", protocol: 2, harnesses: [], canText: true, homeFolder: "/home/agent", ...extra });
+  const s = { projectPath: "/p/app" };
+  expect(offersCanText(r(), s)).toBe(true);
+  expect(offersCanText(r({ canText: undefined }), s)).toBe(false);
+  expect(offersCanText(undefined, s)).toBe(false);
+  expect(offersCanText(r({ access: "drive" }), s)).toBe(false);
+  expect(offersCanText(r(), { ...s, parentSessionId: "claude:main" })).toBe(false);
+  expect(offersCanText(r(), { ...s, sideOf: "claude:main" })).toBe(false);
+  expect(offersCanText(r(), { projectPath: "/home/agent" })).toBe(false);
 });
 
 describe("texting down", () => {

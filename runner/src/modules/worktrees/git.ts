@@ -218,6 +218,47 @@ export async function worktreeOn(main: string, path: string, git: Git = runGit):
   return undefined;
 }
 
+/** Work on one worktree (joining it, removing it), by its path: one at a time, runner-wide. */
+const worktreeLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * `f` once earlier work on the worktree at `path` is done. Joining and Archive done's removal share
+ * it: a session can't join one while it's being removed, and a removal sees a join that came first.
+ */
+export async function lockWorktree<T>(path: string, f: () => Promise<T>): Promise<T> {
+  const key = resolve(path);
+  const run = (worktreeLocks.get(key) ?? Promise.resolve()).catch(() => {}).then(f);
+  const tail = run.catch(() => {});
+  worktreeLocks.set(key, tail);
+  try {
+    return await run;
+  } finally {
+    if (worktreeLocks.get(key) === tail) worktreeLocks.delete(key);
+  }
+}
+
+/** One entry of `git worktree list --porcelain`. */
+export interface GitWorktree {
+  path: string;
+  /** none: a detached HEAD */
+  branch?: string;
+  bare?: boolean;
+  /** git says its folder is gone (`git worktree prune` would drop it) */
+  prunable?: boolean;
+}
+
+/** A repo's worktrees as git lists them, the main checkout first; [] when git fails. */
+export async function gitWorktrees(main: string, git: Git = runGit): Promise<GitWorktree[]> {
+  const list = await git(main, ["worktree", "list", "--porcelain"]);
+  if (!list.ok) return [];
+  return list.out.split(/\n\s*\n/).flatMap((block) => {
+    const path = /^worktree (.+)$/m.exec(block)?.[1];
+    if (!path) return [];
+    const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
+    return [{ path: resolve(path), ...(branch ? { branch } : {}), ...(/^bare$/m.test(block) ? { bare: true } : {}), ...(/^prunable\b/m.test(block) ? { prunable: true } : {}) }];
+  });
+}
+
 function rmEmpty(dir: string) {
   try {
     if (!readdirSync(dir).length) rmdirSync(dir);

@@ -91,6 +91,7 @@ test("setRunnerName renames in runner.json and says hello again; blank goes back
   writeFileSync(file, JSON.stringify({ runnerId: "u2", sessions: {} }));
   const hellos: string[] = [];
   const pinning: unknown[] = [];
+  const canText: unknown[] = [];
   const s = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -98,7 +99,7 @@ test("setRunnerName renames in runner.json and says hello again; blank goes back
     websocket: {
       message(ws, raw) {
         const m = JSON.parse(String(raw));
-        if (m.t === "hello") (hellos.push(m.runner.name), pinning.push(m.runner.pinning), ws.send(JSON.stringify({ t: "welcome" })));
+        if (m.t === "hello") (hellos.push(m.runner.name), pinning.push(m.runner.pinning), canText.push(m.runner.canText), ws.send(JSON.stringify({ t: "welcome" })));
       },
     },
   });
@@ -109,6 +110,8 @@ test("setRunnerName renames in runner.json and says hello again; blank goes back
   await until(() => hellos.length === 1);
   // it says it takes pinSession (the browser shows pin buttons only then)
   expect(pinning[0]).toBe(true);
+  // and that it takes setCanText (the browser shows the "Session can text me" box only then)
+  expect(canText[0]).toBe(true);
   expect(await r.ops.handle("setRunnerName", { name: "  Work\nbox  " })).toEqual({ ok: true, data: { name: "Work box" } });
   await until(() => hellos.length === 2);
   expect(hellos[1]).toBe("Work box");

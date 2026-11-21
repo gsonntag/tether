@@ -316,7 +316,7 @@ export class SessionCore {
     const row: SessionSummary | undefined = known ?? (blank ? { id, harness: parsed.harness, nativeId: parsed.nativeId, projectPath: prefs.projectPath!, title: "New session", mode: "stored", status: "idle", updatedAt: prefs.at ?? this.now() } : undefined);
     if (!row) throw new Error("That session isn't on this runner any more.");
     const defaults = await a.defaults(row.projectPath, parsed.nativeId).catch(() => ({}) as StartOpts);
-    const state: LiveState = { ...emptyState(), ...(row.billing ? { billing: row.billing } : {}), ...a.unset, ...pick(defaults), ...chosenOf(a, prefs), ...MessageQueue.saved(prefs), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), ...(prefs.carried ? { carried: true } : {}), ...(prefs.nextBilling ? { nextBilling: prefs.nextBilling } : {}), ...(prefs.nextDeployment ? { nextDeployment: prefs.nextDeployment } : {}), ...(prefs.sourceSwitchFailed ? { sourceSwitchFailed: true } : {}), ...(prefs.autoKey ? { autoKey: true } : {}), ...(prefs.lastKey ? { lastKey: prefs.lastKey } : {}), ...(prefs.fallbackKeys !== undefined ? { fallbackKeys: prefs.fallbackKeys } : {}), ...(prefs.setup ? { setup: "failed" as const } : {}), requests: this.requestsFor(id) };
+    const state: LiveState = { ...emptyState(), ...(row.billing ? { billing: row.billing } : {}), ...a.unset, ...pick(defaults), ...chosenOf(a, prefs), ...MessageQueue.saved(prefs), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), ...(prefs.carried ? { carried: true } : {}), ...(prefs.nextBilling ? { nextBilling: prefs.nextBilling } : {}), ...(prefs.nextDeployment ? { nextDeployment: prefs.nextDeployment } : {}), ...(prefs.sourceSwitchFailed ? { sourceSwitchFailed: true } : {}), ...(prefs.autoKey ? { autoKey: true } : {}), ...(prefs.canText ? { canText: true } : {}), ...(prefs.lastKey ? { lastKey: prefs.lastKey } : {}), ...(prefs.fallbackKeys !== undefined ? { fallbackKeys: prefs.fallbackKeys } : {}), ...(prefs.setup ? { setup: "failed" as const } : {}), requests: this.requestsFor(id) };
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;
@@ -592,7 +592,7 @@ export class SessionCore {
     await this.discover();
   }
 
-  /** Records the worktree Tether made for a session as its own (New worktree, SPEC §4): saved at once. */
+  /** Records the worktree a session works in as its own (New or Existing worktree, SPEC §4): saved at once. */
   setWorktree(s: Session, worktree: WorktreeRecord) {
     this.o.prefs.set(s.id, { projectPath: s.summary.projectPath, worktree });
     this.o.prefs.flush();

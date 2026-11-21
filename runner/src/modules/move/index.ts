@@ -223,6 +223,9 @@ export class Mover {
       const stayed = background ? " Background work stayed there." : "";
       await this.ctx.sessions.notice(moved.sessionId, notice(`n-moved-from-${id}`, `${movedFrom(name(from, own))}${note ? ` ${note}` : ""}${stayed}`, id), moved.after ? { after: moved.after } : { first: true });
       await this.ctx.sessions.notice(id, notice(`n-moved-to-${moved.sessionId}`, movedTo(name(target, source)), moved.sessionId));
+      // It goes on in the same folder: in a worktree (SPEC §4), the new session is one of its users too.
+      const rec = this.ctx.sessions.worktree?.(id);
+      if (rec) await this.ctx.sessions.setWorktree?.(moved.sessionId, rec).catch((e) => this.ctx.log(`${moved.sessionId} isn't recorded in its worktree: ${(e as Error).message}`));
       // Its side chats (SPEC §16a) go under the session it went on in (on their own harness, as they were).
       this.ctx.sessions.moveSides?.(id, moved.sessionId);
       // Messages scheduled here go on from the new session (SPEC §9).

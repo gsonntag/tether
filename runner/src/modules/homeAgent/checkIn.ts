@@ -10,7 +10,8 @@
 // uncommitted changes count as applied; a separate worktree or branch must be clean and in main.
 //
 // A session that is done and merged also removes the worktrees it made (and their merged local
-// branches) in that same turn, and says so. It's told which folders it must never touch: the main
+// branches) in that same turn, and says so. One Tether made (New worktree) Tether removes, once no
+// other session works in it (several may share it: Existing worktree). It's told which folders it must never touch: the main
 // checkout, its own folder, and every other recent session's folder in the same repo. A session is
 // archived only when no worktree it used is left (git checks that too).
 
@@ -36,10 +37,14 @@ export const CHECKIN_MAX = 40;
  * What a session is asked. `keep`: folders it must never remove (other sessions' folders in its
  * repo); its own folder and the main checkout are always named as off limits.
  */
-export function checkInMessage(ownFolder: string, keep: string[] = [], own?: { branch: string }): string {
+export function checkInMessage(ownFolder: string, keep: string[] = [], own?: { branch: string; joined?: boolean }): string {
   const others = keep.filter((f) => resolve(f) !== resolve(ownFolder));
-  // A worktree Tether made for the session: Tether removes it (it can't remove its own folder).
-  const made = own ? `\n   Your folder is a worktree Tether made for this session, on ${own.branch}: leave it and its branch. Once git confirms your work is merged, Tether removes both itself; it doesn't count against cleaned_up.` : "";
+  // A worktree Tether made for the session (or another, that it joined): Tether removes it (it can't remove its own folder).
+  const made = own
+    ? own.joined
+      ? `\n   Your folder is a worktree Tether made, on ${own.branch}, which other sessions may share: leave it and its branch. Once git confirms the work is merged and no other session works there, Tether removes both itself; it doesn't count against cleaned_up.`
+      : `\n   Your folder is a worktree Tether made for this session, on ${own.branch}: leave it and its branch. Once git confirms your work is merged, Tether removes both itself; it doesn't count against cleaned_up.`
+    : "";
   return `Check-in from the Home agent: the person wants to know which sessions are finished, so finished ones can be archived.
 
 Don't start or continue any task work in this turn, and don't stop anything you started that's still running. From what you know and a quick look at git:
@@ -101,7 +106,8 @@ async function mainRefs(git: Git, cwd: string): Promise<string[]> {
 
 /**
  * Removes the worktree Tether made for a session that is done and merged (Archive done), with its
- * branch: never while another session's folder is in it, and only as git allows (a clean worktree:
+ * branch: never while another session's folder is in it (`others`: their folders, and the worktree
+ * itself for each other session recorded as using it), and only as git allows (a clean worktree:
  * `git worktree remove` without --force). Its HEAD must be in main (by ancestry or as equal patches,
  * which a rebase merge keeps; a squash of several commits may not match). Ignored files it would
  * delete must be in regenerable folders (node_modules, dist, …) or be unchanged since it was made

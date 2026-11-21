@@ -11,12 +11,14 @@ import { peerTarget } from "../../../../shared/peers";
 import { ASKS_MAX, MAX_HOPS, PeerCaps, RATE_MAX } from "./caps";
 import { answerIn, Peers } from "./index";
 import { IMAGE_REFUSED, ImageFailures, readOutgoingImage } from "../texting/images";
+import { CANT_TEXT } from "../homeLine";
 import { callerOf, peerSecret, peerToken, PeerSocket } from "./server";
 
 const row = (id: string, title: string, o: Partial<SessionSummary> = {}): SessionSummary => ({ id, harness: id.startsWith("codex") ? "codex" : "claude", nativeId: id.split(":")[1]!, projectPath: "/p/app", title, mode: "live", status: "idle", updatedAt: 0, ...o });
 
 /** Peers over a fake set of sessions (`stored`: older ones the lists leave out); what it queues and notices is recorded. */
-function setup(rows: SessionSummary[], o: { stored?: SessionSummary[]; home?: string; modes?: Record<string, string | undefined> } = {}) {
+/** `noText`: sessions whose "Session can text me" box is off (every other one is ticked). */
+function setup(rows: SessionSummary[], o: { stored?: SessionSummary[]; home?: string; modes?: Record<string, string | undefined>; noText?: string[] } = {}) {
   const queued: { to: string; text: string; id: string }[] = [];
   const notices: { id: string; text: string }[] = [];
   const recent = new Map<string, Msg[]>();
@@ -27,7 +29,7 @@ function setup(rows: SessionSummary[], o: { stored?: SessionSummary[]; home?: st
     const s = [...rows, ...(o.stored ?? [])].find((r) => r.id === id);
     // Every session asks first unless `modes` says otherwise (undefined: not known).
     const permissionMode = o.modes && id in o.modes ? o.modes[id] : s?.harness === "codex" ? "untrusted" : "default";
-    return s ? ({ summary: s, status: s.status, requests: [], state: { mode: s.mode, queue: [], permissionMode } as any, busy: false, background: false }) : undefined;
+    return s ? ({ summary: s, status: s.status, requests: [], state: { mode: s.mode, queue: [], permissionMode, canText: !o.noText?.includes(id) } as any, busy: false, background: false }) : undefined;
   };
   const ctx: any = {
     log: () => {},
@@ -449,3 +451,20 @@ describe("text_person with an image", () => {
   });
 });
 
+describe("text_person and the \"Session can text me\" box", () => {
+  test("a session whose box is off texts nothing and is told why; a ticked one and the Home agent's chats text", async () => {
+    const rows = [row("claude:a", "A"), row("claude:b", "B"), row("claude:h", "Home", { projectPath: "/home/agent" }), row("claude:x", "In Home's folder", { projectPath: "/home/agent" }), row("claude:old", "Archived", { archived: true })];
+    const { peers } = setup(rows, { noText: ["claude:a", "claude:h", "claude:x"], home: "/home/agent" });
+    const sent: unknown[][] = [];
+    (peers as any).ctx.homeLine = { home: { isTextsChat: () => false, homes: () => [{ n: 0, chat: "claude:h" }] }, phone: { text: async (...a: unknown[]) => (sent.push(a), { text: "Texted the person." }) } };
+    // Only Home's own chats are exempt, not anything in its folder; an archived session doesn't text.
+    expect(await peers.call({ from: "claude:x", tool: "text_person", args: { message: "hi" } } as any)).toEqual({ text: CANT_TEXT, isError: true });
+    expect(await peers.call({ from: "claude:old", tool: "text_person", args: { message: "hi" } } as any)).toEqual({ text: CANT_TEXT, isError: true });
+    const call = (from: string) => peers.call({ from, tool: "text_person", args: { message: "done" } } as any);
+    expect(await call("claude:a")).toEqual({ text: CANT_TEXT, isError: true });
+    expect(sent).toEqual([]);
+    expect((await call("claude:b")).text).toBe("Texted the person.");
+    expect((await call("claude:h")).text).toBe("Texted the person.");
+    expect(sent.map((a) => a[0])).toEqual(["claude:b", "claude:h"]);
+  });
+});

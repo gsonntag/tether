@@ -26,7 +26,9 @@ export const VIEW_OPS: ReadonlySet<OpName> = new Set<OpName>([
   // A short link's session (making one, linkFor, stores a code: not a view op).
   "resolveLink",
   // Never the git or files modules' ops: they read the session's folder itself, secrets too
-  // (runner/src/modules/git and files say so).
+  // (runner/src/modules/git and files say so). Nor the worktrees module's: workspaceInfo and
+  // listWorktrees read the repo (its setup, branches, folders); starting a session (newSession,
+  // newWorktreeSession, existingWorktreeSession) is driving.
 ]);
 
 /**
@@ -50,6 +52,8 @@ export const MANAGE_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "setMessagingPrefer",
   "testConnector",
   "setTextingHub",
+  // Which sessions may text the owner's phone.
+  "setCanText",
   "harnessAutoUpdate",
   "harnessUpdate",
   // The Home agent is the owner's own: what it runs on, texting its replies to their phone, its

@@ -4,6 +4,7 @@
 // one that left the list went offline or was unshared, so it just goes (it can't be used offline).
 
 import type { RunnerInfo } from "../../shared/protocol";
+import type { SessionSummary } from "../../shared/transcript";
 
 export interface KnownRunner extends RunnerInfo {
   online: boolean;
@@ -20,6 +21,19 @@ export function mergeRunners(known: KnownRunner[], online: RunnerInfo[], now: nu
 
 /** Whether the runner takes `pinSession` (RunnerInfo.pinning): pin buttons show only then. */
 export const canPin = (runners: RunnerInfo[], runnerId: string) => !!runners.find((r) => r.id === runnerId)?.pinning;
+
+/** Whether the runner takes `listWorktrees` and `existingWorktreeSession` (RunnerInfo.existingWorktrees): New session's "Existing worktree" shows only then. */
+export const canJoinWorktree = (runners: RunnerInfo[], runnerId: string) => !!runners.find((r) => r.id === runnerId)?.existingWorktrees;
+
+/**
+ * Whether a session's header offers the "Session can text me" box: its runner takes `setCanText`
+ * (RunnerInfo.canText), you own it (only its owners pick what texts their phone, shared/access.ts),
+ * and it's a main session: not a subagent (it texts as its main session), a side chat or one of the
+ * Home agent's chats.
+ */
+export function offersCanText(runner: RunnerInfo | undefined, s: Pick<SessionSummary, "parentSessionId" | "sideOf" | "projectPath">): boolean {
+  return !!runner?.canText && accessOf(runner) === "manage" && !s.parentSessionId && !s.sideOf && runner.homeFolder !== s.projectPath;
+}
 
 /** Connected first, then by name. */
 export function sortRunners(list: KnownRunner[]): KnownRunner[] {

@@ -3,6 +3,7 @@
 
 import { defang } from "../../../shared/fromTether";
 import { hostname } from "node:os";
+import { resolve } from "node:path";
 import { CredentialStore, redact } from "../credentials";
 import { CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
@@ -104,6 +105,8 @@ export function createRunner(o: RunnerOptions) {
     gitActions: true,
     files: true,
     pinning: true,
+    existingWorktrees: true,
+    canText: true,
     // The relay shows the runner to these people (shared/access.ts) and only its owners see the list.
     ...(prefs.shared().length ? { shared: prefs.shared() } : {}),
     ...(hubPort.state ? { textingHub: hubPort.state } : {}),
@@ -257,6 +260,16 @@ export function createRunner(o: RunnerOptions) {
         return s ? lookAt(s) : undefined;
       },
       loaded: () => [...core.sessions.values()].map(lookAt),
+      // From runner.json, not the lists (they hold only recent sessions, and none until discovery).
+      texters: () =>
+        prefs
+          .texters()
+          .map((id) => {
+            const row = core.sessions.get(id)?.summary ?? core.book.get(id);
+            return { id, title: prefs.get(id).title ?? row?.title ?? "", at: row?.updatedAt ?? prefs.get(id).at ?? 0 };
+          })
+          .sort((a, b) => b.at - a.at)
+          .map(({ id, title }) => ({ id, title })),
       viewersOf: (id: string) => live.read.viewersOf(id),
       homeFolder: o.homeFolder,
       apiCost: (id: string) => (costs.has(id) ? costs.get(id) : undefined),
@@ -348,6 +361,11 @@ export function createRunner(o: RunnerOptions) {
         setArchived: async (id: string, archived: boolean) => core.setArchived(await core.open(id), archived),
         setWorktree: async (id: string, worktree: WorktreeRecord) => core.setWorktree(await core.open(id), worktree),
         worktree: (id: string) => prefs.get(id).worktree,
+        // A session that went on under another id (a source change, a renewal) isn't one: its successor has the record.
+        worktreeUsers: (path?: string) =>
+          prefs
+            .ids((p) => !p.carried && !p.movedTo && !!p.worktree && (path === undefined || resolve(p.worktree.path) === resolve(path)))
+            .map((id) => ({ id, worktree: prefs.get(id).worktree!, ...(prefs.get(id).archived ? { archived: true } : {}) })),
         setup: async (id: string, command: string, { beforeRelease, ...run }: Omit<SetupRun, "done"> & { beforeRelease?: () => void | Promise<void> } = {}) => {
           const s = await core.open(id);
           live.queue.setupStarted(s);
