@@ -169,7 +169,11 @@ describe("side chats", () => {
   test("its session going on under a new id takes its side chats along", async () => {
     const { runner, call } = await setup();
     const { sessionId } = await call("openSideChat", { sessionId: "claude:s1" });
+    const continued: unknown[] = [];
+    runner.bus.on("continued", (e) => void continued.push(e));
     runner.core.moveSides("claude:s1", "claude:s2");
+    // Modules hear it too (the peers module's who-started-whom follows it).
+    expect(continued).toEqual([{ from: "claude:s1", to: "claude:s2" }]);
     expect(runner.core.o.prefs.get(sessionId).sideOf).toBe("claude:s2");
     expect((await runner.core.open(sessionId)).summary.sideOf).toBe("claude:s2");
     expect((await runner.core.listSessions({ sideOf: "claude:s2" })).sessions.map((r) => r.id)).toEqual([sessionId]);

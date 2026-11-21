@@ -72,7 +72,7 @@ export class Peers {
   private asks: Ask[] = [];
 
   constructor(
-    private ctx: Pick<ModuleContext, "sessions" | "session" | "log" | "homeFolder" | "homeLine"> & { ops?: Pick<ModuleContext["ops"], "call">; dataDir?: string },
+    private ctx: Pick<ModuleContext, "sessions" | "session" | "log" | "homeFolder" | "homeLine" | "hiddenFolder"> & { ops?: Pick<ModuleContext["ops"], "call">; dataDir?: string },
     now: () => number = Date.now,
   ) {
     this.caps = new PeerCaps(now);
@@ -455,7 +455,11 @@ export const peersModule: Module = {
         instructions: () => sessionInstructions(runnerSettings()),
       }),
     );
+    // Read only (shared/access.ts VIEW_OPS): the web shows these as the session's children (SPEC §6a).
+    ctx.ops.register("spawnedFamily", ({ sessionId }) => peers.children.family(String(sessionId ?? "")));
     const offs = [
+      // A Move or a source change: who started whom follows the session to its new id.
+      ctx.bus.on("continued", ({ from, to }) => peers.children.continued(from, to)),
       ctx.bus.on("queueGone", ({ sessionId, msgId, how, text }) => peers.queueGone(sessionId, msgId, how, text)),
       ctx.bus.on("message", ({ sessionId, msg }) => peers.message(sessionId, msg)),
       // A subagent's request is its main session's.

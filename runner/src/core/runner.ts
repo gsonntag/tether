@@ -105,6 +105,8 @@ export function createRunner(o: RunnerOptions) {
     gitActions: true,
     files: true,
     pinning: true,
+    // The peers module's op (off with it).
+    ...(process.env.TETHER_PEERS === "0" ? {} : { spawnedFamily: true }),
     existingWorktrees: true,
     canText: true,
     // The relay shows the runner to these people (shared/access.ts) and only its owners see the list.
@@ -322,6 +324,10 @@ export function createRunner(o: RunnerOptions) {
         fork: (id: string, f: ForkOptions = {}) => (forker ? forker(id, f) : Promise.reject(new Error("This runner can't fork sessions."))),
         forker: (f: (id: string, o: ForkOptions) => Promise<string>) => { forker = f; },
         moveSides: (from: string, to: string) => core.moveSides(from, to),
+        kept: (id: string) => {
+          const p = core.o.prefs.get(id);
+          return { ...(p.archived ? { archived: true } : {}), ...(p.movedTo ? { movedTo: p.movedTo } : {}) };
+        },
         projects: () => core.listProjects(),
         // Side chats (SPEC §16a) aren't in the lists: they show under their session.
         list: () => core.listed().filter((r) => !r.sideOf),

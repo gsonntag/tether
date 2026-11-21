@@ -65,6 +65,8 @@ describe("wire", () => {
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, files: "yes" } })) as any).runner.files).toBeUndefined();
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, pinning: true } })) as any).runner.pinning).toBe(true);
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, pinning: "yes" } })) as any).runner.pinning).toBeUndefined();
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, spawnedFamily: true } })) as any).runner.spawnedFamily).toBe(true);
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, spawnedFamily: 1 } })) as any).runner.spawnedFamily).toBeUndefined();
     // The build stamp from git: commit, date, branch and dirty.
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, build: { commit: "abc1234", date: "2026-11-21", branch: "main", dirty: false, behind: 3 } } })) as any).runner.build).toEqual({ commit: "abc1234", date: "2026-11-21", branch: "main", dirty: false, behind: 3 });
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, build: { commit: "abc1234", date: "2026-11-21", dirty: true } } })) as any).runner.build).toEqual({ commit: "abc1234", date: "2026-11-21", dirty: true });

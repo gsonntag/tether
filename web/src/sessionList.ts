@@ -5,6 +5,8 @@ import type { RunStatus, SessionSummary } from "../../shared/transcript";
 
 export interface Row extends SessionSummary {
   runnerId: string;
+  /** under the open session: one its agent started (tether_start, SPEC §6a), not a subagent (subagents.ts) */
+  spawned?: boolean;
 }
 
 /** Background subagents still running: the session is working, whatever its main agent does. */
