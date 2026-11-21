@@ -15,7 +15,7 @@ import { TextMeChip } from "./TextMeChip";
 import { offersCanText } from "../runners";
 import { shownStatus } from "../sessionList";
 import { StatusDot } from "./SessionRow";
-import { SubagentChips } from "./SubagentChips";
+import { StartedChips, SubagentChips } from "./SubagentChips";
 import { MODEL_AFTER_SOURCE } from "../../../shared/sourceSwitch";
 import { billingForDisplay, visibleNextBilling } from "../sourceMenu";
 
@@ -25,6 +25,7 @@ export function SessionHeader({
   state,
   models,
   children,
+  startedBy,
   extra,
   sideChats,
   capabilities,
@@ -33,7 +34,10 @@ export function SessionHeader({
   session: SessionSummary;
   state: LiveState;
   models?: ModelList;
+  /** subagents, and the sessions its agent started (`spawned`) */
   children: Row[];
+  /** the session whose agent started this one (tether_start, SPEC §6a) */
+  startedBy?: { id: string; title: string };
   extra?: React.ReactNode;
   /** its side chats' chip (SPEC §16a), beside its subagents' */
   sideChats?: React.ReactNode;
@@ -41,6 +45,8 @@ export function SessionHeader({
 }) {
   const [error, setError] = useState<string>();
   const isChild = !!session.parentSessionId;
+  const subagents = children.filter((c) => !c.spawned);
+  const started = children.filter((c) => c.spawned);
   // Only where the runner takes it, for its owner, on a main session (runners.ts offersCanText).
   const textMe = useStore((s) => offersCanText(s.runners.find((r) => r.id === runnerId), session));
   const paid = isApiBilling(billingForDisplay(state));
@@ -119,6 +125,13 @@ export function SessionHeader({
         {isChild ? `Subagent${session.agentType ? ` · ${session.agentType}` : ""} · ${session.projectPath}` : session.projectPath}
       </div>
       {session.sideOf ? <SideOf runnerId={runnerId} parentId={session.sideOf} /> : session.forkedFrom && <ForkedFrom runnerId={runnerId} from={session.forkedFrom} />}
+      {startedBy && !session.sideOf && (
+        <div className="t-header-fork">
+          <button type="button" className="t-link" title="Open the session whose agent started this one" onClick={() => openSession(runnerId, startedBy.id)}>
+            ← Started by {startedBy.title ? `“${startedBy.title}”` : "another session"}
+          </button>
+        </div>
+      )}
       <div className={`t-chips${paid ? " t-paid-chips" : ""}`}>
         <BillingChip runnerId={runnerId} session={session} state={state} capabilities={capabilities} onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))} onAutoKey={(on) => void call(rpc(runnerId, "setAutoKey", { sessionId: session.id, on }))} />
         {nextBilling && <span className={`t-chip t-chip-info t-next-source${isApiBilling(nextBilling) ? " t-next-api" : ""}`} title={`${nextBilling.label} from the next start`}>Next: {nextBilling.label}</span>}
@@ -160,7 +173,8 @@ export function SessionHeader({
           </>
         )}
         {textMe && <TextMeChip on={!!state.canText} onChange={(canText) => void call(rpc(runnerId, "setCanText", { sessionId: session.id, canText }))} />}
-        <SubagentChips runnerId={runnerId} children={children} />
+        <SubagentChips runnerId={runnerId} children={subagents} />
+        <StartedChips runnerId={runnerId} started={started} />
         {sideChats}
         {/* Last in the row: where chips scroll sideways, these go out of view first. */}
         {!isChild && state.context && (

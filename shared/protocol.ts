@@ -104,6 +104,8 @@ export interface RunnerInfo {
   files?: boolean;
   /** it takes `pinSession` (SPEC §10 Pinning). Absent: a runner from before it, and no pin buttons */
   pinning?: boolean;
+  /** it takes `spawnedFamily` (SPEC §6a: sessions an agent started show as its children). Absent: an older runner, or peers off */
+  spawnedFamily?: boolean;
   /** it takes `listWorktrees` and `existingWorktreeSession` (SPEC §4 Existing worktree). Absent: an older runner, and no such choice */
   existingWorktrees?: boolean;
   /** it takes `setCanText` (SPEC §11 Texting: the "Session can text me" box). Absent: an older runner, and no box */
@@ -114,6 +116,16 @@ export interface RunnerInfo {
   textingHub?: TextingHubState;
   /** set by the server for each browser: what you may do on it. Absent: you own it (shared/access.ts) */
   access?: "drive" | "view";
+}
+
+/**
+ * A session's place among sessions agents started (tether_start): the session that started it,
+ * and the ones it started (newest first; released ones too, never archived ones). Ordinary
+ * sessions, not subagents: no parentSessionId.
+ */
+export interface SpawnedFamily {
+  parent?: { id: string; title: string };
+  children: SessionSummary[];
 }
 
 /** Runner-wide settings (the Settings page), kept in runner.json. */
@@ -372,6 +384,8 @@ export interface Ops {
   setTexting: { args: { enabled?: boolean; phone?: string; projectId?: string; projectSecret?: string }; result: TextingStatus };
   /** Sends a test text to the phone. */
   textingTest: { args: {}; result: null };
+  /** Who started a session with tether_start and whom it started (SPEC §6a, §9a): read only. */
+  spawnedFamily: { args: { sessionId: string }; result: SpawnedFamily };
   /** What a short link's code (`#/l/<code>`, runner modules/links) opens on this runner (the browser takes the runner to be the one it asked); null: not one of its codes, or expired. */
   resolveLink: { args: { code: string }; result: { sessionId: string } | null };
   /** The session's short-link code on this runner (made, or its own renewed), for the address bar; null when none can be kept. */

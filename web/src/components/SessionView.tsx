@@ -26,7 +26,7 @@ import { btwQuestion, BTW_NO_FILES, canSideChat, withBtw } from "../sideChat";
 import { SideChatChips, SideChatPanel, useSideChats, type SideState } from "./SideChatPanel";
 import { SessionHeader } from "./SessionHeader";
 import { Transcript } from "./Transcript";
-import { useChildren } from "./useChildren";
+import { useFamily } from "./useChildren";
 import { useFitViewport } from "./useFitViewport";
 import { useTermCover } from "./useTermCover";
 import { PanelHandle } from "./WidthHandle";
@@ -61,7 +61,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   const runnerFiles = useStore((s) => !!s.runners.find((r) => r.id === runnerId)?.files);
   // Shared with you to view only (shared/access.ts): the transcript, with no way to change it.
   const viewOnly = useStore((s) => accessOf(s.runners.find((r) => r.id === runnerId)) === "view");
-  const children = useChildren(runnerId, sessionId);
+  const { children, parent: startedBy } = useFamily(runnerId, sessionId);
   const pending = usePending(runnerId, sessionId);
   const composer = useRef<ComposerHandle>(null);
   const root = useRef<HTMLDivElement>(null);
@@ -360,7 +360,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     <SessionCtx.Provider value={ctx}>
       <div className={`t-session-split${panel || changes ? " with-terminal" : side ? " with-side" : ""}${cover || (side && noRoom) ? " t-term-cover" : ""}`} ref={rootRef}>
       <div className="t-session">
-        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move && !summary.sideOf} canFork={canFork(summary, view.capabilities, state)} onSideChat={sides ? () => void openSide("") : undefined} />}<PrChip lookup={prs.pr} />{changesChip}{terminalChip}</>} sideChats={<SideChatChips chats={sideChats} onOpen={reopenSide} />} capabilities={view.capabilities} />
+        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} startedBy={startedBy} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move && !summary.sideOf} canFork={canFork(summary, view.capabilities, state)} onSideChat={sides ? () => void openSide("") : undefined} />}<PrChip lookup={prs.pr} />{changesChip}{terminalChip}</>} sideChats={<SideChatChips chats={sideChats} onOpen={reopenSide} />} capabilities={view.capabilities} />
         {ask && !panelShown && (
           <div className="t-term-ask" role="group" aria-label="Open the terminal">
             <span>{ask.text}</span>

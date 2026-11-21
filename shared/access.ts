@@ -22,6 +22,8 @@ export const VIEW_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "fullPart",
   "listProjects",
   "listSessions",
+  // Who started whom (tether_start): titles and statuses, as listSessions shows.
+  "spawnedFamily",
   // A short link's session (making one, linkFor, stores a code: not a view op).
   "resolveLink",
   // Never the git or files modules' ops: they read the session's folder itself, secrets too

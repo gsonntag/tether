@@ -79,7 +79,7 @@ export interface SessionActions {
   closeDriver?(id: string): Promise<void>;
   /** a session's side chats (SPEC §16a), archived (closed) ones too */
   sideChatsOf?(id: string): string[];
-  /** a session went on under another id (a Move): its side chats (SPEC §16a) are beside that one now */
+  /** a session went on under another id (a Move): its side chats (SPEC §16a) are beside that one now, and the `continued` event tells modules */
   moveSides?(from: string, to: string): void;
   /** what makes forks (the fork module) */
   forker(make: (id: string, o: ForkOptions) => Promise<string>): void;
@@ -103,6 +103,8 @@ export interface SessionActions {
   notice(id: string, msg: Msg, where?: { first?: boolean; after?: string }): Promise<void>;
   /** the folders with sessions (the lists' projects), newest activity first */
   projects(): Promise<ProjectInfo[]>;
+  /** what Tether keeps about a session without opening it: archived, or gone on under another id */
+  kept?(id: string): { archived?: boolean; movedTo?: string };
   /** the sessions the lists show (recent ones and every live one, core/summaries.ts), newest activity first; not old ones listed only because they're pinned */
   list(): SessionSummary[];
   /** the archived sessions (which the lists leave out), newest activity first */

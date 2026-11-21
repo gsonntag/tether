@@ -653,7 +653,7 @@ export class SessionCore {
    * The session's row changed (status, mode, title, activity): the sidebar hears. `queuePaused` is
    * a queue waiting for you, so neither one the terminal holds nor one the restart wait holds.
    */
-  /** A session went on under a new id (a source change's new thread, a renewed id): its side chats follow (SPEC §16a). */
+  /** A session went on under a new id (a Move, a source change's new thread, a renewed id): its side chats follow (SPEC §16a), and the `continued` event says so. */
   moveSides(from: string, to: string) {
     const ids = this.o.prefs.sideChatsOf(from);
     this.o.prefs.moveSides(from, to);
@@ -662,6 +662,8 @@ export class SessionCore {
       if (s) this.touch(s, { sideOf: to });
       else if (this.book.get(id)) this.book.upsert([{ ...this.book.get(id)!, sideOf: to }]);
     }
+    // Modules follow it too (the peers module's who-started-whom).
+    this.o.bus.emit("continued", { from, to });
   }
 
   touch(s: Session, patch: Partial<SessionSummary> = {}) {
