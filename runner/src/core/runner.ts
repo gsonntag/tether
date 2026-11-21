@@ -7,7 +7,7 @@ import { CredentialStore, redact } from "../credentials";
 import { CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { testAzure } from "../adapters/codex/upstream";
-import { PROTOCOL_VERSION, type HarnessInfo, type HomeChatUpdate, type RunnerInfo } from "../../../shared/protocol";
+import { PROTOCOL_VERSION, type HarnessInfo, type HomeChatUpdate, type RunnerBuild, type RunnerInfo } from "../../../shared/protocol";
 import { parseSessionId, sessionId } from "../../../shared/ids";
 import type { ForkedFrom } from "../../../shared/fork";
 import type { SessionPrefs } from "../config";
@@ -45,6 +45,8 @@ export interface RunnerOptions {
   /** the name a blank rename goes back to (the hostname, or a friendly one); `name` when absent */
   defaultName?: string;
   version: string;
+  /** git build stamp read at startup; absent outside a git checkout or on fallback */
+  build?: RunnerBuild;
   detectHarnesses: () => Promise<HarnessInfo[]>;
   /** how often to look for installed or removed harnesses */
   harnessCheckMs?: number;
@@ -89,6 +91,7 @@ export function createRunner(o: RunnerOptions) {
     name,
     hostname: hostname(),
     version: o.version,
+    ...(o.build ? { build: o.build } : {}),
     protocol: PROTOCOL_VERSION,
     harnesses: await harnesses,
     ...(o.homeFolder ? { homeFolder: o.homeFolder } : {}),

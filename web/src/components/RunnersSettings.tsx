@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Heading } from "@astryxdesign/core/Heading";
 import { cleanEmail, type RunnerGrant } from "../../../shared/access";
+import type { RunnerBuild } from "../../../shared/protocol";
 import { rpc } from "../connection";
 import { accessOf, type KnownRunner } from "../runners";
 import { useStore } from "../store";
@@ -13,25 +14,31 @@ import { useStore } from "../store";
  */
 export function RunnersSettings() {
   const runners = useStore((s) => s.runners).filter((r) => accessOf(r) === "manage");
+  const serverBuild = useStore((s) => s.serverBuild);
   if (!runners.length) return <div className="t-inline-status">No runners of yours have connected yet.</div>;
   return (
     <>
       <p className="t-settings-note">
         Share Tether with someone in Foliation first. They see no runners until you add them to one here. "Can drive" lets them send messages and use terminals. "Can view" lets them read sessions only. Someone with a viewer share in Foliation can only view.
       </p>
-      {runners.map((r) => <RunnerCard key={r.id} runner={r} />)}
+      {runners.map((r) => <RunnerCard key={r.id} runner={r} serverBuild={serverBuild} />)}
     </>
   );
 }
 
-function RunnerCard({ runner }: { runner: KnownRunner }) {
+export function RunnerCard({ runner, serverBuild: propServerBuild }: { runner: KnownRunner; serverBuild?: RunnerBuild }) {
   const linkOpen = useStore((s) => s.link === "open");
+  const storeServerBuild = useStore((s) => s.serverBuild);
+  const serverBuild = propServerBuild ?? storeServerBuild;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [email, setEmail] = useState("");
   const [level, setLevel] = useState<RunnerGrant["access"]>("view");
   const people = runner.shared ?? [];
   const disabled = busy || !linkOpen || !runner.online;
+  const build = runner.build;
+  const versionText = build ? `${build.commit} · ${build.date}${build.dirty ? " · local changes" : ""}` : runner.version;
+  const differentBuild = !!(serverBuild?.commit && build?.commit && serverBuild.commit !== build.commit);
 
   const run = async (f: () => Promise<unknown>) => {
     setBusy(true);
@@ -62,6 +69,10 @@ function RunnerCard({ runner }: { runner: KnownRunner }) {
         {runner.name || runner.id}
         {!runner.online && <span className="t-credential-status"> · offline</span>}
       </Heading>
+      <div className="t-usage-note">
+        <span>{versionText}</span>
+        {differentBuild && <div>Different from the app's build ({serverBuild!.commit}): restart the runner to update</div>}
+      </div>
       <NameField runner={runner} disabled={disabled} run={run} />
       <div className="t-share-list" role="list" aria-label="Shared with">
         {people.length === 0 ? (

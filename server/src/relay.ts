@@ -6,7 +6,7 @@
 //
 // Sockets are abstract (send/close) so the routing is tested without a network.
 
-import { CLOSE_PROTOCOL, CLOSE_REAUTH, CLOSE_REPLACED, CLOSE_RUNNER_ID, CLOSE_TOO_SLOW, PROTOCOL_VERSION, TERMINAL_OPS, type BrowserToServer, type PushKeys, type OpName, type ResultMsg, type RunnerInfo, type RunnerToServer, type ServerToBrowser, type ServerToRunner, type User } from "../../shared/protocol";
+import { CLOSE_PROTOCOL, CLOSE_REAUTH, CLOSE_REPLACED, CLOSE_RUNNER_ID, CLOSE_TOO_SLOW, PROTOCOL_VERSION, TERMINAL_OPS, type BrowserToServer, type PushKeys, type OpName, type ResultMsg, type RunnerBuild, type RunnerInfo, type RunnerToServer, type ServerToBrowser, type ServerToRunner, type User } from "../../shared/protocol";
 import { LONG_OPS } from "../../shared/gitActions";
 import { fitCloseReason, runnerIdAllowed, runnerIdRefusal } from "./runnerIds";
 import { accessAllows, grantedAccess, type RunnerAccess } from "../../shared/access";
@@ -29,6 +29,8 @@ export interface RelayOptions {
   now?: () => number;
   /** the app's VAPID keys (push.ts): the public one to browsers, the pair to runners */
   push?: PushKeys;
+  /** the server's own build stamp, sent in hello to browsers */
+  build?: RunnerBuild;
   /** how long a browser socket stays signed in without a renew ticket (tickets.ts) */
   reauthMs?: number;
   /** issues and checks renew tickets; by default its own, on this relay's clock */
@@ -114,6 +116,7 @@ export class Relay {
   private readonly log: (line: string) => void;
   private readonly now: () => number;
   private readonly push?: PushKeys;
+  private readonly build?: RunnerBuild;
   private readonly reauthMs: number;
   readonly tickets: Tickets;
   /** the viewers frame last sent to each runner, so only changes go out */
@@ -124,6 +127,7 @@ export class Relay {
 
   constructor(opts: RelayOptions = {}) {
     this.push = opts.push;
+    this.build = opts.build;
     this.rpcTimeoutMs = opts.rpcTimeoutMs ?? 120_000;
     this.longOps = opts.longOps ?? LONG_OPS;
     this.protocol = opts.protocol ?? PROTOCOL_VERSION;
@@ -210,7 +214,7 @@ export class Relay {
   addBrowser(sock: Socket, user: User, protocol: number, viewerId = "", role = "owner") {
     const b: BrowserConn = { viewerId, email: user.email, role, deadline: this.now() + this.reauthMs, subs: new Map(), attaches: new Set() };
     this.browsers.set(sock, b);
-    this.out(sock, { t: "hello", user, protocol, ...(this.push ? { push: { publicKey: this.push.publicKey } } : {}) });
+    this.out(sock, { t: "hello", user, protocol, ...(this.push ? { push: { publicKey: this.push.publicKey } } : {}), ...(this.build ? { build: this.build } : {}) });
     this.out(sock, { t: "runners", runners: this.runnerList(b) });
   }
 
