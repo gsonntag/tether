@@ -13,6 +13,7 @@ import { OpRegistry } from "../../core/ops";
 import { writeFileSync } from "node:fs";
 import { Children, CHILDREN_MAX, DEPTH_MAX, FAMILY_OPENS, MAX_REPORTS } from "./children";
 import { Peers, peersModule } from "./index";
+import { worktreeArg } from "../../../../shared/worktree";
 
 const agyMove = {
   modes: [
@@ -31,6 +32,7 @@ function setup(o: { modes?: Record<string, string>; dataDir?: string } = {}) {
   const queued: { to: string; text: string }[] = [];
   const sent: { to: string; text: string }[] = [];
   const created: any[] = [];
+  const calls: string[] = [];
   const recent = new Map<string, Msg[]>();
   const looks = new Map<string, any>();
   let n = 0;
@@ -72,12 +74,19 @@ function setup(o: { modes?: Record<string, string>; dataDir?: string } = {}) {
       notice: async () => {},
       recent: async (id: string) => recent.get(id) ?? [],
     },
-    ops: { call: async (_op: string, a: any) => ({ sessionId: await ctx.sessions.create(a), path: "/p/app-wt", branch: "tether/x", base: "main" }) },
+    ops: {
+      call: async (op: string, a: any) => {
+        calls.push(op);
+        if (op === "listWorktrees") return a.projectPath === "/p/plain" ? { worktrees: [] } : { repo: "/p/app", worktrees: [{ path: "/p/app-wt", branch: "tether/x", sessions: [] }] };
+        if (op === "existingWorktreeSession") return { sessionId: await ctx.sessions.create({ ...a, projectPath: a.worktree }), path: a.worktree, branch: "tether/x", tether: true };
+        return { sessionId: await ctx.sessions.create(a), path: "/p/app-wt", branch: "tether/x", base: "main" };
+      },
+    },
   };
   const peers = new Peers(ctx);
   const start = (args: Record<string, unknown>, from = "claude:boss") => peers.call({ from, tool: "tether_start", args } as any);
   const reply = (id: string, text: string) => recent.set(id, [{ id: "u", role: "user", ts: 0, parts: [{ type: "text", text: "go" }] }, { id: "a", role: "assistant", ts: 1, parts: [{ type: "text", text }] }]);
-  return { peers, start, queued, sent, created, modes, look, reply, rows };
+  return { peers, start, queued, sent, created, modes, look, reply, rows, calls };
 }
 
 describe("tether_start", () => {
@@ -112,6 +121,38 @@ describe("tether_start", () => {
     // It runs git and the repo's setup: not for a session that asks before commands.
     const u = setup({ modes: { "claude:boss": "acceptEdits" } });
     expect((await u.start({ harness: "codex", prompt: "x", worktree: true })).text).toContain("can't make worktrees");
+  });
+
+  test("an existing worktree (path or branch): another folder, so only from a session nothing confines unless it's its own; nothing runs", async () => {
+    const t = setup();
+    const r = await t.start({ harness: "codex", prompt: "x", worktree: "tether/x" });
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toContain("in the existing worktree /p/app-wt on branch tether/x");
+    expect(t.created[0].projectPath).toBe("/p/app-wt");
+    expect(t.calls).toEqual(["listWorktrees", "existingWorktreeSession"]);
+    expect((await t.start({ harness: "codex", prompt: "x", worktree: "/p/app-wt/" })).isError).toBeFalsy();
+    expect((await t.start({ harness: "codex", prompt: "x", worktree: "nope" })).text).toContain("isn't one of /p/app's worktrees");
+    expect((await t.start({ harness: "codex", prompt: "x", project: "/p/other", worktree: "nope" })).isError).toBe(true);
+    // A sandboxed caller: not another folder, though joining runs nothing (so no "can't make worktrees").
+    const u = setup({ modes: { "claude:boss": "acceptEdits" } });
+    const no = await u.start({ harness: "codex", prompt: "x", worktree: "tether/x" });
+    expect(no.text).toContain("only start sessions in its own folder");
+    expect(u.created).toHaveLength(0);
+    // Its own folder is that worktree: allowed.
+    const v = setup({ modes: { "claude:boss": "acceptEdits" } });
+    v.rows[0]!.projectPath = "/p/app-wt";
+    expect((await v.start({ harness: "codex", prompt: "x", worktree: "tether/x" })).isError).toBeFalsy();
+    // Outside git: refused.
+    const w = setup();
+    w.rows[0]!.projectPath = "/p/plain";
+    expect((await w.start({ harness: "codex", prompt: "x", worktree: "tether/x" })).text).toContain("isn't in a git repository");
+  });
+
+  test("worktree: true, or an existing one's path or branch (a \"true\" sent as text is true)", () => {
+    expect(worktreeArg(true)).toBe(true);
+    expect(worktreeArg("true")).toBe(true);
+    expect(worktreeArg(" tether/x ")).toBe("tether/x");
+    for (const v of [false, "false", "", " ", 1, undefined]) expect(worktreeArg(v)).toBeUndefined();
   });
 
   test("another folder: only a known project, only from a session nothing confines", async () => {

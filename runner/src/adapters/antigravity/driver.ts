@@ -334,8 +334,7 @@ export class AgyDriver implements Driver {
     const images = nativeImages(attachments);
     const tether = tetherOrigin(text);
     const shown: Part[] = [{ type: "text", text: tether?.text ?? text }, ...images.map((i) => ({ type: "image" as const, mimeType: i.mimeType, data: i.data }))];
-    const msg = this.t.prompt(shown);
-    if (tether) msg.origin = tether.origin;
+    this.t.prompt(shown, tether?.origin);
     this.stopping = false;
     this.plan = undefined;
     this.flush();

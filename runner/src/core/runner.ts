@@ -3,11 +3,12 @@
 
 import { defang } from "../../../shared/fromTether";
 import { hostname } from "node:os";
+import { resolve } from "node:path";
 import { CredentialStore, redact } from "../credentials";
 import { CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { testAzure } from "../adapters/codex/upstream";
-import { PROTOCOL_VERSION, type HarnessInfo, type HomeChatUpdate, type RunnerInfo } from "../../../shared/protocol";
+import { PROTOCOL_VERSION, type HarnessInfo, type HomeChatUpdate, type RunnerBuild, type RunnerInfo } from "../../../shared/protocol";
 import { parseSessionId, sessionId } from "../../../shared/ids";
 import type { ForkedFrom } from "../../../shared/fork";
 import type { SessionPrefs } from "../config";
@@ -45,6 +46,12 @@ export interface RunnerOptions {
   /** the name a blank rename goes back to (the hostname, or a friendly one); `name` when absent */
   defaultName?: string;
   version: string;
+  /** git build stamp read at startup; absent outside a git checkout or on fallback */
+  build?: RunnerBuild;
+  /** periodically re-reads the git build stamp (commit, behind, dirty) */
+  detectBuild?: () => Promise<RunnerBuild | undefined>;
+  /** how often to check for git build stamp changes; defaults to 1 hour */
+  buildCheckMs?: number;
   detectHarnesses: () => Promise<HarnessInfo[]>;
   /** how often to look for installed or removed harnesses */
   harnessCheckMs?: number;
@@ -84,11 +91,13 @@ export function createRunner(o: RunnerOptions) {
 
   let harnesses = o.detectHarnesses();
   let name = o.name;
+  let currentBuild: RunnerBuild | undefined = o.build;
   const helloInfo = async (): Promise<Omit<RunnerInfo, "connectedAt">> => ({
     id: o.runnerId,
     name,
     hostname: hostname(),
     version: o.version,
+    ...(currentBuild ? { build: currentBuild } : {}),
     protocol: PROTOCOL_VERSION,
     harnesses: await harnesses,
     ...(o.homeFolder ? { homeFolder: o.homeFolder } : {}),
@@ -98,6 +107,7 @@ export function createRunner(o: RunnerOptions) {
     pinning: true,
     // The peers module's op (off with it).
     ...(process.env.TETHER_PEERS === "0" ? {} : { spawnedFamily: true }),
+    existingWorktrees: true,
     canText: true,
     // The relay shows the runner to these people (shared/access.ts) and only its owners see the list.
     ...(prefs.shared().length ? { shared: prefs.shared() } : {}),
@@ -218,6 +228,22 @@ export function createRunner(o: RunnerOptions) {
     if (JSON.stringify(await harnesses) !== before) conn.send({ t: "hello", runner: await helloInfo() });
   }, o.harnessCheckMs ?? 60_000);
   timer.unref?.();
+
+  if (o.detectBuild) {
+    // Refresh at startup and hourly; re-send hello when build changes.
+    const refreshBuild = async () => {
+      const before = JSON.stringify(currentBuild);
+      // A failed read (git busy, offline) keeps what was known.
+      const next = await o.detectBuild!().catch(() => undefined);
+      if (next && JSON.stringify(next) !== before) {
+        currentBuild = next;
+        conn.send({ t: "hello", runner: await helloInfo() });
+      }
+    };
+    void refreshBuild();
+    const buildTimer = setInterval(refreshBuild, o.buildCheckMs ?? 3_600_000);
+    buildTimer.unref?.();
+  }
 
   return {
     bus,
@@ -341,6 +367,11 @@ export function createRunner(o: RunnerOptions) {
         setArchived: async (id: string, archived: boolean) => core.setArchived(await core.open(id), archived),
         setWorktree: async (id: string, worktree: WorktreeRecord) => core.setWorktree(await core.open(id), worktree),
         worktree: (id: string) => prefs.get(id).worktree,
+        // A session that went on under another id (a source change, a renewal) isn't one: its successor has the record.
+        worktreeUsers: (path?: string) =>
+          prefs
+            .ids((p) => !p.carried && !p.movedTo && !!p.worktree && (path === undefined || resolve(p.worktree.path) === resolve(path)))
+            .map((id) => ({ id, worktree: prefs.get(id).worktree!, ...(prefs.get(id).archived ? { archived: true } : {}) })),
         setup: async (id: string, command: string, { beforeRelease, ...run }: Omit<SetupRun, "done"> & { beforeRelease?: () => void | Promise<void> } = {}) => {
           const s = await core.open(id);
           live.queue.setupStarted(s);

@@ -80,7 +80,10 @@ tether/
 **Sharing runners.** The app's owners see and manage every runner. Anyone else the app is shared
 with on Foliation (editor or viewer) may sign in but sees only the runners an owner shared with
 them in Settings → Runners, each "Can drive" or "Can view" (read sessions only); a Foliation viewer
-share only ever views. The list lives on the runner (runner.json `sharedWith`, op
+share only ever views. Settings → Runners shows each runner's version (short git commit, commit date,
+"local changes" if dirty; package.json version fallback), with a quiet note when behind its upstream branch
+("Behind <branch> by N commits: pull and restart the runner to update"); in production the server has no `.git/`,
+so the runner's own `behind` count drives the note, with a server build comparison as fallback in dev mode. The list lives on the runner (runner.json `sharedWith`, op
 `setRunnerAccess`) and the relay enforces it on every frame (shared/access.ts: `VIEW_OPS`, and
 `MANAGE_OPS` that stay the owner's: sharing, name, keys, texting, updates, runner settings, the
 Home agent's settings). View never includes the git or files modules' ops (they read the folder,
@@ -120,8 +123,8 @@ claim any id not starting with `runner-` (`CLOSE_RUNNER_ID` otherwise; server/sr
   exist yet, and only a confirmed `createFolder` on `newSession` makes it, parents too. Only a path
   starting with `/` or `~/` is made.
 - **A worktree per session** (`modules/worktrees`). For a folder in git with a commit
-  (`workspaceInfo`), New session offers **Workspace**: *This folder* (default) or *New worktree*,
-  with a branch (shown, and sent, as `tether/<slug>`: a slug of the Home agent's title or brief, a
+  (`workspaceInfo`), New session offers **Workspace**: *This folder* (default), *New worktree*,
+  or *Existing worktree* (below), with a branch (shown, and sent, as `tether/<slug>`: a slug of the Home agent's title or brief, a
   hash of text with no usable words, else `wt-<random>`). Creates in one repo run one at a time.
   `newWorktreeSession` resolves the base, `origin/HEAD`, else `origin/main|master`, else local
   `main|master`, else `HEAD`; for `origin/<x>` it first runs `git fetch origin <x>` (best effort: 15 s,
@@ -157,6 +160,18 @@ runs whatever the base has) before the main checkout's, runs in
   and what you send next stay held, even with nothing queued; Home shows the session failed, and
   the card offers **Re-run setup** (`rerunSetup`) and **Send anyway** (Resume, which ends the gate).
   The Home agent's `start_session` takes `worktree: true`. Archive done (§10) removes it.
+  **Existing worktree** (runners with `existingWorktrees`): `listWorktrees` lists the repo's
+  worktrees from `git worktree list --porcelain` (not the main checkout, bare or prunable ones):
+  path, branch, and the sessions working in each (not archived: listed ones whose folder is in it,
+  and any of any age whose runner.json `worktree` names it). The picker shows path · branch · used
+  by N. `existingWorktreeSession {…, worktree}` (a path or branch) runs `newSession` there: nothing
+  made, no setup rerun. It records `worktree` with `joined`, as a live (not archived) user's record
+  on the worktree's current branch has it, else `handMade` (a person's `git worktree add`, or a
+  record that can't be trusted: never removed by Tether). Joining and Archive done's removal of one
+  worktree share a lock; a join re-checks the worktree is there inside it. A session's successor on
+  another id (source change, renewal) keeps the record (the old id stops counting); a Move's new
+  session and a fork (not a side chat) get one too. Agents: `start_session` and `tether_start` take
+  `worktree: "<path or branch>"` too (a path, else a branch, else a folder name only one has).
 - **Session:** `harness` + `nativeId` (the harness's own id) + `projectPath`. Tether's id is
   `${harness}:${nativeId}`. A session is in exactly one **mode** at a time:
 
@@ -211,6 +226,9 @@ harness's store lacks (`codex-threads.json`, `claude-windows.json`).
 
 Browser → server → runner: `{ t: "rpc", id, runnerId, op, args }`, which gets `{ t: "result", id, ok, data?, error? }`.
 Runner → server → browsers: `{ t: "event", runnerId, sessionId, seq, event }`.
+On connect, the runner sends `{ t: "hello", runner: RunnerInfo }` with its installed harnesses and
+optional `build` (`commit`, `date`, `branch`, `dirty`, `behind`) read from git at startup and hourly; the server sends
+`{ t: "hello", user, protocol, push?, build? }` to browsers.
 
 **Subscriptions.** A browser subscribes to the sessions it has open (`subscribe` / `unsubscribe`
 ops). The server forwards session events only to subscribers, and forwards a small `summary` stream
@@ -287,7 +305,7 @@ is dropped, so `plan` is always the plan's.
 `setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `setSessionArchived`, `pinSession`, `openTerminal`, `closeTerminal`,
 `terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands). The move module
 adds `moveOptions` and `moveSession` (§15), the usage module `usage` (§10 Usage), the worktrees
-module `workspaceInfo` and `newWorktreeSession` and `rerunSetup` (§4), the fork module `forkSession` (§16),
+module `workspaceInfo`, `newWorktreeSession`, `listWorktrees`, `existingWorktreeSession` and `rerunSetup` (§4), the fork module `forkSession` (§16),
 the git module `gitDiff` (§10 Changes), `checkpoints` and `restoreCheckpoint` (§10 Checkpoints), the
 files module `listDir`, `readFile` and `findFiles` (§10 Files).
 
@@ -1024,7 +1042,9 @@ event (with the message's text) and the queued message's id from `SessionActions
   only names a known project, and only from a caller nothing confines (judged or full), as another
   folder would widen a sandboxed one. `worktree: true` makes a new worktree through
   `newWorktreeSession` (§4), only from a caller that may run commands itself (sandboxed or looser),
-  as git and the repo's setup run. Source: the harness's default for a new session (as New
+  as git and the repo's setup run. `worktree: "<path or branch>"` starts in one of the folder's
+  repo's existing worktrees (`existingWorktreeSession`): nothing runs, so it's just another folder,
+  as `project`: unless it's the caller's own, only from a judged or full caller. Source: the harness's default for a new session (as New
   Session). Mode: the loosest mode the target offers whose level is at or under the caller's
   (Claude's auto counts as judged), so a child is never looser. The prompt goes in as a peer
   message from the caller (carrying its hops) whose hint says its final reply goes back. Who
@@ -1587,7 +1607,7 @@ screens only a pinned row shows it, to unpin), and the session's ⋯ menu has Pi
 sit in a Pinned group above Recent, oldest pin first, across runners (each runner's clock), on every
 device; a search or a folder lists them as usual. The runner keeps when it was pinned in its prefs
 (`pinSession`, carried on the row as `pinned`), past the 90-day pruning, and says so in its hello
-(`RunnerInfo.pinning`: no pin buttons for a runner from before it). A pinned session is listed however
+(`RunnerInfo.pinning`: no pin buttons for a runner from before it; `RunnerInfo.build`: git commit and date). A pinned session is listed however
 old: discovery looks up the old ones in parallel with a short timeout and keeps them (read again when
 the store changes or after a minute); a failed lookup keeps the row. The pin keeps the row as last
 seen (`pinnedRow`): a session the harness can't find is listed from it, dimmed, "Not found on this
@@ -1636,7 +1656,8 @@ in the report, never interrupted. At most 40 sessions are asked at a time; each 
 The message asks for one line, `TETHER-CHECK-IN: {"done", "merged", "cleaned_up", "branch",
 "worktree", "note"}`. A session that is done and merged first removes the worktrees it made (`git
 worktree remove` without `--force`, `git branch -d`), never the main checkout, its own folder, or
-any other recent session's folder in the same repo (the message lists those). Tether checks the
+any other recent session's folder in the same repo, nor any worktree a session of any age is
+recorded in (the message lists those). Tether checks the
 answer against git: a named branch, or the session's own separate worktree, must be clean and in
 main (by ancestry or as equal patches, after one `git fetch origin` per repo), and no worktree it
 used may be left. The main checkout's uncommitted changes count as applied. Only a session that is
@@ -1651,7 +1672,10 @@ since, more than 20,000 to check) keeps it, named in the reason. Then `git workt
 `--force` (a clean worktree only), and its branch by `update-ref -d` at the commit checked to be in
 main, so it can't have moved in between; a branch with work not in main stays. A worktree folder
 already gone (moved or deleted) is said so, and git's record pruned. One git won't remove keeps the
-session, with why; one another listed session works in stays, and the session is archived.
+session, with why; one another session works in (listed with its folder there, or recorded as using
+it: Existing worktree) stays, and the session is archived: the last one's check-in removes it.
+Sessions of one worktree are judged one at a time (and never while one joins it), so two sharing
+it can't each leave it to the other. A `handMade` one is never removed.
 
 The answer isn't one of a started session's reports. When all have answered, or after 10 minutes,
 the chat gets one report of what was archived, what wasn't and why, and what wasn't asked. A

@@ -144,12 +144,14 @@ export class AcpTranscript {
   }
 
   /** A prompt Tether sent (live): its message, as a replay would show it. */
-  prompt(parts: Part[]): Msg {
+  prompt(parts: Part[], origin?: Msg["origin"]): Msg {
     this.turn = undefined;
     this.user = undefined;
     this.last = undefined;
     const m = this.newMsg("user");
     m.parts = parts;
+    // Set before it's emitted: modules read who wrote it from the event (a peer's message isn't the person's).
+    if (origin) m.origin = origin;
     this.emit(m);
     return m;
   }

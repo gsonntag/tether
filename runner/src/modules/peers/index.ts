@@ -17,6 +17,7 @@ import { runnerSettings } from "../../core/runnerSettings";
 import { sessionInstructions } from "./instructions";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
 import { LEVELS, type Level } from "../../../../shared/move";
+import { worktreeArg } from "../../../../shared/worktree";
 import { LEVEL_WORDS, levelOf } from "../../core/permissionLevel";
 import type { Module, ModuleContext, SessionLook } from "..";
 import { BROADCAST_MAX, PeerCaps } from "./caps";
@@ -385,7 +386,7 @@ export class Peers {
     if (why) return this.refused(from, why, "a new session");
     const hops = this.caps.hopsFrom(from);
     const undo = this.caps.count(from);
-    return this.children.start(from, { harness: str(a.harness), prompt: str(a.prompt), model: str(a.model), effort: str(a.effort), title: str(a.title), project: str(a.project), worktree: a.worktree === true }, hops, undo);
+    return this.children.start(from, { harness: str(a.harness), prompt: str(a.prompt), model: str(a.model), effort: str(a.effort), title: str(a.title), project: str(a.project), worktree: worktreeArg(a.worktree) }, hops, undo);
   }
 
   /**

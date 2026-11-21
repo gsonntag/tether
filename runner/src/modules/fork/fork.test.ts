@@ -140,6 +140,17 @@ describe("forking a session", () => {
     expect(p.autoKey).toBeUndefined();
   });
 
+  test("a fork of a session in a worktree is one of its users too (cleanup waits for it); a side chat isn't", async () => {
+    const { runner } = setup();
+    const s = await runner.core.open("claude:s1");
+    runner.core.setWorktree(s, { path: "/p", branch: "tether/x", repo: "/r", known: { a: [1, 2] } });
+    const id = await runner.look.sessions.fork("claude:s1");
+    expect(runner.look.sessions.worktree!(id)).toEqual({ path: "/p", branch: "tether/x", repo: "/r", joined: true });
+    expect(runner.look.sessions.worktreeUsers!("/p").map((u) => u.id).sort()).toEqual(["claude:s1", id].sort());
+    const side = await runner.look.sessions.fork("claude:s1", { sideOf: "claude:s1" });
+    expect(runner.look.sessions.worktree!(side)).toBeUndefined();
+  });
+
   test("a fork that can't be adopted is removed, not left half-made", async () => {
     const { a, runner } = setup();
     const sessions = { ...runner.look.sessions, notice: async () => { throw new Error("disk full"); } };

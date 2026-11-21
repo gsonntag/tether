@@ -2,7 +2,7 @@
 // frame must still never throw inside the relay or reach a handler half-formed.
 
 import { cleanGrants } from "./access";
-import type { BrowserToServer, HarnessInfo, OpName, RunnerInfo, RunnerToServer, SummaryUpdate } from "./protocol";
+import type { BrowserToServer, HarnessInfo, OpName, RunnerBuild, RunnerInfo, RunnerToServer, SummaryUpdate } from "./protocol";
 import { parseHubFrame, parseHubState } from "./textingHub";
 import { HARNESS_LABELS, type HarnessId, type SessionEvent } from "./transcript";
 
@@ -49,6 +49,13 @@ function parseHarness(v: unknown): HarnessInfo | null {
   return { id: v.id as HarnessId, version: v.version };
 }
 
+function parseRunnerBuild(v: unknown): RunnerBuild | undefined {
+  if (!isObj(v) || typeof v.commit !== "string" || !v.commit || typeof v.date !== "string" || !v.date || typeof v.dirty !== "boolean") return undefined;
+  const branch = typeof v.branch === "string" && v.branch ? v.branch : undefined;
+  const behind = typeof v.behind === "number" && Number.isSafeInteger(v.behind) && v.behind >= 0 ? v.behind : undefined;
+  return { commit: v.commit, date: v.date, ...(branch ? { branch } : {}), dirty: v.dirty, ...(behind !== undefined ? { behind } : {}) };
+}
+
 function parseRunnerInfo(v: unknown): Omit<RunnerInfo, "connectedAt"> | null {
   if (!isObj(v) || !isId(v.id) || typeof v.hostname !== "string" || typeof v.version !== "string" || !isNum(v.protocol) || !Array.isArray(v.harnesses)) return null;
   // Unknown harnesses (a newer runner) are left out rather than refusing the runner.
@@ -57,7 +64,8 @@ function parseRunnerInfo(v: unknown): Omit<RunnerInfo, "connectedAt"> | null {
   const homeFolder = typeof v.homeFolder === "string" && v.homeFolder.startsWith("/") && v.homeFolder.length <= 4096 ? v.homeFolder : undefined;
   const shared = cleanGrants(v.shared);
   const textingHub = parseHubState(v.textingHub);
-  return { id: v.id, name, hostname: v.hostname, version: v.version, protocol: v.protocol, harnesses, ...(homeFolder ? { homeFolder } : {}), ...(v.git === true ? { git: true } : {}), ...(v.gitActions === true ? { gitActions: true } : {}), ...(v.files === true ? { files: true } : {}), ...(v.pinning === true ? { pinning: true } : {}), ...(v.spawnedFamily === true ? { spawnedFamily: true } : {}), ...(v.canText === true ? { canText: true } : {}), ...(shared.length ? { shared } : {}), ...(textingHub ? { textingHub } : {}) };
+  const build = parseRunnerBuild(v.build);
+  return { id: v.id, name, hostname: v.hostname, version: v.version, protocol: v.protocol, harnesses, ...(homeFolder ? { homeFolder } : {}), ...(v.git === true ? { git: true } : {}), ...(v.gitActions === true ? { gitActions: true } : {}), ...(v.files === true ? { files: true } : {}), ...(v.pinning === true ? { pinning: true } : {}), ...(v.spawnedFamily === true ? { spawnedFamily: true } : {}), ...(v.existingWorktrees === true ? { existingWorktrees: true } : {}), ...(v.canText === true ? { canText: true } : {}), ...(shared.length ? { shared } : {}), ...(textingHub ? { textingHub } : {}), ...(build ? { build } : {}) };
 }
 
 /** A runner frame, or null when it isn't one the server understands. Rebuilt like browser frames. */

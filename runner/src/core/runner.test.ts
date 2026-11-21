@@ -124,3 +124,45 @@ test("setRunnerName renames in runner.json and says hello again; blank goes back
   expect(await r.ops.handle("setRunnerName", { name: "" })).toEqual({ ok: true, data: { name: "Teal Quail" } });
   expect(JSON.parse(readFileSync(file, "utf8")).name).toBeUndefined();
 }, 15_000);
+
+test("detectBuild refreshes build and re-sends hello when changed", async () => {
+  const hellos: any[] = [];
+  const s = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: (req, srv) => (srv.upgrade(req, { data: undefined }) ? undefined : new Response("no", { status: 400 })),
+    websocket: {
+      message(ws, raw) {
+        const m = JSON.parse(String(raw));
+        if (m.t === "hello") {
+          hellos.push(m.runner);
+          ws.send(JSON.stringify({ t: "welcome" }));
+        }
+      },
+    },
+  });
+  stops.push(() => s.stop(true));
+  let buildInfo = { commit: "1111111", date: "2026-11-21", branch: "main", dirty: false, behind: 0 };
+  const r = createRunner({
+    url: `http://127.0.0.1:${s.port}`,
+    token: "t",
+    runnerId: "u4",
+    name: "Build Box",
+    version: "0",
+    build: buildInfo,
+    detectBuild: async () => buildInfo,
+    buildCheckMs: 20,
+    detectHarnesses: async () => [],
+    log: () => {},
+    prefsFile: "/nonexistent/runner.json",
+  });
+  stops.push(() => r.stop());
+  r.start();
+  await until(() => hellos.length >= 1);
+  expect(hellos[0].build).toEqual(buildInfo);
+
+  // Change build and wait for periodic refresh:
+  buildInfo = { commit: "1111111", date: "2026-11-21", branch: "main", dirty: false, behind: 2 };
+  await until(() => hellos.some((h) => h.build?.behind === 2));
+  expect(hellos.at(-1).build.behind).toBe(2);
+}, 15_000);

@@ -30,7 +30,7 @@ import type { DiffScope, GitDiff } from "./gitDiff";
 import type { CheckpointList, RestoreResult } from "./checkpoints";
 import type { GitActionResult, GitDraft, GitStatus, PrLookup } from "./gitActions";
 import type { MoveOptions } from "./move";
-import type { WorkspaceInfo, WorktreeMade } from "./worktree";
+import type { WorkspaceInfo, WorktreeJoined, WorktreeList, WorktreeMade } from "./worktree";
 import type { Attachment } from "./attachments";
 import type { AzureDeployment, BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
 import type { TokenRates } from "./costs";
@@ -66,6 +66,19 @@ export interface HarnessInfo {
   version: string;
 }
 
+export interface RunnerBuild {
+  /** short commit hash, e.g. "30944f6" */
+  commit: string;
+  /** commit date, e.g. "2026-11-21" */
+  date: string;
+  /** branch name, or "detached" */
+  branch?: string;
+  /** whether the checkout has local uncommitted changes */
+  dirty: boolean;
+  /** commits HEAD is behind its upstream; absent when no upstream or check failed */
+  behind?: number;
+}
+
 export interface RunnerInfo {
   /** stable and unique: generated once and kept in runner.json */
   id: string;
@@ -74,6 +87,8 @@ export interface RunnerInfo {
   hostname: string;
   /** the runner's own version */
   version: string;
+  /** the build stamp read from git at startup; absent outside a git checkout or on older runners */
+  build?: RunnerBuild;
   protocol: number;
   /** installed harnesses */
   harnesses: HarnessInfo[];
@@ -91,6 +106,8 @@ export interface RunnerInfo {
   pinning?: boolean;
   /** it takes `spawnedFamily` (SPEC §6a: sessions an agent started show as its children). Absent: an older runner, or peers off */
   spawnedFamily?: boolean;
+  /** it takes `listWorktrees` and `existingWorktreeSession` (SPEC §4 Existing worktree). Absent: an older runner, and no such choice */
+  existingWorktrees?: boolean;
   /** it takes `setCanText` (SPEC §11 Texting: the "Session can text me" box). Absent: an older runner, and no box */
   canText?: boolean;
   /** the people its owner shared it with (shared/access.ts); only sent to its owners */
@@ -326,6 +343,17 @@ export interface Ops {
   newWorktreeSession: {
     args: { harness: HarnessId; projectPath: string; model?: string; effort?: string; permissionMode?: string; terminal?: boolean; source?: BillingSource; branch?: string; name?: string; expectSetup?: string };
     result: WorktreeMade;
+  };
+  /** The worktrees of a folder's repo other than its main checkout, and who works in each (SPEC §4). Read-only. */
+  listWorktrees: { args: { projectPath: string }; result: WorktreeList };
+  /**
+   * newSession in an existing worktree of the folder's repo (SPEC §4): `worktree` is its path or
+   * branch. Nothing is made and no setup runs; the session is recorded as one of its users, so it
+   * isn't removed while it works there. Refused for the main checkout (that's newSession).
+   */
+  existingWorktreeSession: {
+    args: { harness: HarnessId; projectPath: string; worktree: string; model?: string; effort?: string; permissionMode?: string; terminal?: boolean; source?: BillingSource };
+    result: WorktreeJoined;
   };
   /** Runs a worktree session's setup again, after it failed or a restart cut it off (SPEC §4). */
   rerunSetup: { args: { sessionId: string }; result: null };
@@ -655,7 +683,7 @@ export type BrowserToServer =
 
 export type ServerToBrowser =
   /** `push`: the public key to subscribe with; absent when the server has no push keys */
-  | { t: "hello"; user: User; protocol: number; push?: { publicKey: string } }
+  | { t: "hello"; user: User; protocol: number; push?: { publicKey: string }; build?: RunnerBuild }
   /** every connected runner, sent on connect and whenever the set changes */
   | { t: "runners"; runners: RunnerInfo[] }
   | ResultMsg

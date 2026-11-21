@@ -592,7 +592,7 @@ export class SessionCore {
     await this.discover();
   }
 
-  /** Records the worktree Tether made for a session as its own (New worktree, SPEC §4): saved at once. */
+  /** Records the worktree a session works in as its own (New or Existing worktree, SPEC §4): saved at once. */
   setWorktree(s: Session, worktree: WorktreeRecord) {
     this.o.prefs.set(s.id, { projectPath: s.summary.projectPath, worktree });
     this.o.prefs.flush();

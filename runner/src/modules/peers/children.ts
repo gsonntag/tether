@@ -1,5 +1,5 @@
 // Sessions an agent starts (SPEC §9a, tether_start): any session's agent starts a new session on any
-// harness, model and effort, in its own folder (or another, or a new worktree), with a prompt. The
+// harness, model and effort, in its own folder (or another, a new worktree, or an existing one), with a prompt. The
 // child is an ordinary session; the module remembers who started it and, each time it finishes a
 // turn, queues its last reply into the starter's chat. The starter follows up with tether_send, or
 // starts a fresh one. The child's mode is never looser than the starter's. Reporting stops once the
@@ -12,7 +12,7 @@ import { LEVELS, mapMode, type Level } from "../../../../shared/move";
 import { waitingNow } from "../../../../shared/schedule";
 import { HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
 import type { SpawnedFamily } from "../../../../shared/protocol";
-import type { WorktreeMade } from "../../../../shared/worktree";
+import { pickWorktree, type WorktreeJoined, type WorktreeMade } from "../../../../shared/worktree";
 import { LEVEL_WORDS, levelOf } from "../../core/permissionLevel";
 import type { ModuleContext, SessionLook } from "..";
 import { lastReply } from "../sideChats";
@@ -71,7 +71,8 @@ export interface StartArgs {
   effort?: string;
   title?: string;
   project?: string;
-  worktree?: boolean;
+  /** true: a new worktree; a string: an existing one's path or branch */
+  worktree?: boolean | string;
 }
 
 type Ctx = Pick<ModuleContext, "sessions" | "session" | "log" | "homeFolder" | "hiddenFolder"> & { ops?: Pick<ModuleContext["ops"], "call">; dataDir?: string };
@@ -266,25 +267,39 @@ export class Children {
     const own = me.summary.projectPath;
     const folder = a.project?.trim() ? s.folder(a.project.trim()) : own;
     if (this.ctx.homeFolder && resolve(folder) === resolve(this.ctx.homeFolder)) throw new Error("that's the Home agent's folder, not a project.");
-    if (resolve(folder) !== resolve(own)) {
-      // Another folder widens where a sandboxed starter could write: only from one nothing confines, and only a known project.
+    // Another folder widens where a sandboxed starter could write: only from one nothing confines, and only a known project.
+    const elsewhere = async (where: string, known: boolean) => {
+      if (resolve(where) === resolve(own)) return;
       if (level < LEVELS.judged) throw new Error(`this session (${LEVEL_WORDS[level]}) can only start sessions in its own folder.`);
-      const known = (await s.projects().catch(() => [])).some((p) => resolve(p.path) === resolve(folder));
-      if (!known) throw new Error(`${folder} isn't one of Tether's projects.`);
-    }
+      if (!known && !(await s.projects().catch(() => [])).some((p) => resolve(p.path) === resolve(where))) throw new Error(`${where} isn't one of Tether's projects.`);
+    };
+    await elsewhere(folder, false);
     // A new worktree runs git and the repo's setup without asking: only for a starter that may run commands itself.
-    if (a.worktree && level < LEVELS.sandboxed) throw new Error(`this session (${LEVEL_WORDS[level]}) can't make worktrees: that runs commands.`);
+    if (a.worktree === true && level < LEVELS.sandboxed) throw new Error(`this session (${LEVEL_WORDS[level]}) can't make worktrees: that runs commands.`);
+    // An existing worktree runs nothing: it's just another folder, one of the (allowed) folder's repo's worktrees.
+    let existing: string | undefined;
+    if (typeof a.worktree === "string") {
+      if (!this.ctx.ops) throw new Error("worktrees aren't available on this runner.");
+      const { repo, worktrees } = await this.ctx.ops.call("listWorktrees", { projectPath: folder });
+      if (!repo) throw new Error(`${folder} isn't in a git repository, so it has no worktrees.`);
+      const w = pickWorktree(worktrees, a.worktree, (p) => (p.startsWith("/") || p.startsWith("~") ? resolve(s.folder(p)) : p));
+      if (!w) throw new Error(`${a.worktree} isn't one of ${repo}'s worktrees (other than its main checkout: for that, leave worktree out and pass project).`);
+      await elsewhere(w.path, true);
+      existing = w.path;
+    }
     const mode = await this.modeFor(harness, level);
     const source = (await s.sources(harness)).default ?? "subscription";
     const model = a.model?.trim() || undefined;
     const effort = a.effort?.trim() || undefined;
     const title = a.title?.replace(/[\x00-\x1f\x7f]/g, " ").trim().slice(0, 80) || undefined;
     let made: WorktreeMade | undefined;
-    if (a.worktree) {
+    let joined: WorktreeJoined | undefined;
+    if (existing) joined = await this.ctx.ops!.call("existingWorktreeSession", { harness, projectPath: folder, worktree: existing, source, permissionMode: mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}) });
+    if (a.worktree === true) {
       if (!this.ctx.ops) throw new Error("worktrees aren't available on this runner.");
       made = await this.ctx.ops.call("newWorktreeSession", { harness, projectPath: folder, source, permissionMode: mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}), name: title || prompt });
     }
-    const id = made?.sessionId ?? (await s.create({ harness, projectPath: folder, source, permissionMode: mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}) }));
+    const id = made?.sessionId ?? joined?.sessionId ?? (await s.create({ harness, projectPath: folder, source, permissionMode: mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}) }));
     this.kids[id] = { parent: starter, depth: (this.kids[starter]?.depth ?? 0) + 1, reports: 0, hops };
     this.save();
     if (title) await s.rename(id, title).catch(() => {});
@@ -302,7 +317,9 @@ export class Children {
     const how = `${HARNESS_LABELS[harness]}${model ? `, ${model}` : ""}${effort ? `, ${effort} effort` : ""}, ${mode} mode`;
     const where = made
       ? `in a new worktree ${made.path} on branch ${made.branch} (from ${made.base}).${made.setup ? ` The repo's setup (${made.setup}) runs first; the prompt goes once it succeeds.` : ""}`
-      : `in ${folder}.`;
+      : joined
+        ? `in the existing worktree ${joined.path}${joined.branch ? ` on branch ${joined.branch}` : ""}.`
+        : `in ${folder}.`;
     return { text: `Started ${name} (${how}) ${where}\nIt works on its own. Each time it finishes a turn, its reply comes to you as a message from it. Follow up with tether_send to ${id}, or start a fresh session for new context.` };
   }
 

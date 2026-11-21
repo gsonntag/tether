@@ -17,6 +17,7 @@ import { ADVERSARIAL_BRIEF, ago, asksToStopTexting, contentless, NO_TEXT, routin
 import { ANSWER_TAG } from "./checkIn";
 import { claudeMove } from "../../adapters/claude/move";
 import { worktreesModule } from "../worktrees";
+import { lockWorktree } from "../worktrees/git";
 
 import { unfence, WATCH } from "./index";
 import { CONCISE_RULE, TEXTING_RULE } from "../peers/instructions";
@@ -891,6 +892,118 @@ test("check-in: Tether removes the worktree it made for a finished, merged sessi
   expect(report).toContain(`its worktree stays: another session works in ${shared.path}`);
   expect(existsSync(shared.path)).toBe(true);
   expect(runner.core.sessions.get(shared.sessionId)!.summary.archived).toBe(true);
+});
+
+test("check-in: a worktree several sessions share goes only with the last of them", async () => {
+  const { runner, fake, op, chat, tools, driverOf, project } = await withWorktrees();
+  fake.script = (text) => [say(`a-${text.length}`, text.includes(ANSWER_TAG) ? `${ANSWER_TAG} {"done": true, "merged": true, "cleaned_up": true, "branch": null}` : "ok"), idle];
+  const settle = async (id: string, text: string) => {
+    await op("send", { sessionId: id, text });
+    await until(() => !!driverOf(id)?.sent.length && runner.core.sessions.get(id)?.state.status === "idle");
+  };
+  /** A worktree made for one session, merged, and a second session that joined it. */
+  const pair = async (name: string) => {
+    const made = (await op("newWorktreeSession", { harness: "claude", projectPath: project, name })) as { sessionId: string; path: string; branch: string };
+    await settle(made.sessionId, name);
+    writeFileSync(join(made.path, `${name}.txt`), "x");
+    await gitIn(made.path, "add", ".");
+    await gitIn(made.path, "commit", "-qm", name);
+    await gitIn(project, "merge", "-q", "--ff-only", made.branch);
+    const joined = (await op("existingWorktreeSession", { harness: "claude", projectPath: project, worktree: made.branch })) as { sessionId: string };
+    await settle(joined.sessionId, `${name} too`);
+    return { ...made, guest: joined.sessionId };
+  };
+  // One at a time: the maker is archived first and the worktree stays for the guest; the guest's check-in removes it.
+  const a = await pair("first");
+  await tools(chat).check_in_sessions!({ session_ids: [a.sessionId] });
+  await until(() => driverOf(chat)?.sent.length === 1);
+  expect(driverOf(chat)!.sent[0]).toContain(`its worktree stays: another session works in ${a.path}`);
+  expect(existsSync(a.path)).toBe(true);
+  expect(runner.core.sessions.get(a.sessionId)!.summary.archived).toBe(true);
+  await tools(chat).check_in_sessions!({ session_ids: [a.guest] });
+  await until(() => driverOf(chat)?.sent.length === 2);
+  // The guest is told Tether removes it, once no other session works there.
+  expect(driverOf(a.guest)!.sent.at(-1)).toContain("which other sessions may share");
+  expect(driverOf(chat)!.sent[1]).toContain(`removed its worktree and branch ${a.branch}`);
+  expect(existsSync(a.path)).toBe(false);
+  expect(runner.core.sessions.get(a.guest)!.summary.archived).toBe(true);
+  // Both in one check-in: the worktree goes with whichever is judged last.
+  const b = await pair("second");
+  await tools(chat).check_in_sessions!({ session_ids: [b.sessionId, b.guest] });
+  await until(() => driverOf(chat)?.sent.length === 3);
+  expect(existsSync(b.path)).toBe(false);
+  expect(runner.core.sessions.get(b.sessionId)!.summary.archived).toBe(true);
+  expect(runner.core.sessions.get(b.guest)!.summary.archived).toBe(true);
+});
+
+test("check-in: a removal waits for a join under way on that worktree, and then sees the new user", async () => {
+  const { runner, fake, op, chat, tools, driverOf, project } = await withWorktrees();
+  fake.script = (text) => [say(`a-${text.length}`, text.includes(ANSWER_TAG) ? `${ANSWER_TAG} {"done": true, "merged": true, "cleaned_up": true, "branch": null}` : "ok"), idle];
+  const made = (await op("newWorktreeSession", { harness: "claude", projectPath: project, name: "racing" })) as { sessionId: string; path: string; branch: string };
+  await op("send", { sessionId: made.sessionId, text: "go" });
+  await until(() => !!driverOf(made.sessionId)?.sent.length && runner.core.sessions.get(made.sessionId)?.state.status === "idle");
+  // A join holds the worktree's lock (as existingWorktreeSession does) while the check-in's answer comes.
+  let release!: () => void;
+  const joining = lockWorktree(made.path, async () => {
+    await new Promise<void>((done) => (release = done));
+    const guest = (await op("newSession", { harness: "claude", projectPath: join(project, "..") })).sessionId as string;
+    await runner.look.sessions.setWorktree!(guest, { path: made.path, branch: made.branch, repo: project, joined: true });
+  });
+  await tools(chat).check_in_sessions!({ session_ids: [made.sessionId] });
+  await until(() => driverOf(made.sessionId)!.sent.length === 2 && runner.core.sessions.get(made.sessionId)?.state.status === "idle");
+  await Bun.sleep(300);
+  expect(existsSync(made.path)).toBe(true);
+  expect(runner.core.sessions.get(made.sessionId)!.summary.archived).toBeFalsy();
+  release();
+  await joining;
+  await until(() => driverOf(chat)?.sent.length === 1);
+  expect(driverOf(chat)!.sent[0]).toContain(`its worktree stays: another session works in ${made.path}`);
+  expect(existsSync(made.path)).toBe(true);
+});
+
+test("check-in: a worktree a session of any age is recorded in is named as off limits", async () => {
+  const { runner, fake, op, chat, tools, driverOf, project } = await withWorktrees();
+  fake.script = (text) => [say(`a-${text.length}`, text.includes(ANSWER_TAG) ? `${ANSWER_TAG} {"done": false, "merged": false}` : "ok"), idle];
+  const old = join(project, "..", "old-wt");
+  await gitIn(project, "worktree", "add", "-qb", "old-wt", old);
+  // Recorded, but long out of the lists.
+  runner.core.o.prefs.set("claude:ancient", { projectPath: old, worktree: { path: old, branch: "old-wt", repo: project, joined: true, handMade: true } });
+  const { sessionId } = await op("newSession", { harness: "claude", projectPath: project });
+  await op("send", { sessionId, text: "go" });
+  await until(() => !!driverOf(sessionId)?.sent.length && runner.core.sessions.get(sessionId)?.state.status === "idle");
+  await tools(chat).check_in_sessions!({ session_ids: [sessionId] });
+  await until(() => driverOf(sessionId)!.sent.length === 2);
+  expect(driverOf(sessionId)!.sent[1]).toContain(`which other sessions are using:\n     ${old}`);
+});
+
+test("check-in: a worktree made by hand that a session joined is never removed by Tether", async () => {
+  const { runner, fake, op, chat, tools, driverOf, project } = await withWorktrees();
+  fake.script = (text) => [say(`a-${text.length}`, text.includes(ANSWER_TAG) ? `${ANSWER_TAG} {"done": true, "merged": true, "cleaned_up": true, "branch": null}` : "ok"), idle];
+  const hand = join(project, "..", "by-hand");
+  await gitIn(project, "worktree", "add", "-qb", "by-hand", hand);
+  const { sessionId } = (await op("existingWorktreeSession", { harness: "claude", projectPath: project, worktree: hand })) as { sessionId: string };
+  expect(runner.look.sessions.worktree!(sessionId)).toMatchObject({ path: hand, handMade: true });
+  await op("send", { sessionId, text: "go" });
+  await until(() => !!driverOf(sessionId)?.sent.length && runner.core.sessions.get(sessionId)?.state.status === "idle");
+  await tools(chat).check_in_sessions!({ session_ids: [sessionId] });
+  await until(() => driverOf(chat)?.sent.length === 1);
+  expect(driverOf(sessionId)!.sent.at(-1)).not.toContain("a worktree Tether made");
+  expect(runner.core.sessions.get(sessionId)!.summary.archived).toBe(true);
+  expect(existsSync(hand)).toBe(true);
+});
+
+test("start_session with worktree: a path or branch starts it in that existing worktree", async () => {
+  const { runner, op, chat, tools, project } = await withWorktrees();
+  const made = (await op("newWorktreeSession", { harness: "claude", projectPath: project, name: "base work" })) as { sessionId: string; path: string; branch: string };
+  const said = await tools(chat).start_session!({ project_path: project, prompt: "Carry on.", worktree: made.branch });
+  const child = /session (\S+) in/.exec(said)![1]!;
+  expect(said).toContain(`in the existing worktree ${made.path} on branch ${made.branch}`);
+  expect(runner.core.sessions.get(child)!.summary.projectPath).toBe(made.path);
+  expect(runner.look.sessions.worktree!(child)).toEqual({ path: made.path, branch: made.branch, repo: project, joined: true });
+  await expect(tools(chat).start_session!({ project_path: project, prompt: "x", worktree: "no-such" })).rejects.toThrow("isn't one of");
+  // "false" as text is no worktree, not a branch called false.
+  const plain = await tools(chat).start_session!({ project_path: project, prompt: "x", worktree: "false" });
+  expect(plain).toContain(`in ${project} (`);
 });
 
 test("Archive done sessions (homeAgentCheckIn) runs the check-in without a chat and keeps its result for Home", async () => {

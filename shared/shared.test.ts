@@ -67,6 +67,13 @@ describe("wire", () => {
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, pinning: "yes" } })) as any).runner.pinning).toBeUndefined();
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, spawnedFamily: true } })) as any).runner.spawnedFamily).toBe(true);
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, spawnedFamily: 1 } })) as any).runner.spawnedFamily).toBeUndefined();
+    // The build stamp from git: commit, date, branch and dirty.
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, build: { commit: "abc1234", date: "2026-11-21", branch: "main", dirty: false, behind: 3 } } })) as any).runner.build).toEqual({ commit: "abc1234", date: "2026-11-21", branch: "main", dirty: false, behind: 3 });
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, build: { commit: "abc1234", date: "2026-11-21", dirty: true } } })) as any).runner.build).toEqual({ commit: "abc1234", date: "2026-11-21", dirty: true });
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, build: "bogus" } })) as any).runner.build).toBeUndefined();
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, build: { commit: "" } } })) as any).runner.build).toBeUndefined();
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, existingWorktrees: true } })) as any).runner.existingWorktrees).toBe(true);
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, existingWorktrees: 1 } })) as any).runner.existingWorktrees).toBeUndefined();
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, canText: true } })) as any).runner.canText).toBe(true);
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, canText: 1 } })) as any).runner.canText).toBeUndefined();
     for (const bad of [{ id: "x" }, { ...runner, harnesses: "no" }, { ...runner, protocol: "1" }, { ...runner, hostname: 3 }, { ...runner, id: "" }, null])
