@@ -41,6 +41,11 @@ export interface HarnessCapabilities {
   canSteer: boolean;
   /** "handoff": the TUI takes over the session; "shared": the TUI joins the live thread */
   terminal: "handoff" | "shared";
+  /**
+   * The harness's TUI reports "needs you" through hooks (Claude Code).
+   * Without this (Antigravity), terminal attention is read from the screen.
+   */
+  terminalHooks?: boolean;
   subagents: {
     /** subagents show as child sessions with their own transcript */
     view: boolean;

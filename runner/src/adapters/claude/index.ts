@@ -153,7 +153,7 @@ function watchFile(path: () => string | undefined, onChange: () => void): () => 
 
 export const claudeAdapter: Adapter = {
   id: "claude",
-  capabilities: { canSteer: true, terminal: "handoff", subagents: { view: true, stop: true, steer: "via-parent", background: true }, sourceSwitch: true, commands: true, move: { import: "native" }, fork: true, readOnlyMode: "default" },
+  capabilities: { canSteer: true, terminal: "handoff", terminalHooks: true, subagents: { view: true, stop: true, steer: "via-parent", background: true }, sourceSwitch: true, commands: true, move: { import: "native" }, fork: true, readOnlyMode: "default" },
   move: claudeMove,
   fork: claudeFork,
   billing: {

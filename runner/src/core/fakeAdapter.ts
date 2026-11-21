@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 /** One step of a scripted turn: called with the session's sink. */
 export type Step = (sink: Sink, d: FakeDriver) => void | Promise<void>;
 
-export const FAKE_CAPS: HarnessCapabilities = { canSteer: false, terminal: "handoff", subagents: { view: true, stop: true, steer: false } };
+export const FAKE_CAPS: HarnessCapabilities = { canSteer: false, terminal: "handoff", terminalHooks: true, subagents: { view: true, stop: true, steer: false } };
 
 export class FakeDriver implements Driver {
   sent: string[] = [];

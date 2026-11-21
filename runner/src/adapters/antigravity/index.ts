@@ -102,7 +102,7 @@ async function history(nativeId: string, projectPath: string): Promise<Msg[]> {
 
 export const antigravityAdapter: Adapter = {
   id: "antigravity",
-  capabilities: { canSteer: false, terminal: "handoff", subagents: { view: true, stop: true, steer: "via-parent" }, commands: true, move: { import: "context" }, fork: true, readOnlyMode: "default" },
+  capabilities: { canSteer: false, terminal: "handoff", terminalHooks: false, subagents: { view: true, stop: true, steer: "via-parent" }, commands: true, move: { import: "context" }, fork: true, readOnlyMode: "default" },
   fork: agyFork,
   toolServer: (server) => agyTools.set(server),
   move: {
