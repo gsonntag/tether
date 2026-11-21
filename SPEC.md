@@ -83,7 +83,10 @@ share only ever views. The list lives on the runner (runner.json `sharedWith`, o
 `setRunnerAccess`) and the relay enforces it on every frame (shared/access.ts: `VIEW_OPS`, and
 `MANAGE_OPS` that stay the owner's: sharing, name, keys, texting, updates, runner settings, the
 Home agent's settings). View never includes the git or files modules' ops (they read the folder,
-secrets too) or making short links. A
+secrets too) or making short links. A runner not shared with you leaves no trace: the server never
+lists it, and the browser remembers only runners you own (to show one that went offline), keyed by
+who is signed in, so a runner shared with you that leaves the list (unshared, or offline) is just
+gone, and a browser one person used shows another nothing. A
 change applies at once; a Foliation role change at the next renew ticket, which carries the role.
 Public-link visitors and app calls never get in. A person's app user token (`fol app-token
 tether`, Foliation contracts/app-user-tokens.md: the identity carries `tok: true` with their current
