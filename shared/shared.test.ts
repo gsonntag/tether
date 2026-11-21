@@ -65,6 +65,8 @@ describe("wire", () => {
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, files: "yes" } })) as any).runner.files).toBeUndefined();
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, pinning: true } })) as any).runner.pinning).toBe(true);
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, pinning: "yes" } })) as any).runner.pinning).toBeUndefined();
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, canText: true } })) as any).runner.canText).toBe(true);
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, canText: 1 } })) as any).runner.canText).toBeUndefined();
     for (const bad of [{ id: "x" }, { ...runner, harnesses: "no" }, { ...runner, protocol: "1" }, { ...runner, hostname: 3 }, { ...runner, id: "" }, null])
       expect(parseRunnerMessage(JSON.stringify({ t: "hello", runner: bad }))).toBeNull();
   });

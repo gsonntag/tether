@@ -96,6 +96,7 @@ export function createRunner(o: RunnerOptions) {
     gitActions: true,
     files: true,
     pinning: true,
+    canText: true,
     // The relay shows the runner to these people (shared/access.ts) and only its owners see the list.
     ...(prefs.shared().length ? { shared: prefs.shared() } : {}),
     ...(hubPort.state ? { textingHub: hubPort.state } : {}),
@@ -233,6 +234,7 @@ export function createRunner(o: RunnerOptions) {
         return s ? lookAt(s) : undefined;
       },
       loaded: () => [...core.sessions.values()].map(lookAt),
+      texters: () => prefs.texters(),
       viewersOf: (id: string) => live.read.viewersOf(id),
       homeFolder: o.homeFolder,
       apiCost: (id: string) => (costs.has(id) ? costs.get(id) : undefined),

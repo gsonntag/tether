@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { HELD_MS, HOME, NOTHING_OPEN, OPEN_MS, REPLY_MS, Router, emptyState, parseHome, toHomeWords } from "./router";
+import { HELD_MS, HOME, NOTHING_OPEN, OPEN_MS, REPLY_MS, Router, emptyState, parseHome, toHomeWords, type Ticked } from "./router";
 import { casualText, TEXTS } from "./texts";
 import { MAX_EXTRA_HOMES } from "../homeLine";
+
+/** Two sessions that may text ("Session can text me"), most recent first: the picker offers them when none is open. */
+const T: Ticked[] = [{ sessionId: "a", label: "login fix" }, { sessionId: "b", label: "docs" }];
 
 function setup() {
   let t = 1_000_000;
@@ -51,30 +54,51 @@ describe("replies", () => {
     r.stamp("b", "finished", ".");
     for (const [msg, text] of [["2 do it", "do it"], ["[2] do it", "do it"], ["2: do it", "do it"], ["(2) do it", "do it"], ["2. do it", "do it"]])
       expect(r.route(msg!)).toMatchObject({ kind: "deliver", sessionId: "b", text });
-    // a number that's part of the message isn't one
-    expect(r.route("20 more files")).toMatchObject({ kind: "reply" });
+    // a number that's part of the message isn't one: plain text, to the session last texted or answered
+    expect(r.route("20 more files")).toMatchObject({ kind: "deliver", sessionId: "b", text: "20 more files" });
   });
 
-  test("ambiguous plain text: held, picker, then a number sends it", () => {
+  test("several open: plain text goes to the one last texted or answered", () => {
     const { r, clock } = setup();
     r.stamp("a", "finished", ".");
     clock.tick(3 * 60_000);
     r.stamp("b", "wants to run a command", ".");
-    const d = r.route("ship it");
-    expect(d).toEqual({ kind: "reply", text: "Which session, by number?\n[1] finished, 3m ago\n[2] wants to run a command, just now" });
-    expect(r.route("1")).toMatchObject({ kind: "deliver", sessionId: "a", text: "ship it" });
-    // used up
+    expect(r.route("ship it")).toMatchObject({ kind: "deliver", sessionId: "b", text: "ship it" });
+    clock.tick(1000);
+    // Answering a by number makes it the one plain text goes to.
+    expect(r.route("1 and the docs")).toMatchObject({ kind: "deliver", sessionId: "a" });
+    clock.tick(1000);
+    expect(r.route("thanks")).toMatchObject({ kind: "deliver", sessionId: "a", text: "thanks" });
+  });
+
+  test("none open: held, a picker of the sessions that may text, then a number sends it", () => {
+    const { r } = setup();
+    const d = r.route("ship it", undefined, false, undefined, T);
+    expect(d).toEqual({ kind: "reply", text: "Which session, by number?\n[1] login fix\n[2] docs" });
+    // Offered numbers aren't texts: plain text again asks again (the newer words held).
+    expect(r.route("ship it now", undefined, false, undefined, T)).toMatchObject({ kind: "reply", text: expect.stringContaining(TEXTS.which) });
+    expect(r.route("1")).toMatchObject({ kind: "deliver", sessionId: "a", text: "ship it now" });
+    // used up; picked, it's the one plain text goes to now
     expect(r.route("1")).toEqual({ kind: "reply", text: "What should I send to [1]?" });
+    expect(r.route("go on", undefined, false, undefined, T)).toMatchObject({ kind: "deliver", sessionId: "a", text: "go on" });
+  });
+
+  test("none open and none may text: says so", () => {
+    const { r } = setup();
+    expect(r.route("hi", undefined, false, undefined, [])).toEqual({ kind: "reply", text: TEXTS.noTexters });
+    expect(casualText(TEXTS.noTexters)).toBe(true);
+    // The Home agent takes it then (only then).
+    expect(r.route("hi", undefined, true, undefined, [])).toEqual({ kind: "home", text: "hi" });
+    expect(r.route("hi", undefined, true, undefined, T)).toMatchObject({ kind: "reply", text: expect.stringContaining(TEXTS.which) });
   });
 
   test("a new plain text replaces the held one; a held one expires", () => {
     const { r, clock } = setup();
-    r.stamp("a", "finished", ".");
-    r.stamp("b", "finished", ".");
-    r.route("first");
-    r.route("second");
+    r.route("first", undefined, false, undefined, T);
+    r.route("second", undefined, false, undefined, T);
     expect(r.route("2")).toMatchObject({ text: "second" });
-    r.route("third");
+    r.route("5 third");
+    expect(r.state.held?.text).toBe("third");
     clock.tick(HELD_MS);
     expect(r.route("2")).toMatchObject({ kind: "reply", text: "What should I send to [2]?" });
   });
@@ -83,9 +107,10 @@ describe("replies", () => {
     const { r } = setup();
     r.stamp("a", "finished", ".");
     r.stamp("b", "finished", ".");
-    r.route("2");
-    expect(r.route("rebase on main")).toMatchObject({ kind: "deliver", sessionId: "b", text: "rebase on main" });
-    expect(r.route("again")).toMatchObject({ kind: "reply" });
+    r.route("1");
+    expect(r.route("rebase on main")).toMatchObject({ kind: "deliver", sessionId: "a", text: "rebase on main" });
+    // Aimed once: then plain text goes to the one last answered (a, just now).
+    expect(r.route("again")).toMatchObject({ kind: "deliver", sessionId: "a", text: "again" });
   });
 
   test("a number that isn't open: says so, holds the text, shows the picker", () => {
@@ -103,15 +128,13 @@ describe("replies", () => {
     r.stamp("b", "finished", ".");
     r.noteSent("m2", "b");
     expect(r.route("yes", "m1")).toMatchObject({ kind: "deliver", sessionId: "a" });
-    // unknown target: like plain text
-    expect(r.route("yes", "zzz")).toMatchObject({ kind: "reply" });
+    // unknown target: like plain text (to a, just answered)
+    expect(r.route("yes", "zzz")).toMatchObject({ kind: "deliver", sessionId: "a" });
   });
 
   test("state is plain data: a new router on it goes on", () => {
     const { r, clock } = setup();
-    r.stamp("a", "finished", ".");
-    r.stamp("b", "finished", ".");
-    r.route("held text");
+    r.route("held text", undefined, false, undefined, T);
     const again = new Router(JSON.parse(JSON.stringify(r.state)), clock.now);
     expect(again.route("2")).toMatchObject({ sessionId: "b", text: "held text" });
   });
@@ -124,8 +147,8 @@ describe("threads", () => {
     r.noteSent("t1", "a");
     r.stamp("b", "finished", ".");
     expect(r.route("yes", "t1")).toMatchObject({ kind: "deliver", sessionId: "a" });
-    // Not one of Tether's texts (gone, or never Tether's): Tether still owns it and asks which session.
-    expect(r.route("yes", "tm1")).toMatchObject({ kind: "reply" });
+    // Not one of Tether's texts (gone, or never Tether's): Tether still owns it, as plain text.
+    expect(r.route("yes", "tm1")).toMatchObject({ kind: "deliver", sessionId: "a" });
   });
 
   test("answered sessions leave the picker; a number still reaches them", () => {
@@ -135,22 +158,21 @@ describe("threads", () => {
     r.stamp("c", "wants to read files", ".");
     expect(r.route("1 ok")).toMatchObject({ kind: "deliver", sessionId: "a" });
     r.settle("b");
-    expect(r.route("hm")).toEqual({ kind: "reply", text: "Which session, by number?\n[3] wants to read files, just now" });
+    expect(r.route("7 hm")).toEqual({ kind: "reply", text: "[7] isn't waiting on a reply, which one did you mean?\n[3] wants to read files, just now" });
     expect(r.route("2")).toMatchObject({ kind: "deliver", sessionId: "b", text: "hm" });
     // a new text puts it back
     r.stamp("a", "finished", ".");
-    expect((r.route("x") as any).text).toContain("[1] finished");
+    expect((r.route("7 x") as any).text).toContain("[1] finished");
   });
 
 });
 
 describe("the Home agent", () => {
-  /** Several sessions open, so plain text would otherwise get a picker. */
+  /** Sessions that may text, none open, so plain text would otherwise get a picker. */
   const busy = () => {
     const s = setup();
-    s.r.stamp("a", "wants to run a command", ".");
-    s.r.stamp("b", "finished", ".");
-    s.r.noteOut();
+    const route = s.r.route.bind(s.r);
+    s.r.route = (raw, replyTo, home, files, texters = T) => route(raw, replyTo, home, files, texters);
     return s;
   };
 
@@ -281,8 +303,8 @@ describe("Home/H prefix", () => {
     s.r.stamp("b", "finished", ".");
     expect(s.r.route("H", undefined, true)).toEqual({ kind: "reply", text: TEXTS.whatToSendHome });
     expect(s.r.route("start the docs fix", undefined, true)).toEqual({ kind: "home", text: "start the docs fix" });
-    // Without a Home agent, "h" is just a word: the usual rules (the picker here).
-    expect(s.r.route("h do x", undefined, false)).toMatchObject({ kind: "reply", text: expect.stringContaining(TEXTS.which) });
+    // Without a Home agent, "h" is just a word: the usual rules (to the last one texted here).
+    expect(s.r.route("h do x", undefined, false)).toMatchObject({ kind: "deliver", sessionId: "b", text: "h do x" });
   });
 });
 
@@ -466,14 +488,12 @@ describe("several homes: h, h1, h2, …", () => {
 
   test("the held text: a number or a home takes it with its id", () => {
     const { r } = setup();
-    r.stamp("a", "finished", ".");
-    r.stamp("b", "finished", ".");
-    expect(r.route("see this", undefined, homes)).toMatchObject({ kind: "reply" });
+    expect(r.route("see this", undefined, homes, undefined, T)).toMatchObject({ kind: "reply" });
     const id = r.state.held!.id!;
     expect(r.route("h1", undefined, homes)).toEqual({ kind: "home", text: "see this", home: 1, chat: "claude:h1", held: id });
-    expect(r.route("again", undefined, homes)).toMatchObject({ kind: "reply" });
+    expect(r.route("again", undefined, homes, undefined, T)).toMatchObject({ kind: "reply" });
     expect(r.route("2", undefined, homes)).toMatchObject({ kind: "deliver", sessionId: "b", text: "again", held: id + 1 });
-    expect(r.route("x", undefined, homes)).toMatchObject({ kind: "reply" });
+    expect(r.route("5 x", undefined, homes)).toMatchObject({ kind: "reply" });
     expect(r.route("hn", undefined, homes)).toEqual({ kind: "newHome", text: "x", held: id + 2 });
     // "5 do x" with no 5: held, with an id.
     expect(r.route("5 do x", undefined, homes)).toMatchObject({ kind: "reply" });
@@ -485,9 +505,7 @@ describe("round 3", () => {
   const homes = [{ n: 0, chat: "claude:t" }, { n: 1, chat: "claude:h1" }];
   const held = () => {
     const s = setup();
-    s.r.stamp("a", "finished", ".");
-    s.r.stamp("b", "finished", ".");
-    expect(s.r.route("(image)", undefined, homes)).toMatchObject({ kind: "reply" });
+    expect(s.r.route("(image)", undefined, homes, undefined, T)).toMatchObject({ kind: "reply" });
     return { ...s, id: s.r.state.held!.id! };
   };
 
@@ -541,5 +559,56 @@ describe("round 3", () => {
     expect(r.route("merge it", undefined, moved)).toEqual({ kind: "home", text: "merge it", home: 1, chat: "codex:h1", about: { sessionId: "claude:x", byHome: true } });
     expect(r.route("and deploy", "m1", moved)).toEqual({ kind: "home", text: "and deploy", home: 1, chat: "codex:h1", about: { sessionId: "claude:x", byHome: true } });
     expect(r.route("yes", undefined, moved)).toEqual({ kind: "home", text: "yes", home: 1, chat: "codex:h1", about: { sessionId: "claude:x", byHome: true } });
+  });
+});
+
+describe("the \"Session can text me\" box", () => {
+  test("the picker offers only the sessions that may text, as many as there are free numbers, next to open ones", () => {
+    const { r } = setup();
+    const many: Ticked[] = Array.from({ length: 12 }, (_, i) => ({ sessionId: `s${i}`, label: `S${i}` }));
+    expect((r.route("hi", undefined, false, undefined, many) as { text: string }).text.split("\n").length).toBe(1 + 9);
+    // A number that isn't open, with sessions open: just the open ones.
+    const { r: r2 } = setup();
+    r2.stamp("a", "finished", ".");
+    r2.settle("a");
+    expect(r2.route("5 hi", undefined, false, undefined, T)).toEqual({ kind: "reply", text: "[5] isn't waiting on a reply, which one did you mean?\n[1] finished, just now" });
+    // Nothing open: the number's text is held, and the ones that may text are offered.
+    const { r: r3 } = setup();
+    expect(r3.route("5 hi", undefined, false, undefined, T)).toEqual({ kind: "reply", text: "Which session, by number?\n[1] login fix\n[2] docs" });
+    expect(r3.route("2")).toMatchObject({ kind: "deliver", sessionId: "b", text: "hi" });
+  });
+
+  test("unticking drops its number: a text to it says it can't text, plain text goes to another, the number is free again", () => {
+    const { r, clock } = setup();
+    r.stamp("a", "finished", ".");
+    r.noteSent("m1", "a");
+    clock.tick(1000);
+    r.stamp("b", "asked you something", ".");
+    r.noteSent("m2", "b");
+    r.route("2");
+    expect(r.drop("b")).toBe(true);
+    expect(r.drop("b")).toBe(false);
+    expect(r.open().map((s) => s.sessionId)).toEqual(["a"]);
+    // Aimed at it: no more.
+    expect(r.state.aimed).toBeUndefined();
+    expect(r.route("2 go on")).toEqual({ kind: "reply", text: TEXTS.cantText(2) });
+    expect(r.route("go on", "m2")).toEqual({ kind: "reply", text: TEXTS.cantText(2) });
+    expect(casualText(TEXTS.cantText(2))).toBe(true);
+    expect(r.route("go on")).toMatchObject({ kind: "deliver", sessionId: "a" });
+    // Its number is the next new one's: then it's that session's, not "can't text".
+    expect(r.stamp("c", "finished", ".").n).toBe(2);
+    expect(r.route("2 hi")).toMatchObject({ kind: "deliver", sessionId: "c", text: "hi" });
+  });
+
+  test("ticked again, its old number is just a free number; the muted list expires", () => {
+    const { r, clock } = setup();
+    r.stamp("a", "finished", ".");
+    r.stamp("b", "finished", ".");
+    r.drop("b");
+    r.allow("b");
+    expect((r.route("2 hi") as { text: string }).text).toStartWith(TEXTS.notWaiting(2).split(",")[0]!);
+    r.drop("a");
+    clock.tick(OPEN_MS);
+    expect(r.route("1 hi")).toMatchObject({ kind: "reply", text: NOTHING_OPEN });
   });
 });

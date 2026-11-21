@@ -11,6 +11,12 @@
 // nothing else claims them go to its Texts chat, and its short replies come back as "[h] ..."
 // texts (homeAgent/index.ts decides which replies).
 //
+// Only a session whose "Session can text me" box is ticked (LiveState.canText, off by default) texts:
+// an unticked one sends nothing, not its requests, not its turns' ends, not its text_person (canText).
+// Plain text goes to the ticked session last texted or answered; with none open, a picker of the
+// ticked ones asks which (router.ts). Unticking drops its number (canTextChanged). The Home agent's
+// own chats text as before.
+//
 // An agent can text the person itself with its text_person tool (personText): a short text stamped with its session's
 // number like any other, whose reply comes back to that session (rate-capped: AgentTextCaps), and
 // optionally an image after it, where the connector takes images (images.ts checks the file: a real
@@ -39,7 +45,9 @@
 // the replies its router gives to their sessions (forward → fromHub), files and all (hubWire.ts
 // passes the bytes on). What a reply does there (a request's y/n, words to the agent, a channel
 // claim) happens on the runner that has the session, as it would here. The Home agent stays the
-// hub's: a spoke's own Home agent doesn't text through it.
+// hub's: a spoke's own Home agent doesn't text through it. A spoke knows its own sessions' boxes, so
+// it gates their texts itself, and tells the hub which ones may text (for the hub's picker) and
+// when one is unticked (its number goes there too).
 //
 // Texts carry what the agent wants and says (the person asked for that over push's lock-screen
 // wording), a request as one "Can I …? y/n" question with no raw command (describe.ts, summary.ts); known secrets
@@ -61,8 +69,8 @@ import { connectors, type ConnectorDeps } from "./connectors";
 import { clip, readReply, requestText } from "./describe";
 import { IMESSAGE } from "./imessage";
 import { openSpectrum, PHOTON, type OpenLink } from "./link";
-import { HELD_MS, HOME, Router, type About, type Decision } from "./router";
-import { heicNote, homeLabel, homeList, PERSON_TEXT_MAX, replyContext } from "../homeLine";
+import { HELD_MS, HOME, Router, type About, type Decision, type Ticked } from "./router";
+import { CANT_TEXT, heicNote, homeLabel, homeList, PERSON_TEXT_MAX, replyContext } from "../homeLine";
 import { DOWNLOAD, IMAGE_REFUSED, ImageFailures, imagemagick, incomingImage, readOutgoingImage, sniffImage, sweepMagickTemp, type Convert, type OutImage } from "./images";
 import { TextingStore } from "./store";
 import { HUB, HUB_SEND_MS, HUB_VIA, HubChannel, isHubVia, type HubAbout, type HubSent } from "./hubChannel";
@@ -81,9 +89,16 @@ export function asksQuestion(text: string): boolean {
   return /\?(?=["')\]*_]*(\s|$))/.test(last);
 }
 
-type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log" | "runnerId" | "appUrl" | "homeLine" | "links" | "attachmentsDir" | "hub"> & {
-  sessions: Pick<ModuleContext["sessions"], "tell" | "answer"> & Partial<Pick<ModuleContext["sessions"], "queue">>;
+type Ctx = Pick<ModuleContext, "session" | "viewersOf" | "log" | "runnerId" | "appUrl" | "homeLine" | "links" | "attachmentsDir" | "hub" | "texters" | "homeFolder"> & {
+  sessions: Pick<ModuleContext["sessions"], "tell" | "answer"> & Partial<Pick<ModuleContext["sessions"], "queue" | "list">>;
 };
+
+/** How long a hub offers another runner's session in its picker after it last heard it may text. */
+export const REMOTE_TEXTER_MS = 7 * 24 * 60 * 60_000;
+/** How many of other runners' sessions a hub keeps for its picker. */
+const REMOTE_TEXTERS_MAX = 20;
+/** How long a session's name is in the picker. */
+const LABEL_MAX = 60;
 
 /** A user message's words as the transcript shows them, for telling the channel's own message apart: no defang mark, no texted marker, no attachments block. */
 const shown = (text: string) => {
@@ -608,6 +623,7 @@ export class Texter {
    * Tether: the agent was asked to text. What the tool answers the agent.
    */
   async personText(from: string, body: string, o: { image?: string; about?: string; chat?: string } = {}): Promise<{ text: string; isError?: boolean }> {
+    if (from !== HOME && !this.canText(from)) return { text: CANT_TEXT, isError: true };
     const words = clip(body, PERSON_TEXT_MAX);
     if (!words) return { text: "The message is empty.", isError: true };
     const target = from === HOME ? this.ownTarget() : this.target();
@@ -645,9 +661,68 @@ export class Texter {
     return { text: `Texted the person.${cut}${pic} If they reply, their reply comes to you as a message.` };
   }
 
+  /** The main session a session (a subagent) speaks for. */
+  private root(id: string): string {
+    let s = this.ctx.session(id);
+    for (let i = 0; i < 5 && s?.summary.parentSessionId; i++) {
+      id = s.summary.parentSessionId;
+      s = this.ctx.session(id);
+    }
+    return id;
+  }
+
+  /**
+   * Whether a session (a subagent: its main session) may text the person: its "Session can text me"
+   * box is ticked. The Home agent's own chats always may (it texts as before).
+   */
+  canText(id: string): boolean {
+    const root = this.root(id);
+    const look = this.ctx.session(root);
+    if (look && this.ctx.homeFolder && look.summary.projectPath === this.ctx.homeFolder) return true;
+    if (look) return !!look.state?.canText;
+    return !!this.ctx.texters?.().includes(root);
+  }
+
+  /** The sessions that may text, for a picker: this runner's (most recent first), then, on a hub, other runners' it heard of. */
+  private ticked(): Ticked[] {
+    const ids = new Set(this.ctx.texters?.() ?? []);
+    const name = (t: string) => clip(t || "Untitled", LABEL_MAX);
+    const mine = (this.ctx.sessions.list?.() ?? []).filter((s) => ids.has(s.id) && !s.parentSessionId).map((s) => ({ sessionId: s.id, label: name(s.title) }));
+    if (!this.store.hub) return mine;
+    const at = this.now();
+    const theirs = Object.entries(this.store.remoteTexters)
+      .filter(([, r]) => at - r.at < REMOTE_TEXTER_MS)
+      .sort((a, b) => b[1].at - a[1].at)
+      .map(([key, r]) => ({ sessionId: key, label: name(r.label) }));
+    return [...mine, ...theirs];
+  }
+
+  /** On a hub: another runner's session may text (`label`: its name), or not (none). */
+  private remoteTexter(key: string, label: string | undefined) {
+    const all = { ...this.store.remoteTexters };
+    delete all[key];
+    if (label !== undefined) all[key] = { label, at: this.now() };
+    this.store.remoteTexters = Object.fromEntries(Object.entries(all).sort((a, b) => b[1].at - a[1].at).slice(0, REMOTE_TEXTERS_MAX));
+  }
+
+  /**
+   * A session's "Session can text me" box changed. Unticked, its number goes (here, and on the hub
+   * when this runner texts through one), and a text to that number says it can't text.
+   */
+  canTextChanged(sessionId: string, on: boolean) {
+    if (on) this.router.allow(sessionId);
+    else this.router.drop(sessionId);
+    this.store.save();
+    const hub = this.port?.hub;
+    const label = clip(this.ctx.session(sessionId)?.summary.title || "Untitled", LABEL_MAX);
+    if (hub && this.wire && !this.ownTarget()) void this.wire.call(hub.id, "router", { op: "canText", sessionId, on, ...(on ? { label } : {}) }).catch(() => {});
+  }
+
   /** Texts about a session, unless someone is looking at it (or at `also`) in Tether right now (`always`: even then). Whether it went. */
   async tell(sessionId: string, status: string, body: string, o: { also?: string[]; quick?: boolean; requestId?: string; always?: boolean; link?: boolean; via?: Back; image?: OutImage } = {}): Promise<{ sent: boolean; imageSent?: boolean }> {
     const { also = [], quick = false, requestId, always = false } = o;
+    // Its box is off: nothing about it goes, not even through the hub (which can't know the box).
+    if (!this.canText(sessionId)) return { sent: false };
     if (!this.target()) return { sent: false };
     if (!always && [sessionId, ...also].some((id) => this.ctx.viewersOf(id).length)) return { sent: false };
     // The link only now and then, and never on a quick back-and-forth.
@@ -658,7 +733,8 @@ export class Texter {
     const full = link ? `${body}\n${this.url(sessionId)}` : body;
     const { text } = this.router.stamp(sessionId, status, full, requestId);
     // Through the hub, it numbers the text itself (`about`): the one number for every computer.
-    const about: HubAbout = { sessionId, status, body: full, ...(requestId ? { requestId } : {}) };
+    const title = this.ctx.session(this.root(sessionId))?.summary.title;
+    const about: HubAbout = { sessionId, status, body: full, ...(requestId ? { requestId } : {}), ...(title ? { label: clip(title, LABEL_MAX) } : {}) };
     const r = await this.send(text, o.via, undefined, about);
     this.noteSent(r, sessionId, requestId);
     const imageSent = r.sent && o.image ? await this.sendImage(o.image, o.via, (ids) => this.noteSent({ ids }, sessionId, requestId), about) : undefined;
@@ -881,9 +957,11 @@ export class Texter {
     // What can't come through (a voice note, a contact card, a poll): said once, for this message.
     if (m.unsupported) await this.say(TEXTS.onlyTextAndFiles, back);
     const mine = m.files ?? [];
+    // A number this runner's session kept though its box is off now (from before the box): it goes.
+    for (const s of this.router.state.slots) if (!parseRemote(s.sessionId) && !this.canText(s.sessionId)) this.router.drop(s.sessionId);
     const was = this.router.heldNow();
     const before = was ? { ...was } : undefined;
-    const d = this.router.route(!m.text.trim() && mine.length ? NO_WORDS : m.text, m.replyTo, home ? home.homes() : false, mine.length ? { filesOnly: NO_WORDS } : undefined);
+    const d = this.router.route(!m.text.trim() && mine.length ? NO_WORDS : m.text, m.replyTo, home ? home.homes() : false, mine.length ? { filesOnly: NO_WORDS } : undefined, this.ticked());
     this.store.save();
     // Files wait with the text the picker holds, and go wherever its turn goes: its own words, or
     // the words that take it over ("2 what's wrong here", "h1 …", "hn …").
@@ -1132,6 +1210,16 @@ export class Texter {
         if (a.op === "settle") this.router.settle(key);
         else if (a.op === "unsettle") this.router.unsettle(key);
         else if (a.op === "closedRequest" && typeof a.requestId === "string") this.router.closedRequest(key, a.requestId);
+        else if (a.op === "canText") {
+          // The spoke's box for its session: the picker offers it, or its number goes.
+          if (a.on === true) {
+            this.remoteTexter(key, typeof a.label === "string" && a.label ? a.label.slice(0, LABEL_MAX) : "Untitled");
+            this.router.allow(key);
+          } else {
+            this.remoteTexter(key, undefined);
+            this.router.drop(key);
+          }
+        }
         this.store.save();
         return null;
       }
@@ -1155,8 +1243,10 @@ export class Texter {
     const place = str(a.place, 200);
     const back: Back | undefined = via && !isHubVia(via) ? { via, ...(place ? { place } : {}), ...(a.shared === true ? { shared: true } : {}) } : undefined;
     const ab = a.about && typeof a.about === "object" ? (a.about as Record<string, unknown>) : undefined;
-    const about = ab && typeof ab.sessionId === "string" && ab.sessionId ? { key: remoteKey(from, ab.sessionId), requestId: str(ab.requestId, 200), status: str(ab.status, 200), body: str(ab.body, 8000) } : undefined;
+    const about = ab && typeof ab.sessionId === "string" && ab.sessionId ? { key: remoteKey(from, ab.sessionId), requestId: str(ab.requestId, 200), status: str(ab.status, 200), body: str(ab.body, 8000), label: str(ab.label, LABEL_MAX) } : undefined;
     if (!this.ownTarget()) return { sent: false, error: "Texting isn't connected on the hub." };
+    // A session that texts may text: the picker offers it later, by the name it sent (else the one it had).
+    if (about?.body !== undefined) this.remoteTexter(about.key, about.label ?? this.store.remoteTexters[about.key]?.label ?? about.status ?? "Untitled");
     if (files.length) {
       const f = files[0]!;
       const ok = await this.sendImage({ name: f.name, mimeType: f.mimeType, data: f.data } as OutImage, back, (ids) => about && this.noteSent({ ids }, about.key, about.requestId));
@@ -1235,6 +1325,7 @@ export const textingModule: Module = {
       ctx.bus.on("message", ({ sessionId, msg }) => t.said(sessionId, msg)),
       ctx.bus.on("turnStarted", ({ sessionId, from }) => t.turnStarted(sessionId, from)),
       ctx.bus.on("requestClosed", ({ sessionId }) => t.settled(sessionId)),
+      ctx.bus.on("canTextChanged", ({ sessionId, canText }) => t.canTextChanged(sessionId, canText)),
       ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) =>
         stopped || recovering ? t.turnStopped(sessionId, !stopped) : void later(FINISH_DELAY_MS, ((end) => () => t.turnEnded(sessionId, error, end))(t.endOf(sessionId))),
       ),

@@ -1,8 +1,11 @@
 // Which session a text reply is for. Every text Tether sends starts with its session's number
 // ("[2] Claude has a question for you."); a session stays open for replies for OPEN_MS after its last
 // text. A reply that names a number, or answers one of Tether's texts in a thread, goes to that
-// session; plain text goes to the only open session, or is held while Tether asks which one with a
-// numbered picker. Pure: the clock is passed in and the state is plain data, saved by the caller.
+// session; plain text goes to the open session last texted or answered. Only sessions whose
+// "Session can text me" box is ticked text (texting/index.ts), so only they get numbers: with none
+// open, plain text is held while a numbered picker of the ticked ones (`texters`, offered numbers
+// of their own) asks which. An unticked session's number is dropped (`drop`), and a text to it says
+// it can't text. Pure: the clock is passed in and the state is plain data, saved by the caller.
 //
 // The Home agent can be texted too (homeLine.ts), when it runs. It has several homes (its chats,
 // Home's tabs), named by place: `h` (the first, the primary one), then `h1`, `h2`, …; closing one
@@ -17,15 +20,14 @@
 //   ("hd h" / "hd0": h itself).
 // Never a word that only starts with them ("hey", "how", "Homer", "homework", "hnn", "h1n1"). A
 // threaded reply to a home's text, and plain text when Tether's last text was a home's (or no
-// session is open: the primary one) go to that home.
+// session is open and none may text: the primary one) go to that home.
 //
 // A reply is about what was just texted: a home's text can say which session it's about (`about`).
 // A text to that same home within REPLY_MS of it carries the session (Decision `about`), and the
 // Home agent reads it as about that session (replyContext in homeLine.ts) unless it names another.
 // A threaded reply to a home's text carries that text's session, however old. A number, another
 // home, or a session's own text since turn away from it; a session's own texts keep the rules
-// above (a plain reply with several open still gets the picker: a "y" mustn't approve the wrong
-// request).
+// above.
 //
 // Tether owns every reply on the thread: the text-me skill (textme), which used to share the
 // Photon number and split replies with it, is gone; agents text through Tether's text_person.
@@ -56,6 +58,16 @@ export interface Slot {
   /** the request its last text was about: a reply answers that one only, never another, and never
    * goes to the agent as words once it's closed (texting/index.ts) */
   requestId?: string;
+  /** the order it was last texted or answered in (RouterState.seq): plain text goes to the latest */
+  seq?: number;
+  /** a number the picker offered a ticked session that hasn't texted (`status`: its name): plain text never goes to it unpicked */
+  offered?: boolean;
+}
+
+/** A session that may text (its "Session can text me" box is ticked), for the picker: its name. */
+export interface Ticked {
+  sessionId: string;
+  label: string;
 }
 
 export interface RouterState {
@@ -79,6 +91,10 @@ export interface RouterState {
   homeChat?: string;
   /** the session a home's last text was about, and when (none: Tether's last text wasn't about one); `home` as in `sent` */
   about?: { sessionId: string; at: number; byHome?: boolean; home?: string };
+  /** numbers of sessions unticked lately (`drop`): a text to one says it can't text, not where else it might go */
+  muted?: { n: number; sessionId: string; at: number }[];
+  /** counts texts and answers to sessions, for Slot.seq (a clock can tie) */
+  seq?: number;
 }
 
 /** What a reply to the Home agent is about: the session Tether's text it answers was about. */
@@ -172,7 +188,8 @@ export class Router {
       slot = { n, sessionId, status, at: 0 };
       s.push(slot);
     }
-    Object.assign(slot, { status, at: this.now(), answered: false, requestId });
+    Object.assign(slot, { status, at: this.now(), answered: false, requestId, seq: this.next() });
+    delete slot.offered;
     this.state.homeLast = false;
     this.state.about = { sessionId, at: this.now() };
     // Just the number and the message ("[6] ok"): no folder, no agent.
@@ -242,6 +259,42 @@ export class Router {
     if (slot?.requestId === requestId) slot.requestId = undefined;
   }
 
+  /** The session's "Session can text me" box was unticked: its number goes, and a text to that number says it can't text. Whether it had one. */
+  drop(sessionId: string): boolean {
+    const st = this.state;
+    const slot = st.slots.find((x) => x.sessionId === sessionId);
+    if (!slot) return false;
+    st.slots = st.slots.filter((x) => x !== slot);
+    st.muted = [...(st.muted ?? []).filter((m) => m.n !== slot.n && m.sessionId !== sessionId), { n: slot.n, sessionId, at: this.now() }].slice(-MAX_SLOTS);
+    if (st.aimed && !st.aimed.home && st.aimed.n === slot.n) st.aimed = undefined;
+    return true;
+  }
+
+  /** The session's box was ticked (again): a text to its old number no longer says it can't. */
+  allow(sessionId: string) {
+    if (this.state.muted) this.state.muted = this.state.muted.filter((m) => m.sessionId !== sessionId);
+  }
+
+  /** Numbers for the ticked sessions that have none (most recent first, as many as are free), for the picker to offer. */
+  private offer(texters: Ticked[]) {
+    const s = this.state.slots;
+    for (const t of texters) {
+      if (s.length >= MAX_SLOTS) break;
+      if (s.some((x) => x.sessionId === t.sessionId)) continue;
+      const used = new Set(s.map((x) => x.n));
+      let n = 1;
+      while (used.has(n)) n++;
+      s.push({ n, sessionId: t.sessionId, status: t.label, at: this.now(), offered: true });
+      // Its number is its own now: it isn't the unticked one that had it.
+      if (this.state.muted) this.state.muted = this.state.muted.filter((m) => m.n !== n && m.sessionId !== t.sessionId);
+    }
+  }
+
+  /** The number an unticked session had, when a text names it (by number, or by a thread on its text) and nothing has it now. */
+  private mutedAs(f: (m: { n: number; sessionId: string }) => boolean): number | undefined {
+    return this.state.muted?.find((m) => f(m) && !this.state.slots.some((x) => x.n === m.n || x.sessionId === m.sessionId))?.n;
+  }
+
   /** Tether texted something (any text: a picker too). */
   noteOut() {
     this.state.lastOut = this.now();
@@ -257,9 +310,10 @@ export class Router {
    * What to do with the person's text. `replyTo`: the message it answers in a thread. `home`: the
    * Home agent runs and takes texts: true, or its open homes (the primary one, n 0, always among
    * them). `files`: files came with it, so just a number (or "h", "h1") with no words delivers them,
-   * as `filesOnly` says.
+   * as `filesOnly` says. `texters`: the sessions that may text, most recent first, for a picker when
+   * none is open (none given: only the open ones).
    */
-  route(raw: string, replyTo?: string, home: boolean | Home[] = false, files?: { filesOnly: string }): Decision {
+  route(raw: string, replyTo?: string, home: boolean | Home[] = false, files?: { filesOnly: string }, texters?: Ticked[]): Decision {
     this.prune();
     const text = raw.trim();
     if (!text) return { kind: "none" };
@@ -279,6 +333,8 @@ export class Router {
       }
       const slot = this.state.slots.find((x) => x.sessionId === threaded.sessionId);
       if (slot) return this.deliver(slot, text, threaded.requestId ?? slot.requestId);
+      const was = this.mutedAs((m) => m.sessionId === threaded.sessionId);
+      if (was !== undefined) return { kind: "reply", text: TEXTS.cantText(was) };
     }
 
     // Only while the Home agent runs: without it, "Home page" or "H" are words for a session.
@@ -310,8 +366,15 @@ export class Router {
       const rest = m[2]!.trim();
       const slot = this.state.slots.find((x) => x.n === n);
       if (!slot) {
+        const was = this.mutedAs((x) => x.n === n);
+        if (was !== undefined) return { kind: "reply", text: TEXTS.cantText(was) };
         if (rest) this.hold(rest);
-        return { kind: "reply", text: this.open().length || running ? this.picker(TEXTS.notWaiting(n), running) : NOTHING_OPEN };
+        // Nothing open: the sessions that may text get numbers, which the person hasn't seen yet.
+        if (!this.open().length) {
+          this.offer(texters ?? []);
+          if (this.open().length) return { kind: "reply", text: this.picker(TEXTS.which, running) };
+        }
+        return { kind: "reply", text: this.open().length || running ? this.picker(TEXTS.notWaiting(n), running) : this.nothing(texters) };
       }
       if (rest) return this.deliver(slot, rest);
       const held = this.state.held;
@@ -344,11 +407,21 @@ export class Router {
       delete this.state.about;
       return this.toHome(text, primary, undefined, true);
     }
-    const open = this.open();
-    if (!open.length) return running ? this.toHome(text, primary) : { kind: "reply", text: NOTHING_OPEN };
-    if (open.length === 1) return this.deliver(open[0]!, text);
-    this.hold(text);
-    return { kind: "reply", text: this.picker(TEXTS.which, running) };
+    // The open session last texted or answered (a number offered by a picker isn't one till it's picked).
+    const live = this.open().filter((s) => !s.offered);
+    if (live.length) return this.deliver(live.reduce((a, b) => ((b.seq ?? 0) > (a.seq ?? 0) || ((b.seq ?? 0) === (a.seq ?? 0) && b.at > a.at) ? b : a)), text);
+    // None: which of the sessions that may text? The Home agent only when none may.
+    this.offer(texters ?? []);
+    if (this.open().length) {
+      this.hold(text);
+      return { kind: "reply", text: this.picker(TEXTS.which, running) };
+    }
+    return running ? this.toHome(text, primary) : { kind: "reply", text: this.nothing(texters) };
+  }
+
+  /** Nothing open to pick: no session may text, when the caller said which may. */
+  private nothing(texters?: Ticked[]): string {
+    return texters && !texters.length ? TEXTS.noTexters : NOTHING_OPEN;
   }
 
   /** Holds plain text for the person to pick a session: its id (what came with it is kept under it, texting/index.ts). */
@@ -365,7 +438,7 @@ export class Router {
     const now = this.now();
     const open = this.open();
     const waiting = open.filter((s) => !s.answered);
-    const rows = (waiting.length ? waiting : open).map((s) => `[${s.n}] ${s.status}, ${ago(now - s.at)}`);
+    const rows = (waiting.length ? waiting : open).map((s) => (s.offered ? `[${s.n}] ${s.status}` : `[${s.n}] ${s.status}, ${ago(now - s.at)}`));
     if (home) rows.push(TEXTS.homeRow);
     return `${head}\n${rows.join("\n")}`;
   }
@@ -389,13 +462,20 @@ export class Router {
     this.state.aimed = undefined;
     slot.at = this.now();
     slot.answered = true;
+    slot.seq = this.next();
+    delete slot.offered;
     return { kind: "deliver", sessionId: slot.sessionId, n: slot.n, text, ...(requestId ? { requestId } : {}), ...(held !== undefined ? { held } : {}) };
+  }
+
+  private next(): number {
+    return (this.state.seq = (this.state.seq ?? 0) + 1);
   }
 
   private prune() {
     const now = this.now();
     const st = this.state;
     st.slots = st.slots.filter((s) => now - s.at < OPEN_MS);
+    if (st.muted) st.muted = st.muted.filter((m) => now - m.at < OPEN_MS);
     if (st.held && now - st.held.at >= HELD_MS) st.held = undefined;
     // A hold from before holds had ids gets one: what goes with it is kept by its id.
     if (st.held && st.held.id === undefined) st.held.id = st.heldSeq = (st.heldSeq ?? 0) + 1;

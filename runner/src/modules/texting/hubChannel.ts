@@ -26,6 +26,8 @@ export interface HubAbout {
   /** the slot's status and the text's words: the hub stamps them "[n] …"; absent (an image after a text): sent as it is */
   status?: string;
   body?: string;
+  /** the session's name, for the hub's picker (it may text: it just did) */
+  label?: string;
 }
 
 /** What a send through the hub answers. */

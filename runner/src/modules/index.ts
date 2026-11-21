@@ -154,6 +154,8 @@ export interface ModuleContext {
   sessions: SessionActions;
   /** devices looking at a session (or one of its subagents) right now */
   viewersOf(id: string): string[];
+  /** the sessions whose "Session can text me" box is ticked, loaded or not (SessionPrefs.canText) */
+  texters?(): string[];
   /** the app's URL (TETHER_URL) */
   appUrl: string;
   /** where attachments are kept (CONFIG_DIR/attachments) */

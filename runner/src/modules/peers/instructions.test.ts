@@ -70,7 +70,7 @@ describe("the instructions Tether adds to its sessions", () => {
 describe("text_person", () => {
   function setup(line?: HomeLine) {
     const rows: Record<string, any> = {
-      "claude:main": { summary: { id: "claude:main", projectPath: "/p/app", title: "Main" }, state: {} },
+      "claude:main": { summary: { id: "claude:main", projectPath: "/p/app", title: "Main" }, state: { canText: true } },
       "claude:sub": { summary: { id: "claude:sub", projectPath: "/p/app", title: "Sub", parentSessionId: "claude:main" }, state: {} },
     };
     const ctx: any = { log: () => {}, homeLine: line, session: (id: string) => rows[id], sessions: { list: () => [] } };
@@ -112,7 +112,7 @@ describe("text_person", () => {
     expect(sent).toEqual([]);
     // Not owned: straight to the person.
     const other: any = setup(line);
-    (other as any).ctx.session = (id: string) => ({ summary: { id, projectPath: "/p/x", title: "X" }, state: {} });
+    (other as any).ctx.session = (id: string) => ({ summary: { id, projectPath: "/p/x", title: "X" }, state: { canText: true } });
     expect(await call(other, "claude:mine", "PR is up")).toEqual({ text: "Texted the person." });
     expect(sent).toEqual([["claude:mine", "PR is up"]]);
   });
