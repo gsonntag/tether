@@ -32,6 +32,12 @@ test("a subscription session with no API history has no API spend group", () => 
   expect(html).toBe("");
 });
 
+test("a subscription session with earlier untracked usage shows the API key spend group as Cost unknown", () => {
+  const html = renderToStaticMarkup(<SessionApiCostGroup billing={{ kind: "plan", label: "Google AI plan" }} cost={{ estimated: true, complete: false, reasons: ["earlier-usage"] }} />);
+  expect(html).toContain("API key spend this session");
+  expect(html).toContain("Cost unknown");
+});
+
 test("a subscription session retains API spend from an earlier key period", () => {
   const html = renderToStaticMarkup(<SessionApiCostGroup billing={{ kind: "plan", label: "ChatGPT plan" }} cost={{ usd: 0.02, estimated: true, complete: true }} />);
   expect(html).toContain("API key spend this session");
@@ -98,4 +104,33 @@ test("a session without choices, plan lines, or cost renders a static span", () 
   expect(html).toContain("<span");
   expect(html).not.toContain("<button");
   expect(html).toContain("Google AI plan");
+});
+
+test("a plan session without choices or plan lines renders a button when cost is present", () => {
+  const state: LiveState = {
+    mode: "live",
+    status: "idle",
+    requests: [],
+    queue: [],
+    billing: { kind: "plan", label: "Google AI plan" },
+    cost: { estimated: true, complete: false, reasons: ["earlier-usage"] },
+  };
+
+  const html = renderToStaticMarkup(<BillingChip runnerId="r1" session={dummySession} state={state} onSwitch={() => {}} />);
+  expect(html).toContain("<button");
+  expect(html).toContain("t-source-chip");
+});
+
+test("a plan session without choices or plan lines stays a span when no cost is present", () => {
+  const state: LiveState = {
+    mode: "live",
+    status: "idle",
+    requests: [],
+    queue: [],
+    billing: { kind: "plan", label: "Google AI plan" },
+  };
+
+  const html = renderToStaticMarkup(<BillingChip runnerId="r1" session={dummySession} state={state} onSwitch={() => {}} />);
+  expect(html).toContain("<span");
+  expect(html).not.toContain("<button");
 });

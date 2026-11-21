@@ -335,7 +335,10 @@ export class SessionCore {
 
   /** Registers a session object (new, opened, or a live subagent). */
   add(s: Session): Session {
-    if (this.o.costs) s.state = { ...s.state, cost: this.o.costs.get(s.id) };
+    if (this.o.costs && (this.o.costs.has(s.id) || this.o.prefs.get(s.id).metered)) {
+      s.state = { ...s.state, cost: this.o.costs.get(s.id) };
+      s.summary = { ...s.summary, cost: s.state.cost };
+    }
     const plan = this.plans.get(s.summary.harness);
     if (plan && !s.summary.parentSessionId) s.state = { ...s.state, plan };
     if (!s.overlay.length) s.overlay = this.notices.get(s.id);
