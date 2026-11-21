@@ -33,6 +33,7 @@ function setup(o: { modes?: Record<string, string>; dataDir?: string } = {}) {
   const sent: { to: string; text: string }[] = [];
   const created: any[] = [];
   const calls: string[] = [];
+  const archivedIds: string[] = [];
   const recent = new Map<string, Msg[]>();
   const looks = new Map<string, any>();
   let n = 0;
@@ -72,6 +73,12 @@ function setup(o: { modes?: Record<string, string>; dataDir?: string } = {}) {
         return { id: `q${queued.length}` };
       },
       notice: async () => {},
+      setArchived: async (id: string, a: boolean) => {
+        const r = rows.find((x) => x.id === id);
+        if (!r) throw new Error("none");
+        r.archived = a || undefined;
+        if (a) archivedIds.push(id);
+      },
       recent: async (id: string) => recent.get(id) ?? [],
     },
     ops: {
@@ -86,7 +93,9 @@ function setup(o: { modes?: Record<string, string>; dataDir?: string } = {}) {
   const peers = new Peers(ctx);
   const start = (args: Record<string, unknown>, from = "claude:boss") => peers.call({ from, tool: "tether_start", args } as any);
   const reply = (id: string, text: string) => recent.set(id, [{ id: "u", role: "user", ts: 0, parts: [{ type: "text", text: "go" }] }, { id: "a", role: "assistant", ts: 1, parts: [{ type: "text", text }] }]);
-  return { peers, start, queued, sent, created, modes, look, reply, rows, calls };
+  const archive = (to: string, from = "claude:boss") => peers.call({ from, tool: "tether_archive", args: { to } } as any);
+  const isArchived = (id: string) => !!rows.find((r) => r.id === id)?.archived;
+  return { peers, start, archive, isArchived, archivedIds, queued, sent, created, modes, look, reply, rows, calls };
 }
 
 describe("tether_start", () => {
@@ -251,6 +260,8 @@ describe("tether_start", () => {
     t.rows[0]!.archived = true;
     await t.peers.turnEnded("claude:c2");
     expect(t.queued).toHaveLength(MAX_REPORTS);
+    // Its starter gone, the idle child is archived too.
+    expect(t.isArchived("claude:c2")).toBe(true);
   });
 
   test("an approval the child waits on is passed on", async () => {
@@ -467,5 +478,197 @@ describe("a side chat starts for its session", () => {
     expect(t.created[0].permissionMode).toBe("read-only");
     expect(parseSessionMessage(t.sent[0]!.text)?.sessionId).toBe("claude:boss");
     expect((await t.peers.children.family("claude:boss")).children.map((c) => c.id)).toEqual(["codex:c1"]);
+  });
+});
+
+describe("tether_archive", () => {
+  test("the starter archives a child it started: out of the lists, no more reports; the card names it", async () => {
+    const t = setup();
+    const r0 = await t.start({ harness: "codex", prompt: "x", title: "Kid" });
+    expect(r0.text).toContain("archive it with tether_archive to codex:c1");
+    const r = await t.archive("codex:c1");
+    expect(r.isError).toBeFalsy();
+    expect(peerTarget(r.text)).toEqual({ id: "codex:c1", title: "Kid" });
+    expect(peerAction("mcp__tether__tether_archive")).toBe("archive");
+    expect(t.isArchived("codex:c1")).toBe(true);
+    expect(t.peers.children.of("codex:c1")?.released).toBe("done");
+    await t.peers.turnEnded("codex:c1");
+    expect(t.queued).toHaveLength(0);
+    expect((await t.peers.children.family("claude:boss")).children).toEqual([]);
+    // Again: already archived, no error.
+    expect((await t.archive("codex:c1")).text).toContain("already archived");
+  });
+
+  test("by title too", async () => {
+    const t = setup();
+    await t.start({ harness: "codex", prompt: "x", title: "Fix the login bug" });
+    await t.start({ harness: "codex", prompt: "y", title: "Fix the logout bug" });
+    expect((await t.archive("fix the")).text).toContain("2 sessions you started match");
+    expect((await t.archive("login")).isError).toBeFalsy();
+    expect(t.archivedIds).toEqual(["codex:c1"]);
+  });
+
+  test("only its own children: not another's, not one nobody started, not itself", async () => {
+    const t = setup();
+    t.rows.push(row("claude:other"));
+    await t.start({ harness: "codex", prompt: "x" }, "claude:other");
+    t.rows.push(row("claude:plain", { title: "Plain" }));
+    for (const to of ["codex:c1", "claude:plain", "Plain", "claude:boss", "claude:nope"]) {
+      const r = await t.archive(to);
+      expect(r.isError).toBe(true);
+      expect(r.text).toMatch(/didn't start|that you started/);
+    }
+    expect(t.archivedIds).toEqual([]);
+    // Its own starter may.
+    expect((await t.archive("codex:c1", "claude:other")).isError).toBeFalsy();
+  });
+
+  test("refused while the child works: a turn, a request, background work, a message due", async () => {
+    const t = setup();
+    await t.start({ harness: "claude", prompt: "x" });
+    const l = t.look("claude:c1");
+    const cases: [string, () => void, () => void][] = [
+      ["running", () => (t.rows.find((r) => r.id === "claude:c1")!.status = "running"), () => (t.rows.find((r) => r.id === "claude:c1")!.status = "idle")],
+      ["request", () => (l.requests = ["r1"]), () => (l.requests = [])],
+      ["background", () => (l.background = true), () => (l.background = false)],
+      ["queued", () => (l.state.queue = [{ id: "q", text: "more" }]), () => (l.state.queue = [])],
+    ];
+    for (const [, on, off] of cases) {
+      on();
+      const r = await t.archive("claude:c1");
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain("still working");
+      expect(r.text).toContain("Wait for its report, or tether_send it to stop");
+      off();
+    }
+    expect(t.archivedIds).toEqual([]);
+    expect((await t.archive("claude:c1")).isError).toBeFalsy();
+  });
+
+  test("refused once the person took it over: it's theirs", async () => {
+    const t = setup();
+    await t.start({ harness: "claude", prompt: "x" });
+    t.peers.message("claude:c1", { id: "m", role: "user", ts: 0, parts: [{ type: "text", text: "mine now" }] });
+    const r = await t.archive("claude:c1");
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("The person took");
+    expect(t.archivedIds).toEqual([]);
+  });
+
+  test("a child that reached its report limit can still be archived; the footer says to", async () => {
+    const t = setup();
+    await t.start({ harness: "claude", prompt: "x" });
+    await t.peers.turnEnded("claude:c1");
+    expect(parseSessionMessage(t.queued[0]!.text)!.text).toContain(`Report 1 of ${MAX_REPORTS}. Follow up with tether_send to claude:c1 if it isn't done; once you're done with it, archive it with tether_archive to claude:c1.`);
+    for (let i = 1; i < MAX_REPORTS; i++) await t.peers.turnEnded("claude:c1");
+    expect(t.queued.at(-1)!.text).toContain("archive it with tether_archive to claude:c1");
+    expect(t.peers.children.of("claude:c1")?.released).toBe("limit");
+    expect((await t.archive("claude:c1")).isError).toBeFalsy();
+  });
+
+  test("its idle children go too, and theirs; a working one or the person's stays", async () => {
+    const t = setup();
+    await t.start({ harness: "claude", prompt: "x" });
+    const g1 = peerTarget((await t.start({ harness: "codex", prompt: "a" }, "claude:c1")).text)!.id;
+    const g2 = peerTarget((await t.start({ harness: "codex", prompt: "b" }, "claude:c1")).text)!.id;
+    const g3 = peerTarget((await t.start({ harness: "codex", prompt: "c" }, "claude:c1")).text)!.id;
+    t.rows.find((r) => r.id === g2)!.status = "running";
+    t.peers.message(g3, { id: "m", role: "user", ts: 0, parts: [{ type: "text", text: "mine" }] });
+    const r = await t.archive("claude:c1");
+    expect(r.text).toContain("and 1 idle session it started");
+    expect(t.archivedIds).toEqual(["claude:c1", g1]);
+    // The working one is archived when its next report finds its starter archived.
+    t.rows.find((r) => r.id === g2)!.status = "idle";
+    await t.peers.turnEnded(g2);
+    expect(t.isArchived(g2)).toBe(true);
+    expect(t.peers.children.of(g2)?.released).toBe("gone");
+    expect(t.isArchived(g3)).toBe(false);
+  });
+
+  test("a moved child is archived at its new id, named by either", async () => {
+    const t = setup();
+    await t.start({ harness: "claude", prompt: "x" });
+    t.rows.push(row("codex:n1", { title: "Moved child" }));
+    t.peers.children.continued("claude:c1", "codex:n1");
+    (t.peers as any).ctx.sessions.kept = (id: string) => (id === "claude:c1" ? { movedTo: "codex:n1" } : {});
+    const r = await t.archive("claude:c1");
+    expect(r.isError).toBeFalsy();
+    expect(peerTarget(r.text)?.id).toBe("codex:n1");
+    expect(t.archivedIds).toEqual(["codex:n1"]);
+  });
+
+  test("a side chat archives its session's children", async () => {
+    const t = setup({ modes: { "claude:side": "plan" } });
+    t.rows.push(row("claude:side", { sideOf: "claude:boss" }));
+    await t.start({ harness: "codex", prompt: "x" });
+    expect((await t.archive("codex:c1", "claude:side")).isError).toBeFalsy();
+  });
+});
+
+describe("archived starters, unarchived children", () => {
+  test("a starter archived by the person: its idle children (and theirs) go, working and the person's stay", async () => {
+    const t = setup();
+    await t.start({ harness: "claude", prompt: "x" });
+    await t.start({ harness: "claude", prompt: "y" });
+    await t.start({ harness: "claude", prompt: "z" });
+    const g = peerTarget((await t.start({ harness: "codex", prompt: "g" }, "claude:c1")).text)!.id;
+    t.rows.find((r) => r.id === "claude:c2")!.status = "running";
+    t.peers.message("claude:c3", { id: "m", role: "user", ts: 0, parts: [{ type: "text", text: "mine" }] });
+    t.rows[0]!.archived = true;
+    await t.peers.children.archived("claude:boss", true);
+    expect(t.archivedIds.sort()).toEqual(["claude:c1", g].sort());
+    // Its own archiving doesn't run the cascade twice.
+    await t.peers.children.archived("claude:c1", true);
+    expect(t.archivedIds).toHaveLength(2);
+  });
+
+  test("a child brought back (unarchived, or sent a message) is the person's: no reports, no archiving", async () => {
+    const t = setup();
+    await t.start({ harness: "claude", prompt: "x" });
+    await t.archive("claude:c1");
+    t.rows.find((r) => r.id === "claude:c1")!.archived = undefined;
+    await t.peers.children.archived("claude:c1", false);
+    expect(t.peers.children.of("claude:c1")?.released).toBe("person");
+    expect((await t.archive("claude:c1")).text).toContain("The person took");
+    await t.peers.turnEnded("claude:c1");
+    expect(t.queued).toHaveLength(0);
+  });
+
+  test("the module follows the core's archived event", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "family-"));
+    writeFileSync(join(dir, "children.json"), JSON.stringify({ "claude:k": { parent: "claude:p", depth: 1, reports: 0 } }));
+    const on: Record<string, (e: any) => void> = {};
+    const bus = { on: (name: string, f: (e: any) => void) => ((on[name] = f), () => {}) };
+    const rows = [row("claude:p", { archived: true }), row("claude:k")];
+    const look = (id: string) => {
+      const s = rows.find((r) => r.id === id);
+      return s && { summary: s, status: "idle", requests: [], state: { queue: [] }, busy: false, background: false };
+    };
+    const archived: string[] = [];
+    const ctx = {
+      log: () => {},
+      dataDir: dir,
+      ops: new OpRegistry(),
+      bus,
+      session: look,
+      sessions: {
+        adapters: () => [],
+        list: () => rows,
+        open: async (id: string) => look(id) ?? Promise.reject(new Error("none")),
+        setArchived: async (id: string) => {
+          archived.push(id);
+          rows.find((r) => r.id === id)!.archived = true;
+        },
+      },
+    };
+    const stop = await peersModule.start(ctx as any);
+    try {
+      on.archived!({ sessionId: "claude:p", archived: true });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(archived).toEqual(["claude:k"]);
+    } finally {
+      if (typeof stop === "function") stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

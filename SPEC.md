@@ -980,8 +980,8 @@ event (with the message's text) and the queued message's id from `SessionActions
   text}` (returns at once), `tether_ask {to, text, timeout_minutes}` (waits for the answer: 15
   minutes by default, 60 at most) and `tether_broadcast {text, project?, scope?, status?}`
   (fire-and-forget, at most 20 sessions, never the sender; the sender's own project unless it
-  passes `project`, or `scope: "all"` for every project). `to` is an id or a title only one
-  session has. The tools run without a prompt: Claude allows `mcp__tether__*`; Codex gets
+  passes `project`, or `scope: "all"` for every project), plus `tether_start` and `tether_archive`
+  (below). `to` is an id or a title only one session has. The tools run without a prompt: Claude allows `mcp__tether__*`; Codex gets
   `default_tools_approval_mode = "approve"`; Antigravity asks for each MCP call, and its driver
   approves those of `mcp_tether_*` itself.
 - **Transport.** The MCP server posts each call to the runner's Unix socket
@@ -1060,8 +1060,22 @@ event (with the message's text) and the queued message's id from `SessionActions
   grandchild can't; starts count toward the 10-per-10-minutes rate and the hop cap. A start that
   fails gives the rate slot back; one whose prompt couldn't be sent names the idle session it
   made. Children show under their starter in the sidebar and header (§6a), taken over or not.
+  The tool's description, its answer, each report's footer and Tether's instructions tell the
+  starter to archive a child once done with it.
+- **Archiving children.** The person's sidebar keeps the sessions they started, and agent-started
+  ones while those work. `tether_archive {to}` (id, followed to its successor if it moved, or a
+  title only one of the caller's children has) archives a child of the caller's (a side chat's:
+  its session's) through the core's archive (so archive-time worktree cleanup applies), marks it
+  released (`done`: no more reports), and archives its idle children the same way, theirs too.
+  Refused for anything the caller didn't start, while the child works (a turn, background work, an
+  open request, a queued message: "wait for its report, or tether_send it to stop"), and once the
+  person took it over. Safety nets: when a starter is archived (the core's `archived` event, by the
+  person or anyone but this), its idle children not taken over are archived, and theirs; a working
+  one is archived when its next report finds its starter archived (released `gone`). A child
+  unarchived (the person's Unarchive, or a message they send it) is the person's from then on
+  (released `person`): no reports, not archived by its starter.
 - Tool cards read "Asked “<title>”" ("Ask failed" once asked, "Not asked" when it never went),
-  "Sent to “<title>”", "Sent to all", "Started “<title>”", with the message, an Open link and the answer. The link goes
+  "Sent to “<title>”", "Sent to all", "Started “<title>”", "Archived “<title>”" ("Didn't archive"), with the message, an Open link and the answer. The link goes
   to the session the runner reached: its answer names it as `"<title>" (<id>)` on its first line. Terminal mode: a TUI-driven session can receive (it queues until Back
   to Tether) but has no tools.
 - **Tether's instructions** (`peers/instructions.ts`): every session that gets the server gets Tether's instructions too, appended to Claude Code's
@@ -1069,7 +1083,8 @@ event (with the message's text) and the queued message's id from `SessionActions
   process start: with **Concise replies** on (a runner setting, Settings → Agents, default on),
   "end each turn with a short reply: 1–3 sentences, outcome first, then a link; details (≤ ~5
   bullets) only for a decision or a failure; no test counts, file lists or recaps unless asked";
-  always, "to text the person, use `text_person`".
+  always, "to text the person, use `text_person`" and "archive a session you started with
+  `tether_archive` once you're done with it".
 - **`text_person(message)`** on the same server texts the person through the texting module (§11
   Texting, "Agents texting the person"), only when the session's **Session can text me** box is
   ticked; otherwise it returns an error saying so (put it in the reply instead), and the rule says so.

@@ -41,7 +41,7 @@ export const TOOL_DEFS = [
   {
     name: PEER_TOOLS.start,
     description:
-      "Starts a new coding session on any agent (Claude Code, Codex or Antigravity), with your prompt as its first message, and returns at once. It works on its own like one of your subagents, in this session's folder unless you pass `project` (or in a git worktree with `worktree`: a new one, or an existing one). Its permissions are never looser than yours. Each time it finishes a turn, its final reply comes to you as a message from it; if it isn't done, follow up with tether_send to its id, or start a fresh session for new context. The person can open, steer and stop it in Tether.",
+      "Starts a new coding session on any agent (Claude Code, Codex or Antigravity), with your prompt as its first message, and returns at once. It works on its own like one of your subagents, in this session's folder unless you pass `project` (or in a git worktree with `worktree`: a new one, or an existing one). Its permissions are never looser than yours. Each time it finishes a turn, its final reply comes to you as a message from it; if it isn't done, follow up with tether_send to its id, or start a fresh session for new context. It stays in the person's sidebar until you archive it: once you're done with it, archive it with tether_archive. The person can open, steer and stop it in Tether.",
     inputSchema: {
       type: "object",
       properties: {
@@ -59,6 +59,12 @@ export const TOOL_DEFS = [
       },
       required: ["harness", "prompt"],
     },
+  },
+  {
+    name: PEER_TOOLS.archive,
+    description:
+      "Archives a session you started with tether_start, once you're done with it, so it leaves the person's sidebar (only sessions they started stay there). It also archives the idle sessions that one started. Only your own started sessions, and not while it's still working (wait for its report, or tether_send it to stop), nor one the person took over. It stops reporting to you. The person can still find it in Tether's archive.",
+    inputSchema: { type: "object", properties: { to: { type: "string", description: "The session you started: its id (from tether_start's answer or its reports) or its title." } }, required: ["to"] },
   },
   {
     name: PEER_TOOLS.broadcast,

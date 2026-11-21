@@ -143,6 +143,8 @@ export class Peers {
         return this.ask(from, str(a.to), str(a.text), Number(a.timeout_minutes) || ASK_DEFAULT_MIN, c.signal);
       case PEER_TOOLS.start:
         return this.start(from, a);
+      case PEER_TOOLS.archive:
+        return this.children.archive(from, str(a.to));
       case PEER_TOOLS.broadcast:
         return this.broadcastFrom(from, str(a.text), { project: str(a.project), status: str(a.status), scope: str(a.scope) });
       case TEXT_PERSON: {
@@ -452,6 +454,8 @@ export const peersModule: Module = {
     const offs = [
       // A Move or a source change: who started whom follows the session to its new id.
       ctx.bus.on("continued", ({ from, to }) => peers.children.continued(from, to)),
+      // An archived starter's idle children go too; a child brought back is the person's.
+      ctx.bus.on("archived", ({ sessionId, archived }) => void peers.children.archived(sessionId, archived).catch((e) => ctx.log(`peers: ${sessionId}: ${(e as Error).message}`))),
       ctx.bus.on("queueGone", ({ sessionId, msgId, how, text }) => peers.queueGone(sessionId, msgId, how, text)),
       ctx.bus.on("message", ({ sessionId, msg }) => peers.message(sessionId, msg)),
       // A subagent's request is its main session's.

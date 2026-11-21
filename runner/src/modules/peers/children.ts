@@ -4,6 +4,9 @@
 // turn, queues its last reply into the starter's chat. The starter follows up with tether_send, or
 // starts a fresh one. The child's mode is never looser than the starter's. Reporting stops once the
 // person steps in (types into the child or stops it), after MAX_REPORTS, or once the starter is gone.
+// Once the starter is done with a child it archives it (tether_archive), so the person's sidebar
+// keeps the sessions they started, and agent-started ones only while those work; an archived (or
+// gone) starter's idle children are archived too.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -49,6 +52,9 @@ export const WAIT_DELAY_MS = 800;
 
 const HARNESSES: HarnessId[] = ["claude", "codex", "antigravity"];
 
+/** Whether a session is at work: a turn, work outside it, background work, an open request, a message due in its queue. */
+const working = (look: SessionLook) => look.status !== "idle" || look.busy || look.background || look.requests.length > 0 || waitingNow(look.state.queue ?? [], Date.now());
+
 export interface Child {
   parent: string;
   /** 1: started by a session the person started; 2: by one of those */
@@ -60,8 +66,8 @@ export interface Child {
   foreign?: boolean;
   /** it already said it's waiting for the person this turn */
   waited?: boolean;
-  /** why it stopped reporting */
-  released?: "person" | "limit" | "gone";
+  /** why it stopped reporting: the person took it over, MAX_REPORTS, its starter archived, its starter archived it (tether_archive) */
+  released?: "person" | "limit" | "gone" | "done";
 }
 
 export interface StartArgs {
@@ -81,6 +87,8 @@ export class Children {
   private kids: Record<string, Child> = {};
   /** starts under way, per starter: counted against CHILDREN_MAX before anything waits */
   private pending = new Map<string, number>();
+  /** sessions this archives itself (their `archived` event isn't a cascade's start: archiveTree goes on itself) */
+  private archiving = new Set<string>();
   private file?: string;
 
   constructor(private ctx: Ctx) {
@@ -192,8 +200,7 @@ export class Children {
       if (c.parent !== parent || c.released) return [];
       const look = this.ctx.session(id);
       if (look?.summary.archived) return [];
-      const working = !!look && (look.status !== "idle" || look.busy || look.background || look.requests.length > 0 || waitingNow(look.state.queue ?? [], Date.now()));
-      return working ? [id] : [];
+      return look && working(look) ? [id] : [];
     });
   }
 
@@ -321,7 +328,126 @@ export class Children {
       : joined
         ? `in the existing worktree ${joined.path}${joined.branch ? ` on branch ${joined.branch}` : ""}.`
         : `in ${folder}.`;
-    return { text: `Started ${name} (${how}) ${where}\nIt works on its own. Each time it finishes a turn, its reply comes to you as a message from it. Follow up with tether_send to ${id}, or start a fresh session for new context.` };
+    return { text: `Started ${name} (${how}) ${where}\nIt works on its own. Each time it finishes a turn, its reply comes to you as a message from it. Follow up with tether_send to ${id}, or start a fresh session for new context. When you're done with it, archive it with tether_archive to ${id}: until then it's in the person's sidebar.` };
+  }
+
+  // ---------------- archiving ----------------
+
+  /**
+   * tether_archive: `caller`'s session archives one it started (followed to its new id if it went
+   * on under one), and that one's idle children. Not while it works, nor once the person took it over.
+   */
+  async archive(caller: string, to: string): Promise<PeerAnswer> {
+    const starter = this.ownerOf(caller);
+    const t = to.trim();
+    if (!t) return { text: "Say which session: `to` is its id or title.", isError: true };
+    let id: string;
+    try {
+      id = await this.resolve(starter, t);
+    } catch (e) {
+      return { text: (e as Error).message, isError: true };
+    }
+    const c = this.kids[id];
+    const look = await this.look(id);
+    const who = `"${markTitle(look?.summary.title ?? "")}" (${id})`;
+    if (!c || c.parent !== starter) return { text: `This session didn't start ${who}, so it can't archive it. tether_archive only archives sessions you started with tether_start.`, isError: true };
+    if (c.released === "person") return { text: `The person took ${who} over, so it's theirs now: it stays as it is.`, isError: true };
+    if (!look) return { text: `Tether can't find ${who} now. Nothing was archived.`, isError: true };
+    if (look.summary.archived) {
+      c.released ??= "done";
+      this.save();
+      return { text: `${who} is already archived.` };
+    }
+    if (working(look)) return { text: `${who} is still working, so it wasn't archived. Wait for its report, or tether_send it to stop, then archive it.`, isError: true };
+    try {
+      const n = await this.archiveTree(id);
+      const more = n - 1;
+      return { text: `Archived ${who}${more ? ` and ${more} idle session${more === 1 ? "" : "s"} it started` : ""}. It's out of the person's sidebar (they can still find it in Tether's archive), and it won't report to you again.` };
+    } catch (e) {
+      return { text: `Couldn't archive ${who}: ${(e as Error).message}`, isError: true };
+    }
+  }
+
+  /** The child `to` names for `starter`: an id (followed to the session it went on as), else a title only one of its children has. */
+  private async resolve(starter: string, t: string): Promise<string> {
+    if (this.kids[t]) return t;
+    if (t.includes(":")) {
+      let sid = t;
+      for (let hop = 0; hop < 5 && !this.kids[sid]; hop++) {
+        const next = this.ctx.sessions.kept?.(sid)?.movedTo ?? (await this.look(sid))?.state.continuedIn;
+        if (!next) break;
+        sid = next;
+      }
+      if (this.kids[sid] || (await this.look(sid))) return sid;
+    }
+    const mine = Object.entries(this.kids).filter(([, c]) => c.parent === starter).map(([k]) => k);
+    const titled = await pooled(mine, FAMILY_OPENS, async (k) => ({ id: k, title: (this.ctx.sessions.list().find((s) => s.id === k) ?? (await this.look(k))?.summary)?.title ?? "" }));
+    const lower = t.toLowerCase();
+    for (const pick of [(x: { title: string }) => x.title.toLowerCase() === lower, (x: { title: string }) => x.title.toLowerCase().includes(lower)]) {
+      const found = titled.filter(pick);
+      if (found.length === 1) return found[0]!.id;
+      if (found.length > 1) throw new Error(`${found.length} sessions you started match "${markTitle(t)}": ${found.slice(0, 8).map((x) => `${x.id} ("${markTitle(x.title)}")`).join(", ")}. Use its id.`);
+    }
+    throw new Error(`There's no session "${markTitle(t)}" that you started. tether_archive only archives sessions you started with tether_start.`);
+  }
+
+  /** Archives `id` (it stops reporting) and its idle children, theirs too; how many it archived. */
+  private async archiveTree(id: string): Promise<number> {
+    const c = this.kids[id];
+    const was = c?.released;
+    if (c) {
+      c.released ??= "done";
+      this.save();
+    }
+    this.archiving.add(id);
+    try {
+      await this.ctx.sessions.setArchived(id, true);
+    } catch (e) {
+      if (c) {
+        c.released = was;
+        this.save();
+      }
+      throw e;
+    } finally {
+      this.archiving.delete(id);
+    }
+    return 1 + (await this.archiveChildren(id));
+  }
+
+  /**
+   * Archives the idle children of `parent` (archived, or done with them), and theirs, the person's
+   * aside; one still working is archived when its next report finds its starter archived.
+   */
+  private async archiveChildren(parent: string): Promise<number> {
+    let n = 0;
+    for (const [id, c] of Object.entries(this.kids)) {
+      if (c.parent !== parent || c.released === "person") continue;
+      const look = await this.look(id);
+      if (!look || look.summary.archived || working(look)) continue;
+      n += await this.archiveTree(id).catch((e) => {
+        this.ctx.log(`peers: couldn't archive ${id}: ${(e as Error).message}`);
+        return 0;
+      });
+    }
+    return n;
+  }
+
+  /**
+   * A session was archived or unarchived (the core's `archived` event). Archived by someone else
+   * (the person, a cascade of theirs): its idle children go too. A child brought back (the person
+   * unarchived it or sent it a message) is the person's from then on.
+   */
+  async archived(id: string, archived: boolean) {
+    if (this.archiving.has(id)) return;
+    if (!archived) {
+      const c = this.kids[id];
+      if (c && c.released !== "person") {
+        c.released = "person";
+        this.save();
+      }
+      return;
+    }
+    await this.archiveChildren(id);
   }
 
   // ---------------- events ----------------
@@ -384,16 +510,21 @@ export class Children {
       error ? `finished a turn with an error: ${error}` : "finished a turn.",
       reply ? `Its last reply:\n<<<\n${reply.length > REPORT_MAX ? `${reply.slice(0, REPORT_MAX)}\n… (cut: open the session for the rest)` : reply}\n>>>` : "It said nothing.",
       last
-        ? `That's report ${MAX_REPORTS} of ${MAX_REPORTS}: you won't hear from it again. Tell the person where it stands.`
-        : `Report ${c.reports} of ${MAX_REPORTS}. Follow up with tether_send to ${id} if it isn't done; otherwise carry on.`,
+        ? `That's report ${MAX_REPORTS} of ${MAX_REPORTS}: you won't hear from it again. Tell the person where it stands; once you're done with it, archive it with tether_archive to ${id}.`
+        : `Report ${c.reports} of ${MAX_REPORTS}. Follow up with tether_send to ${id} if it isn't done; once you're done with it, archive it with tether_archive to ${id}.`,
     ].join("\n\n");
     await this.report(id, c, body, last);
   }
 
   private async report(id: string, c: Child, body: string, last: boolean) {
     const parent = await this.look(c.parent);
-    // Archived: gone for good. Not found now: maybe a passing failure, so skip this one only.
-    if (parent?.summary.archived) return this.release(id, "gone");
+    // Archived: gone for good, and the child too once it's idle. Not found now: maybe a passing failure, so skip this one only.
+    if (parent?.summary.archived) {
+      this.release(id, "gone");
+      const look = await this.look(id);
+      if (look && !look.summary.archived && !working(look)) await this.archiveTree(id).catch((e) => this.ctx.log(`peers: couldn't archive ${id}: ${(e as Error).message}`));
+      return;
+    }
     if (!parent) return this.ctx.log(`peers: couldn't find ${c.parent} to report ${id} to`);
     if (last) c.released = "limit";
     this.save();

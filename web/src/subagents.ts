@@ -29,13 +29,14 @@ export function saveChildrenOpen(on: boolean, s: Store | undefined = local()) {
 
 /**
  * The sessions a session's agent started, as rows (marked `spawned`): the broadcast summary where
- * there's one (fresher), else what the op said.
+ * there's one (fresher), else what the op said. One the summary says is archived (its starter done
+ * with it, tether_archive) is left out before the op is asked again.
  */
 export function spawnedRows(family: SpawnedFamily | undefined, summaries: Record<string, SummaryState>, runnerId: string): Row[] {
   const live = summaries[runnerId]?.sessions ?? {};
-  return (family?.children ?? []).map((c) => {
+  return (family?.children ?? []).flatMap((c) => {
     const s = live[c.id] ?? c;
-    return { ...s, status: shownStatus(s), runnerId, spawned: true };
+    return s.archived ? [] : [{ ...s, status: shownStatus(s), runnerId, spawned: true }];
   });
 }
 
