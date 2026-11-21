@@ -6,7 +6,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { folderForBranch, hashSlug, randomSlug, slugOf } from "../../../../shared/worktree";
+import { folderForBranch, hashSlug, pickWorktree, randomSlug, slugOf } from "../../../../shared/worktree";
 import { saveConfig } from "../../config";
 import { FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
@@ -773,5 +773,67 @@ describe("New worktree", () => {
     await until(() => t.state(made.sessionId).setup === "failed");
     await t.runner.shellRuns.run(made.sessionId, "touch x");
     await until(() => existsSync(join(made.path, "x")));
+  });
+});
+
+describe("Existing worktree", () => {
+  test("pickWorktree: by path (typed loosely), else branch, else folder name", () => {
+    const list = [{ path: "/r/app-worktrees/fix", branch: "tether/fix" }, { path: "/r/hand", branch: "gavin/hand" }, { path: "/r/detached" }];
+    expect(pickWorktree(list, "/r/hand/")?.path).toBe("/r/hand");
+    expect(pickWorktree(list, "~/hand", (p) => p.replace("~", "/r"))?.path).toBe("/r/hand");
+    expect(pickWorktree(list, "tether/fix")?.path).toBe("/r/app-worktrees/fix");
+    expect(pickWorktree(list, "refs/heads/gavin/hand")?.path).toBe("/r/hand");
+    expect(pickWorktree(list, "detached")?.path).toBe("/r/detached");
+    expect(pickWorktree(list, "nope")).toBeUndefined();
+    expect(pickWorktree(list, " ")).toBeUndefined();
+  });
+
+  test("lists the repo's worktrees (not the main checkout) with who works in each; joining runs no setup and records the session as a user", async () => {
+    const t = runnerFor();
+    const { worktreesModule } = await import(".");
+    await worktreesModule.start({ ...t.runner.look, bus: t.runner.bus, ops: t.runner.ops, dataDir: scratch(), log: () => {}, runnerId: "t", appUrl: "http://x" } as never);
+    const r = withSetup('#!/bin/sh\necho x >> .setup-runs\n');
+    const made = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/shared" });
+    await until(() => t.state(made.sessionId).setup === undefined);
+    const hand = join(r.root, "hand");
+    sh(r.dir, "worktree", "add", "-qb", "gavin/hand", hand);
+    expect(await t.w.list(scratch())).toEqual({ worktrees: [] });
+    const listed = await t.w.list(r.dir);
+    expect(listed.repo).toBe(r.dir);
+    expect(listed.worktrees).toMatchObject([
+      { path: made.path, branch: "tether/shared", tether: true },
+      { path: hand, branch: "gavin/hand", sessions: [] },
+    ]);
+    expect(listed.worktrees[0]!.sessions.map((x) => x.id)).toEqual([made.sessionId]);
+    expect(listed.worktrees[1]!.tether).toBeUndefined();
+    // Joining by branch: the session runs there, nothing made, the setup not run again.
+    const cards = t.cards(made.sessionId).length;
+    const joined = (await t.runner.ops.handle("existingWorktreeSession", { harness: "claude", projectPath: r.dir, worktree: "tether/shared" })) as any;
+    expect(joined).toMatchObject({ ok: true, data: { path: made.path, branch: "tether/shared", tether: true } });
+    const guest = joined.data.sessionId as string;
+    const s = t.runner.core.sessions.get(guest)!;
+    expect(s.summary.projectPath).toBe(made.path);
+    expect(s.summary.worktreeOf).toBe(r.dir);
+    expect(t.runner.look.sessions.worktree!(guest)).toEqual({ path: made.path, branch: "tether/shared", repo: r.dir, joined: true });
+    expect(t.state(guest).setup).toBeUndefined();
+    expect(t.cards(guest)).toHaveLength(0);
+    expect(t.cards(made.sessionId)).toHaveLength(cards);
+    expect(readFileSync(join(made.path, ".setup-runs"), "utf8")).toBe("x\n");
+    await t.runner.live.send(guest, "hello");
+    await until(() => t.adapter.drivers.at(-1)?.sent.includes("hello") ?? false);
+    // Both are its users now, in the list and to cleanup.
+    expect((await t.w.list(r.dir)).worktrees[0]!.sessions.map((x) => x.id).sort()).toEqual([made.sessionId, guest].sort());
+    expect(t.runner.look.sessions.worktreeUsers!(made.path).map((u) => u.id).sort()).toEqual([made.sessionId, guest].sort());
+    // One made by hand, by path: recorded, but as never Tether's to remove.
+    const byHand = await t.w.join({ harness: "claude", projectPath: r.dir, worktree: `${hand}/` });
+    expect(byHand).toMatchObject({ path: hand, branch: "gavin/hand" });
+    expect(byHand.tether).toBeUndefined();
+    expect(t.runner.look.sessions.worktree!(byHand.sessionId)).toEqual({ path: hand, branch: "gavin/hand", repo: r.dir, joined: true, handMade: true });
+    // The main checkout, one that isn't there, and a folder outside git are refused, and nothing starts.
+    const n = t.adapter.drivers.length;
+    await expect(t.w.join({ harness: "claude", projectPath: r.dir, worktree: r.dir })).rejects.toThrow("main checkout");
+    await expect(t.w.join({ harness: "claude", projectPath: r.dir, worktree: "tether/nope" })).rejects.toThrow("isn't one of");
+    await expect(t.w.join({ harness: "claude", projectPath: scratch(), worktree: "x" })).rejects.toThrow("isn't in a git repository");
+    expect(t.adapter.drivers.length).toBe(n);
   });
 });

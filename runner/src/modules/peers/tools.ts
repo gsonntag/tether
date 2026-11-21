@@ -41,7 +41,7 @@ export const TOOL_DEFS = [
   {
     name: PEER_TOOLS.start,
     description:
-      "Starts a new coding session on any agent (Claude Code, Codex or Antigravity), with your prompt as its first message, and returns at once. It works on its own like one of your subagents, in this session's folder unless you pass `project` (or in a new git worktree with `worktree`). Its permissions are never looser than yours. Each time it finishes a turn, its final reply comes to you as a message from it; if it isn't done, follow up with tether_send to its id, or start a fresh session for new context. The person can open, steer and stop it in Tether.",
+      "Starts a new coding session on any agent (Claude Code, Codex or Antigravity), with your prompt as its first message, and returns at once. It works on its own like one of your subagents, in this session's folder unless you pass `project` (or in a git worktree with `worktree`: a new one, or an existing one). Its permissions are never looser than yours. Each time it finishes a turn, its final reply comes to you as a message from it; if it isn't done, follow up with tether_send to its id, or start a fresh session for new context. The person can open, steer and stop it in Tether.",
     inputSchema: {
       type: "object",
       properties: {
@@ -51,7 +51,11 @@ export const TOOL_DEFS = [
         effort: { type: "string", description: "Its reasoning effort (low, medium, high, …), when one was asked for." },
         title: { type: "string", description: "A short title for it, as Tether's sidebar shows it." },
         project: { type: "string", description: "Another project folder to run in, instead of this session's." },
-        worktree: { type: "boolean", description: "true: it works in a new git worktree of the project (its own folder and branch), so it doesn't touch this checkout. Only in a git repo." },
+        worktree: {
+          anyOf: [{ type: "boolean" }, { type: "string" }],
+          description:
+            "true: it works in a new git worktree of the project (its own folder and branch), so it doesn't touch this checkout. A path or branch instead: it works in that existing worktree of the project (another session's, to carry on its work, or one made by hand); nothing is made and no setup runs. Only in a git repo.",
+        },
       },
       required: ["harness", "prompt"],
     },

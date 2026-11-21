@@ -379,7 +379,7 @@ export class Peers {
     if (why) return this.refused(from, why, "a new session");
     const hops = this.caps.hopsFrom(from);
     const undo = this.caps.count(from);
-    return this.children.start(from, { harness: str(a.harness), prompt: str(a.prompt), model: str(a.model), effort: str(a.effort), title: str(a.title), project: str(a.project), worktree: a.worktree === true }, hops, undo);
+    return this.children.start(from, { harness: str(a.harness), prompt: str(a.prompt), model: str(a.model), effort: str(a.effort), title: str(a.title), project: str(a.project), worktree: worktreeArg(a.worktree) }, hops, undo);
   }
 
   /**
@@ -465,3 +465,11 @@ export const peersModule: Module = {
     };
   },
 };
+
+/** tether_start's `worktree`: true (a new one), or an existing one's path or branch. A "true" some models send as text is true. */
+export function worktreeArg(v: unknown): boolean | string | undefined {
+  if (v === true) return true;
+  const t = typeof v === "string" ? v.trim() : "";
+  if (t === "true") return true;
+  return t && t !== "false" ? t : undefined;
+}

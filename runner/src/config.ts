@@ -42,11 +42,20 @@ export interface RunnerConfig {
   aliveAt?: number;
 }
 
-/** A worktree Tether made for a session: its folder (the session's), its branch, and the repo's main checkout. */
+/**
+ * A worktree a session works in: its folder (the session's), its branch, and the repo's main
+ * checkout. Tether made it for the session (New worktree), or the session joined it (Existing
+ * worktree). Each session in it has a record: Archive done removes it only when none is left.
+ */
 export interface WorktreeRecord {
   path: string;
+  /** "" for a detached HEAD (only in one Tether didn't make) */
   branch: string;
   repo: string;
+  /** started in it with Existing worktree: another session (or a person) made it */
+  joined?: boolean;
+  /** Tether didn't make it (`git worktree add` by hand): it's never removed by Tether */
+  handMade?: boolean;
   /** ignored files there once it was made and set up, with size, time and (up to 1 MB) a content hash: Archive done may delete these while unchanged */
   known?: Record<string, [number, number, string?]>;
 }
@@ -116,7 +125,7 @@ export interface SessionPrefs {
   queue?: QueuedMessage[];
   /** the queue waits until released, and why (LiveState.queueHeldBy) */
   queueHeldBy?: "terminal" | "stopped" | "restart" | "failed" | "setup";
-  /** the worktree Tether made for this session (New worktree, SPEC §4): Archive done removes it once merged */
+  /** the worktree this session works in (New or Existing worktree, SPEC §4): Archive done removes one Tether made once merged and no other session uses it */
   worktree?: WorktreeRecord;
   /** its worktree's setup runs, or failed (LiveState.setup): still "running" at start means a restart cut it off */
   setup?: "running" | "failed";

@@ -1,6 +1,6 @@
 // A worktree per session (SPEC §4): New session's "New worktree" makes a git worktree beside the
-// repo, on a new branch, and the session runs there. Shared by the runner (making it) and the
-// browser (the dialog).
+// repo, on a new branch, and the session runs there; "Existing worktree" starts one in a worktree
+// that's already there. Shared by the runner (making it) and the browser (the dialog).
 
 /** New worktrees' branches start with this. */
 export const WORKTREE_BRANCH_PREFIX = "tether/";
@@ -45,6 +45,52 @@ export interface WorktreeMade {
   setup?: string;
   /** the base was fetched from origin just before (false: the fetch failed, it's as last fetched) */
   fetched?: boolean;
+}
+
+/** One of a repo's worktrees, as New session's "Existing worktree" lists it (`listWorktrees`). */
+export interface WorktreeEntry {
+  path: string;
+  /** its branch; none: a detached HEAD */
+  branch?: string;
+  /** the sessions working in it (not archived): its folder, or recorded as its users */
+  sessions: { id: string; title?: string }[];
+  /** Tether made it (New worktree): once its work is merged, its last session's check-in removes it */
+  tether?: boolean;
+}
+
+/** A repo's worktrees other than its main checkout (`listWorktrees`); none outside git. */
+export interface WorktreeList {
+  /** the repo's main checkout */
+  repo?: string;
+  worktrees: WorktreeEntry[];
+}
+
+/** What existingWorktreeSession started. */
+export interface WorktreeJoined {
+  sessionId: string;
+  path: string;
+  branch?: string;
+  /** Tether made it (it's removed once merged and no session uses it); else it's never removed by Tether */
+  tether?: boolean;
+}
+
+/** How the picker shows a worktree: "path · branch · used by N sessions". */
+export function worktreeLabel(w: WorktreeEntry): string {
+  const n = w.sessions.length;
+  return [w.path, w.branch ?? "detached HEAD", n ? `used by ${n} session${n === 1 ? "" : "s"}` : "unused"].join(" · ");
+}
+
+/**
+ * The worktree `wanted` names: its path (`expand` makes a typed path absolute: ~, trailing
+ * slashes), else its branch (refs/heads/ optional), else its folder's name. Undefined: none.
+ */
+export function pickWorktree<T extends { path: string; branch?: string }>(list: T[], wanted: string, expand: (p: string) => string = (p) => p): T | undefined {
+  const w = wanted.trim();
+  if (!w) return undefined;
+  const trim = (p: string) => p.replace(/\/+$/, "") || "/";
+  const path = trim(expand(w));
+  const branch = w.replace(/^refs\/heads\//, "");
+  return list.find((e) => trim(e.path) === path) ?? list.find((e) => e.branch === branch) ?? list.find((e) => trim(e.path).split("/").pop() === w);
 }
 
 /** A new worktree's setup may run this long; then it's stopped, as failed. */

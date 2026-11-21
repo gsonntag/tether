@@ -57,7 +57,7 @@ function parseRunnerInfo(v: unknown): Omit<RunnerInfo, "connectedAt"> | null {
   const homeFolder = typeof v.homeFolder === "string" && v.homeFolder.startsWith("/") && v.homeFolder.length <= 4096 ? v.homeFolder : undefined;
   const shared = cleanGrants(v.shared);
   const textingHub = parseHubState(v.textingHub);
-  return { id: v.id, name, hostname: v.hostname, version: v.version, protocol: v.protocol, harnesses, ...(homeFolder ? { homeFolder } : {}), ...(v.git === true ? { git: true } : {}), ...(v.gitActions === true ? { gitActions: true } : {}), ...(v.files === true ? { files: true } : {}), ...(v.pinning === true ? { pinning: true } : {}), ...(shared.length ? { shared } : {}), ...(textingHub ? { textingHub } : {}) };
+  return { id: v.id, name, hostname: v.hostname, version: v.version, protocol: v.protocol, harnesses, ...(homeFolder ? { homeFolder } : {}), ...(v.git === true ? { git: true } : {}), ...(v.gitActions === true ? { gitActions: true } : {}), ...(v.files === true ? { files: true } : {}), ...(v.pinning === true ? { pinning: true } : {}), ...(v.existingWorktrees === true ? { existingWorktrees: true } : {}), ...(shared.length ? { shared } : {}), ...(textingHub ? { textingHub } : {}) };
 }
 
 /** A runner frame, or null when it isn't one the server understands. Rebuilt like browser frames. */

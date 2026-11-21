@@ -1,26 +1,33 @@
 // A worktree per session (SPEC §4). New session's "New worktree" (and the Home agent's start_session
 // with worktree: true) makes a git worktree beside the folder's repo, on a new branch from the
-// default branch (fetched first, best effort), and starts the session there:
+// default branch (fetched first, best effort), and starts the session there. "Existing worktree"
+// starts one in a worktree that's already there (made for another session, or by hand):
 //
-//   workspaceInfo        is the folder in git? where would a worktree go, from what, with what setup?
-//   newWorktreeSession   (one per repo at a time) fetch -> git worktree add -> newSession in it ->
-//                        recorded as the session's own -> setup
-//   rerunSetup           the setup again, after it failed or a restart cut it off
+//   workspaceInfo           is the folder in git? where would a worktree go, from what, with what setup?
+//   newWorktreeSession      (one per repo at a time) fetch -> git worktree add -> newSession in it ->
+//                           recorded as the session's own -> setup
+//   listWorktrees           the repo's other worktrees (git worktree list), and who works in each
+//   existingWorktreeSession newSession in one of them -> recorded as one of its users (no setup)
+//   rerunSetup              the setup again, after it failed or a restart cut it off
 //
 // The record (runner.json's `worktree` on the session: path, branch, main checkout, and the ignored
 // files there once it was set up) is what makes the worktree the session's own: the summary carries
 // the main checkout as `worktreeOf`, and the Home agent's check-in (Archive done) removes it, and its
-// branch, once the session is done and merged. The setup (`.tether/setup`, or `.tether/config.json`'s
-// "setup") runs in the new worktree as a card in the session; until it succeeds what you send waits,
-// held (core/queue.ts setupStarted/setupEnded). It gets TETHER_WORKTREE, TETHER_REPO (the main
-// checkout, to copy a .env from, say) and TETHER_BRANCH.
+// branch, once the session is done and merged and no other session uses it (one with a record there,
+// or whose folder is in it). One made by hand is recorded too (`handMade`), but never removed. The
+// setup (`.tether/setup`, or `.tether/config.json`'s "setup") runs in the new worktree as a card in
+// the session; until it succeeds what you send waits, held (core/queue.ts setupStarted/setupEnded).
+// It gets TETHER_WORKTREE, TETHER_REPO (the main checkout, to copy a .env from, say) and
+// TETHER_BRANCH. Joining doesn't run it again: the worktree was set up when it was made.
 
 import type { Module, ModuleContext, SessionActions } from "..";
 import type { OpArgs } from "../../../../shared/protocol";
-import type { WorkspaceInfo, WorktreeMade } from "../../../../shared/worktree";
-import { SETUP_MAX_MS } from "../../../../shared/worktree";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import type { WorkspaceInfo, WorktreeJoined, WorktreeList, WorktreeMade } from "../../../../shared/worktree";
+import { pickWorktree, SETUP_MAX_MS } from "../../../../shared/worktree";
 import type { WorktreeRecord } from "../../config";
-import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredFiles, lastFetched, repoOf, runGit, setupAt, shaOf, undoAdd, worktreePath, type Git, type IgnoredFiles, type Setup, sameStamp } from "./git";
+import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, gitWorktrees, ignoredFiles, lastFetched, repoOf, runGit, setupAt, shaOf, undoAdd, worktreePath, type Git, type IgnoredFiles, type Setup, sameStamp } from "./git";
 
 /** At most this many ignored files are remembered as there after setup (more: the rest count as new). */
 const KNOWN_MAX = 5000;
@@ -165,6 +172,76 @@ export class Worktrees {
     });
   }
 
+  /**
+   * The sessions working in a worktree, not archived: those the lists show whose folder is in it,
+   * and any recorded as its users (however old).
+   */
+  users(path: string): { id: string; title?: string }[] {
+    const p = resolve(path);
+    const out = new Map<string, string | undefined>();
+    for (const r of this.o.sessions.list()) {
+      const f = resolve(r.projectPath);
+      if (!r.archived && !r.parentSessionId && (f === p || f.startsWith(`${p}/`))) out.set(r.id, r.title);
+    }
+    for (const u of this.o.sessions.worktreeUsers?.(p) ?? []) if (!u.archived && !out.has(u.id)) out.set(u.id, undefined);
+    return [...out].map(([id, title]) => ({ id, ...(title ? { title } : {}) }));
+  }
+
+  /** The folder's repo's worktrees other than the main checkout (one whose folder is gone neither). */
+  async list(projectPath: string): Promise<WorktreeList> {
+    let folder: string;
+    try {
+      folder = this.o.sessions.folder(projectPath);
+    } catch {
+      return { worktrees: [] };
+    }
+    const repo = await repoOf(folder, this.git);
+    if (!repo) return { worktrees: [] };
+    const trees = (await gitWorktrees(repo.main, this.git)).filter((w) => !w.bare && !w.prunable && w.path !== repo.main && existsSync(w.path));
+    return {
+      repo: repo.main,
+      worktrees: trees.map((w) => {
+        const made = (this.o.sessions.worktreeUsers?.(w.path) ?? []).some((u) => !u.worktree.handMade);
+        return { path: w.path, ...(w.branch ? { branch: w.branch } : {}), sessions: this.users(w.path), ...(made ? { tether: true } : {}) };
+      }),
+    };
+  }
+
+  /**
+   * Starts a session in an existing worktree of the folder's repo (its path or branch), and records
+   * it as one of the worktree's users: as Tether's record of it says (branch, and whether Tether made
+   * it) when another session has one, else as one made by hand (never removed by Tether). Nothing is
+   * made and the setup doesn't run again.
+   */
+  async join(args: OpArgs<"existingWorktreeSession">): Promise<WorktreeJoined> {
+    const { worktree: wanted, ...rest } = args;
+    const folder = this.o.sessions.folder(String(args.projectPath ?? ""));
+    const repo = await repoOf(folder, this.git);
+    if (!repo) throw new Error(`${folder} isn't in a git repository, so it has no worktrees.`);
+    const typed = typeof wanted === "string" ? wanted.trim() : "";
+    if (!typed) throw new Error("Say which worktree: its path or branch.");
+    const expand = (p: string) => {
+      if (!p.startsWith("/") && !p.startsWith("~")) return p;
+      try {
+        return resolve(this.o.sessions.folder(p));
+      } catch {
+        return resolve(p.replace(/^~(?=\/|$)/, process.env.HOME ?? "~"));
+      }
+    };
+    const w = pickWorktree((await gitWorktrees(repo.main, this.git)).filter((x) => !x.bare), typed, expand);
+    if (!w) throw new Error(`${typed} isn't one of ${repo.main}'s worktrees (git worktree list names them).`);
+    if (w.path === repo.main) throw new Error(`${w.path} is the repo's main checkout, not a worktree: start in This folder.`);
+    if (w.prunable || !existsSync(w.path)) throw new Error(`${w.path}'s folder is gone (git worktree prune would drop it).`);
+    const { sessionId } = await this.o.newSession({ ...rest, projectPath: w.path });
+    // Another session's record says what Tether knows of it: one Tether made first.
+    const users = this.o.sessions.worktreeUsers?.(w.path) ?? [];
+    const from = (users.find((u) => !u.worktree.handMade) ?? users[0])?.worktree;
+    const rec: WorktreeRecord = from ? { path: w.path, branch: from.branch, repo: from.repo, joined: true, ...(from.handMade ? { handMade: true } : {}) } : { path: w.path, branch: w.branch ?? "", repo: repo.main, joined: true, handMade: true };
+    await this.o.sessions.setWorktree?.(sessionId, rec);
+    this.o.log?.(`${sessionId}: joined worktree ${w.path}${w.branch ? ` on ${w.branch}` : ""}${rec.handMade ? " (made by hand: never removed by Tether)" : ""}`);
+    return { sessionId, path: w.path, ...(w.branch ? { branch: w.branch } : {}), ...(rec.handMade ? {} : { tether: true }) };
+  }
+
   /** Re-run setup, after it failed (or a restart cut it off). */
   async rerun(sessionId: string) {
     // Claimed before anything waits: a double tap runs it once.
@@ -193,6 +270,8 @@ export const worktreesModule: Module = {
     const w = new Worktrees({ sessions: ctx.sessions, newSession: (a) => ctx.ops.call("newSession", a), log: ctx.log });
     ctx.ops.register("workspaceInfo", (a) => w.info(String(a?.projectPath ?? "")));
     ctx.ops.register("newWorktreeSession", (a) => w.create(a));
+    ctx.ops.register("listWorktrees", (a) => w.list(String(a?.projectPath ?? "")));
+    ctx.ops.register("existingWorktreeSession", (a) => w.join(a));
     ctx.ops.register("rerunSetup", async (a) => (await w.rerun(String(a?.sessionId ?? "")), null));
   },
 };

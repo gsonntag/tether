@@ -3,6 +3,7 @@
 
 import { defang } from "../../../shared/fromTether";
 import { hostname } from "node:os";
+import { resolve } from "node:path";
 import { CredentialStore, redact } from "../credentials";
 import { CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
@@ -96,6 +97,7 @@ export function createRunner(o: RunnerOptions) {
     gitActions: true,
     files: true,
     pinning: true,
+    existingWorktrees: true,
     // The relay shows the runner to these people (shared/access.ts) and only its owners see the list.
     ...(prefs.shared().length ? { shared: prefs.shared() } : {}),
     ...(hubPort.state ? { textingHub: hubPort.state } : {}),
@@ -324,6 +326,10 @@ export function createRunner(o: RunnerOptions) {
         setArchived: async (id: string, archived: boolean) => core.setArchived(await core.open(id), archived),
         setWorktree: async (id: string, worktree: WorktreeRecord) => core.setWorktree(await core.open(id), worktree),
         worktree: (id: string) => prefs.get(id).worktree,
+        worktreeUsers: (path: string) =>
+          prefs
+            .ids((p) => !p.carried && !!p.worktree && resolve(p.worktree.path) === resolve(path))
+            .map((id) => ({ id, worktree: prefs.get(id).worktree!, ...(prefs.get(id).archived ? { archived: true } : {}) })),
         setup: async (id: string, command: string, { beforeRelease, ...run }: Omit<SetupRun, "done"> & { beforeRelease?: () => void | Promise<void> } = {}) => {
           const s = await core.open(id);
           live.queue.setupStarted(s);

@@ -30,7 +30,7 @@ import type { DiffScope, GitDiff } from "./gitDiff";
 import type { CheckpointList, RestoreResult } from "./checkpoints";
 import type { GitActionResult, GitDraft, GitStatus, PrLookup } from "./gitActions";
 import type { MoveOptions } from "./move";
-import type { WorkspaceInfo, WorktreeMade } from "./worktree";
+import type { WorkspaceInfo, WorktreeJoined, WorktreeList, WorktreeMade } from "./worktree";
 import type { Attachment } from "./attachments";
 import type { AzureDeployment, BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
 import type { TokenRates } from "./costs";
@@ -89,6 +89,8 @@ export interface RunnerInfo {
   files?: boolean;
   /** it takes `pinSession` (SPEC §10 Pinning). Absent: a runner from before it, and no pin buttons */
   pinning?: boolean;
+  /** it takes `listWorktrees` and `existingWorktreeSession` (SPEC §4 Existing worktree). Absent: an older runner, and no such choice */
+  existingWorktrees?: boolean;
   /** the people its owner shared it with (shared/access.ts); only sent to its owners */
   shared?: RunnerGrant[];
   /** it's the texting hub (SPEC §11 Texting): it texts for its owner's other runners too, and whether texts can go now */
@@ -310,6 +312,17 @@ export interface Ops {
   newWorktreeSession: {
     args: { harness: HarnessId; projectPath: string; model?: string; effort?: string; permissionMode?: string; terminal?: boolean; source?: BillingSource; branch?: string; name?: string; expectSetup?: string };
     result: WorktreeMade;
+  };
+  /** The worktrees of a folder's repo other than its main checkout, and who works in each (SPEC §4). Read-only. */
+  listWorktrees: { args: { projectPath: string }; result: WorktreeList };
+  /**
+   * newSession in an existing worktree of the folder's repo (SPEC §4): `worktree` is its path or
+   * branch. Nothing is made and no setup runs; the session is recorded as one of its users, so it
+   * isn't removed while it works there. Refused for the main checkout (that's newSession).
+   */
+  existingWorktreeSession: {
+    args: { harness: HarnessId; projectPath: string; worktree: string; model?: string; effort?: string; permissionMode?: string; terminal?: boolean; source?: BillingSource };
+    result: WorktreeJoined;
   };
   /** Runs a worktree session's setup again, after it failed or a restart cut it off (SPEC §4). */
   rerunSetup: { args: { sessionId: string }; result: null };

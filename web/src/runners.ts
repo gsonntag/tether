@@ -21,6 +21,9 @@ export function mergeRunners(known: KnownRunner[], online: RunnerInfo[], now: nu
 /** Whether the runner takes `pinSession` (RunnerInfo.pinning): pin buttons show only then. */
 export const canPin = (runners: RunnerInfo[], runnerId: string) => !!runners.find((r) => r.id === runnerId)?.pinning;
 
+/** Whether the runner takes `listWorktrees` and `existingWorktreeSession` (RunnerInfo.existingWorktrees): New session's "Existing worktree" shows only then. */
+export const canJoinWorktree = (runners: RunnerInfo[], runnerId: string) => !!runners.find((r) => r.id === runnerId)?.existingWorktrees;
+
 /** Connected first, then by name. */
 export function sortRunners(list: KnownRunner[]): KnownRunner[] {
   const label = (r: KnownRunner) => r.name || r.id;
