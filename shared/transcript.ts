@@ -374,6 +374,8 @@ export interface LiveState {
   sourceSwitchFailed?: boolean;
   /** ticked: when the plan runs out, the session switches to a key and resends (SPEC §10) */
   autoKey?: boolean;
+  /** ticked ("Session can text me"): it may text the person, and plain texts can come to it (SPEC §11 Texting). Absent: it never texts */
+  canText?: boolean;
   /** the key this session last used or had picked: default when no fallback order is saved */
   lastKey?: BillingSource;
   /** Allowed automatic fallback keys, in priority order. Empty excludes all keys. */

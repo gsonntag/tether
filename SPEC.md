@@ -1052,7 +1052,8 @@ event (with the message's text) and the queued message's id from `SessionActions
   always, "to text the person, use `text_person`" (and, in a session the Home agent drives, to put
   news in the final reply instead).
 - **`text_person(message)`** on the same server texts the person through the texting module (§11
-  Texting, "Agents texting the person").
+  Texting, "Agents texting the person"), only when the session's **Session can text me** box is
+  ticked; otherwise it returns an error saying so (put it in the reply instead), and the rule says so.
 
 ## 10. UI
 
@@ -1848,7 +1849,15 @@ finished, failed), and the Home inbox. After P5, v2 replaces v1 in production.
 **Texting (a module, `runner/src/modules/texting`).** iMessages through Photon Spectrum for a
 request, "needs you", a failed turn, a turn whose last message asks the person something, and the
 agent's answer after the person texted it (a turn that just finishes doesn't text), each with a link
-to the session; skipped while the session is viewed. A request's text is
+to the session; skipped while the session is viewed. Only from a session whose **Session can text
+me** box is ticked (a per-session checkbox, off by default for new sessions, in the header's phone
+chip for its owner: `setCanText`, a manage op; `SessionPrefs.canText` → `LiveState.canText`, kept
+however old, carried to a successor, a TUI's `/clear` too; a subagent goes by its main session's; an
+archived session doesn't text; the Home agent's own chats, its tabs and Texts chats, text as before):
+an unticked session texts nothing, not its requests, not its turns' ends, not its `text_person`. The
+first start with the box ticks, once, every session that held a number, was among Tether's
+remembered texts or was written by text (`texting.json` `canTextMigrated`), keeping its number. A
+runner without it says nothing (`RunnerInfo.canText`) and shows no box. A request's text is
 one plain question in the agent's voice, under ~100 characters, with the session's link on its own
 line below: "[2] Can I clean up the hide-checkin worktree? y/n", "[3] Can I run the jungle test
 suite? y/n". The words come from the tool call's own `description` (Claude Code's Bash) or a
@@ -1856,9 +1865,16 @@ deterministic reading of the command (`texting/summary.ts`: its programs, the ri
 command text, no harness warning, no explanation: those stay in Tether behind the link. A question
 carries its options; a plan asks "Can I go ahead with the plan to …?". Known secrets are redacted. Replies route by number: each text
 starts with its session's number (1-9, kept while the session is open, 30 minutes after its last
-text); `n text`, a threaded reply, or plain text when one session is open go straight there; plain
-text with several open is held and answered with a numbered picker listing only the sessions still
-waiting (one answered by text or in Tether since its last text drops out; its number still works).
+text); `n text` or a threaded reply goes straight there; plain text goes to the open session last
+texted or answered. A threaded reply to a text whose session isn't open any more (or to a message
+Tether doesn't know) never goes by plain routing (a "y" mustn't approve another session's
+request): it's held and the picker asks. With none open, plain text is held and answered with a numbered picker of the
+ticked sessions (numbers offered for them, newest activity first, open 30 minutes; plain text never
+goes to an offered number unpicked); with none ticked, "No session can text you". A number that
+isn't open is held the same way, its picker listing only the open sessions still waiting (one
+answered by text or in Tether since its last text drops out; its number still works). Unticking a
+session drops its number: `n text` or a threaded reply to it gets "[n] can't text you anymore" for
+30 minutes (until the number is taken again).
 Tether owns every reply on the thread: the text-me skill (`textme`), which used to text from the
 same number and split replies with Tether through `~/.local/state/imessage-thread/`, is gone, and
 agents text only through Tether (`text_person`, below). On an open request, `y` allows
@@ -1882,7 +1898,12 @@ last channel is the hub's (`hubChannel.ts`), used when no connector of their own
   router (the session kept as `\u0001<runner>\u0001<session>`), so every computer's sessions share
   one set of numbers and one picker, sends it on its connector, and notes it for threaded replies.
   An image after a text, a request's text and `text_person` go the same way. Answered on the
-  spoke (in Tether, a new turn, a closed request), its slot changes on the hub too.
+  spoke (in Tether, a new turn, a closed request), its slot changes on the hub too. The spoke
+  gates its own sessions' texts by their box, and turns away a reply the hub hands one that's
+  unticked ("[n] can't text you anymore"). It tells the hub the whole set of its ticked sessions,
+  with names (at start, whenever its hub (re)connects, and when a box changes): the hub's picker
+  offers them (`texting.json` `remoteTexters`, 7 days after last heard), and the numbers of the
+  spoke's other sessions go.
 - In: a reply the hub's router gives to a spoke's session goes there (`deliver`), with the ✅
   handed back and the files the person sent (fetched and checked on the hub: HEIC made JPEG). The
   spoke takes it as its own connector's message: a request's y/n, or words and files to the agent.
@@ -1957,9 +1978,10 @@ with `[h]`, like a session's `[n]`. Who a reply belongs to, in order:
 chat: if the home is deleted meanwhile (and the tabs renumbered), the person is told it's gone instead.
 3. `n text` (and just `n`) goes to session n, as before.
 4. Plain text goes to the home (by its chat) that sent Tether's last text when that was a home's
-   (the primary one when no session is open).
-   Otherwise it goes to the one open session, or gets the numbered picker, which ends with a
-   `home:` row.
+   (the primary one when no session is open and none is ticked).
+   Otherwise it goes to the open session last texted or answered (but with two or more open
+   requests it's held and the picker asks, so a plain "y" can't approve the wrong one), or gets the
+   numbered picker of ticked sessions, which ends with a `home:` row.
 
 *Homes.* (The router is shared, so all of this, the Home/H prefixes and reply threading work the
 same on every connector, Discord included. The way back for private answers, `replyVia`, is kept
@@ -2079,13 +2101,14 @@ link, decisions), batching sessions into one text, never routine progress; repli
 texts come back to it and it relays instructions with send_to_session. A session the Home agent
 drives (started or messaged it, the person hasn't stepped in) doesn't text: its `text_person`
 goes to the Home agent as a report (`homeLine.ts` relay) and the tool tells it to report back
-instead. A session the person runs themselves (or stepped into) texts directly. Requests' own
-texts are unchanged. A session's text
+instead. A session the person runs themselves (or stepped into) texts directly when its **Session
+can text me** box is ticked; unticked, the tool refuses and nothing goes. Requests' own texts follow
+the same box. A session's text
 is stamped with its number like any other (`[n] …`, status "texted you", the link as usual) and
 goes out even while the session is open in Tether; the Home agent's is a `[h]` text. Either is
 cut at 300 characters, and capped at 3 per sender and 10 in all per 10 minutes (a refused or
 failed one is the tool's error, and says to put it in the reply instead). A reply routes like a
-reply to any of Tether's texts (threaded, `n text`, the one open session; ✅, taken once), so it
+reply to any of Tether's texts (threaded, `n text`, the open session last texted; ✅, taken once), so it
 reaches that session as the person's message, and its answer comes back by text. A Texts-tab
 turn that used `text_person` isn't texted again by Reply by text.
 

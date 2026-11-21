@@ -52,6 +52,8 @@ export const MANAGE_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "setMessagingPrefer",
   "testConnector",
   "setTextingHub",
+  // Which sessions may text the owner's phone.
+  "setCanText",
   "harnessAutoUpdate",
   "harnessUpdate",
   // The Home agent is the owner's own: what it runs on, texting its replies to their phone, its

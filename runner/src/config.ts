@@ -99,6 +99,8 @@ export interface SessionPrefs {
   nextSource?: BillingSource;
   /** switch to a key when the plan runs out, the one exception to no fallback (SPEC §10). Ticked by you */
   autoKey?: boolean;
+  /** "Session can text me", ticked by you: it may text the person, and gets plain texts (SPEC §11 Texting). Kept whatever its age */
+  canText?: boolean;
   /** the key this session last used or had picked */
   lastKey?: BillingSource;
   /** Allowed automatic fallback keys, in priority order. Empty excludes all keys. */

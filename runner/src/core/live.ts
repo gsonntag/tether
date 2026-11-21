@@ -1588,12 +1588,25 @@ export class LiveControl {
     s.setState(patch);
   }
 
+  /**
+   * The "Session can text me" box (SPEC §11 Texting): only a ticked session texts the person.
+   * Texting hears of it (canTextChanged): unticked, its number is dropped.
+   */
+  async setCanText(id: string, on: boolean) {
+    const s = await this.core.open(id);
+    if (s.summary.parentSessionId) throw new Error("A subagent texts as its main session.");
+    this.core.o.prefs.set(id, { canText: on || undefined });
+    this.core.o.prefs.flush();
+    s.setState({ canText: on || undefined });
+    this.core.o.bus.emit("canTextChanged", { sessionId: id, canText: on });
+  }
+
   /** What a session's successor on another id keeps (a fork's link back too, SPEC §16; its worktree record, SPEC §4). */
   keptPrefs(s: Session) {
-    const { autoKey, lastKey, fallbackKeys, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
+    const { autoKey, canText, lastKey, fallbackKeys, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
     // A side chat's successor is one too, read-only (SPEC §16a): failing closed.
     // The worktree goes on with the conversation: cleanup counts the successor as its user (the old id, moved on, no more).
-    return { ...(autoKey ? { autoKey } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree } : {}) };
+    return { ...(autoKey ? { autoKey } : {}), ...(canText ? { canText } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree } : {}) };
   }
 
   /**
