@@ -61,7 +61,7 @@ function setup(o: { home?: boolean; attachmentsDir?: string } = {}) {
       deleteHome: async () => [{ n: 0, chat: "claude:texts" }],
     };
   const sessions: Record<string, any> = {
-    "claude:a": { summary: { id: "claude:a", projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } },
+    "claude:a": { summary: { id: "claude:a", projectPath: "/p" }, status: "idle", requests: [], state: { requests: [], canText: true } },
   };
   const store = new TextingStore(undefined, {});
   const t = new Texter(
@@ -322,17 +322,17 @@ describe("review fixes", () => {
       const sessions = (s.t as any).ctx.session;
       await s.t.start();
       const png = (name = "a.png") => ({ name, mimeType: "image/png", size: 1, read: async () => new Uint8Array([7]) });
-      // Nothing open, no Home agent: the reply says nothing's waiting, and that the file didn't go.
+      // Nothing open, no Home agent, no session may text: the reply says so, and that the file didn't go.
       s.dc.hear({ text: "look", files: [png()] });
       await tick(5);
-      expect(s.dc.sent.map((o) => o.text)).toEqual([TEXTS.nothingOpen, TEXTS.filesNotSent]);
-      // Two open: held for the picker with its file, then delivered with it.
+      expect(s.dc.sent.map((o) => o.text)).toEqual([TEXTS.noTexters, TEXTS.filesNotSent]);
+      // Two open, a number that isn't: held for the picker with its file, then delivered with it.
       await s.t.attention("claude:a");
-      (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } };
+      (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [], canText: true } };
       await s.t.attention("codex:b");
-      s.dc.hear({ text: "see this", files: [png("held.png")] });
+      s.dc.hear({ text: "7 see this", files: [png("held.png")] });
       await tick(5);
-      expect(s.dc.sent.at(-1)!.text).toStartWith(TEXTS.which);
+      expect(s.dc.sent.at(-1)!.text).toStartWith("[7] isn't waiting on a reply");
       expect(s.dc.sent.at(-1)!.text).not.toContain(TEXTS.filesNotSent);
       s.dc.hear({ text: "2" });
       await tick(5);
@@ -394,7 +394,7 @@ describe("second review round", () => {
   async function twoOpen(o: { attachmentsDir?: string } = {}) {
     const s = setup(o);
     const sessions = (s.t as any).ctx.session;
-    (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } };
+    (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [], canText: true } };
     await s.t.start();
     await s.t.attention("claude:a");
     await s.t.attention("codex:b");
@@ -408,7 +408,7 @@ describe("second review round", () => {
       const notSent = () => s.dc.sent.filter((o) => o.text === TEXTS.filesNotSent).length;
       // Held, then "2 other words": those words go, and the held file goes with them (it was meant for
       // the same place).
-      s.dc.hear({ text: "look", files: [png()] });
+      s.dc.hear({ text: "9 look", files: [png()] });
       await tick(5);
       s.dc.hear({ text: "2 other words" });
       await tick(5);
@@ -417,13 +417,13 @@ describe("second review round", () => {
       expect(notSent()).toBe(0);
       // Held, then a new unclear text replaces it (a photo, then its caption): the file moves to it.
       await s.t.attention("codex:b");
-      s.dc.hear({ text: "look again", files: [png()] });
+      s.dc.hear({ text: "9 look again", files: [png()] });
       await tick(5);
-      s.dc.hear({ text: "something else" });
+      s.dc.hear({ text: "9 something else" });
       await tick(5);
       expect(notSent()).toBe(0);
       // Held, then it expires: the person is told, once.
-      s.dc.hear({ text: "and this", files: [png()] });
+      s.dc.hear({ text: "9 and this", files: [png()] });
       await tick(5);
       (s.t as any).now = () => Date.now() + 11 * 60_000;
       await s.t.checkHeld();
@@ -598,7 +598,7 @@ describe("round 3", () => {
     await s.t.start();
     await s.t.attention("claude:a");
     const sessions = (s.t as any).ctx.session;
-    (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } };
+    (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [], canText: true } };
     await s.t.attention("codex:b");
     s.t.router.state.held = { text: "\u0000", at: Date.now() };
     s.dc.hear({ text: "2" });
@@ -733,9 +733,9 @@ describe("round 4: only the turn a channel message started answers in the channe
       expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
       // Two open; a text held from the DM, picked from the channel: no channel answer.
       const sessions = (s.t as any).ctx.session;
-      (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } };
+      (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [], canText: true } };
       await s.t.attention("codex:b");
-      s.dc.hear({ text: "deploy it", place: "dm-1" });
+      s.dc.hear({ text: "9 deploy it", place: "dm-1" });
       await tick();
       s.dc.hear({ text: "1", place: "chan-1", shared: true });
       await tick();
@@ -745,7 +745,7 @@ describe("round 4: only the turn a channel message started answers in the channe
       await s.t.turnEnded("claude:a");
       expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
       // Held files from the channel that go nowhere: the notice goes privately.
-      s.dc.hear({ text: "look", files: [{ name: "a.png", mimeType: "image/png", size: 1, read: async () => new Uint8Array([1]) }], place: "chan-1", shared: true });
+      s.dc.hear({ text: "9 look", files: [{ name: "a.png", mimeType: "image/png", size: 1, read: async () => new Uint8Array([1]) }], place: "chan-1", shared: true });
       await tick();
       (s.t as any).now = () => Date.now() + 11 * 60_000;
       await s.t.checkHeld();
@@ -1105,7 +1105,7 @@ describe("final round", () => {
     const s = setup();
     await s.t.start();
     const sessions = (s.t as any).ctx.session;
-    (s.t as any).ctx.session = (id: string) => (id === "claude:sub" ? { summary: { id, parentSessionId: "claude:a", projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } } : sessions(id));
+    (s.t as any).ctx.session = (id: string) => (id === "claude:sub" ? { summary: { id, parentSessionId: "claude:a", projectPath: "/p" }, status: "idle", requests: [], state: { requests: [], canText: true } } : sessions(id));
     s.t.turnStarted("claude:sub");
     expect((s.t as any).turns.has("claude:sub")).toBe(false);
     await s.t.turnEnded("claude:sub");

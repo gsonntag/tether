@@ -89,6 +89,8 @@ export interface RunnerInfo {
   files?: boolean;
   /** it takes `pinSession` (SPEC §10 Pinning). Absent: a runner from before it, and no pin buttons */
   pinning?: boolean;
+  /** it takes `setCanText` (SPEC §11 Texting: the "Session can text me" box). Absent: an older runner, and no box */
+  canText?: boolean;
   /** the people its owner shared it with (shared/access.ts); only sent to its owners */
   shared?: RunnerGrant[];
   /** it's the texting hub (SPEC §11 Texting): it texts for its owner's other runners too, and whether texts can go now */
@@ -146,6 +148,8 @@ export interface Ops {
   setSessionSource: { args: { sessionId: string; source: BillingSource }; result: null };
   /** the box in the billing chip's menu (`on`) and/or the session's fallback key order; each alone leaves the other */
   setAutoKey: { args: { sessionId: string; on?: boolean; fallbackKeys?: CredentialSource[] }; result: null };
+  /** the "Session can text me" box: only a ticked session texts the person, or gets plain texts and a place in the picker (SPEC §11 Texting) */
+  setCanText: { args: { sessionId: string; canText: boolean }; result: null };
   /** asks the harness for its plan limits if it has a cheap read; the answer comes as session state */
   refreshPlan: { args: { harness: HarnessId }; result: null };
   renameSession: { args: { sessionId: string; title: string }; result: null };

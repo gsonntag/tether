@@ -437,6 +437,8 @@ describe("review round 1", () => {
     const { adapter, core, live, term, tmux, frames } = setup();
     adapter.addStored("s1", [{ id: "m1", role: "user", ts: 1, parts: [{ type: "text", text: "hi" }] }]);
     await core.subscribe("claude:s1");
+    // Its "Session can text me" box goes with it, in memory as on disk.
+    await live.setCanText("claude:s1", true);
     await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
     // Something that isn't a session id never moves it.
     term.report({ sessionId: "claude:s1", event: "SessionStart", nativeId: "../../etc", source: "clear" });
@@ -445,6 +447,8 @@ describe("review round 1", () => {
     // The hook URL still names claude:s1; the payload names the new session.
     term.report({ sessionId: "claude:s1", event: "SessionStart", nativeId: "00000002-0000-4000-8000-000000000000", source: "clear" });
     await until(() => core.sessions.get("claude:00000002-0000-4000-8000-000000000000")?.state.mode === "terminal");
+    expect(state(core, "claude:00000002-0000-4000-8000-000000000000").canText).toBe(true);
+    expect(core.o.prefs.get("claude:00000002-0000-4000-8000-000000000000").canText).toBe(true);
     expect(tmux.sessions.get("t-claude-s1")!.sessionId).toBe("claude:00000002-0000-4000-8000-000000000000");
     const old = state(core, "claude:s1");
     expect(old).toMatchObject({ mode: "stored", continuedIn: "claude:00000002-0000-4000-8000-000000000000" });

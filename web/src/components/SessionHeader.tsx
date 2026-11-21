@@ -11,6 +11,8 @@ import { loadModels, useStore } from "../store";
 import { forkedFromTitle } from "../fork";
 import { BillingChip, useSources } from "./BillingChip";
 import { ChoiceMenu } from "./ChoiceMenu";
+import { TextMeChip } from "./TextMeChip";
+import { offersCanText } from "../runners";
 import { shownStatus } from "../sessionList";
 import { StatusDot } from "./SessionRow";
 import { SubagentChips } from "./SubagentChips";
@@ -39,6 +41,8 @@ export function SessionHeader({
 }) {
   const [error, setError] = useState<string>();
   const isChild = !!session.parentSessionId;
+  // Only where the runner takes it, for its owner, on a main session (runners.ts offersCanText).
+  const textMe = useStore((s) => offersCanText(s.runners.find((r) => r.id === runnerId), session));
   const paid = isApiBilling(billingForDisplay(state));
   const nextBilling = visibleNextBilling(state);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -155,6 +159,7 @@ export function SessionHeader({
             />}
           </>
         )}
+        {textMe && <TextMeChip on={!!state.canText} onChange={(canText) => void call(rpc(runnerId, "setCanText", { sessionId: session.id, canText }))} />}
         <SubagentChips runnerId={runnerId} children={children} />
         {sideChats}
         {/* Last in the row: where chips scroll sideways, these go out of view first. */}

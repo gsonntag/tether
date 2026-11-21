@@ -15,6 +15,8 @@ import type { Attachment } from "../../../shared/attachments";
 export const HOME_SENDER = "home";
 /** How long an agent's own text (text_person) may be. */
 export const PERSON_TEXT_MAX = 300;
+/** What text_person answers a session whose "Session can text me" box is off (texting/index.ts canText). */
+export const CANT_TEXT = "This session isn't allowed to text the person (the 'Session can text me' box is off). Put it in your reply instead.";
 
 /** At most this many homes besides the primary one (h1 … h9): ten tabs. */
 export const MAX_EXTRA_HOMES = 9;
