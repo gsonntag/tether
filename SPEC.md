@@ -36,7 +36,8 @@ subagents, plan review, forks, and libraries for writing hooks, commands or suba
 Each may come back later as a module (§3). None of them may require editing the session core. A
 harness's own commands and skills, `/goal` `/loop` `/schedule` `/review` among them, aren't Tether
 features: the message box offers and passes on what the harness has (§9 Commands). Cross-harness handoff came back this way, as an explicit move a
-person starts (§15); an automatic one stays a non-goal.
+person starts (§15); an automatic one stays a non-goal. Cross-harness subagents came back the same
+way, as ordinary sessions an agent starts (`tether_start`, §9a).
 
 ## 2. Principles
 
@@ -930,7 +931,8 @@ Only the owner can run one (the same auth as sending).
 ## 9a. Sessions talking to each other
 
 An agent can message or ask another session on its runner, Claude Code, Codex or Antigravity, and send a note
-to all. Agents can't start sessions. Nothing asks the person; loops are capped. A module
+to all, and start a new session on any harness that reports back to it (`tether_start`, below).
+Nothing asks the person; loops are capped. A module
 (`runner/src/modules/peers/`, off with `TETHER_PEERS=0`); the core only gained the `queueGone`
 event (with the message's text) and the queued message's id from `SessionActions.queue`.
 
@@ -997,8 +999,34 @@ event (with the message's text) and the queued message's id from `SessionActions
   A message is counted (and an ask opened) right after the check, before anything waits, so calls
   side by side can't all pass; one that doesn't go is given back.
   A refusal is the tool's error and a warning notice in the sender's transcript.
+- **Starting sessions** (`children.ts`). `tether_start {harness, prompt, model?, effort?, title?,
+  project?, worktree?}` starts an ordinary session on any harness (claude, codex, antigravity),
+  from any harness, and returns at once with `"<title>" (<id>)`. Folder: the caller's; `project`
+  only names a known project, and only from a caller nothing confines (judged or full), as another
+  folder would widen a sandboxed one. `worktree: true` makes a new worktree through
+  `newWorktreeSession` (§4), only from a caller that may run commands itself (sandboxed or looser),
+  as git and the repo's setup run. Source: the harness's default for a new session (as New
+  Session). Mode: the loosest mode the target offers whose level is at or under the caller's
+  (Claude's auto counts as judged), so a child is never looser. The prompt goes in as a peer
+  message from the caller (carrying its hops) whose hint says its final reply goes back. Who
+  started whom is kept in `<config>/modules/peers/children.json`.
+  Each time the child really finishes a turn (nothing queued, no background work, no open request;
+  not a rate-limit retry; not a turn whose answer went to an ask), its last reply (cut at 20 KB) is
+  queued into the caller as a message from the child, with "Report N of 20" and to follow up with
+  `tether_send`. A turn another session's message started isn't reported (that would let a
+  stricter session reach a looser caller through the child). A request it (or its subagent) waits
+  on, still open after 0.8 s, or a terminal prompt, is passed on once a turn and counts as a
+  report. Reports carry the hops the start carried, so they neither grow nor reset the caller's
+  chain. It stops reporting when the person types into it, runs a `!` command, texts it or presses
+  Stop, after 20 reports, or when the caller is archived; the child itself goes on as a normal
+  session either way. Caps: at most 5 children still at work per caller (one idle after its turn
+  doesn't count; starts side by side reserve their slot at once); a child may start children, a
+  grandchild can't; starts count toward the 10-per-10-minutes rate and the hop cap. A start that
+  fails gives the rate slot back; one whose prompt couldn't be sent names the idle session it
+  made. Not yet: children shown under their starter in the sidebar and header (the card links to
+  it).
 - Tool cards read "Asked “<title>”" ("Ask failed" once asked, "Not asked" when it never went),
-  "Sent to “<title>”", "Sent to all", with the message, an Open link and the answer. The link goes
+  "Sent to “<title>”", "Sent to all", "Started “<title>”", with the message, an Open link and the answer. The link goes
   to the session the runner reached: its answer names it as `"<title>" (<id>)` on its first line. Terminal mode: a TUI-driven session can receive (it queues until Back
   to Tether) but has no tools.
 - **Tether's instructions** (`peers/instructions.ts`): every session that gets the server (not the

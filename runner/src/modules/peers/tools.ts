@@ -7,14 +7,14 @@ import { PEER_TOOLS, TEXT_PERSON } from "../../../../shared/peers";
 export const ASK_MAX_MIN = 60;
 export const ASK_DEFAULT_MIN = 15;
 
-const to = { type: "string", description: 'The session: its id (like "claude:…" or "codex:…", from tether_sessions) or its exact title.' };
+const to = { type: "string", description: 'The session: its id (like "claude:…", "codex:…" or "antigravity:…", from tether_sessions) or its exact title.' };
 const text = { type: "string", description: "The message. It reaches the other agent as written, marked as coming from you." };
 
 export const TOOL_DEFS = [
   {
     name: PEER_TOOLS.sessions,
     description:
-      "Lists the other coding sessions on this machine that you can message: id, title, project folder, agent (Claude Code or Codex), whether it's idle, working or waiting on the person, and when it was last active.",
+      "Lists the other coding sessions on this machine that you can message: id, title, project folder, agent (Claude Code, Codex or Antigravity), whether it's idle, working or waiting on the person, and when it was last active.",
     inputSchema: {
       type: "object",
       properties: {
@@ -36,6 +36,24 @@ export const TOOL_DEFS = [
       type: "object",
       properties: { to, text, timeout_minutes: { type: "number", description: `How long to wait for the answer, in minutes (default ${ASK_DEFAULT_MIN}, at most ${ASK_MAX_MIN}).` } },
       required: ["to", "text"],
+    },
+  },
+  {
+    name: PEER_TOOLS.start,
+    description:
+      "Starts a new coding session on any agent (Claude Code, Codex or Antigravity), with your prompt as its first message, and returns at once. It works on its own like one of your subagents, in this session's folder unless you pass `project` (or in a new git worktree with `worktree`). Its permissions are never looser than yours. Each time it finishes a turn, its final reply comes to you as a message from it; if it isn't done, follow up with tether_send to its id, or start a fresh session for new context. The person can open, steer and stop it in Tether.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        harness: { type: "string", enum: ["claude", "codex", "antigravity"], description: "Which agent runs it: claude (Claude Code), codex, or antigravity." },
+        prompt: { type: "string", description: "The complete brief: it starts with no other context." },
+        model: { type: "string", description: "Its model, when one was asked for (else the agent's default)." },
+        effort: { type: "string", description: "Its reasoning effort (low, medium, high, …), when one was asked for." },
+        title: { type: "string", description: "A short title for it, as Tether's sidebar shows it." },
+        project: { type: "string", description: "Another project folder to run in, instead of this session's." },
+        worktree: { type: "boolean", description: "true: it works in a new git worktree of the project (its own folder and branch), so it doesn't touch this checkout. Only in a git repo." },
+      },
+      required: ["harness", "prompt"],
     },
   },
   {
