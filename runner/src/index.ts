@@ -14,6 +14,7 @@ import { createRunner } from "./core/runner";
 import { MODULES, startModules } from "./modules";
 import { PhoneLine } from "./modules/phoneLine";
 import { ShortLinks } from "./modules/links/store";
+import { readBuildInfo } from "./build";
 
 // No silent defaults outside dev: a runner that quietly dialled localhost with token "dev" would
 // look healthy while serving nobody.
@@ -30,6 +31,8 @@ registerSecret(token);
 const config = loadConfig();
 const credentials = new CredentialStore();
 CredentialStore.current = credentials;
+const runnerFolder = join(import.meta.dir, "..");
+const build = await readBuildInfo(runnerFolder);
 const runner = createRunner({
   costsFile: join(DATA_DIR, "costs.json"),
   credentials,
@@ -39,6 +42,8 @@ const runner = createRunner({
   name: displayName(config),
   defaultName: displayName({ ...config, name: undefined }),
   version: pkg.version,
+  build,
+  detectBuild: () => readBuildInfo(runnerFolder, undefined, true),
   detectHarnesses: () => detectHarnesses(),
   adapters: [claudeAdapter, codexAdapter, antigravityAdapter],
   noticesFile: join(CONFIG_DIR, "notices.json"),
@@ -67,7 +72,8 @@ const stopModules = await startModules(MODULES, (m) => {
   return { bus: runner.bus, ops: runner.ops, dataDir, log: (line) => console.log(`[${m.name}] ${line}`), runnerId: config.runnerId, appUrl: url, attachmentsDir: join(CONFIG_DIR, "attachments"), phoneLine, links, ...runner.look };
 });
 
-console.log(`Tether runner ${pkg.version}: ${displayName(config)} (${config.runnerId}), config in ${CONFIG_DIR}`);
+const buildStamp = build ? ` (${build.commit}${build.dirty ? ", local changes" : ""})` : "";
+console.log(`Tether runner ${pkg.version}${buildStamp}: ${displayName(config)} (${config.runnerId}), config in ${CONFIG_DIR}`);
 console.log(`harnesses: ${(await runner.harnesses()).map((h) => `${h.id} ${h.version}`).join(", ") || "none found"}`);
 await runner.start();
 

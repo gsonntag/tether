@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { SessionSummary } from "../../shared/transcript";
-import { childrenOf, folderName, groupByProject, mergeRows, recentGroups, pinMenuLabel, recentSessions, splitPinned, waitingOn , inbox } from "./sessionList";
+import { childrenOf, folderName, groupByProject, mergeRows, recentGroups, pinMenuLabel, recentSessions, setHomeFolders, splitPinned, waitingOn , inbox } from "./sessionList";
 
 const s = (id: string, updatedAt: number, extra: Partial<SessionSummary> = {}): SessionSummary => ({ id, harness: "claude", nativeId: id, projectPath: "/p/web", title: `T ${id}`, mode: "stored", status: "idle", updatedAt, ...extra });
 const summaries = {
@@ -126,4 +126,16 @@ test("a session watching background work reads as watching on Home, not finished
   expect(at({ watching, status: "running" })).toBe("working");
   expect(at({ watching, requests: 1 })).toBe("needs");
   expect(at({ watching, archived: true })).toBeUndefined();
+});
+
+test("an older runner's Home agent chats stay out of the lists (RunnerInfo.homeFolder)", () => {
+  const row = (id: string, projectPath: string) => ({ id, harness: "claude", projectPath, title: id, updatedAt: 1, status: "idle" }) as SessionSummary;
+  const summaries = { a: { sessions: { "claude:x": row("claude:x", "/p"), "claude:h": row("claude:h", "/home/agent") } } } as any;
+  setHomeFolders([{ id: "a", homeFolder: "/home/agent" }]);
+  try {
+    expect(recentSessions(summaries).map((r) => r.id)).toEqual(["claude:x"]);
+  } finally {
+    setHomeFolders([]);
+  }
+  expect(recentSessions(summaries).map((r) => r.id).sort()).toEqual(["claude:h", "claude:x"]);
 });

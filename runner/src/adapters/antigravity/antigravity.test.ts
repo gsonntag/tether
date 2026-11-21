@@ -66,6 +66,13 @@ test("live events: text streams as deltas, calls as patches, and each new messag
   expect([last.streaming, last.parts[0].text]).toEqual([false, "Hello"]);
 });
 
+test("a prompt from another session is announced with its origin (peers reads it from the event)", () => {
+  const t = new AcpTranscript("m", hooks());
+  t.prompt([{ type: "text", text: "Fix the bug" }], { kind: "session", name: "Boss", sessionId: "claude:boss" });
+  const first = (t.drain().find((e) => e.type === "msg") as any).msg;
+  expect(first.origin).toEqual({ kind: "session", name: "Boss", sessionId: "claude:boss" });
+});
+
 test("a stopped turn settles its running calls as errors, and a failed one carries its error", () => {
   const t = new AcpTranscript("m", hooks());
   t.prompt([{ type: "text", text: "go" }]);

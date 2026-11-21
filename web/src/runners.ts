@@ -28,10 +28,11 @@ export const canJoinWorktree = (runners: RunnerInfo[], runnerId: string) => !!ru
 /**
  * Whether a session's header offers the "Session can text me" box: its runner takes `setCanText`
  * (RunnerInfo.canText), you own it (only its owners pick what texts their phone, shared/access.ts),
- * and it's a main session: not a subagent (it texts as its main session) nor a side chat.
+ * and it's a main session: not a subagent (it texts as its main session) nor a side chat. On an
+ * older runner, not one of its Home agent's chats either (remove once no runner sends homeFolder).
  */
-export function offersCanText(runner: RunnerInfo | undefined, s: Pick<SessionSummary, "parentSessionId" | "sideOf">): boolean {
-  return !!runner?.canText && accessOf(runner) === "manage" && !s.parentSessionId && !s.sideOf;
+export function offersCanText(runner: RunnerInfo | undefined, s: Pick<SessionSummary, "parentSessionId" | "sideOf" | "projectPath">): boolean {
+  return !!runner?.canText && accessOf(runner) === "manage" && !s.parentSessionId && !s.sideOf && runner.homeFolder !== s.projectPath;
 }
 
 /** Connected first, then by name. */

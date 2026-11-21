@@ -3,7 +3,7 @@
 
 import { create } from "zustand";
 import { checkBuild } from "./build";
-import { PROTOCOL_VERSION, type User } from "../../shared/protocol";
+import { PROTOCOL_VERSION, type RunnerBuild, type User } from "../../shared/protocol";
 import { applySummary, emptySummary, type SummaryState } from "../../shared/summary";
 import type { HarnessId, ModelList, ProjectInfo } from "../../shared/transcript";
 import { connect, on, onAuth, onLinkState, rpc, type AuthState, type LinkState } from "./connection";
@@ -12,6 +12,7 @@ import { startPresence, tellPresence } from "./presence";
 import { openSession, parseRoute, shortenHash, startShortUrls } from "./route";
 import { registerWorker, syncPush } from "./push";
 import { loadKnown, mergeRunners, reconnected, saveKnown, sortRunners, type KnownRunner } from "./runners";
+import { setHomeFolders } from "./sessionList";
 import { SessionModel, type SessionView, type Verdict } from "./sessionModel";
 import { resubscriber, Subscriptions } from "./subscriptions";
 import { pendingSender, reconcile, type PendingSend } from "./pendingSends";
@@ -59,6 +60,8 @@ interface State {
   projectFilter?: string;
   /** the app's VAPID public key (hello); absent: the server has no push keys */
   pushKey?: string;
+  /** the server's git build stamp (hello); absent when outside git or on older servers */
+  serverBuild?: RunnerBuild;
   /** the last archive change made here: the sidebar patches its listSessions copies with it */
   archiveEdit?: { runnerId: string; sessionId: string; archived: boolean };
 }
@@ -111,7 +114,8 @@ export function start() {
     const before = get().user?.email === m.user.email ? get().runners : [];
     const remembered = loadKnown(m.user.email).filter((k) => !before.some((r) => r.id === k.id));
     const runners = sortRunners([...before, ...remembered]);
-    set((s) => ({ user: m.user, runners, stale: s.stale || m.protocol !== PROTOCOL_VERSION, pushKey: m.push?.publicKey }));
+    setHomeFolders(runners);
+    set((s) => ({ user: m.user, runners, stale: s.stale || m.protocol !== PROTOCOL_VERSION, pushKey: m.push?.publicKey, serverBuild: m.build }));
     // The server forgot what this device looked at with its old socket.
     tellPresence(true);
     resub.hello();
@@ -126,6 +130,7 @@ export function start() {
     for (const r of runners) if (r.online && (afterHello || back.includes(r.id))) refreshRunner(r.id);
     afterHello = false;
     saveKnown(runners, get().user?.email);
+    setHomeFolders(runners);
     set({ runners });
     // A runner that came online may give the open session its short link now.
     if (runners.some((r) => r.online && !before.find((b) => b.id === r.id)?.online)) {

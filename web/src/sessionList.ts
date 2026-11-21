@@ -10,9 +10,22 @@ export interface Row extends SessionSummary {
 /** Background subagents still running: the session is working, whatever its main agent does. */
 export const shownStatus = <S extends { status: RunStatus; backgroundSubagents?: number }>(s: S): RunStatus => (s.backgroundSubagents && s.status === "idle" ? "running" : s.status);
 
+/**
+ * An older runner's Home agent folder (RunnerInfo.homeFolder): its live chats stay out of the lists,
+ * as they did. Remove once no runner sends it (the Home agent is gone).
+ */
+const homeFolders = new Map<string, string>();
+export function setHomeFolders(runners: { id: string; homeFolder?: string }[]) {
+  homeFolders.clear();
+  for (const r of runners) if (r.homeFolder) homeFolders.set(r.id, r.homeFolder);
+}
+export const isHomeChat = (runnerId: string, projectPath: string) => homeFolders.get(runnerId) === projectPath;
+
 const rows = (summaries: Record<string, SummaryState>): Row[] =>
   Object.entries(summaries).flatMap(([runnerId, s]) =>
-    Object.values(s.sessions).map((x) => ({ ...x, status: shownStatus(x), runnerId })),
+    Object.values(s.sessions)
+      .filter((x) => !isHomeChat(runnerId, x.projectPath))
+      .map((x) => ({ ...x, status: shownStatus(x), runnerId })),
   );
 
 /** A row the lists show: not a subagent (under its parent) nor a side chat (under its session, SPEC §16a). */

@@ -8,7 +8,7 @@ import { CredentialStore, redact } from "../credentials";
 import { CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { testAzure } from "../adapters/codex/upstream";
-import { PROTOCOL_VERSION, type HarnessInfo, type RunnerInfo } from "../../../shared/protocol";
+import { PROTOCOL_VERSION, type HarnessInfo, type RunnerBuild, type RunnerInfo } from "../../../shared/protocol";
 import { parseSessionId, sessionId } from "../../../shared/ids";
 import type { ForkedFrom } from "../../../shared/fork";
 import type { SessionPrefs } from "../config";
@@ -46,6 +46,12 @@ export interface RunnerOptions {
   /** the name a blank rename goes back to (the hostname, or a friendly one); `name` when absent */
   defaultName?: string;
   version: string;
+  /** git build stamp read at startup; absent outside a git checkout or on fallback */
+  build?: RunnerBuild;
+  /** periodically re-reads the git build stamp (commit, behind, dirty) */
+  detectBuild?: () => Promise<RunnerBuild | undefined>;
+  /** how often to check for git build stamp changes; defaults to 1 hour */
+  buildCheckMs?: number;
   detectHarnesses: () => Promise<HarnessInfo[]>;
   /** how often to look for installed or removed harnesses */
   harnessCheckMs?: number;
@@ -83,11 +89,13 @@ export function createRunner(o: RunnerOptions) {
 
   let harnesses = o.detectHarnesses();
   let name = o.name;
+  let currentBuild: RunnerBuild | undefined = o.build;
   const helloInfo = async (): Promise<Omit<RunnerInfo, "connectedAt">> => ({
     id: o.runnerId,
     name,
     hostname: hostname(),
     version: o.version,
+    ...(currentBuild ? { build: currentBuild } : {}),
     protocol: PROTOCOL_VERSION,
     harnesses: await harnesses,
     git: true,
@@ -214,6 +222,22 @@ export function createRunner(o: RunnerOptions) {
     if (JSON.stringify(await harnesses) !== before) conn.send({ t: "hello", runner: await helloInfo() });
   }, o.harnessCheckMs ?? 60_000);
   timer.unref?.();
+
+  if (o.detectBuild) {
+    // Refresh at startup and hourly; re-send hello when build changes.
+    const refreshBuild = async () => {
+      const before = JSON.stringify(currentBuild);
+      // A failed read (git busy, offline) keeps what was known.
+      const next = await o.detectBuild!().catch(() => undefined);
+      if (next && JSON.stringify(next) !== before) {
+        currentBuild = next;
+        conn.send({ t: "hello", runner: await helloInfo() });
+      }
+    };
+    void refreshBuild();
+    const buildTimer = setInterval(refreshBuild, o.buildCheckMs ?? 3_600_000);
+    buildTimer.unref?.();
+  }
 
   return {
     bus,

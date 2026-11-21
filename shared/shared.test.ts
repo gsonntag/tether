@@ -52,8 +52,9 @@ describe("wire", () => {
     const runner = { id: "u1", name: "box", hostname: "box.local", version: "0.2.0", protocol: 1, harnesses: [{ id: "claude", version: "2.1" }, { id: "pi", version: "1" }, { id: "toString", version: "1" }] };
     expect(parseRunnerMessage(JSON.stringify({ t: "hello", runner }))).toEqual({ t: "hello", runner: { ...runner, harnesses: [{ id: "claude", version: "2.1" }] } });
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, name: undefined } })) as any).runner.name).toBe("box.local");
-    // An older runner's Home agent folder is dropped: there's no Home agent any more.
-    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, homeFolder: "/home/me/.config/tether/home" } })) as any).runner.homeFolder).toBeUndefined();
+    // An older runner's Home agent folder passes when it's an absolute path (browsers hide its chats), and is dropped otherwise.
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, homeFolder: "/home/me/.config/tether/home" } })) as any).runner.homeFolder).toBe("/home/me/.config/tether/home");
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, homeFolder: "rel" } })) as any).runner.homeFolder).toBeUndefined();
     // The git module's flag is kept; anything but true is dropped.
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, git: true } })) as any).runner.git).toBe(true);
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, git: "yes" } })) as any).runner.git).toBeUndefined();
@@ -63,6 +64,11 @@ describe("wire", () => {
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, files: "yes" } })) as any).runner.files).toBeUndefined();
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, pinning: true } })) as any).runner.pinning).toBe(true);
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, pinning: "yes" } })) as any).runner.pinning).toBeUndefined();
+    // The build stamp from git: commit, date, branch and dirty.
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, build: { commit: "abc1234", date: "2026-11-21", branch: "main", dirty: false, behind: 3 } } })) as any).runner.build).toEqual({ commit: "abc1234", date: "2026-11-21", branch: "main", dirty: false, behind: 3 });
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, build: { commit: "abc1234", date: "2026-11-21", dirty: true } } })) as any).runner.build).toEqual({ commit: "abc1234", date: "2026-11-21", dirty: true });
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, build: "bogus" } })) as any).runner.build).toBeUndefined();
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, build: { commit: "" } } })) as any).runner.build).toBeUndefined();
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, existingWorktrees: true } })) as any).runner.existingWorktrees).toBe(true);
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, existingWorktrees: 1 } })) as any).runner.existingWorktrees).toBeUndefined();
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, canText: true } })) as any).runner.canText).toBe(true);

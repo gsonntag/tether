@@ -75,13 +75,15 @@ test("Existing worktree only for a runner that takes listWorktrees, each shown a
 
 test("the \"Session can text me\" box: a runner that takes it, its owner, a main session", () => {
   const r = (extra: object = {}) => ({ id: "a", name: "a", hostname: "h", version: "1", protocol: 2, harnesses: [], canText: true, ...extra });
-  const s: { parentSessionId?: string; sideOf?: string } = {};
+  const s: { parentSessionId?: string; sideOf?: string; projectPath: string } = { projectPath: "/p" };
   expect(offersCanText(r(), s)).toBe(true);
   expect(offersCanText(r({ canText: undefined }), s)).toBe(false);
   expect(offersCanText(undefined, s)).toBe(false);
   expect(offersCanText(r({ access: "drive" }), s)).toBe(false);
   expect(offersCanText(r(), { ...s, parentSessionId: "claude:main" })).toBe(false);
   expect(offersCanText(r(), { ...s, sideOf: "claude:main" })).toBe(false);
+  // An older runner's Home agent chat: no box.
+  expect(offersCanText(r({ homeFolder: "/home/agent" }), { ...s, projectPath: "/home/agent" })).toBe(false);
 });
 
 describe("texting down", () => {

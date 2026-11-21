@@ -7,7 +7,7 @@ import { Cog6ToothIcon, HomeIcon, LinkIcon, PlusIcon, UserCircleIcon } from "@he
 import type { ProjectInfo } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { navigate, useRoute } from "../route";
-import { folderName, listed, recentGroups, mergeRows, recentSessions, splitPinned, waitingOn, type Row } from "../sessionList";
+import { folderName, isHomeChat, listed, recentGroups, mergeRows, recentSessions, splitPinned, waitingOn, type Row } from "../sessionList";
 import { avatarSrc } from "../avatar";
 import { canPin } from "../runners";
 import { useStore } from "../store";
@@ -73,7 +73,7 @@ export function Sidebar() {
   const rows = useMemo(() => {
     let list = recentSessions(summaries, q);
     if (filter) list = list.filter((r) => r.projectPath === filter);
-    if (extra.for === extraKey) list = mergeRows(extra.rows.filter((r) => listed(r) && (!r.archived || !!q)), list);
+    if (extra.for === extraKey) list = mergeRows(extra.rows.filter((r) => listed(r) && (!r.archived || !!q) && !isHomeChat(r.runnerId, r.projectPath)), list);
     return list;
   }, [summaries, q, filter, extra, extraKey]);
   // Pinned sessions sit above Recent; a search or a folder lists everything as one list.
