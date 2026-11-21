@@ -161,6 +161,13 @@ describe("tether_start", () => {
     expect((await u.start({ harness: "claude", prompt: "x", project: "/p/other" })).text).toContain("only start sessions in its own folder");
   });
 
+  test("never in a folder Tether hides (the removed Home agent's old one, TETHER_HIDE_PROJECTS)", async () => {
+    const t = setup();
+    (t.peers as any).ctx.hiddenFolder = (p: string) => p === "/p/other";
+    expect((await t.start({ harness: "claude", prompt: "x", project: "/p/other" })).text).toContain("is a folder Tether hides");
+    expect(t.created).toEqual([]);
+  });
+
   test("bad input starts nothing and gives the rate slot back", async () => {
     const t = setup();
     expect((await t.start({ harness: "gpt", prompt: "x" })).isError).toBe(true);

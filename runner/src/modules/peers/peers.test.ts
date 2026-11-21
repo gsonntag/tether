@@ -238,6 +238,13 @@ describe("tools", () => {
     ({ peers, queued } = setup([row("claude:a", "A"), row("codex:c", "C", { projectPath: "/p/other" })]));
     expect((await peers.broadcastFrom("claude:a", "x", {})).text).toMatch(/No other session in this project/);
   });
+  test("a session in a hidden folder (an old Home agent chat) can't be reached", async () => {
+    const hidden = "/cfg/modules/homeAgent/workspace";
+    const { peers, queued } = setup([row("claude:a", "A"), row("claude:b", "B")], { stored: [row("claude:h", "Home chat", { projectPath: hidden })] });
+    (peers as any).ctx.hiddenFolder = (p: string) => p === hidden;
+    expect(await peers.send("claude:a", "claude:h", "x").catch((e) => e.message)).toMatch(/can't be messaged/);
+    expect(queued.some((q) => q.to === "claude:h")).toBe(false);
+  });
   test("an older session can be reached by its id; an archived one can't", async () => {
     const { peers } = setup([row("claude:a", "A"), row("claude:b", "B")], { stored: [row("claude:old", "Old one"), row("claude:gone", "Archived", { archived: true })] });
     expect((await peers.send("claude:a", "claude:old", "still there?")).text).toMatch(/Sent to "Old one" \(claude:old\)/);

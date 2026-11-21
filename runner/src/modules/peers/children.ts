@@ -56,7 +56,7 @@ export interface StartArgs {
   worktree?: boolean | string;
 }
 
-type Ctx = Pick<ModuleContext, "sessions" | "session" | "log"> & { ops?: Pick<ModuleContext["ops"], "call">; dataDir?: string };
+type Ctx = Pick<ModuleContext, "sessions" | "session" | "log" | "hiddenFolder"> & { ops?: Pick<ModuleContext["ops"], "call">; dataDir?: string };
 
 export class Children {
   private kids: Record<string, Child> = {};
@@ -167,6 +167,8 @@ export class Children {
     const level = this.level(me) ?? LEVELS.readOnly;
     const own = me.summary.projectPath;
     const folder = a.project?.trim() ? s.folder(a.project.trim()) : own;
+    // A hidden folder's sessions are out of the lists (TETHER_HIDE_PROJECTS, the removed Home agent's old one).
+    if (this.ctx.hiddenFolder?.(folder)) throw new Error(`${folder} is a folder Tether hides, not a project.`);
     // Another folder widens where a sandboxed starter could write: only from one nothing confines, and only a known project.
     const elsewhere = async (where: string, known: boolean) => {
       if (resolve(where) === resolve(own)) return;

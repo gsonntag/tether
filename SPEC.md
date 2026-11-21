@@ -1577,13 +1577,22 @@ The flag is saved in the runner's prefs (`setSessionArchived`), so it survives r
 90-day pruning, and shows on every connected device. A failure shows once: in the chat from ⋯, under
 the row from the Sidebar until the next click or key or a few seconds.
 
+**Sending unarchives.** A message you send to an archived session (`send`, not the queue's own
+sends: a scheduled message firing stays as it is) unarchives it first: it's in use again.
+
 **Worktree cleanup.** Archiving a session, any way (`setSessionArchived`), removes the worktree Tether
 made for it (§4, runner.json's `worktree`) and its branch, once that's safe (`modules/worktrees`
-cleanUp, on the `archived` event). Never one made by hand (`handMade`), nor while the session still
-has work going (a turn, queued messages, background work, a terminal), another session that isn't
-archived works there (listed with its folder there, or recorded as using it: Existing worktree; the
-last one archived removes it), or a process outside the runner (a tmux session, a dev server) has its
-folder there. After fetching the base branch (best effort, as New worktree does), its HEAD must be in main (by ancestry or as
+cleanUp, on the `archived` event). Never one made by hand (`handMade`); never while another session
+that isn't archived works there (listed with its folder there, or recorded as using it: Existing
+worktree; the last one archived removes it); never while any session that uses it, archived or not
+(each recorded user, every session in memory whose folder is in it, and each one's side chats), has
+work going (a turn or a request, queued or held messages, a rate-limit retry waiting, a setup
+running, background work or watchers, a terminal) or an open side chat; never while a process
+outside the runner (a tmux session, a dev server) has its folder there, or Tether can't tell (no
+`/proc`, as on macOS, or one of the runner user's processes that started after the worktree was made
+hides its folder; other users' processes aren't seen). The session's own work is checked first, then
+the base branch is fetched (best effort, as New worktree does), and everything is checked again
+under the worktree's lock, right before the removal. Its HEAD must be in main (by ancestry or as
 equal patches: a rebase merge counts, a squash of several commits may not). Ignored files it would
 delete, file by file, must be in regenerable folders (`node_modules`, `dist`, `build`, `target`,
 `.venv`, `venv`, `__pycache__`, `.next`, `.turbo`, `coverage`, `.cache`) or `known` and unchanged (same
@@ -1592,8 +1601,11 @@ than 20,000 to check) keeps it, named in the reason. Then `git worktree remove` 
 clean worktree only), and its branch by `update-ref -d` at the commit checked to be in main, so it
 can't have moved in between; a branch with work not in main stays. A worktree folder already gone
 is said so, and git's record pruned. Sessions of one worktree are judged one at a time (and never
-while one joins it). A notice in the session says it was removed, or why it was kept (none while another session still
-works there: the last one's archive decides); unsure, it stays. Unarchiving doesn't bring it back.
+while one joins it). A notice in the session says it was removed, or why it was kept (none while
+another session still works there: the last one's archive decides); unsure, it stays. A minute
+after the runner starts, and hourly, a sweep tries again for every archived session whose Tether-made
+worktree git still lists on its branch (a restart cut it short, or it was busy when archived): the
+same checks, and only a removal is said in the session. Unarchiving doesn't bring it back.
 
 ### Pinning
 
@@ -1910,7 +1922,8 @@ stay for an older web).
    it's held and the picker asks, so a plain "y" can't approve the wrong one), or gets the numbered
    picker of ticked sessions; with none ticked, "No session can text you".
 There is no Home agent to text: its old chats are ordinary sessions in a hidden folder (§2 Project),
-reached by a text only when their box is ticked.
+reached by a text only when their box is ticked; agents can't message them or start sessions in that
+folder (`tether_send`, `tether_start` refuse any hidden folder's).
 
 *Files and images.* Files the person sends on any connector (iMessage attachments through Photon,
 Discord's from its CDN) go as the *Connectors* paragraph says, stored by the runner as an upload is

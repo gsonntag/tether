@@ -316,6 +316,7 @@ export function createRunner(o: RunnerOptions) {
         fork: (id: string, f: ForkOptions = {}) => (forker ? forker(id, f) : Promise.reject(new Error("This runner can't fork sessions."))),
         forker: (f: (id: string, o: ForkOptions) => Promise<string>) => { forker = f; },
         moveSides: (from: string, to: string) => core.moveSides(from, to),
+        sideChatsOf: (id: string) => core.o.prefs.sideChatsOf(id),
         projects: () => core.listProjects(),
         // Side chats (SPEC §16a) aren't in the lists: they show under their session.
         list: () => core.listed().filter((r) => !r.sideOf),

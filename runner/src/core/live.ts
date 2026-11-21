@@ -274,6 +274,9 @@ export class LiveControl {
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     this.sideCommand(id, text);
     const s = await this.core.open(id);
+    // A message you send to an archived session brings it back into the lists (SPEC §10 Archiving):
+    // it's in use again (and its worktree mustn't go, modules/worktrees cleanUp).
+    if (!o.queued && !o.retryId && !o.continued && this.core.o.prefs.get(id).archived && !s.summary.parentSessionId) await this.core.setArchived(s, false);
     if (o.retryId && (s.retry?.id !== o.retryId || s.retry.phase !== "sending")) throw new SendCancelled();
     if (!o.retryId && (s.retry || this.core.o.prefs.get(id).retry)) {
       if (o.queued) throw new Error("A rate limit retry is waiting.");

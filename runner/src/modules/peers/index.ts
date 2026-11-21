@@ -72,7 +72,7 @@ export class Peers {
   private asks: Ask[] = [];
 
   constructor(
-    private ctx: Pick<ModuleContext, "sessions" | "session" | "log" | "phoneLine"> & { ops?: Pick<ModuleContext["ops"], "call">; dataDir?: string },
+    private ctx: Pick<ModuleContext, "sessions" | "session" | "log" | "phoneLine" | "hiddenFolder"> & { ops?: Pick<ModuleContext["ops"], "call">; dataDir?: string },
     now: () => number = Date.now,
   ) {
     this.caps = new PeerCaps(now);
@@ -191,10 +191,11 @@ export class Peers {
     return `"${markTitle(title)}" (${id})`;
   }
 
-  /** Whether a message can reach `s`: listed, not archived, not a subagent. */
+  /** Whether a message can reach `s`: listed, not archived, not a subagent, not in a hidden folder. */
   private reaches(s: SessionSummary) {
-    // A side chat (SPEC §16a) is reached through its session's panel only.
-    return reachable(s) && !s.sideOf;
+    // A side chat (SPEC §16a) is reached through its session's panel only. A hidden folder's
+    // (TETHER_HIDE_PROJECTS, the removed Home agent's old chats) is out of the lists, so out of reach.
+    return reachable(s) && !s.sideOf && !this.ctx.hiddenFolder?.(s.projectPath);
   }
 
   /** The sessions the lists show (recent ones and every live one) that `from` can message. */
@@ -230,7 +231,7 @@ export class Peers {
     if (/^[a-z]+:[\w.-]+$/.test(t)) {
       const s = (await this.ctx.sessions.open(t).catch(() => undefined))?.summary;
       if (s && this.reaches(s)) return s;
-      if (s) throw new Error(`Session ${t} can't be messaged (archived sessions and subagents can't be).`);
+      if (s) throw new Error(`Session ${t} can't be messaged (archived sessions, subagents and sessions in hidden folders can't be).`);
     }
     const lower = t.toLowerCase();
     for (const pick of [(s: SessionSummary) => s.title.toLowerCase() === lower, (s: SessionSummary) => s.title.toLowerCase().includes(lower)]) {
@@ -238,7 +239,7 @@ export class Peers {
       if (found.length === 1) return found[0]!;
       if (found.length > 1) throw new Error(`${found.length} sessions match "${t}": ${found.slice(0, 8).map((s) => `${s.id} ("${markTitle(s.title)}")`).join(", ")}. Use its id.`);
     }
-    throw new Error(`There's no session "${markTitle(t)}" to message (archived sessions and subagents can't be). tether_sessions lists them.`);
+    throw new Error(`There's no session "${markTitle(t)}" to message (archived sessions, subagents and sessions in hidden folders can't be). tether_sessions lists them.`);
   }
 
   /** Who sends: its title, and its permission level (unknown: the strictest). */

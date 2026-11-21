@@ -421,22 +421,46 @@ export async function removeOwnWorktree(own: WorktreeRecord, others: string[], g
 
 /**
  * How many processes (not this one, nor any it started) have their working folder in `dir`: a tmux
- * session, a dev server or a container's shell left there. Read from /proc; 0 where there's none.
+ * session, a dev server or a container's shell left there. Read from /proc. Undefined: Tether can't
+ * tell (no /proc, as on macOS; or one of this user's processes that started after the worktree was
+ * made hides its folder), so the worktree is kept. Other users' processes are out of sight (their
+ * folders can't be read) and not counted.
  */
-export function outsideUsers(dir: string): number {
+export function outsideUsers(dir: string, proc = "/proc"): number | undefined {
   const root = resolve(dir);
   let pids: string[];
   try {
-    pids = readdirSync("/proc").filter((p) => /^\d+$/.test(p));
+    pids = readdirSync(proc).filter((p) => /^\d+$/.test(p));
   } catch {
-    return 0;
+    return undefined;
   }
+  if (!pids.length) return undefined;
+  const me = process.getuid?.();
+  // When the worktree was made (its .git file): a process older than it that hides its folder (systemd --user, gpg-agent) didn't start there.
+  let made = 0;
+  try {
+    made = statSync(join(root, ".git")).mtimeMs;
+  } catch {}
+  // Boot time (/proc/stat btime), for when a process started: its stat's starttime, in clock ticks (100 a second on Linux).
+  let boot: number | undefined;
+  try {
+    boot = Number(/^btime (\d+)$/m.exec(readFileSync(`${proc}/stat`, "utf8"))?.[1]) * 1000 || undefined;
+  } catch {}
+  const startedAt = (pid: string): number | undefined => {
+    try {
+      const stat = readFileSync(`${proc}/${pid}/stat`, "utf8");
+      const ticks = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]);
+      return boot !== undefined && Number.isFinite(ticks) ? boot + ticks * 10 : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   const parent = new Map<number, number>();
   const ppid = (pid: number) => {
     if (!parent.has(pid)) {
       try {
         // "pid (comm) state ppid …": comm may hold spaces or parentheses, so read after the last ")".
-        const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+        const stat = readFileSync(`${proc}/${pid}/stat`, "utf8");
         parent.set(pid, Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]));
       } catch {
         parent.set(pid, 0);
@@ -452,8 +476,19 @@ export function outsideUsers(dir: string): number {
   for (const pid of pids) {
     let cwd: string;
     try {
-      cwd = readlinkSync(`/proc/${pid}/cwd`);
-    } catch {
+      cwd = readlinkSync(`${proc}/${pid}/cwd`);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EACCES") continue;
+      // Hidden: another user's is out of sight; one of ours that started after the worktree was made may be in it.
+      let uid: number | undefined;
+      try {
+        uid = statSync(`${proc}/${pid}`).uid;
+      } catch {
+        continue;
+      }
+      if (uid !== me) continue;
+      const at = startedAt(pid);
+      if (!made || at === undefined || at >= made) return undefined;
       continue;
     }
     if ((cwd === root || cwd.startsWith(`${root}/`)) && !ours(Number(pid))) n++;
