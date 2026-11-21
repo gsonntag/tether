@@ -38,7 +38,8 @@ import { RetryControl } from "./retryControl";
 export const IDLE_CLOSE_MS = 5 * 60_000;
 
 /** What the quiet wait after a restart shows (SPEC §4). */
-const WAITING_TEXT = "Waiting for Claude Code from before the restart to finish…";
+export const waitingText = (harness: HarnessId): string => `Waiting for ${AGENT_NAMES[harness]} from before the restart to finish…`;
+export const WAITING_TEXT = waitingText;
 const SETUP_TEXT = "The worktree's setup is still running.";
 const SETUP_FAILED_TEXT = "The worktree's setup failed.";
 const notice = (text: string, level: Msg["level"] = "info"): Msg => ({ id: `n-${randomUUID()}`, role: "notice", level, ts: Date.now(), parts: [{ type: "text", text }] });
@@ -305,7 +306,7 @@ export class LiveControl {
     // Claude Code from before the restart may be running: nothing starts beside it. Held, whatever
     // the queue held before; it goes on once the wait ends.
     if (!o.continued && this.restartWaits.has(id)) {
-      if (o.queued) throw new Error(WAITING_TEXT);
+      if (o.queued) throw new Error(waitingText(s.summary.harness));
       return void (await this.queue.add(id, text, attachments));
     }
     // Held by a module (a checkpoint restore changing the files): it waits in the queue till the release.
@@ -919,7 +920,7 @@ export class LiveControl {
       // Still being written: the rest happens in the background once it's quiet (rejoin, and the
       // queues it restores, don't wait for this session). The same notice after another restart.
       if (this.restartWaits.has(id)) {
-        s.apply({ type: "msg", msg: { ...notice(WAITING_TEXT), id: `n-wait-${id}-${this.core.o.prefs.get(id).restartWait}` } });
+        s.apply({ type: "msg", msg: { ...notice(waitingText(s.summary.harness)), id: `n-wait-${id}-${this.core.o.prefs.get(id).restartWait}` } });
         s.setState({ restartWait: true });
         this.queue.hold(s, "restart");
       }
@@ -945,8 +946,8 @@ export class LiveControl {
       // Stopping: `running` stays saved, and the next start waits on.
       if (this.stopping || !on()) return;
       if (!quiet) {
-        this.read.set(id, { failure: "Couldn't tell whether Claude Code from before the restart was still working." });
-        s.apply({ type: "msg", msg: notice("Couldn't tell whether Claude Code from before the restart was still working. Send a message to carry on.", "warning") });
+        this.read.set(id, { failure: `Couldn't tell whether ${AGENT_NAMES[s.summary.harness]} from before the restart was still working.` });
+        s.apply({ type: "msg", msg: notice(`Couldn't tell whether ${AGENT_NAMES[s.summary.harness]} from before the restart was still working. Send a message to carry on.`, "warning") });
         this.queue.hold(s, "restart", { due: "restart" });
         return this.endWait(s);
       }

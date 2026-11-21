@@ -410,7 +410,7 @@ export interface LiveState {
    */
   setup?: "running" | "failed";
   /**
-   * Waiting for Claude Code from before a restart (SPEC §4): messages sent now queue, held, and
+   * Waiting for the agent from before a restart (SPEC §4): messages sent now queue, held, and
    * Resume can't release them until this clears.
    */
   restartWait?: boolean;
