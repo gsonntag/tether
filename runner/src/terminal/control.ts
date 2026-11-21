@@ -27,7 +27,7 @@ import { randomUUID } from "node:crypto";
 import { parseSessionId, sessionId as makeId } from "../../../shared/ids";
 import { decodeChunk } from "../../../shared/wire";
 import { TERMINAL_BUSY, TERMINAL_CLOSED, TERMINAL_TEXT_MAX, type RunnerToServer, type ShellInfo } from "../../../shared/protocol";
-import type { LiveState, Msg } from "../../../shared/transcript";
+import { agentOf, type LiveState, type Msg } from "../../../shared/transcript";
 import type { QuitStep, ScreenRead, TerminalLaunch, TerminalOpts } from "../core/adapter";
 import type { LiveControl } from "../core/live";
 import type { Session } from "../core/session";
@@ -70,6 +70,10 @@ const NEEDS_YOU = new Set(["permission_prompt", "elicitation_dialog"]);
 export const ASKING_THERE = "Claude needs you in the terminal.";
 export const HANDING_OFF = "The session is moving to the terminal.";
 
+export function askingMessage(s: Session): string {
+  return `${agentOf(s.id)} needs you in the terminal.`;
+}
+
 /** What a PermissionRequest (or Elicitation) hook says Claude waits for. */
 function askingFor(r: HookReport): string {
   if (r.event === "Elicitation") return "Claude needs you in the terminal.";
@@ -105,6 +109,8 @@ export class TerminalControl {
   private entering = new Map<string, Promise<void>>();
   /** sessions with Needs you whose TUI shows its prompt (no dialog), since when */
   private promptSince = new Map<string, number>();
+  /** consecutive checks where the TUI's screen showed an asking state */
+  private askingChecks = new Map<string, number>();
   /** sessions whose TUI has shown its permission mode since it started (status line or a hook) */
   private modeShown = new Set<string>();
   /** how each harness reads its TUI's screen */
@@ -469,6 +475,7 @@ export class TerminalControl {
     if (!name) return;
     this.tuis.delete(id);
     this.promptSince.delete(id);
+    this.askingChecks.delete(id);
     this.attaches.endTarget(name, "exited");
     const s = this.o.core.sessions.get(id);
     if (!s) return;
@@ -668,7 +675,18 @@ export class TerminalControl {
     }
   }
 
-  /** Claude waits on the person: Needs you (announced once, however many hooks say so). */
+  /** Whether the harness reports terminal attention via hooks. */
+  private hasAttentionHooks(s: Session): boolean {
+    return s.capabilities.terminalHooks ?? (s.summary.harness === "claude");
+  }
+
+  /** A question on the TUI's screen is Needs you. */
+  private screenAttention(s: Session, push = true) {
+    const term = s.state.terminal;
+    if (term) this.needsYou(s, term, askingMessage(s), push);
+  }
+
+  /** The agent waits on the person: Needs you (announced once, however many hooks say so). */
   private needsYou(s: Session, term: NonNullable<LiveState["terminal"]>, message: string, push = true) {
     const already = !!term.attention;
     this.promptSince.delete(s.id);
@@ -681,6 +699,7 @@ export class TerminalControl {
   private answered(s: Session) {
     const term = s.state.terminal;
     this.promptSince.delete(s.id);
+    this.askingChecks.delete(s.id);
     if (!term?.attention && s.state.status !== "waiting") return;
     s.setState({ status: "idle", terminal: { ...term!, attention: undefined } });
     this.o.core.touch(s);
@@ -723,6 +742,7 @@ export class TerminalControl {
       core.o.prefs.set(n.id, { projectPath: n.summary.projectPath, model, effort, permissionMode });
       this.tuis.delete(old.id);
       this.promptSince.delete(old.id);
+      this.askingChecks.delete(old.id);
       // Its hooks go on naming the session it was launched for: remember where that is now.
       const launch = [...this.moved].find(([, v]) => v === old.id)?.[0] ?? old.id;
       this.moved.set(launch, newId);
@@ -778,8 +798,7 @@ export class TerminalControl {
       this.log(`readopted the terminal of ${s.id}`);
       // No status is inferred; a question on its screen is Needs you (no push: it was announced).
       if (s.capabilities.terminal === "handoff" && (await this.readScreen(s, t.name))?.state === "asking") {
-        const term = s.state.terminal;
-        if (term) this.needsYou(s, term, ASKING_THERE, false);
+        this.screenAttention(s, false);
       }
     }
     for (const [id, tui] of this.o.core.o.prefs.inTerminal()) if (!this.tuis.has(id)) await this.settleMissed(id, tui);
@@ -817,12 +836,25 @@ export class TerminalControl {
    */
   private async checkScreen(id: string, name: string) {
     const s = this.o.core.sessions.get(id);
-    if (!s || s.state.mode !== "terminal" || !s.state.terminal || this.returning.has(id)) return void this.promptSince.delete(id);
+    if (!s || s.state.mode !== "terminal" || !s.state.terminal || this.returning.has(id)) {
+      this.askingChecks.delete(id);
+      return void this.promptSince.delete(id);
+    }
     const seen = await this.readScreen(s, name, 1);
     // Asked or moved on meanwhile: what was read isn't this session's any more.
     if (this.tuis.get(id) !== name || this.returning.has(id) || !s.state.terminal) return;
     if (seen?.mode) this.seenMode(s, seen.mode);
     if (seen && seen.state !== "unknown" && seen.state !== "picker" && seen.state !== "asking" && !!seen.background !== !!s.state.terminal.background) s.setState({ terminal: { ...s.state.terminal, background: seen.background } });
+    if (seen?.state === "asking") {
+      this.promptSince.delete(id);
+      const count = (this.askingChecks.get(id) ?? 0) + 1;
+      this.askingChecks.set(id, count);
+      if (!this.hasAttentionHooks(s) && count >= 2 && !s.state.terminal.attention) {
+        this.screenAttention(s, true);
+      }
+      return;
+    }
+    this.askingChecks.delete(id);
     if (!s.state.terminal.attention) return void this.promptSince.delete(id);
     if (!seen || (seen.state !== "idle" && seen.state !== "busy")) return void this.promptSince.delete(id);
     const since = this.promptSince.get(id) ?? this.o.core.now();
