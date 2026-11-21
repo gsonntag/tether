@@ -94,10 +94,19 @@ test("context, title and settings come through the hooks", () => {
   expect(seen).toEqual({ context: { used: 10497, total: 1048576 }, title: "Edit Notes", mode: "plan" });
 });
 
-test("a call's kind comes from ACP's own, a file made whole is a write", () => {
+test("a call's kind comes from ACP's own, a file made whole is a write, subagents are tasks", () => {
   expect(acpTool({ sessionUpdate: "tool_call", toolCallId: "a", name: "grep_search", kind: "search", rawInput: { Query: "x" } }).kind).toBe("search");
   expect(acpTool({ sessionUpdate: "tool_call", toolCallId: "b", name: "write_file", kind: "edit", rawInput: { Content: "x", Path: "/p/f" } }).kind).toBe("write");
-  expect(acpTool({ sessionUpdate: "tool_call", toolCallId: "c", name: "invoke_subagent", kind: "other" }).kind).toBe("other");
+  const sub = acpTool({ sessionUpdate: "tool_call", toolCallId: "c", name: "invoke_subagent", kind: "other", rawInput: { TypeName: "self", Prompt: "run the shell command 'sleep 40'\nsecond line" } });
+  expect(sub.kind).toBe("task");
+  expect((sub.input as any).description).toBe("self · run the shell command 'sleep 40'");
+  expect((sub.input as any).prompt).toBe("run the shell command 'sleep 40'\nsecond line");
+  expect((sub.input as any).subagent_type).toBe("self");
+
+  const withRole = acpTool({ sessionUpdate: "tool_call", toolCallId: "c2", name: "invoke_subagent", kind: "other", rawInput: { Role: "Codebase Researcher", TypeName: "research", Prompt: "Search files" } });
+  expect(withRole.kind).toBe("task");
+  expect((withRole.input as any).description).toBe("Codebase Researcher · Search files");
+  expect((withRole.input as any).subagent_type).toBe("research");
 });
 
 test("models and thinking levels are separate settings; modes keep Antigravity's ids", () => {

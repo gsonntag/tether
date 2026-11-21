@@ -40,7 +40,8 @@ relay and checks the items marked *(script)*; `--only subagent,plan,fork,side,mo
 The move spends one Claude Haiku turn.
 
 - [ ] *(script)* A subagent the agent starts shows as a child session (in the sidebar and the session
-  header), titled by its role, with its prompt and its own turns; the parent's call links to it. Its
+  header), titled by its role, with its prompt and its own turns; the parent's call links to it (task
+  card with readable summary: role/TypeName and prompt, and Open link with live child status). Its
   report reaches the parent, which goes on by itself (shown as working, then idle).
 - [ ] *(script)* A subagent's approval request asks in its session (and the parent's), marked with its
   name; approving it lets it go on.

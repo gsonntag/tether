@@ -23,7 +23,7 @@ export function shortPath(path: string, root?: string): string {
   return path;
 }
 
-function summary(p: ToolPart, root?: string): string {
+export function summary(p: ToolPart, root?: string): string {
   const i = (p.input ?? {}) as Record<string, any>;
   switch (p.kind) {
     case "shell":
@@ -40,8 +40,16 @@ function summary(p: ToolPart, root?: string): string {
       const todos: any[] = Array.isArray(i.todos) ? i.todos : [];
       return `${todos.length} tasks · ${todos.filter((t) => t?.status === "completed").length} done`;
     }
-    case "task":
-      return str(i.description) ?? "";
+    case "task": {
+      if (str(i.description)) return i.description;
+      const raw = (i.raw ?? {}) as Record<string, any>;
+      const role = str(raw.Role) ?? str(raw.role);
+      const type = str(i.subagent_type) ?? str(raw.TypeName) ?? str(raw.typeName) ?? str(raw.type);
+      const who = role ?? type;
+      const prompt = str(i.prompt) ?? str(raw.Prompt) ?? str(raw.prompt);
+      const head = prompt ? firstLine(prompt).trim() : undefined;
+      return [who, head].filter(Boolean).join(" · ");
+    }
     default: {
       // A question or a plan reads better as itself than as JSON.
       if (Array.isArray(i.questions) && typeof i.questions[0]?.question === "string") return i.questions[0].question;
@@ -137,24 +145,27 @@ export function ToolDetails({ p, root }: { p: ToolPart; root?: string }) {
         </ul>
       );
     }
-    case "task":
+    case "task": {
+      const prompt = str(i.prompt) ?? str(i.raw?.Prompt) ?? str(i.raw?.prompt);
+      const subagentType = str(i.subagent_type) ?? str(i.raw?.TypeName) ?? str(i.raw?.typeName) ?? str(i.raw?.Role) ?? str(i.raw?.role);
       return (
         <>
-          {str(i.subagent_type) && <span className="t-label">{i.subagent_type}</span>}
+          {subagentType && <span className="t-label">{subagentType}</span>}
           {p.childSessionId && (
             <button type="button" className="t-link" onClick={() => openSession(runnerId, p.childSessionId!)}>
               Open the subagent's transcript →
             </button>
           )}
-          {str(i.prompt) && (
+          {prompt && (
             <>
               <span className="t-label">Prompt</span>
-              <pre className="t-pre wrap">{i.prompt}</pre>
+              <pre className="t-pre wrap">{prompt}</pre>
             </>
           )}
           <Output text={p.output} label="Report" />
         </>
       );
+    }
     case "read":
     case "search":
     case "fetch":
