@@ -11,7 +11,7 @@ import { saveConfig } from "../../config";
 import { FakeAdapter, idle, say } from "../../core/fakeAdapter";
 import { createRunner } from "../../core/runner";
 import { busyWhy, Worktrees } from ".";
-import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredFiles, lockWorktree, outsideUsers, precious, IGNORED_MAX, removeOwnWorktree, removeWorktree, repoOf, runGit, setupAt, taken, undoAdd, worktreesDir, type Git } from "./git";
+import { addWorktree, branchNameOk, defaultBase, fetchBase, findSetup, freeBranch, ignoredFiles, lockWorktree, outsideUsers, precious, IGNORED_MAX, removeOwnWorktree, removeWorktree, repoOf, worktreeKeeps, runGit, setupAt, taken, undoAdd, worktreesDir, type Git } from "./git";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((f) => f()));
@@ -927,6 +927,39 @@ describe("Cleanup on archive", () => {
     await archive(t, dirty.sessionId);
     expect((await t.w.cleanUp(dirty.sessionId))?.removed).toBe(false);
     expect(existsSync(join(dirty.path, "README.md"))).toBe(true);
+  });
+
+  test("worktreeKeeps: what archiving would leave behind, without removing anything", async () => {
+    const r = repo();
+    const path = await addWorktree(r.dir, "tether/keeps", "main");
+    const own = { path, branch: "tether/keeps", repo: r.dir };
+    expect(await worktreeKeeps(own)).toBeUndefined();
+    writeFileSync(join(path, "new.txt"), "x");
+    expect(await worktreeKeeps(own)).toContain("uncommitted changes");
+    sh(path, "add", ".");
+    sh(path, "commit", "-qm", "wip");
+    expect(await worktreeKeeps(own)).toContain("commits that aren't in main");
+    sh(r.dir, "merge", "-q", "--ff-only", "tether/keeps");
+    expect(await worktreeKeeps(own)).toBeUndefined();
+    expect(existsSync(path)).toBe(true);
+    expect(await worktreeKeeps({ ...own, path: join(r.root, "gone") })).toBeUndefined();
+  });
+
+  test("the module says what cleanup decided on the bus (worktreeCleaned)", async () => {
+    const t = runnerFor();
+    const { worktreesModule } = await import(".");
+    await worktreesModule.start({ ...t.runner.look, bus: t.runner.bus, ops: t.runner.ops, dataDir: scratch(), log: () => {}, runnerId: "t", appUrl: "http://x" } as never);
+    const said: unknown[] = [];
+    t.runner.bus.on("worktreeCleaned", (e) => void said.push(e));
+    const r = repo();
+    const open = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/said" });
+    writeFileSync(join(open.path, "g.txt"), "x");
+    sh(open.path, "add", ".");
+    sh(open.path, "commit", "-qm", "wip");
+    await archive(t, open.sessionId);
+    await until(() => said.length > 0);
+    expect(said[0]).toMatchObject({ sessionId: open.sessionId, removed: false });
+    expect((said[0] as { why: string }).why).toContain("aren't in main");
   });
 
   test("a worktree several sessions share goes only with the last of them; one made by hand never does", async () => {

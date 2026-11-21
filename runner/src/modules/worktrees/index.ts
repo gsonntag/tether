@@ -447,7 +447,15 @@ export const worktreesModule: Module = {
     ctx.ops.register("existingWorktreeSession", (a) => w.join(a));
     ctx.ops.register("rerunSetup", async (a) => (await w.rerun(String(a?.sessionId ?? "")), null));
     const off = ctx.bus.on("archived", ({ sessionId, archived }) => {
-      if (archived) void w.cleanUp(sessionId).catch((e) => ctx.log(`${sessionId}: worktree cleanup failed: ${(e as Error).message}`));
+      // What it decided goes on the bus too: tether_archive tells the starter (peers, SPEC §9a).
+      if (archived)
+        void w.cleanUp(sessionId).then(
+          (r) => ctx.bus.emit("worktreeCleaned", { sessionId, ...(r ? { removed: r.removed, ...(r.why ? { why: r.why } : {}) } : {}) }),
+          (e) => {
+            ctx.log(`${sessionId}: worktree cleanup failed: ${(e as Error).message}`);
+            ctx.bus.emit("worktreeCleaned", { sessionId, removed: false, why: `its cleanup failed: ${(e as Error).message}` });
+          },
+        );
     });
     // What a restart cut short, or a session busy when it was archived: looked at again, soon after start and hourly.
     const sweep = () => void w.sweep().catch((e) => ctx.log(`worktree sweep failed: ${(e as Error).message}`));

@@ -368,6 +368,27 @@ async function inMain(git: Git, cwd: string, ref: string, mains: string[]): Prom
 }
 
 /**
+ * Why the worktree Tether made for a session holds work archiving it would leave behind, without
+ * removing anything: uncommitted changes, commits not in main, or ignored files removal would delete
+ * (removeOwnWorktree's checks, and a clean `git status`). Undefined: merged and clean, or already gone.
+ * Peers checks it before archiving a started session on its own (SPEC §9a): unsure, it stays.
+ */
+export async function worktreeKeeps(own: WorktreeRecord, git: Git = runGit): Promise<string | undefined> {
+  const path = resolve(own.path);
+  if (!existsSync(path)) return undefined;
+  const st = await git(path, ["status", "--porcelain"]);
+  if (!st.ok) return `Tether couldn't read git status in its worktree ${path}`;
+  if (st.out.trim()) return `its worktree ${path} has uncommitted changes`;
+  const mains = await mainRefs(git, own.repo);
+  if (!mains.length || !(await inMain(git, path, "HEAD", mains))) return `its worktree ${path} has commits that aren't in main`;
+  const ignored = await ignoredFiles(path, git);
+  if (!ignored) return `Tether couldn't list the ignored files in its worktree ${path}`;
+  const lost = precious(ignored, own.known && !Array.isArray(own.known) ? own.known : {});
+  if (lost.length) return `its worktree ${path} has ignored files that aren't regenerable: ${lost.slice(0, 5).join(", ")}${lost.length > 5 ? ` and ${lost.length - 5} more` : ""}`;
+  return undefined;
+}
+
+/**
  * Removes the worktree Tether made for a session (cleanup on archive), with its branch: never while
  * another session's folder is in it (`others`: their folders, and the worktree itself for each other
  * session recorded as using it), and only as git allows (a clean worktree: `git worktree remove`

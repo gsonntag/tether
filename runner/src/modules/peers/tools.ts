@@ -63,7 +63,7 @@ export const TOOL_DEFS = [
   {
     name: PEER_TOOLS.archive,
     description:
-      "Archives a session you started with tether_start, once you're done with it, so it leaves the person's sidebar (only sessions they started stay there). It also archives the idle sessions that one started. Only your own started sessions, and not while it's still working (wait for its report, or tether_send it to stop), nor one the person took over. It stops reporting to you. The person can still find it in Tether's archive.",
+      "Archives a session you started with tether_start, once you're done with it, so it leaves the person's sidebar (only sessions they started stay there). It also archives the idle sessions that one started. Only your own started sessions, and not while it's still working (wait for its report, or tether_send it to stop), nor one the person took over or pinned. It stops reporting to you, and the answer says whether its worktree was removed or kept (and why). The person can still find it in Tether's archive.",
     inputSchema: { type: "object", properties: { to: { type: "string", description: "The session you started: its id (from tether_start's answer or its reports) or its title." } }, required: ["to"] },
   },
   {

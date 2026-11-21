@@ -1063,17 +1063,27 @@ event (with the message's text) and the queued message's id from `SessionActions
   The tool's description, its answer, each report's footer and Tether's instructions tell the
   starter to archive a child once done with it.
 - **Archiving children.** The person's sidebar keeps the sessions they started, and agent-started
-  ones while those work. `tether_archive {to}` (id, followed to its successor if it moved, or a
-  title only one of the caller's children has) archives a child of the caller's (a side chat's:
-  its session's) through the core's archive (so archive-time worktree cleanup applies), marks it
-  released (`done`: no more reports), and archives its idle children the same way, theirs too.
-  Refused for anything the caller didn't start, while the child works (a turn, background work, an
-  open request, a queued message: "wait for its report, or tether_send it to stop"), and once the
-  person took it over. Safety nets: when a starter is archived (the core's `archived` event, by the
-  person or anyone but this), its idle children not taken over are archived, and theirs; a working
-  one is archived when its next report finds its starter archived (released `gone`). A child
-  unarchived (the person's Unarchive, or a message they send it) is the person's from then on
-  (released `person`): no reports, not archived by its starter.
+  ones while those work. When unsure, a child isn't archived. `tether_archive {to}` (its id,
+  followed to its successor if it moved, or the exact title, any case, of only one of the caller's
+  children) archives a child of the caller's (a side chat's: its session's) through the core's
+  archive, marks it released (`done`: no more reports), archives its children that may go as a
+  cascade (below), and answers with what the worktree cleanup decided (the worktrees module's
+  `worktreeCleaned` event: removed, or kept and why; waited for 30 s at most). Refused for anything
+  the caller didn't start, while the child has work going (the worktree cleanup's busy checks: a
+  turn or request, a rate-limit retry, its setup, any queued message, scheduled or held, background
+  work: "wait for its report, or tether_send it to stop"), once the person took it over, and when
+  it's pinned. The person takes a child over (released `person`, for good) when they type into it,
+  run a `!` command, text it, press Stop, take it to its terminal, or unarchive it (Unarchive, or a
+  message they send it); whatever it was released for before.
+  **Cascade:** a child whose starter is archived (by the person: the core's `archived` event; done
+  with it: `tether_archive`; at its next report, for one that worked then; and the peers sweep,
+  a minute after start and hourly, for what a restart missed) is archived and marked `cascade`
+  only if it may go: not the person's, not pinned, not in its terminal, no work going, and its own
+  worktree Tether made holds nothing archiving would leave behind (uncommitted changes, commits not
+  in main, ignored files that aren't regenerable: `worktreeKeeps`; a failed check keeps it). One
+  that may not go stays, released `gone`. When the person unarchives a starter, the children its
+  archive took along come back (and theirs), released as they were before. A report rechecks the
+  child after its waits, so one taken over meanwhile isn't reported.
 - Tool cards read "Asked “<title>”" ("Ask failed" once asked, "Not asked" when it never went),
   "Sent to “<title>”", "Sent to all", "Started “<title>”", "Archived “<title>”" ("Didn't archive"), with the message, an Open link and the answer. The link goes
   to the session the runner reached: its answer names it as `"<title>" (<id>)` on its first line. Terminal mode: a TUI-driven session can receive (it queues until Back
