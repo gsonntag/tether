@@ -7,7 +7,6 @@
 // Bring back is a turn of the side chat's own (Tether asks it for a short summary); the summary
 // comes back as text for the session's box, to edit and send. Nothing goes into the session itself.
 
-import { resolve } from "node:path";
 import { BRING_BACK_PROMPT, bringBackDraft, sideChatTitle } from "../../../../shared/sideChat";
 import { FROM_TETHER } from "../../../../shared/fromTether";
 import { HARNESS_LABELS, type Msg } from "../../../../shared/transcript";
@@ -33,7 +32,7 @@ export class SideChats {
   private bringing = new Set<string>();
 
   constructor(
-    private ctx: Pick<ModuleContext, "sessions" | "bus" | "log" | "homeFolder">,
+    private ctx: Pick<ModuleContext, "sessions" | "bus" | "log">,
     private bringBackMs = BRING_BACK_MS,
   ) {}
 
@@ -42,7 +41,6 @@ export class SideChats {
     const look = await this.ctx.sessions.open(parentId);
     if (look.summary.sideOf) throw new Error("A side chat can't have side chats. Ask it here.");
     if (look.summary.parentSessionId) throw new Error("A subagent can't have side chats. Open one on its main session.");
-    if (this.ctx.homeFolder && resolve(look.summary.projectPath) === resolve(this.ctx.homeFolder)) throw new Error("The Home agent's chats can't have side chats.");
     const mode = this.ctx.sessions.adapters().find((a) => a.id === look.summary.harness)?.capabilities.readOnlyMode;
     if (!mode) throw new Error(`${HARNESS_LABELS[look.summary.harness] ?? look.summary.harness} sessions can't have side chats yet.`);
     const q = question.trim();

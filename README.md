@@ -2,8 +2,7 @@
 
 Run coding agents (Claude Code, Codex and Google's Antigravity) on your own machines and drive them from any browser,
 desktop or phone. Close the tab and the agent keeps working. Open the same session on several
-devices and they stay in sync. A Home agent can start work across your projects and see it through,
-and Tether can text you when a session needs you. The design is in [SPEC.md](SPEC.md).
+devices and they stay in sync. Tether can text you when a session needs you. The design is in [SPEC.md](SPEC.md).
 
 ```
 browser ──wss──► server (Foliation app: UI + relay) ◄──wss── runner (your machine) ──► claude / codex / agy
@@ -60,8 +59,9 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
   it (`<repo>-worktrees/<slug>`, on a new branch `tether/<slug>` from the default branch) and run
   the session there. The repo's `.tether/setup` (an executable) or `.tether/config.json`
   `"setup"` command runs in it first, as a card in the session; your first message waits until it
-  succeeds, and if it fails you can re-run it or send anyway. Archive done removes the worktree and its branch once
-  the work is merged. The Home agent can start sessions in a worktree too.
+  succeeds, and if it fails you can re-run it or send anyway. Archiving the session removes the
+  worktree and its branch once the work is merged, the tree is clean and nothing else uses it; a
+  notice in the session says it was removed, or why it was kept.
 - **Change session harness** (SPEC §15): continues a session on the other harness, or on the same
   harness with another billing source. The old session stays as it was.
 - **Fork** (SPEC §16): the session menu's Fork makes a new session with the same conversation, folder,
@@ -74,25 +74,8 @@ stored after 5 idle minutes. Subagents appear as child sessions. See SPEC §4–
   Claude Code they have no shell, MCP tools or subagents, on Codex a read-only sandbox with MCP off,
   and on Antigravity every approval is refused and no MCP server is given.
 
-**Home.** Home has an inbox of sessions that need you, failed, finished or are working. It also has
-the runners and the **Home agent**, a chat that starts sessions in your projects and sees them
-through (SPEC §10):
-
-- **Tabs.** Several chats can be open and running at once, and each one is its own session. You can
-  rename a tab by double-clicking it. Closing a tab, or typing `/new` or `/clear` in it, archives that
-  chat. **Expand** puts the chat over the whole window, and Esc brings it back.
-- **Pickers:** the agent's harness, source, model and permission mode. The mode is **Auto** by
-  default. These settings are shared by all chats and remembered for new ones.
-- **Reports.** When a session the agent started or messaged ends a turn, its reply comes back to the
-  chat as a `[From Tether]` message. It's shown folded to one line, and you can open it to read the
-  rest. While those sessions are still working, a "Waiting for N sessions to finish…" row shows.
-  The agent can message any session, and following up in a session yourself makes it yours again.
-- **Watch all sessions** (on by default): the agent also hears when any other session finishes a
-  turn, fails or starts waiting for you.
-- **Archive done sessions** (also something you can ask the agent for): the agent asks each idle
-  session whether its work is done and merged, and tells finished sessions to remove the worktrees
-  they made (a worktree Tether made for a session, Tether removes itself). It checks each answer against git, then archives the finished sessions and reports on
-  the rest. Busy sessions are skipped, never interrupted.
+**Home.** Home has an inbox of sessions that need you, failed, finished or are working, and the
+runners (SPEC §10).
 
 **Sessions talking to each other** (SPEC §9a): every live session gets a `tether` MCP server with
 four tools: `tether_sessions`, `tether_send`, `tether_ask` (waits for the answer) and
@@ -126,6 +109,9 @@ that has messaging set up: it texts for all of them with one set of numbers, and
 photos and files reach the session on whichever computer it runs. The others need no messaging set
 up. While that computer is offline no texts go out, and the app shows a yellow banner. See SPEC §11.
 
+- **Which sessions:** only those whose **Session can text me** box is ticked (the phone chip in the
+  session's header) text you or get your texts. With none ticked, a plain text gets "No session can
+  text you".
 - **Answering a request:** reply `y` or `n` to a command, edit or plan, or an option's letter to a
   question. Anything else goes to the agent as your words. A reply answers only the request its
   text was about. If that request has already been answered, Tether says so instead of passing the
@@ -135,8 +121,7 @@ up. While that computer is offline no texts go out, and the app shows a yellow b
   A session takes replies for 30 minutes after its last text.
 - **Confirmation:** a reply that was passed on to its session gets a ✅ reaction, not another text.
   The session's answer comes back by text.
-- **Agents texting you:** sessions and the Home agent text you with Tether's `text_person` tool;
-  sessions the Home agent drives report to it instead, and it sends you one condensed text.
+- **Agents texting you:** sessions text you with Tether's `text_person` tool.
 - **Secrets:** your known keys are removed from texts, but anything else the agent writes can appear
   in one.
 - **Setup:** add a Photon project's id and secret and your verified phone number under
@@ -176,7 +161,7 @@ dial out, so your machines need no inbound port. SPEC §3 has the details.
 |---|---|
 | `shared/` | The wire protocol (`protocol.ts`), transcript model (`transcript.ts`), and helpers used by all three: credentials, costs, move, fork, side chats, commands, plan, sync |
 | `server/` | Bun relay on Foliation: identity, RPC forwarding, session subscriptions, summary broadcast, terminal routing (`relay.ts`), Web Push keys (`push.ts`) |
-| `runner/` | Bun runner. `src/core/`: connection, event bus, ops and the session core (`sessions.ts`, `live.ts`, `queue.ts`, `requests.ts`, `transcript.ts`). `src/adapters/claude/` (Agent SDK), `src/adapters/codex/` (app-server daemon, private hosts for API sources), `src/adapters/antigravity/` (`agy acp`) and `src/adapters/acp/` (a generic Agent Client Protocol client). `src/terminal/`: PTY and tmux. `src/modules/`: `homeAgent`, `peers`, `texting` (its connectors: `imessage.ts`, `discord.ts`), `push`, `move`, `fork`, `sideChats` |
+| `runner/` | Bun runner. `src/core/`: connection, event bus, ops and the session core (`sessions.ts`, `live.ts`, `queue.ts`, `requests.ts`, `transcript.ts`). `src/adapters/claude/` (Agent SDK), `src/adapters/codex/` (app-server daemon, private hosts for API sources), `src/adapters/antigravity/` (`agy acp`) and `src/adapters/acp/` (a generic Agent Client Protocol client). `src/terminal/`: PTY and tmux. `src/modules/`: `peers`, `texting` (its connectors: `imessage.ts`, `discord.ts`), `push`, `move`, `fork`, `sideChats` |
 | `web/` | React + Vite + Astryx UI |
 | `scripts/` | End-to-end checks, a fake runner, probes |
 | `docs/` | `acceptance/` manual checks per phase and feature, `notes/`, [`ISSUES.md`](docs/ISSUES.md) backlog |
@@ -206,7 +191,7 @@ Runner (`runner.env` in production, or the shell in dev):
 | `TETHER_TMUX_SOCKET` | `tether` | the tmux socket terminals use (`tmux -L <socket>`). Give a dev runner its own |
 | `TETHER_HIDE_PROJECTS` | | folders to leave out of the session lists |
 | `TETHER_PEERS` | | `0` turns off session-to-session messaging |
-| `TETHER_MAX_LIVE_SESSIONS` | no limit | the most sessions kept live at once; one more is refused with a clear error. Home chats, subagents and restart rejoins don't count. For shared hosts |
+| `TETHER_MAX_LIVE_SESSIONS` | no limit | the most sessions kept live at once; one more is refused with a clear error. Subagents and restart rejoins don't count. For shared hosts |
 | `TETHER_PHOTON_PROJECT_ID`, `TETHER_PHOTON_PROJECT_SECRET`, `TETHER_TEXT_PHONE` | | texting, instead of Settings → Messaging (these take precedence) |
 | `TETHER_DISCORD_TOKEN`, `TETHER_DISCORD_OWNER_IDS`, `TETHER_DISCORD_CHANNEL_ID` | | the Discord connector, instead of Settings → Messaging (these take precedence; owner ids comma-separated) |
 

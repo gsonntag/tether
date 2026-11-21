@@ -6,14 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ATTACH_CHUNK } from "../../../shared/limits";
 import type { RunnerToServer } from "../../../shared/protocol";
-import type { ToolPart } from "../../../shared/transcript";
+import type { HarnessId, ToolPart } from "../../../shared/transcript";
 import { saveConfig } from "../config";
 import { AttachmentStore } from "./attachments";
 import { RequestBroker } from "./broker";
 import { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
 import { FakeAdapter, FakeDriver, say, subagent, toolCall } from "./fakeAdapter";
-import { AUTO_CONTINUE_MAX, AUTO_CONTINUE_TEXT, LiveControl } from "./live";
+import { AUTO_CONTINUE_MAX, AUTO_CONTINUE_TEXT, LiveControl, waitingText } from "./live";
 import { Prefs } from "./prefs";
 import { SessionCore } from "./sessions";
 
@@ -27,8 +27,8 @@ const until = async (f: () => boolean, ms = 2000) => {
   }
 };
 
-function setup(o: { prefsFile?: string; dir?: string } = {}) {
-  const adapter = new FakeAdapter();
+function setup(o: { prefsFile?: string; dir?: string; harness?: HarnessId } = {}) {
+  const adapter = new FakeAdapter(o.harness ?? "claude");
   // Turns run until the test ends them.
   adapter.script = (text) => [say(`a-${text}`, `echo ${text}`)];
   const bus = new EventBus<CoreEvents>();
@@ -806,15 +806,16 @@ describe("read state", () => {
   });
 
   /** A runner stopped mid-turn (prefs say running), and a new one on the same runner.json. */
-  async function cutOff(o: { stored?: any[]; queue?: string } = {}) {
+  async function cutOff(o: { stored?: any[]; queue?: string; harness?: HarnessId } = {}) {
+    const harness = o.harness ?? "claude";
     const dir = mkdtempSync(join(tmpdir(), "tether-p5-"));
-    const a = setup({ dir });
+    const a = setup({ dir, harness });
     a.adapter.addStored("s1", []);
-    await a.live.send("claude:s1", "one");
-    if (o.queue) await a.live.queue.add("claude:s1", o.queue, []);
+    await a.live.send(`${harness}:s1`, "one");
+    if (o.queue) await a.live.queue.add(`${harness}:s1`, o.queue, []);
     a.prefs.flush();
     a.core.stop();
-    const b = setup({ dir, prefsFile: a.prefsFile });
+    const b = setup({ dir, prefsFile: a.prefsFile, harness });
     b.adapter.addStored("s1", o.stored ?? []);
     b.live.quiet = { quietMs: 200, pollMs: 50, maxMs: 2000 };
     return { a, b };
@@ -830,13 +831,37 @@ describe("read state", () => {
     const s = await b.core.open("claude:s1");
     expect(b.adapter.drivers).toHaveLength(0);
     expect(s.state.queueHeldBy).toBe("restart");
-    expect(s.transcript!.messages.some((m) => /Waiting for Claude Code from before the restart/.test(JSON.stringify(m.parts)))).toBe(true);
+    expect(s.transcript!.messages.some((m) => /Waiting for Claude from before the restart/.test(JSON.stringify(m.parts)))).toBe(true);
     await Bun.sleep(300);
     expect(b.adapter.drivers).toHaveLength(0);
     clearInterval(tick);
     await until(() => b.adapter.drivers.length === 1 && b.driver().sent.length === 1, 3000);
     expect(b.driver().sent[0]).toBe(AUTO_CONTINUE_TEXT);
     expect(s.state.queueHeld).toBeUndefined();
+  });
+
+  test("restart-wait notice and queued send error name the session's harness (Claude, Codex, Antigravity)", async () => {
+    expect(waitingText("claude")).toBe("Waiting for Claude from before the restart to finish…");
+    expect(waitingText("codex")).toBe("Waiting for Codex from before the restart to finish…");
+    expect(waitingText("antigravity")).toBe("Waiting for Antigravity from before the restart to finish…");
+
+    for (const harness of ["claude", "codex", "antigravity"] as const) {
+      const { b } = await cutOff({ queue: "two", harness });
+      let changed = Date.now();
+      (b.adapter as any).storeChangedAt = () => changed;
+      const tick = setInterval(() => (changed = Date.now()), 30);
+      cleanups.push(() => clearInterval(tick));
+      await b.live.rejoin();
+      await b.live.queue.restore();
+      const s = await b.core.open(`${harness}:s1`);
+      expect(s.state.restartWait).toBe(true);
+      const expectedText = waitingText(harness);
+      expect(s.transcript!.messages.some((m) => JSON.stringify(m.parts).includes(expectedText))).toBe(true);
+      await expect(b.live.send(`${harness}:s1`, "next", [], { queued: true })).rejects.toThrow(expectedText);
+      clearInterval(tick);
+      await until(() => b.adapter.drivers.length === 1 && b.driver().sent.length === 1, 3000);
+      expect(s.state.restartWait).toBeUndefined();
+    }
   });
 
   /** In the quiet wait: the store still changing until the test says stop. */

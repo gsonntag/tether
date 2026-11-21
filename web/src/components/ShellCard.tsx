@@ -35,7 +35,7 @@ export function ShellCard({ msg }: { msg: Msg }) {
   const held = useStore((s) => {
     const st = s.views[viewKey(runnerId, sessionId)]?.state;
     if (run.state !== "queued" || !st?.queueHeld) return undefined;
-    if (st.restartWait) return "until Claude Code from before the restart finishes";
+    if (st.restartWait) return `until ${agent} from before the restart finishes`;
     return st.queueHeldBy ? HELD[st.queueHeldBy] : "paused";
   });
   const busy = useStore((s) => run.state === "queued" && (s.views[viewKey(runnerId, sessionId)]?.state?.status ?? "idle") !== "idle");

@@ -33,12 +33,16 @@ import { Session } from "./session";
 import { chosenOf, type SessionCore } from "./sessions";
 import { Transcript } from "./transcript";
 import { RetryControl } from "./retryControl";
+import { lockWorktree } from "./worktreeLock";
+
+/** How a message is sent (LiveControl.send). */
+type SendOpts = { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string; clientId?: string };
 
 /** Idle this long, a live session's process closes. */
 export const IDLE_CLOSE_MS = 5 * 60_000;
 
 /** What the quiet wait after a restart shows (SPEC §4). */
-const WAITING_TEXT = "Waiting for Claude Code from before the restart to finish…";
+export const waitingText = (harness: HarnessId): string => `Waiting for ${AGENT_NAMES[harness]} from before the restart to finish…`;
 const SETUP_TEXT = "The worktree's setup is still running.";
 const SETUP_FAILED_TEXT = "The worktree's setup failed.";
 const notice = (text: string, level: Msg["level"] = "info"): Msg => ({ id: `n-${randomUUID()}`, role: "notice", level, ts: Date.now(), parts: [{ type: "text", text }] });
@@ -123,8 +127,6 @@ export class LiveControl {
       idleMs?: number;
       /** the most sessions live at once (TETHER_MAX_LIVE_SESSIONS); absent or 0: no limit */
       maxLive?: number;
-      /** the Home agent's folder: its chats are never refused by maxLive, so Home always answers */
-      homeFolder?: string;
       attachmentsDir?: string; credentials?: CredentialStore; costs?: CostLedger } = {},
   ) {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
@@ -178,7 +180,7 @@ export class LiveControl {
 
   /**
    * Ends a retry chain before it recovers. A waiting chain's turn already ended as "recovering",
-   * which listeners (peers, Home agent, texting) skipped: its real end is now, as a stop. A Tether
+   * which listeners (peers, texting) skipped: its real end is now, as a stop. A Tether
    * send that replaces the chain neither holds the queue nor ends the turn: its own turn's end does.
    */
   private cancelRetrySession(s: Session, o: { tether?: boolean; due?: "stopped" } = {}) {
@@ -271,7 +273,24 @@ export class LiveControl {
    * `tether`: sent on your behalf, which releases nothing; `continued`: the continue after a restart,
    * the one send that ends the quiet wait). During the wait everything else queues.
    */
-  async send(id: string, text: string, attachments: Attachment[] = [], o: { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string; clientId?: string } = {}) {
+  async send(id: string, text: string, attachments: Attachment[] = [], o: SendOpts = {}) {
+    const prefs = this.core.o.prefs.get(id);
+    // A message you send to an archived session brings it back into the lists once it's taken (SPEC
+    // §10 Archiving): it's in use again. Not a closed side chat (it stays closed), nor the queue's own
+    // sends. Under its worktree's lock (core/worktreeLock.ts): never while cleanup on archive removes
+    // that worktree, and cleanup sees it unarchived after. A session that went on under another id
+    // sends to that one, whose own send does this.
+    if (o.queued || o.retryId || o.continued || !prefs.archived || prefs.sideOf) return this.sendNow(id, text, attachments, o);
+    const s = await this.core.open(id);
+    if (s.summary.parentSessionId || s.rebuilt || s.movedTo) return this.sendNow(id, text, attachments, o);
+    const go = async () => {
+      await this.sendNow(id, text, attachments, o);
+      if (this.core.o.prefs.get(id).archived) await this.core.setArchived(s, false);
+    };
+    return prefs.worktree?.path ? lockWorktree(prefs.worktree.path, go) : go();
+  }
+
+  private async sendNow(id: string, text: string, attachments: Attachment[] = [], o: SendOpts = {}) {
     if (!text?.trim() && !attachments.length) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     this.sideCommand(id, text);
@@ -305,7 +324,7 @@ export class LiveControl {
     // Claude Code from before the restart may be running: nothing starts beside it. Held, whatever
     // the queue held before; it goes on once the wait ends.
     if (!o.continued && this.restartWaits.has(id)) {
-      if (o.queued) throw new Error(WAITING_TEXT);
+      if (o.queued) throw new Error(waitingText(s.summary.harness));
       return void (await this.queue.add(id, text, attachments));
     }
     // Held by a module (a checkpoint restore changing the files): it waits in the queue till the release.
@@ -919,7 +938,7 @@ export class LiveControl {
       // Still being written: the rest happens in the background once it's quiet (rejoin, and the
       // queues it restores, don't wait for this session). The same notice after another restart.
       if (this.restartWaits.has(id)) {
-        s.apply({ type: "msg", msg: { ...notice(WAITING_TEXT), id: `n-wait-${id}-${this.core.o.prefs.get(id).restartWait}` } });
+        s.apply({ type: "msg", msg: { ...notice(waitingText(s.summary.harness)), id: `n-wait-${id}-${this.core.o.prefs.get(id).restartWait}` } });
         s.setState({ restartWait: true });
         this.queue.hold(s, "restart");
       }
@@ -945,8 +964,8 @@ export class LiveControl {
       // Stopping: `running` stays saved, and the next start waits on.
       if (this.stopping || !on()) return;
       if (!quiet) {
-        this.read.set(id, { failure: "Couldn't tell whether Claude Code from before the restart was still working." });
-        s.apply({ type: "msg", msg: notice("Couldn't tell whether Claude Code from before the restart was still working. Send a message to carry on.", "warning") });
+        this.read.set(id, { failure: `Couldn't tell whether ${AGENT_NAMES[s.summary.harness]} from before the restart was still working.` });
+        s.apply({ type: "msg", msg: notice(`Couldn't tell whether ${AGENT_NAMES[s.summary.harness]} from before the restart was still working. Send a message to carry on.`, "warning") });
         this.queue.hold(s, "restart", { due: "restart" });
         return this.endWait(s);
       }
@@ -1286,7 +1305,7 @@ export class LiveControl {
 
   /**
    * Why this session may not go live now (the runner's live-session limit is reached), or
-   * undefined. Subagents and the Home agent's chats don't count and are never refused.
+   * undefined. Subagents don't count and are never refused.
    */
   private overLiveLimit(s: Session): string | undefined {
     const max = this.opts.maxLive ?? 0;
@@ -1298,9 +1317,7 @@ export class LiveControl {
   }
 
   private exemptFromLimit(s: Session): boolean {
-    const home = this.opts.homeFolder;
-    const path = s.summary.projectPath;
-    return !!s.summary.parentSessionId || (!!home && (path === home || path.startsWith(`${home}/`)));
+    return !!s.summary.parentSessionId;
   }
 
   /** The session's driver, starting or resuming the harness when it isn't live. */

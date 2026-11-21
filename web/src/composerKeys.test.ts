@@ -57,7 +57,9 @@ test("the shell hint says when the output reaches the agent, whatever holds the 
   expect(shellWhen("Claude", { running: false, inTerminal: true })).toBe("the output goes to Claude when you go Back to Tether");
   expect(shellWhen("Codex", { running: false, inTerminal: false, heldBy: "stopped" })).toMatch(/waits in the queue, paused after Stop/);
   expect(shellWhen("Claude", { running: false, inTerminal: false, heldBy: "restart" })).toMatch(/paused after a restart/);
-  expect(shellWhen("Claude", { running: false, inTerminal: false, heldBy: "restartWait" })).toMatch(/until Claude Code from before the restart finishes/);
+  expect(shellWhen("Claude", { running: false, inTerminal: false, heldBy: "restartWait" })).toMatch(/until Claude from before the restart finishes/);
+  expect(shellWhen("Codex", { running: false, inTerminal: false, heldBy: "restartWait" })).toMatch(/until Codex from before the restart finishes/);
+  expect(shellWhen("Antigravity", { running: false, inTerminal: false, heldBy: "restartWait" })).toMatch(/until Antigravity from before the restart finishes/);
   expect(shellWhen("Claude", { running: false, inTerminal: false, heldBy: "setupRunning" })).toMatch(/until the worktree's setup finishes/);
   expect(shellWhen("Claude", { running: false, inTerminal: false, heldBy: "setup" })).toMatch(/held after the worktree's setup failed/);
 });

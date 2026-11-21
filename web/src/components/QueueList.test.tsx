@@ -46,6 +46,17 @@ test("one that waits for you says why", () => {
   expect(html(state([{ id: "b", text: "x", queuedAt: 1, at: Date.now() - 1000, held: "stopped" }]))).toContain("you pressed Stop while it was due");
 });
 
+test("restartWait notice in queue head names the session's harness (Claude, Codex, Antigravity)", () => {
+  const claude = renderToStaticMarkup(<QueueList runnerId="r" sessionId="claude:s" state={state([{ id: "a", text: "hi", queuedAt: 1 }], { restartWait: true })} />);
+  expect(claude).toContain("Waiting for Claude from before the restart.");
+
+  const codex = renderToStaticMarkup(<QueueList runnerId="r" sessionId="codex:s" state={state([{ id: "a", text: "hi", queuedAt: 1 }], { restartWait: true })} />);
+  expect(codex).toContain("Waiting for Codex from before the restart.");
+
+  const agy = renderToStaticMarkup(<QueueList runnerId="r" sessionId="antigravity:s" state={state([{ id: "a", text: "hi", queuedAt: 1 }], { restartWait: true })} />);
+  expect(agy).toContain("Waiting for Antigravity from before the restart.");
+});
+
 test("the late notice says when it was for and when it went, in local time", () => {
   const ts = new Date("2026-11-18T21:14:00-05:00").getTime();
   const msg: Msg = { id: "n-late-1", role: "notice", level: "info", ts, scheduledFor: new Date("2026-11-18T21:00:00-05:00").getTime(), parts: [{ type: "text", text: "Scheduled message sent late." }] };

@@ -384,11 +384,6 @@ export class Relay {
         for (const b of this.browsersOf(runnerId)) this.raw(b, s);
         return;
       }
-      case "homeChat": {
-        const s = JSON.stringify({ t: "homeChat", runnerId, rev: m.rev, ...(m.sessionId ? { sessionId: m.sessionId } : {}), ...(m.chats ? { chats: m.chats } : {}), ...(m.labels ? { labels: m.labels } : {}) } satisfies ServerToBrowser);
-        for (const b of this.browsersOf(runnerId)) this.raw(b, s);
-        return;
-      }
       case "term": {
         const at = this.attaches.get(m.attachId);
         if (at && at.runnerId === runnerId) this.out(at.browser, { t: "term", attachId: m.attachId, data: m.data });

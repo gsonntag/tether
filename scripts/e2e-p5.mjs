@@ -546,10 +546,10 @@ const steps = {
     execFileSync("sh", ["-c", CRASH], { stdio: "inherit" });
     const b = await page(desktop, url);
     // Claude Code wrote the session moments ago: Tether must wait, whatever that process does next.
-    await b.getByText("Waiting for Claude Code from before the restart to finish…").waitFor({ timeout: 60_000 });
+    await b.getByText(/Waiting for (?:Claude|Codex|Antigravity) from before the restart to finish…/).waitFor({ timeout: 60_000 });
     await shot(b, "restart-crash-waiting");
     // What's queued says what it waits for, and nothing can release it meanwhile.
-    await b.locator(".t-queue-head", { hasText: "Waiting for Claude Code from before the restart." }).waitFor({ timeout: 10_000 });
+    await b.locator(".t-queue-head", { hasText: /Waiting for (?:Claude|Codex|Antigravity) from before the restart\./ }).waitFor({ timeout: 10_000 });
     if (await button(b, "Resume").count()) fail("Resume is offered during the wait");
     // Either Tether waits for the left-behind process, then (its turn finished) doesn't continue, or
     // (it stopped mid-turn) continues once the store is quiet.

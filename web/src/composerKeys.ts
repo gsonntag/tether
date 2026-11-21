@@ -57,7 +57,7 @@ const HELD_HINT: Record<string, string> = {
  * queue, so it follows whatever holds the queue.
  */
 export function shellWhen(agent: string, o: { running: boolean; inTerminal: boolean; heldBy?: string }): string {
-  if (o.heldBy === "restartWait") return "the output waits in the queue until Claude Code from before the restart finishes";
+  if (o.heldBy === "restartWait") return `the output waits in the queue until ${agent} from before the restart finishes`;
   if (o.heldBy === "setupRunning") return "the output waits in the queue until the worktree's setup finishes";
   if (o.heldBy === "setup") return "the output waits in the queue, held after the worktree's setup failed (Send anyway lets it go)";
   // A queue paused (after Stop, …) stays paused through a terminal round trip: that comes first.

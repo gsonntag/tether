@@ -11,16 +11,14 @@
 // with its time: edit (text and time), send now, or cancel. They neither wait for the rest nor
 // hold it, so the head's count and pause are about the others.
 
-import { FROM_TETHER, parseSessionMessage, tetherPurpose, undefang } from "../../../shared/fromTether";
-import { homeReport } from "../../../shared/homeReport";
+import { parseSessionMessage, undefang } from "../../../shared/fromTether";
 import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { ArrowUpIcon, PaperAirplaneIcon, PencilIcon, XMarkIcon } from "@heroicons/react/24/outline";
-import type { LiveState, Msg, QueuedMessage } from "../../../shared/transcript";
+import { agentOf, type LiveState, type Msg, type QueuedMessage } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { viewKey } from "../store";
 import { putDraft } from "./Composer";
-import { useSessionCtx } from "./sessionContext";
 import { lostEdit, UNKNOWN_MS } from "../queueEdit";
 import { scheduled, unscheduled } from "../../../shared/schedule";
 import { fromLocalInput, toLocalInput, whenLabel } from "../schedule";
@@ -103,8 +101,6 @@ function useShort(): boolean {
 
 export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: string; sessionId: string; state: LiveState; messages?: Msg[] }) {
   const key = viewKey(runnerId, sessionId);
-  /** the Home agent's chat: Tether's reports waiting in its queue read as one line (shared/homeReport.ts) */
-  const { home } = useSessionCtx();
   const [edit, setEditState] = useState<Edit | undefined>(() => edits.get(key));
   const [error, setError] = useState<string>();
   const setEdit = (e: Edit | undefined) => {
@@ -213,7 +209,7 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
   // The quiet wait after a restart (SPEC §4): nothing can release it, so no Resume.
   // A new worktree's setup runs (SPEC §4): what waits goes when it's done, so no Resume yet.
   const settingUp = state.setup === "running";
-  const held = state.restartWait ? "Waiting for Claude Code from before the restart." : settingUp ? "Waiting for the worktree's setup to finish." : state.queueHeld && state.queueHeldBy ? HELD[state.queueHeldBy] : state.queueHeld ? "Paused." : undefined;
+  const held = state.restartWait ? `Waiting for ${agentOf(sessionId)} from before the restart.` : settingUp ? "Waiting for the worktree's setup to finish." : state.queueHeld && state.queueHeldBy ? HELD[state.queueHeldBy] : state.queueHeld ? "Paused." : undefined;
   const plain = unscheduled(state.queue);
   const timed = scheduled(state.queue);
   const body = (m: QueuedMessage) => (
@@ -222,10 +218,6 @@ export function QueueList({ runnerId, sessionId, state, messages }: { runnerId: 
         <>
           Output of <code className="t-queued-cmd">$ {m.shell.command}</code>
         </>
-      ) : tetherPurpose(m.text) === "checkIn" ? (
-        <span className="t-queued-from">↳ Home agent check-in</span>
-      ) : home && m.text.startsWith(FROM_TETHER) ? (
-        <span className="t-queued-from">↳ {homeReport(m.text)?.summary}</span>
       ) : peerOf(m.text) ? (
         <>
           <span className="t-queued-from">From “{peerOf(m.text)!.title}”{peerOf(m.text)!.all ? " · to all" : ""}:</span> {peerOf(m.text)!.text}

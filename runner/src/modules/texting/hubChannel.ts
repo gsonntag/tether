@@ -54,7 +54,6 @@ export class HubChannel extends Channel {
       get service() {
         return hub()?.name ?? "the texting hub";
       },
-      mark: "",
       get images() {
         return !!hub()?.images;
       },

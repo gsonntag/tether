@@ -26,7 +26,6 @@ function fake(id: string, images = false) {
   const c: Connector = {
     id,
     label: id,
-    mark: `[From ${id}] `,
     images,
     about: "",
     notReady: "",
@@ -388,14 +387,6 @@ describe("one number for every computer", () => {
     await late.t.start();
     await tick(20);
     expect(hub.store.remoteTexters[remoteKey("gcp", "claude:far")]?.label).toBe("far away");
-  });
-
-  test("a spoke's Home agent doesn't text through the hub", async () => {
-    const { im, spoke } = await pair();
-    expect(await spoke.t.homeText("on it")).toBe(false);
-    const r = await spoke.t.personText("home", "hello");
-    expect([r.isError, r.text.includes("dev")]).toEqual([true, true]);
-    expect(im.sent).toEqual([]);
   });
 
   test("a runner that isn't the hub refuses a spoke's texts, and only its own hub delivers to a spoke", async () => {

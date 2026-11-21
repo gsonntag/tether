@@ -13,11 +13,11 @@ Tether has three layers, and each one keeps tenants apart in its own way:
 
 | Layer | What separates tenants |
 |---|---|
-| **Server** (a Foliation app: the UI plus a stateless relay) | Either **one app per tenant** (model A), or **one shared app with `TETHER_RUNNER_OWNERS`** (model B). With model B the relay shows each person only their own runners. That covers the runner list, summaries, Home chats, presence and every rpc (`server/src/tenancy.ts`). |
+| **Server** (a Foliation app: the UI plus a stateless relay) | Either **one app per tenant** (model A), or **one shared app with `TETHER_RUNNER_OWNERS`** (model B). With model B the relay shows each person only their own runners. That covers the runner list, summaries, presence and every rpc (`server/src/tenancy.ts`). |
 | **Runner** (one per tenant) | Its own **Linux user**, systemd user unit, `~/.config/tether`, `~/.claude`, `~/.codex`, checkouts, tmux server and Codex daemon. Everything a runner serves locally is a Unix socket (mode 600) in a 700 folder. The one TCP listener, the private Codex proxy for API-key sessions, requires a random bearer kept in a private file. |
 | **Agents** | Run as the tenant's Linux user, so a tenant's agent can do anything that user can. They can't do more: no `sudo`, no `docker` group, and no shared writable folders. |
 
-Everything a runner holds belongs to its one tenant: sessions, the Home agent, texting
+Everything a runner holds belongs to its one tenant: sessions, texting
 connectors, short links, peers, push subscriptions, credentials and billing sources, harness
 updates, and notices. None of these features can reach another runner. Peers use a local socket.
 Short links resolve through the `resolveLink` rpc, which the relay gates. Texting replies route
@@ -158,7 +158,7 @@ Next, for each tenant:
 |---|---|---|
 | runner unit (`deploy/tether-runner.service`) | `MemoryHigh=3G`, `MemoryMax=4G`, `TasksMax=1024` | the runner and its Claude sessions and their tools |
 | `user-<uid>.slice` | `MemoryHigh=3.5G`, `MemoryMax=4.5G` | adds tmux terminals, the Codex daemon and private Codex hosts, which run in their own scopes |
-| `runner.env` | `TETHER_MAX_LIVE_SESSIONS=4` | a 5th session sending gets "This runner already has 4 live sessions…". Home chats, subagents and sessions rejoining after a restart are exempt |
+| `runner.env` | `TETHER_MAX_LIVE_SESSIONS=4` | a 5th session sending gets "This runner already has 4 live sessions…". Subagents and sessions rejoining after a restart are exempt |
 | Foliation | §2.3 | builds and apps can't take everything |
 
 Expected memory: about 0.3 GiB per Claude session, 0.1 GiB per Codex session, and 0.3–0.5 GiB per
@@ -211,9 +211,8 @@ same time.
 
 - [ ] **Sessions:** 2 Claude and 1 Codex session working at once (3 tenants, 9 sessions in all).
   Then push one tenant to 4, and check that a 5th is refused with the limit message.
-- [ ] **Home agent:** each tenant asks Home to start a session in their own project. It can't see
-  the others' projects.
-- [ ] **Check-in and archive:** "archive done sessions" in alice's Home touches only alice's sessions.
+- [ ] **Archive and worktrees:** archiving a merged worktree session of alice's removes only alice's
+  worktree. Home shows each tenant only their own sessions.
 - [ ] **Billing sources:** alice adds an Anthropic API key under Settings → Credentials. Bob's
   Credentials page still shows none, and bob's sessions stay on his subscription.
 - [ ] **Harness updates:** alice runs "update Claude". Only `/home/alice/.local/share/claude`
@@ -264,17 +263,15 @@ These are outside this change and scoped for later:
    identity.
 4. **Terminals and shells don't count toward `TETHER_MAX_LIVE_SESSIONS`.** Only the per-user slice
    caps them.
-5. **The Home agent's prompt says "every session on this machine".** It means this runner. That's
-   accurate per tenant, but the wording is single-user.
-6. **No provisioner.** Tenants are made by hand (§2.5). SPEC §1's "provisioner module" for cloud
+5. **No provisioner.** Tenants are made by hand (§2.5). SPEC §1's "provisioner module" for cloud
    containers is the follow-up.
-7. **Private Codex hosts from before this change** use a bearer derived from the session id. On an
+6. **Private Codex hosts from before this change** use a bearer derived from the session id. On an
    existing host, run `systemctl --user stop 'tether-key-*.scope'` once after updating. A fresh
    host has none.
-8. **Agents share the host's ports and `/tmp`.** Two tenants' dev servers on `:5173` collide (the
+7. **Agents share the host's ports and `/tmp`.** Two tenants' dev servers on `:5173` collide (the
    second one fails), and files an agent leaves world-readable in `/tmp` are readable by others.
    `hidepid` and private homes cover Tether's own state, not what agents choose to write.
-9. **Never run a Tether dev stack on the shared host.** In dev mode the server treats every caller
+8. **Never run a Tether dev stack on the shared host.** In dev mode the server treats every caller
    as the owner. It checks only the `Host` header, which any local user can set, and its runner
    token defaults to `dev`, so any other tenant could take it over. Use the local UI testing recipe
    on another machine. *Follow-up:* a random per-run dev secret.
