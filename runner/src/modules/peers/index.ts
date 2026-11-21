@@ -22,6 +22,7 @@ import type { Module, ModuleContext, SessionLook } from "..";
 import { BROADCAST_MAX, PeerCaps } from "./caps";
 import { peerSecret, peerToken, PeerSocket, type PeerAnswer, type PeerCall } from "./server";
 import { ASK_DEFAULT_MIN, ASK_MAX_MIN } from "./tools";
+import { Children } from "./children";
 import { IMAGE_REFUSED, ImageFailures } from "../texting/images";
 
 /** How much of an answer an ask returns. */
@@ -64,13 +65,16 @@ interface Ask {
 
 export class Peers {
   readonly caps: PeerCaps;
+  /** sessions agents started (tether_start) */
+  readonly children: Children;
   private asks: Ask[] = [];
 
   constructor(
-    private ctx: Pick<ModuleContext, "sessions" | "session" | "log" | "homeFolder" | "homeLine">,
+    private ctx: Pick<ModuleContext, "sessions" | "session" | "log" | "homeFolder" | "homeLine"> & { ops?: Pick<ModuleContext["ops"], "call">; dataDir?: string },
     now: () => number = Date.now,
   ) {
     this.caps = new PeerCaps(now);
+    this.children = new Children(ctx);
     this.imageFails = new ImageFailures(now);
     this.now = now;
   }
@@ -85,6 +89,7 @@ export class Peers {
    * hops its hint carries (so a message queued before a restart keeps them).
    */
   queueGone(sessionId: string, msgId: string, how: "sent" | "cancelled", text = "") {
+    if (how === "sent") this.children.queueGone(sessionId, text);
     const peer = parseSessionMessage(text);
     if (peer && how === "sent") this.caps.turnFrom(sessionId, { hops: peerHops(text) ?? 1, ...(peer.all ? { broadcast: true } : {}) });
     const ask = this.asks.find((a) => a.msgId === msgId);
@@ -95,6 +100,7 @@ export class Peers {
 
   /** A message in a transcript: one the person (or Tether) sent starts a fresh chain. */
   message(sessionId: string, msg: Msg) {
+    this.children.message(sessionId, msg);
     if (msg.role !== "user" || msg.origin?.kind === "session") return;
     if (msg.origin && msg.origin.kind !== "tether" && msg.origin.kind !== "shell") return;
     this.caps.turnFrom(sessionId);
@@ -105,6 +111,8 @@ export class Peers {
     // Whatever starts its next turn says where that one comes from.
     this.caps.turnFrom(sessionId);
     const ask = this.asks.find((a) => a.to === sessionId && a.delivered);
+    // A session an agent started reports its turn to it, unless an ask took this turn's answer.
+    await this.children.turnEnded(sessionId, error, stopped, !!ask);
     if (!ask) return;
     if (stopped) return this.finish(ask, { text: `The person stopped ${this.who(sessionId)}'s turn before it answered.`, isError: true });
     if (error) return this.finish(ask, { text: `${this.who(sessionId)}'s turn failed: ${error}`, isError: true });
@@ -131,6 +139,8 @@ export class Peers {
         return this.send(from, str(a.to), str(a.text));
       case PEER_TOOLS.ask:
         return this.ask(from, str(a.to), str(a.text), Number(a.timeout_minutes) || ASK_DEFAULT_MIN, c.signal);
+      case PEER_TOOLS.start:
+        return this.start(from, a);
       case PEER_TOOLS.broadcast:
         return this.broadcastFrom(from, str(a.text), { project: str(a.project), status: str(a.status), scope: str(a.scope) });
       case TEXT_PERSON: {
@@ -154,6 +164,10 @@ export class Peers {
   }
 
   /** A subagent speaks for its main session. */
+  rootOf(id: string): string {
+    return this.root(id);
+  }
+
   private root(id: string): string {
     let s = this.ctx.session(id);
     for (let i = 0; i < 5 && s?.summary.parentSessionId; i++) {
@@ -244,9 +258,9 @@ export class Peers {
   }
 
   /** A cap hit: the tool says why, and the sender's transcript shows it. */
-  private refused(from: string, why: string): PeerAnswer {
+  private refused(from: string, why: string, what = "a message to another session"): PeerAnswer {
     void this.ctx.sessions
-      .notice(from, { id: `n-peers-${this.now()}-${Math.random().toString(36).slice(2, 6)}`, role: "notice", level: "warning", ts: this.now(), parts: [{ type: "text", text: `Tether held back a message to another session: ${why}` }] })
+      .notice(from, { id: `n-peers-${this.now()}-${Math.random().toString(36).slice(2, 6)}`, role: "notice", level: "warning", ts: this.now(), parts: [{ type: "text", text: `Tether held back ${what}: ${why}` }] })
       .catch(() => {});
     return { text: why, isError: true };
   }
@@ -357,6 +371,17 @@ export class Peers {
     });
   }
 
+  /** tether_start: a new session on any harness that reports each turn back to `from` (children.ts). */
+  async start(from: string, a: Record<string, unknown>): Promise<PeerAnswer> {
+    const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+    // The caps first: refusal() reserves a child slot when it passes.
+    const why = this.caps.check(from, "", "send") ?? this.children.refusal(from);
+    if (why) return this.refused(from, why, "a new session");
+    const hops = this.caps.hopsFrom(from);
+    const undo = this.caps.count(from);
+    return this.children.start(from, { harness: str(a.harness), prompt: str(a.prompt), model: str(a.model), effort: str(a.effort), title: str(a.title), project: str(a.project), worktree: a.worktree === true }, hops, undo);
+  }
+
   /**
    * An agent's note to all: its own project's sessions unless it names a `project` or asks for
    * `scope: "all"`.
@@ -426,6 +451,9 @@ export const peersModule: Module = {
     const offs = [
       ctx.bus.on("queueGone", ({ sessionId, msgId, how, text }) => peers.queueGone(sessionId, msgId, how, text)),
       ctx.bus.on("message", ({ sessionId, msg }) => peers.message(sessionId, msg)),
+      // A subagent's request is its main session's.
+      ctx.bus.on("requestOpened", ({ request: r }) => void peers.children.waiting(peers.rootOf(r.sessionId), r.question ?? r.title ?? (r.tool ? `approval for ${r.tool}` : "a request"), { sessionId: r.sessionId, id: r.id })),
+      ctx.bus.on("attention", ({ sessionId, message }) => void peers.children.waiting(sessionId, message ?? "its terminal asks something")),
       // A rate-limit retry is still that turn: its ask stays open for the turn that recovers.
       ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!recovering && peers.turnEnded(sessionId, error, stopped))),
     ];

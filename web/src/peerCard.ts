@@ -17,6 +17,8 @@ export function peerHead(p: ToolPart, title: string | undefined): { label: strin
     case "ask":
       // Failed once asked (no answer, a failed or stopped turn): the answer names the session.
       return { label: p.status === "running" ? "Asking" : p.status !== "error" ? "Asked" : peerTarget(p.output) ? "Ask failed" : "Not asked", sum: who };
+    case "start":
+      return { label: p.status === "running" ? "Starting" : p.status === "error" ? "Didn't start" : "Started", sum: title ? who : [str(i.harness), str(i.title)].filter(Boolean).join(" · ") };
     case "broadcast":
       return { label: p.status === "error" ? "Not sent to all" : "Sent to all", sum: [str(i.project) ?? (i.scope === "all" ? "every project" : "this project"), str(i.status)].filter(Boolean).join(" · ") };
     default:
