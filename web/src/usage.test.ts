@@ -58,6 +58,8 @@ test("days are calendar days, whatever the browser's zone", () => {
 test("names and the scan line", () => {
   expect(modelName("claude", "claude-opus-5-5")).toBe("Claude · Opus 5.5");
   expect(modelName("codex", "gpt-6-luna")).toBe("Codex · gpt-6-luna");
+  expect(modelName("antigravity", "gemini-3-pro")).toBe("Antigravity · gemini-3-pro");
+  expect(modelName("antigravity", "claude-sonnet-4-6")).toBe("Antigravity · Sonnet 4.6");
   expect(modelName("claude", "claude-haiku-4-5-20251001")).toBe("Claude · Haiku 4.5 (20251001)");
   const now = Date.parse("2026-11-18T12:00:00Z");
   expect(scanLine({ running: true, files: 3005, done: 120, errors: 0 }, now)).toBe("Reading session logs… 120 of 3,005 files");

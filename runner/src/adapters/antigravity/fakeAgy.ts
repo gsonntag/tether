@@ -75,7 +75,7 @@ async function prompt(id: number, p: any) {
   update(sid, { sessionUpdate: "session_info_update", title: "Ping" });
   update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "po" } });
   update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ng" } });
-  out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } } });
+  out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: { inputTokens: 11, outputTokens: 2, cachedReadTokens: 7, cachedWriteTokens: 3, thoughtTokens: 5, totalTokens: 28 } } });
 }
 
 let buf = "";

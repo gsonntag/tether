@@ -1070,3 +1070,76 @@ test("an Azure deployment is a startup default; model changes stay on the same t
   const launch = codexAdapter.terminalCommand!(MAIN, CWD, { credential, model: "third-deploy" });
   expect(launch.argv[launch.argv.indexOf("-m") + 1]).toBe("third-deploy");
 });
+
+/** A read-only session with a Full access command (a python REPL) and a read-only one left running. */
+async function stdinSession(reviewer = "user") {
+  useDaemon();
+  const dir = mkdtempSync(join(tmpdir(), "codex-stdin-"));
+  const path = join(dir, "r.jsonl");
+  const ctx = (a: string, sb: string) => JSON.stringify({ type: "turn_context", timestamp: "2026-10-30T00:00:00Z", payload: { turn_id: "t", approval_policy: a, sandbox_policy: { type: sb }, approvals_reviewer: "user" } });
+  writeFileSync(path, [ctx("never", "danger-full-access"), `{"type":"response_item","payload":{"type":"custom_tool_call_output","output":[{"text":"session_id: 41234"}]}}`, ctx("on-request", "read-only"), `{"type":"response_item","payload":{"call_id":"item-tight"}}`, ""].join("\n"));
+  daemon.answers["thread/resume"] = () => ({ thread: { id: MAIN, path, status: { type: "idle" } }, model: "m", approvalPolicy: "on-request", approvalsReviewer: reviewer, sandbox: { type: "readOnly" } });
+  const list = [
+    { itemId: "item-loose", processId: "41234", command: "python3 -q -i" },
+    { itemId: "item-tight", processId: "p2", command: "python3 -q -i" },
+  ];
+  daemon.answers["thread/backgroundTerminals/list"] = () => ({ data: list });
+  daemon.answers["thread/backgroundTerminals/terminate"] = (p) => {
+    list.splice(list.findIndex((t) => t.processId === p.processId), 1);
+    return {};
+  };
+  const sink = new TestSink();
+  const d = await CodexDriver.open(MAIN, CWD, {}, sink, true);
+  d.commandPollMs = 60_000;
+  daemon.say({ method: "turn/started", params: { threadId: MAIN, turn: { id: "t2" } } });
+  return { d, sink, list };
+}
+
+const stdinAsk = (itemId: string, processId: string) => ({ kind: "writeStdin", threadId: MAIN, turnId: "t2", itemId, approvalId: "exec-a1", reason: "Send input to an existing terminal.", command: `write_stdin --session-id ${processId} "print(1)\n"`, cwd: CWD, availableDecisions: ["accept", "cancel"] });
+
+test("input from a tighter turn to a command started with more access is refused without asking; the agent is told why", async () => {
+  const { d, sink } = await stdinSession();
+  daemon.say({ id: 40, method: "item/commandExecution/requestApproval", params: stdinAsk("item-loose", "41234") });
+  await Bun.sleep(20);
+  expect(sink.asks).toHaveLength(0);
+  expect(daemon.replies(40)).toEqual([{ id: 40, result: { decision: "decline" } }]);
+  expect(daemon.calls("turn/steer")[0]!.input[0].text).toBe(`${FROM_TETHER}Tether refused input to that process: it was started with more access (Full access) than this session now has (Read only). Nothing was written to it. Start a new one under the current mode, or ask the person to stop it.`);
+  expect(JSON.stringify(sink.t.messages)).toContain("Tether refused input from this turn to a background command that runs with Full access, more than this session's Read only.");
+  // Nothing is stopped: the person decides that (the header's Stop).
+  expect(daemon.calls("thread/backgroundTerminals/terminate")).toEqual([]);
+  // One started as shown (or tighter) is asked about as usual, as input to a running command.
+  daemon.say({ id: 41, method: "item/commandExecution/requestApproval", params: stdinAsk("item-tight", "p2") });
+  await Bun.sleep(20);
+  expect(sink.asks).toHaveLength(1);
+  expect(sink.asks[0]!.ask).toMatchObject({ title: "Send input to a running command", toolId: "item-tight" });
+  sink.asks[0]!.resolve({ allow: true });
+  await Bun.sleep(5);
+  expect(daemon.replies(41)).toEqual([{ id: 41, result: { decision: "accept" } }]);
+  await d.close();
+});
+
+test("input to a command Tether can't find or whose settings aren't known is refused (fail closed)", async () => {
+  const { d, sink } = await stdinSession();
+  daemon.say({ id: 42, method: "item/commandExecution/requestApproval", params: stdinAsk("item-gone", "999") });
+  await Bun.sleep(20);
+  expect(sink.asks).toHaveLength(0);
+  expect(daemon.replies(42)).toEqual([{ id: 42, result: { decision: "decline" } }]);
+  expect(daemon.calls("turn/steer")[0]!.input[0].text).toContain("started with access Tether can't confirm is no more than this session now has (Read only)");
+  await d.close();
+});
+
+test("Approve for me: Codex's reviewer answers inside Codex, so a review of input to a looser command stops that command before it ends", async () => {
+  const { d, sink, list } = await stdinSession("auto_review");
+  const review = (itemId: string, processId: string) => ({ method: "item/autoApprovalReview/started", params: { threadId: MAIN, turnId: "t2", reviewId: "r1", targetItemId: itemId, review: { status: "inProgress" }, action: { type: "writeStdin", approvalId: "exec-a1", processId, stdin: "print(1)\n", cwd: CWD } } });
+  daemon.say(review("item-tight", "p2"));
+  await Bun.sleep(20);
+  expect(daemon.calls("thread/backgroundTerminals/terminate")).toEqual([]);
+  daemon.say(review("item-loose", "41234"));
+  await Bun.sleep(20);
+  expect(daemon.calls("thread/backgroundTerminals/terminate")).toEqual([{ threadId: MAIN, processId: "41234" }]);
+  expect(list.map((t) => t.processId)).toEqual(["p2"]);
+  expect(daemon.calls("turn/steer")[0]!.input[0].text).toContain("Tether refused input to that process and stopped it: it was started with more access (Full access) than this session now has (Read only (Codex reviews))");
+  expect(JSON.stringify(sink.t.messages)).toContain("Tether stopped a background command that runs with Full access");
+  expect(sink.asks).toHaveLength(0);
+  await d.close();
+});

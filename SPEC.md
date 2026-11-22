@@ -409,6 +409,19 @@ relay directly.
   `thread/settings/update` and pinned on `turn/start`, in a read-only sandbox. The app-server has
   no review step (its TUI's "Implement this plan?" is client-side), so a turn that completes with a
   `plan` item raises a plan request (`planFollowUp`, §7) that Tether answers itself.
+- **Input to a background command with more access.** A command in one of Codex's background
+  terminals keeps the settings of the turn that started it (`running.ts`). Once the session is
+  tightened, a later turn's `write_stdin` raises `item/commandExecution/requestApproval` with
+  `kind: "writeStdin"` (its `itemId` is the command's). If that command has more access than the
+  session now has, or Tether can't find it or its settings (fail closed), Tether declines without
+  asking anyone: approved, the command would do what the tighter turn tells it with its own wider
+  access. The agent gets the reason as a steer, the person a notice. Input to a command no looser
+  than shown is asked as usual ("Send input to a running command"). With **Approve for me**
+  (`@codex-reviews`) Codex's reviewer answers inside Codex and Tether never gets the request, only
+  `item/autoApprovalReview/started` (action `writeStdin`, with the `processId`). For a looser command
+  Tether stops it (`thread/backgroundTerminals/terminate`) as the review starts. The review takes
+  seconds, so the write fails ("Unknown process id"). Checked on codex-cli 0.171.0, 2026-11-21: with
+  no fix, the reviewer approved and the write went through.
 - **History:** rollout files under `~/.codex/sessions/`, or `thread/read`. The parser comes from v1.
 - **Terminal:** `terminal: "shared"`. `codex resume --remote <socket> <id>` attaches the TUI to the
   same live thread through the daemon (without `--remote` the TUI runs its own app-server). Tether
@@ -835,11 +848,17 @@ with no background work, shell command or agent terminal running. The session, s
 revision, model, effort, permission mode and attachments stay the same. After tools or steering,
 a notice explains why the message wasn't resent and asks the person to continue.
 
-There are at most five additional attempts, delayed about 15, 30, 60, 120 and 120 seconds with
+By default there are at most five additional attempts, delayed about 15, 30, 60, 120 and 120 seconds with
 20% jitter. A valid provider retry time is a minimum. No new retry starts after ten minutes from
 the first terminal throttle; restarting the runner preserves this deadline and attempt count.
 Sessions sharing a known source, credential revision and model/deployment share a runner-local
 cooldown, with a gap between dispatches. This does not coordinate different runners.
+
+For a session using an Azure, OpenAI or Anthropic key, the Source menu's **Keep retrying when
+throttled** setting opts into a six-hour deadline and up to 60 additional attempts. The backoff
+starts around one minute and doubles with jitter up to ten minutes. A provider's retry time
+can require a longer wait. Extended recovery keeps using the same key and displays the local
+time of the next retry and a **Stop** button. Turning the setting off stops a waiting extended retry.
 
 The chat shows the next attempt's countdown, **Retry now** and **Cancel**. Retry now skips Tether's
 backoff but honors provider timing and concurrent-session cooldowns. Stop, a direct message, a
@@ -1276,8 +1295,8 @@ A Codex thread whose record disagrees with its session's source stops, naming bo
 
 The session label changes only after harness confirmation. API billing has one accessible colour
 token in light and dark themes: a loud source badge first in the session's chip row, visible at
-phone width without sideways scrolling and matching title text on Sidebar and Home rows. The
-composer keeps its regular styling. Subscription sessions remain quiet. Unknown billing is plainly neutral. Plan usage appears
+phone width without sideways scrolling and matching title text on Home rows. Session rows in the
+sidebar use plain white text with no payment-source differentiator. The composer keeps its regular styling. Subscription sessions remain quiet. Unknown billing is plainly neutral. Plan usage appears
 early in the chip row on phones and never appears on an API session's chip. Terminal mode must use the same
 confirmed source, or refuse to open. No terminal launch may edit the user's harness configuration.
 Codex's remote TUI joins the thread's confirmed permissions and approval reviewer; its launch
@@ -1789,9 +1808,13 @@ a key, any other provider is a provider, OpenAI's own whose token count after it
 source from then on; before it unknown, since it may have been another. A Codex token count of rate
 limits only (no usage) marks only the record just before it.
 
-The `usage` module reads the harness stores, not Tether's records: each adapter's
+The `usage` module scans each adapter's
 `usageStores()` (Claude's `projects/`, subagents included; Codex's `sessions/`, `archived_sessions/`
-and the private homes of Tether's key threads, `codex-keys/`). The ledger and the hidden folders come
+and the private homes of Tether's key threads, `codex-keys/`; Antigravity's runner-local
+`antigravity-usage/`). Antigravity records one aggregate entry per live Tether prompt with usage in
+its ACP result. It uses the selected model at prompt submission, includes thought tokens in output,
+and leaves the entry unpriced. The page labels this scope. Older turns, standalone CLI or terminal
+turns, and work without a prompt result are outside the recording scope. The ledger and the hidden folders come
 through `ModuleContext` (`apiCost`, `hiddenFolder`). A request is one record. Claude: one per message
 id and request id, at the largest counts its streamed entries carry; a compaction's own request isn't
 in the store. Codex: `token_usage_record` by response id; before a file's first one, each

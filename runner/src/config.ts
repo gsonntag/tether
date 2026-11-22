@@ -103,6 +103,7 @@ export interface SessionPrefs {
   autoKey?: boolean;
   /** "Session can text me", ticked by you: it may text the person, and gets plain texts (SPEC §11 Texting). Kept whatever its age */
   canText?: boolean;
+  retryThrottled?: boolean;
   /** the key this session last used or had picked */
   lastKey?: BillingSource;
   /** Allowed automatic fallback keys, in priority order. Empty excludes all keys. */
