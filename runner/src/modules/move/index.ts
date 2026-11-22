@@ -242,7 +242,7 @@ export class Mover {
    * and the same settings, confirmed and unlisted. Native import or nothing: the file route is a
    * turn on the new source that the person didn't ask for.
    */
-  async carry(id: string, source: BillingSource): Promise<string> {
+  async carry(id: string, source: BillingSource, picked?: string): Promise<string> {
     const { look, adapter } = await this.source(id);
     // What's waiting follows the session (live.ts send), so it's no reason to refuse.
     const why = await this.blocked(adapter, { ...look, state: { ...look.state, queue: [] } });
@@ -251,8 +251,9 @@ export class Mover {
     try {
       const portable = await exportSession(adapter, look);
       const { effort, permissionMode } = look.state;
-      // An Azure deployment's name means nothing on another source: there, the default model.
-      const model = (await this.ctx.sessions.sourceOf(id)) === "azure" && source !== "azure" ? undefined : look.state.model;
+      // The model picked for the new source while the change waited, else: an Azure deployment's
+      // name means nothing on another source, so there the default model.
+      const model = picked ?? ((await this.ctx.sessions.sourceOf(id)) === "azure" && source !== "azure" ? undefined : look.state.model);
       const azureDeployment = source === "azure" ? look.state.nextDeployment : undefined;
       const pin = azureDeployment ? { azureDeployment, model: azureDeployment } : model && model !== "default" ? { model } : {};
       const opts: StartOpts = { ...pin, ...(effort ? { effort } : {}), permissionMode: moveMode(adapter, permissionMode, adapter) };
@@ -340,7 +341,7 @@ export const moveModule: Module = {
   name: "move",
   start(ctx) {
     const mover = new Mover(ctx);
-    ctx.sessions.carrier((id, source) => mover.carry(id, source));
+    ctx.sessions.carrier((id, source, model) => mover.carry(id, source, model));
     ctx.ops.register("moveOptions", (a) => mover.options(String(a.sessionId ?? "")));
     ctx.ops.register("moveSession", (a) => mover.move(String(a.sessionId ?? ""), String(a.harness ?? ""), { ...(typeof a.model === "string" && a.model ? { model: a.model } : {}), ...(typeof a.effort === "string" && a.effort ? { effort: a.effort } : {}), source: a.source }));
   },

@@ -6,7 +6,7 @@ import { constants, closeSync, fchmodSync, fstatSync, mkdirSync, openSync, readF
 import { dirname, join } from "node:path";
 import { AZURE_MAX_DEPLOYMENTS, AZURE_NAME, azureEndpoint, type AzureDeployment, type BillingSource, type CredentialSource, type CredentialStatus } from "../../shared/credentials";
 import { validRates, type TokenRates } from "../../shared/costs";
-import { AZURE_RATES_DATE, isAzureType, type AzurePricing } from "../../shared/azureRates";
+import { AZURE_RATES_DATE, AZURE_SOL_RATES_DATE, azureModelId, isAzureType, type AzurePricing } from "../../shared/azureRates";
 import { CONFIG_DIR } from "./config";
 
 export const DATA_DIR = process.env.TETHER_DATA_DIR || CONFIG_DIR;
@@ -202,7 +202,8 @@ export class CredentialStore {
     if (!d) return undefined;
     const pricing: AzurePricing = { ...(d.model ? { model: d.model } : {}), type: d.type ?? "global", ...(d.rates ? { rates: d.rates } : {}) };
     // The table's date too: new rates restart an idle session's private process, as changed ones do.
-    return { key: secret.key, source, file: this.file, endpoint, deployment: d.name, ...(d.rates ? { rates: d.rates } : {}), pricing, revision: `${secret.revision}:${azureDigest(endpoint, d.name, d.rates ?? null, d.model ?? null, pricing.type, AZURE_RATES_DATE)}` };
+    const ratesDate = azureModelId(d.model) === "gpt-6.2-sol" ? AZURE_SOL_RATES_DATE : AZURE_RATES_DATE;
+    return { key: secret.key, source, file: this.file, endpoint, deployment: d.name, ...(d.rates ? { rates: d.rates } : {}), pricing, revision: `${secret.revision}:${azureDigest(endpoint, d.name, d.rates ?? null, d.model ?? null, pricing.type, ratesDate)}` };
   }
   /** A key. Azure's settings come separately (`setAzure`); a browser from before sends them along. */
   set(source: CredentialSource, key: string, endpoint?: string, deployment?: string, rates?: TokenRates): CredentialStatus {

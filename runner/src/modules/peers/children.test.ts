@@ -47,7 +47,8 @@ function setup(o: { modes?: Record<string, string>; dataDir?: string; failFallba
     return l;
   };
   const offered: Record<string, string[]> = { claude: ["plan", "default", "acceptEdits", "auto", "bypassPermissions"], codex: ["read-only", "untrusted", "auto", "full-access"], antigravity: ["plan", "default", "accept-edits", "bypass"] };
-  const adapter = (id: string, move: any) => ({ id, move, listModels: async () => ({ models: [], permissionModes: offered[id]!.map((m) => ({ id: m })) }) });
+  const models: Record<string, any[]> = { codex: [{ id: "default", label: "Default" }, { id: "gpt-6-luna", label: "GPT-6 Luna", efforts: ["low", "high"] }] };
+  const adapter = (id: string, move: any) => ({ id, move, listModels: async () => ({ models: models[id] ?? [], permissionModes: offered[id]!.map((m) => ({ id: m })) }) });
   const ctx: any = {
     log: () => {},
     dataDir: o.dataDir,
@@ -101,6 +102,20 @@ function setup(o: { modes?: Record<string, string>; dataDir?: string; failFallba
   const isArchived = (id: string) => !!rows.find((r) => r.id === id)?.archived;
   return { peers, start, archive, isArchived, archivedIds, queued, sent, created, modes, look, reply, rows, calls };
 }
+
+describe("tether_models", () => {
+  test("lists each source's models; Azure's are its deployments", async () => {
+    const t = setup();
+    const r = await t.peers.call({ from: "claude:boss", tool: "tether_models", args: { harness: "codex" } } as any);
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toContain("Tether sets up each source's provider and key itself");
+    expect(r.text).toContain("subscription:\n  - gpt-6-luna (GPT-6 Luna); effort: low, high");
+    expect(r.text).toContain("azure (API key: confirm with the person first):\n  - sol-deployment (runs gpt-6.2-sol)");
+    expect(r.text).not.toContain("- default");
+    expect((await t.peers.call({ from: "claude:boss", tool: "tether_models", args: { harness: "nope" } } as any)).isError).toBe(true);
+    expect(peerAction("mcp__tether__tether_models")).toBe("models");
+  });
+});
 
 describe("tether_start", () => {
   test("defaults to subscription and never replaces an unavailable Azure model", async () => {

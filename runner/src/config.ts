@@ -97,6 +97,8 @@ export interface SessionPrefs {
   sourceSwitchFailed?: boolean;
   /** with capabilities.sourceCarry: the source the next message goes to, in a new thread */
   nextSource?: BillingSource;
+  /** with nextSource: the model picked for the new source, which its thread starts on (else the carry's own pick) */
+  nextModel?: string;
   /** switch to a key when the plan runs out, the one exception to no fallback (SPEC §10). Ticked by you */
   autoKey?: boolean;
   /** "Session can text me", ticked by you: it may text the person, and gets plain texts (SPEC §11 Texting). Kept whatever its age */
