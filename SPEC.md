@@ -1348,14 +1348,18 @@ deployment is refused before anything is sent, and mid-turn it is held as above.
 only: the source, the billing labels and the plan % are unaffected.
 
 **The model while a source change waits.** On a harness that carries a source change to a new thread
-(Codex), the current thread starts on its confirmed source until the next message carries it over, so
-the Model menu lists that source's models (deployments only when the confirmed source is Azure), and the
-runner decides by the same source. While a change is pending (`nextBilling` with `sourceCarry`) the
-Model chip is disabled, "Pick the model after the source change.", and `setModel` refuses: a pick then
-would go to the source being left, a deployment name to the shared ChatGPT daemon or a model id to an
-Azure process. The carry itself drops an Azure deployment name leaving Azure and takes the deployment
-matching the model (else the first) arriving there; the model can be changed once it's done. On Claude a
-source change switches in place, so there is nothing to wait for.
+(Codex), the current thread starts on its confirmed source until the next message carries it over. While
+a change is pending (`nextBilling` with `sourceCarry`) the Model menu picks for the new source: it lists
+that source's models (deployments when the change goes onto Azure), shows "<model> on <source>" (or
+"Model on <source>" with no pick), and `setModel` holds the pick for the new thread instead of sending
+it anywhere: onto Azure as `nextDeployment` (a name that isn't a configured deployment is refused, as
+the chip's own deployment pick), elsewhere as `SessionPrefs.nextModel`. Nothing reaches the source being
+left (a deployment name to the shared ChatGPT daemon, or a model id to an Azure process). "Default"
+clears the pick; cancelling the change, or picking another source, drops it. The carry starts the new
+thread on the pick; without one it drops an Azure deployment name leaving Azure (the new source's default,
+which is Codex's config: a model ChatGPT accounts don't serve is refused there, so pick one) and takes
+the deployment matching the model (else the first) arriving there. On Claude a source change switches in
+place, so there is nothing to wait for.
 
 ### Changes
 

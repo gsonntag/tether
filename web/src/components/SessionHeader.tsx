@@ -16,7 +16,6 @@ import { offersCanText } from "../runners";
 import { shownStatus } from "../sessionList";
 import { StatusDot } from "./SessionRow";
 import { StartedChips, SubagentChips } from "./SubagentChips";
-import { MODEL_AFTER_SOURCE } from "../../../shared/sourceSwitch";
 import { billingForDisplay, visibleNextBilling } from "../sourceMenu";
 
 export function SessionHeader({
@@ -80,11 +79,14 @@ export function SessionHeader({
     if (state.model === "default" && !state.modelResolved) ensureModels();
   }, [state.model, state.modelResolved, !!models]);
   // The source the next start uses, as the runner decides it: a harness that carries a source change
-  // to a new thread (Codex) starts this thread on its confirmed source, and its model can't change
-  // until the change is done (the runner refuses too); one that switches in place starts on the new one.
+  // to a new thread (Codex) starts this thread on its confirmed source; one that switches in place
+  // starts on the new one. While a carried change waits, the Model menu picks for the new source:
+  // its models (deployments onto Azure), held for the new thread, never sent to the source being left.
   const sourcePending = !!capabilities?.sourceCarry && !!state.nextBilling;
   const onAzure = (capabilities?.sourceCarry ? state.billing : billingForDisplay(state))?.label === "Azure";
-  const { choices: sources, refresh: refreshSources } = useSources(runnerId, session.harness, onAzure);
+  const menuAzure = sourcePending ? state.nextBilling?.label === "Azure" : onAzure;
+  const pendingPick = sourcePending ? (menuAzure ? state.nextDeployment : state.nextModel) : undefined;
+  const { choices: sources, refresh: refreshSources } = useSources(runnerId, session.harness, onAzure || menuAzure);
   const azureModels = sources?.options.find((o) => o.source === "azure")?.deployments?.map((d) => ({ id: d.name, label: d.model ? `${d.name} · ${d.model}` : d.name, description: undefined }));
   const current = findModel(models?.models ?? [], state.model);
   // A handoff TUI drives (SPEC §8): it takes no settings from Tether.
@@ -145,16 +147,16 @@ export function SessionHeader({
             <ChoiceMenu
               name="Model"
               customLabel={session.harness === "codex" ? "Other model or deployment…" : undefined}
-              value={current?.id ?? state.model}
+              value={sourcePending ? pendingPick ?? "" : current?.id ?? state.model}
               // While the TUI drives, its /model is what runs: Tether shows the last it knew.
-              label={locked ? `Set in the terminal (last seen: ${modelLabel(state.model, models?.models, state.modelResolved)})` : nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model, state.model)}
-              disabled={locked ?? (sourcePending ? MODEL_AFTER_SOURCE : undefined)}
-              choices={(onAzure ? azureModels ?? [] : models?.models ?? []).map((m) => ({ id: m.id, label: m.label, description: m.description }))}
-              onOpen={() => { ensureModels(); if (onAzure) refreshSources(); }}
+              label={locked ? `Set in the terminal (last seen: ${modelLabel(state.model, models?.models, state.modelResolved)})` : sourcePending ? (pendingPick ? `${menuAzure ? pendingPick : modelLabel(pendingPick, models?.models)} on ${state.nextBilling!.label}` : `Model on ${state.nextBilling!.label}`) : nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model, state.model)}
+              disabled={locked}
+              choices={(menuAzure ? azureModels ?? [] : models?.models ?? []).map((m) => ({ id: m.id, label: m.label, description: m.description }))}
+              onOpen={() => { ensureModels(); if (menuAzure) refreshSources(); }}
               // A refusal shows in the chat, from the runner.
               onPick={(model) => void rpc(runnerId, "setModel", { sessionId: session.id, model }).catch(() => {})}
             />
-            {state.nextDeployment && <span className="t-chip t-chip-info t-next-deployment" title={`${state.nextDeployment} from the next message`}>Next: {state.nextDeployment}</span>}
+            {state.nextDeployment && !sourcePending && <span className="t-chip t-chip-info t-next-deployment" title={`${state.nextDeployment} from the next message`}>Next: {state.nextDeployment}</span>}
             {(efforts.length > 0 || state.effort) && (
               <ChoiceMenu name="Effort" value={state.effort} label={locked ? `Set in the terminal (last seen: ${effortLabel(state.effort)})` : nextTurn(effortLabel(state.effort), turn?.effort, state.effort)} disabled={locked} choices={efforts} onOpen={ensureModels} onPick={(effort) => void call(rpc(runnerId, "setEffort", { sessionId: session.id, effort }))} />
             )}

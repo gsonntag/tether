@@ -98,6 +98,23 @@ describe("a source change (Mover.carry)", () => {
     expect(runner.core.book.all().sessions.map((r) => r.id)).not.toContain(id);
   });
 
+  test("leaving Azure: the model picked for the new source, else the default (never the deployment name)", async () => {
+    const codex = new Neutral("codex", true);
+    codex.billing = { ...codex.billing, keys: ["azure"] };
+    const store = new CredentialStore(join(mkdtempSync(join(tmpdir(), "tether-carry-off-azure-")), "credentials.json"));
+    store.set("azure", "fake-azure-key-0123456789abcdef");
+    store.setAzure({ endpoint: "my-res", deployments: [{ name: "luna", model: "gpt-6-luna" }] });
+    const { mover, runner } = setup([codex], store);
+    codex.stored_("s1", convo);
+    runner.core.o.prefs.set("codex:s1", { source: "azure", deployment: "luna", model: "luna", nextSource: "subscription" });
+    await mover.carry("codex:s1", "subscription", "gpt-6.2-sol");
+    expect(codex.drivers.at(-1)!.opts.model).toBe("gpt-6.2-sol");
+    codex.stored_("s2", convo);
+    runner.core.o.prefs.set("codex:s2", { source: "azure", deployment: "luna", model: "luna", nextSource: "subscription" });
+    await mover.carry("codex:s2", "subscription");
+    expect(codex.drivers.at(-1)!.opts.model).toBeUndefined();
+  });
+
   test("an Azure carry uses the pending deployment and refuses a removed one", async () => {
     const codex = new Neutral("codex", true);
     codex.billing = { ...codex.billing, keys: ["azure"] };
