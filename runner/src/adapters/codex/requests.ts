@@ -7,6 +7,7 @@ import type { RequestQuestion } from "../../../../shared/transcript";
 import type { Decision, RequestAsk } from "../../core/adapter";
 import { classifyTool } from "../toolKind";
 import { patchInput, unwrapShell } from "./items";
+import { permissionModeLabel } from "../../../../shared/labels";
 import { DEFAULT_MODE } from "./modes";
 
 /** A tool's kind and its command or path, as a request carries them. */
@@ -28,6 +29,38 @@ export function codexPlanAsk(p: { id: string; text: string }): RequestAsk {
   return { kind: "approval", tool: "plan", input: { id: p.id }, toolId: p.id, title: "Codex's plan is ready", plan: p.text, approveMode: DEFAULT_MODE, planFollowUp: true };
 }
 
+/**
+ * The background command an approval for input to it is about (write_stdin), else undefined. From
+ * Tether's own request (`item/commandExecution/requestApproval` with `kind: "writeStdin"`: the item
+ * that started the command, and its session id in the command Codex shows) or from Codex's reviewer
+ * starting a review of one (`item/autoApprovalReview/started`, "Approve for me"), which Tether never
+ * gets to answer.
+ */
+export function stdinTarget(method: string, p: any): { itemId?: string; processId?: string } | undefined {
+  if (method === "item/commandExecution/requestApproval" && p?.kind === "writeStdin") {
+    const processId = /--session-id\s+(\S+)/.exec(typeof p.command === "string" ? p.command : "")?.[1];
+    return { ...(str(p.itemId) ? { itemId: p.itemId } : {}), ...(processId ? { processId } : {}) };
+  }
+  if (method === "item/autoApprovalReview/started" && p?.action?.type === "writeStdin") {
+    const processId = p.action.processId != null ? String(p.action.processId) : undefined;
+    return { ...(str(p.targetItemId) ? { itemId: p.targetItemId } : {}), ...(processId ? { processId } : {}) };
+  }
+  return undefined;
+}
+
+/**
+ * What the agent is told when Tether refuses input to a background command started with more access
+ * than the session now has (`mode`: the command's, undefined when not known; `now`: the session's;
+ * `stopped`: Codex's reviewer would have answered, so Tether stopped the command instead).
+ */
+export function stdinRefusal(mode: string | undefined, now: string | undefined, stopped = false): string {
+  const had = mode ? `more access (${permissionModeLabel(mode)})` : "access Tether can't confirm is no more";
+  const why = `it was started with ${had} than this session now has (${permissionModeLabel(now ?? "unknown")})`;
+  return stopped
+    ? `Tether refused input to that process and stopped it: ${why}. Nothing was written to it. Start a new one under the current mode if you still need it.`
+    : `Tether refused input to that process: ${why}. Nothing was written to it. Start a new one under the current mode, or ask the person to stop it.`;
+}
+
 /** The tool name a MCP approval is about (`mcp__server__tool`, as on the tool card). */
 export function mcpApprovalTool(p: any): string {
   const name = p?._meta?.tool_name ?? /run tool "(.+)"\?\s*$/.exec(p?.message ?? "")?.[1] ?? p?._meta?.tool_title ?? "tool";
@@ -47,7 +80,9 @@ export function codexAsk(method: string, p: any, cwd: string, patch?: any): Requ
       const command = unwrapShell(p.command ?? "");
       const input = { command, ...(p.cwd && p.cwd !== cwd ? { cwd: p.cwd } : {}), ...(p.additionalPermissions ? { permissions: p.additionalPermissions } : {}) };
       const net = p.networkApprovalContext?.host ? `Network access to ${p.networkApprovalContext.host}` : undefined;
-      return { ...base, kind: "approval", tool: "bash", input, ...tags("bash", input), ...(net && !reason ? { reason: net } : {}), ...(net ? { network: true } : {}) };
+      // Input to a command already running in a background terminal (write_stdin), not a new one.
+      const stdin = p.kind === "writeStdin" ? { title: "Send input to a running command" } : {};
+      return { ...base, kind: "approval", tool: "bash", input, ...tags("bash", input), ...stdin, ...(net && !reason ? { reason: net } : {}), ...(net ? { network: true } : {}) };
     }
     case "item/fileChange/requestApproval": {
       const input = patch ? patchInput(patch.changes ?? [], cwd) : { path: p.grantRoot ?? cwd, edits: [] };

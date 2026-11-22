@@ -10,6 +10,7 @@ import { LiveControl } from "./live";
 import { Prefs } from "./prefs";
 import { RequestBroker } from "./broker";
 import { SessionCore } from "./sessions";
+import { EXTENDED_RETRY_DEADLINE_MS, EXTENDED_RETRY_MAX_ATTEMPTS } from "./retryPolicy";
 import type { Sink } from "./adapter";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -62,6 +63,50 @@ function fastRetry(live: LiveControl, calls: { attempt: number; deadline: number
 }
 
 describe("automatic rate limit retry integration", () => {
+  test("restores an opted-in key retry after restart and Stop cancels it", async () => {
+    const first = setup();
+    const id = "claude:extended";
+    first.adapter.addStored("extended", []);
+    first.prefs.set(id, { source: "anthropic" });
+    await first.live.setRetryThrottled(id, true);
+    const retryAt = Date.now() + 30 * 60_000;
+    first.adapter.script = () => [limit(1, retryAt)];
+    await first.live.send(id, "wait for the key");
+    const original = await first.core.open(id);
+    await until(() => !!original.state.retry);
+    expect(original.state.retry).toMatchObject({ extended: true, nextAt: retryAt, maxAttempts: EXTENDED_RETRY_MAX_ATTEMPTS });
+    expect(original.state.retry!.deadline).toBeGreaterThan(retryAt);
+    expect(original.state.retry!.deadline).toBeLessThanOrEqual(Date.now() + EXTENDED_RETRY_DEADLINE_MS);
+    await first.live.closeAll();
+    first.core.stop();
+
+    const adapter = new FakeAdapter();
+    adapter.addStored("extended", []);
+    const second = setup({ prefsPath: first.prefsPath, adapter });
+    await second.live.restoreRetries();
+    const restored = await second.core.open(id);
+    expect(restored.state.retryThrottled).toBe(true);
+    expect(restored.state.retry).toMatchObject({ extended: true, nextAt: retryAt });
+    await second.live.interrupt(id);
+    expect(restored.state.retry).toBeUndefined();
+    expect(second.prefs.get(id).retry).toBeUndefined();
+    expect(adapter.drivers).toHaveLength(0);
+  });
+
+  test("the option is available before a new key session sends its first message", async () => {
+    const { live } = setup();
+    const session = await live.createSession("claude", "/project", {}, "anthropic");
+    expect(session.state.retryThrottled).toBe(false);
+    await live.setRetryThrottled(session.id, true);
+    expect(session.state.retryThrottled).toBe(true);
+  });
+
+  test("a subscription session cannot enable extended throttle retries", async () => {
+    const { adapter, live } = setup();
+    adapter.addStored("plan", []);
+    await expect(live.setRetryThrottled("claude:plan", true)).rejects.toThrow("using an API key");
+  });
+
   test("a retry due while a module holds the session waits for the release, then goes", async () => {
     const { adapter, core, live } = setup();
     adapter.addStored("held", []);

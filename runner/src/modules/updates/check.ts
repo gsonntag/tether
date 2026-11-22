@@ -6,18 +6,57 @@
 // process (a new version goes in beside it, or replaces files a running process still holds open),
 // so live sessions go on with the version they started with.
 
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { compareVersions, parseVersion, updateStatus, type HarnessReport, type HarnessVersion, type UpdateRun } from "../../../../shared/harnessUpdates";
 import { bundledPackageJson, commandLine, detectInstall, effectNote, updatePlan, type HarnessSpec, type Install, type UpdatePlan } from "./install";
 import { childEnv } from "../../childEnv";
+import { checkAntigravityCompatibility } from "../../adapters/antigravity/compat";
 
 export const HARNESS_SPECS: HarnessSpec[] = [
   { id: "claude", name: "Claude Code", pkg: "@anthropic-ai/claude-code", bin: process.env.CLAUDE_BIN || "claude", brew: "claude-code" },
   { id: "codex", name: "Codex", pkg: "@openai/codex", bin: process.env.CODEX_BIN || "codex", brew: "codex" },
   { id: "claude-agent-sdk", name: "Claude Agent SDK", pkg: "@anthropic-ai/claude-agent-sdk" },
+  { id: "antigravity", name: "Antigravity", pkg: "", bin: process.env.AGY_BIN || "agy" },
 ];
+
+export interface AgyCompatState {
+  lastVersion?: string;
+  checkedAt?: number;
+  ok?: boolean;
+  error?: string;
+  output?: string;
+}
+
+export interface AgyCompatTracker {
+  get(): AgyCompatState | undefined;
+  set(state: AgyCompatState): void;
+  runCheck?: (version: string) => Promise<{ ok: boolean; error?: string; output: string }>;
+  onFailure?: (version: string, error: string, output?: string) => void;
+}
+
+export class FileCompatStore implements AgyCompatTracker {
+  private state?: AgyCompatState;
+  constructor(private file?: string, public onFailure?: (version: string, error: string, output?: string) => void) {
+    if (!file) return;
+    try {
+      if (existsSync(file)) this.state = JSON.parse(readFileSync(file, "utf8"));
+    } catch {}
+  }
+  get(): AgyCompatState | undefined {
+    return this.state;
+  }
+  set(state: AgyCompatState): void {
+    this.state = state;
+    if (!this.file) return;
+    try {
+      const tmp = `${this.file}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
+      renameSync(tmp, this.file);
+    } catch {}
+  }
+}
 
 /** How long a check is reused before the registry is asked again. */
 export const CACHE_MS = 5 * 60_000;
@@ -140,6 +179,7 @@ export class UpdateChecker {
     private deps: CheckerDeps = realDeps,
     private specs: HarnessSpec[] = HARNESS_SPECS,
     private log: (line: string) => void = () => {},
+    private compat?: AgyCompatTracker,
   ) {}
 
   /** The report, from the cache when it's fresh and not `refresh`. Never throws. */
@@ -173,6 +213,53 @@ export class UpdateChecker {
     return { spec, installed, install: detectInstall(path, spec.pkg), bin, path };
   }
 
+  private async checkAgyCompatibility(installed: string, setError: (e: string) => void): Promise<void> {
+    if (!this.compat) return;
+    const last = this.compat.get();
+    if (!last || last.lastVersion !== installed) {
+      this.log(`new agy version seen: ${installed} (previous: ${last?.lastVersion ?? "none"}); running compatibility checks`);
+      const checkFn = this.compat.runCheck ?? ((_v: string) => checkAntigravityCompatibility());
+      let res: { ok: boolean; error?: string; output: string };
+      try {
+        res = await checkFn(installed);
+      } catch (e) {
+        res = { ok: false, error: (e as Error)?.message ?? String(e), output: `Check threw: ${e}` };
+      }
+      this.compat.set({ lastVersion: installed, checkedAt: this.deps.now(), ok: res.ok, error: res.error, output: res.output });
+      if (!res.ok) {
+        const msg = `Compatibility check failed: ${res.error ?? "unknown error"}`;
+        setError(msg);
+        this.runs.set("antigravity", {
+          state: "failed",
+          startedAt: this.deps.now(),
+          endedAt: this.deps.now(),
+          command: "bun scripts/antigravity-compat.ts",
+          error: res.error,
+          output: res.output,
+          from: installed,
+          to: installed,
+        });
+        this.compat.onFailure?.(installed, res.error ?? "Compatibility check failed", res.output);
+      } else {
+        this.log(`Antigravity compatibility check passed for agy ${installed}`);
+      }
+    } else if (!last.ok) {
+      setError(`Compatibility check failed: ${last.error}`);
+      if (!this.runs.has("antigravity")) {
+        this.runs.set("antigravity", {
+          state: "failed",
+          startedAt: last.checkedAt ?? this.deps.now(),
+          endedAt: last.checkedAt ?? this.deps.now(),
+          command: "bun scripts/antigravity-compat.ts",
+          error: last.error,
+          output: last.output ?? "",
+          from: installed,
+          to: installed,
+        });
+      }
+    }
+  }
+
   private async check(): Promise<HarnessReport> {
     const rows = await Promise.all(
       this.specs.map(async (spec): Promise<HarnessVersion> => {
@@ -181,20 +268,26 @@ export class UpdateChecker {
         let latest: string | undefined;
         let error: string | undefined;
         if (f.installed) {
-          try {
-            latest = await latestFromRegistry(spec.pkg, spec.id === "claude" && f.install.method === "native" ? this.deps.claudeChannel() : "latest", this.deps);
-          } catch (e) {
-            error = (e as Error).message;
+          if (spec.id === "antigravity") {
+            latest = f.installed;
+            await this.checkAgyCompatibility(f.installed, (err) => { error = err; });
+          } else if (spec.pkg) {
+            try {
+              latest = await latestFromRegistry(spec.pkg, spec.id === "claude" && f.install.method === "native" ? this.deps.claudeChannel() : "latest", this.deps);
+            } catch (e) {
+              error = (e as Error).message;
+            }
           }
         }
         const plan = f.installed ? updatePlan(spec, f.install, latest, f.bin) : undefined;
+        const status = spec.id === "antigravity" && error ? "unknown" : updateStatus(f.installed, latest);
         return {
           id: spec.id,
           name: spec.name,
           pkg: spec.pkg,
           ...(f.installed ? { installed: f.installed } : {}),
           ...(latest ? { latest } : {}),
-          status: updateStatus(f.installed, latest),
+          status,
           method: f.install.method,
           ...(f.path ? { path: f.path } : {}),
           updatable: !!plan,
@@ -219,7 +312,7 @@ export class UpdateChecker {
     if (prev && (prev.state === "queued" || prev.state === "running")) return report;
     const f = this.found.get(id);
     if (!f?.installed) throw new Error(`${row.name} isn't installed on this runner.`);
-    if (row.status === "current") throw new Error(`${row.name} is up to date.`);
+    if (row.status === "current" && id !== "antigravity") throw new Error(`${row.name} is up to date.`);
     if (f.install.method === "bundled") throw new Error(`${row.name} is part of Tether's runner: it updates with a Tether release.`);
     const plan = updatePlan(f.spec, f.install, row.latest, f.bin);
     if (!plan) throw new Error(`${row.name} was installed in a way Tether can't update. Update it on the machine.`);
@@ -238,6 +331,30 @@ export class UpdateChecker {
   }
 
   private async execute(f: Found, plan: UpdatePlan, run: UpdateRun): Promise<void> {
+    if (f.spec.id === "antigravity") {
+      run.state = "running";
+      run.startedAt = this.deps.now();
+      this.log(`checking Antigravity compatibility: ${run.command}`);
+      const checkFn = this.compat?.runCheck ?? ((_v: string) => checkAntigravityCompatibility());
+      try {
+        const res = await checkFn(f.installed ?? "");
+        run.output = res.output;
+        run.to = f.installed;
+        if (!res.ok) throw new Error(res.error ?? "Compatibility check failed");
+        run.state = "done";
+        this.compat?.set({ lastVersion: f.installed, checkedAt: this.deps.now(), ok: true, output: res.output });
+        this.log(`Antigravity compatibility check passed for agy ${f.installed}`);
+      } catch (e) {
+        run.state = "failed";
+        run.error = (e as Error)?.message ?? String(e);
+        this.compat?.set({ lastVersion: f.installed, checkedAt: this.deps.now(), ok: false, error: run.error, output: run.output });
+        this.log(`Antigravity compatibility check failed: ${run.error}`);
+      } finally {
+        run.endedAt = this.deps.now();
+        this.cache = undefined;
+      }
+      return;
+    }
     run.state = "running";
     run.startedAt = this.deps.now();
     this.log(`updating ${f.spec.name}: ${run.command}`);
