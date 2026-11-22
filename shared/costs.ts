@@ -1,4 +1,4 @@
-import { AZURE_RATES_DATE, AZURE_RATES_SOURCE } from "./azureRates";
+import { AZURE_RATES_DATE, AZURE_RATES_SOURCE, AZURE_SOL_RATES_SOURCE } from "./azureRates";
 /** A session's API usage only. Unknown prior usage or prices must not become a $0 total. */
 export interface SessionCost {
   usd?: number;
@@ -10,7 +10,7 @@ export interface SessionCost {
   notes?: string[];
 }
 
-const REASON = /^(no-usage|no-cache-ttl|no-write-rate|azure-table|tool-fee|long-context|earlier-usage|terminal|no-baseline|unsaved|(tier|model|type):[\w.:-]{1,64})$/;
+const REASON = /^(no-usage|no-cache-ttl|no-write-rate|azure-table|azure-sol-table|tool-fee|long-context|earlier-usage|terminal|no-baseline|unsaved|(tier|model|type):[\w.:-]{1,64})$/;
 /** A value inside a reason: what doesn't look like a tier or a model id isn't stored. */
 export const reasonValue = (value: unknown) => (typeof value === "string" && /^[\w.:-]{1,64}$/.test(value) ? value : "other");
 export const costReasons = (value: unknown): string[] =>
@@ -48,6 +48,7 @@ function missing(reason: string): string {
 }
 function assumed(reason: string): string | undefined {
   if (reason === "azure-table") return `Azure rates are from Tether's table of ${AZURE_RATES_SOURCE} rates dated ${AZURE_RATES_DATE}; your agreement may differ.`;
+  if (reason === "azure-sol-table") return `${AZURE_SOL_RATES_SOURCE}.`;
   if (reason === "no-cache-ttl") return "Cache write lifetimes weren't reported: priced at the default 30-minute rate.";
   if (reason.startsWith("tier:")) return `The response gave service tier ${reason.slice(5)} and the request asked for none: priced as Standard.`;
 }
@@ -57,9 +58,10 @@ const sentence = (reasons: string[]) => (reasons.length ? ` Missing: ${reasons.j
 export function costChip(cost: SessionCost | undefined): { text: string; detail: string } {
   const known = typeof cost?.usd === "number" && Number.isFinite(cost.usd) && cost.usd >= 0;
   const reasons = costReasons(cost?.reasons);
-  const notes = costReasons(cost?.notes).flatMap((r) => assumed(r) ?? []);
+  const codes = costReasons(cost?.notes);
+  const notes = codes.flatMap((r) => assumed(r) ?? []);
   // A partial subtotal says where its rates came from, not what a priced part assumed.
-  const table = costReasons(cost?.notes).includes("azure-table") ? ` ${assumed("azure-table")}` : "";
+  const table = codes.filter((r) => r === "azure-table" || r === "azure-sol-table").map((r) => ` ${assumed(r)}`).join("");
   if (!known || !cost?.complete) {
     const why = sentence(reasons.map(missing));
     // What's known is shown as an estimate; the tooltip says it isn't the whole and what's missing.

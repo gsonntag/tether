@@ -1,0 +1,27 @@
+{
+  "subscription": "00000000-0000-0000-0000-000000000000",
+  "resource_group": "main",
+  "account": "your-openai-west",
+  "automation_account": "openai-spend-guard",
+  "automation_region": "westus2",
+  "storage_account": "aoaispendguardunique",
+  "email": "owner@example.com",
+  "deployments": {
+    "gpt-6.2-sol": {
+      "model": "gpt-6.2-sol",
+      "baseline": 1200,
+      "maximum": 7000,
+      "trip": 1,
+      "prompt": 2000000,
+      "output": 250000
+    },
+    "gpt-6-luna": {
+      "model": "gpt-6-luna",
+      "baseline": 1200,
+      "maximum": 7000,
+      "trip": 1,
+      "prompt": 4000000,
+      "output": 500000
+    }
+  }
+}

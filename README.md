@@ -94,6 +94,8 @@ You add keys under **Settings → Credentials** and **Settings → Azure**, and 
 runner. New sessions start on the subscription. The header's billing chip shows the source and
 switches it, and API sessions show what they've cost in dollars.
 
+For unattended Azure OpenAI jobs, see the [spend guard setup and recovery guide](docs/azure-openai-spend-guard.md).
+
 **Usage** (SPEC §10, *Usage*): **Settings → Usage** shows a runner's last 7 or 30 days of tokens
 (input, output, cache reads and writes) by day, by harness and model, and by project, read from
 Claude Code's and Codex's own logs, so CLI sessions count too. Dollars are estimates at published API

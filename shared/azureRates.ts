@@ -1,26 +1,45 @@
-// Azure OpenAI Standard (on-demand) rates, USD per 1M tokens, region West US, as on the Azure OpenAI
-// pricing page pasted by the owner on 2026-11-01. Only what that page lists: no other models, regions,
-// deployment types or tiers (Regional, Priority, Flex, Batch and Provisioned aren't here). `cacheWrite`
-// is absent where the page lists none. Long context is a request over 272K input tokens; the page states
-// that cutoff only for GPT-5.4 ("<272k context length") and it's assumed for the others. The owner's
-// own agreement may differ: these price estimates, never invoices.
+// Azure OpenAI Standard rates, USD per 1M tokens. The default source is the West US pricing page
+// supplied by the owner. Models with a different source identify it in their table. The 272K
+// cutoff comes from the GPT-5.4 listing and is also used for the other models' estimates.
 
 /** One band's rates. */
-export interface AzureBand { input: number; cached: number; cacheWrite?: number; output: number }
+export interface AzureBand { input: number; cached: number; cacheWrite?: number; cacheWrite12h?: number; output: number }
 /** A deployment type's rates: short context (≤ 272K input tokens) and, where listed, long. */
-export interface AzureTypeRates { short: AzureBand; long?: AzureBand }
+export interface AzureTypeRates { short: AzureBand; long?: AzureBand; source?: string }
 /** What Azure calls Global Standard and Data Zone Standard. Regional has no rates here. */
-export type AzureTableType = "global" | "dataZone";
+export type AzureTableType = "global" | "dataZone" | "dataZoneEU" | "dataZoneAPAC";
 export type AzureType = AzureTableType | "regional";
-export const AZURE_TYPES: readonly AzureType[] = ["global", "dataZone", "regional"];
-export const isAzureType = (v: unknown): v is AzureType => v === "global" || v === "dataZone" || v === "regional";
+export const AZURE_TYPES = ["global", "dataZone", "dataZoneEU", "dataZoneAPAC", "regional"] as const;
+export const isAzureType = (v: unknown): v is AzureType => AZURE_TYPES.some((type) => type === v);
 
 export const AZURE_RATES_DATE = "2026-11-01";
 export const AZURE_RATES_SOURCE = "Azure OpenAI pricing page, West US, USD, Standard";
+export const AZURE_SOL_RATES_DATE = "2026-11-21";
+export const AZURE_SOL_RATES_SOURCE = `Owner-supplied GPT-6.2 Sol rates (${AZURE_SOL_RATES_DATE}), pending Microsoft confirmation`;
 /** Input tokens above this are long context. */
 export const AZURE_LONG_CONTEXT = 272_000;
 
-export const AZURE_RATES: Record<string, Record<AzureTableType, AzureTypeRates>> = {
+const solInternational: AzureTypeRates = {
+  short: { input: 2.40, cached: 0.12, cacheWrite: 3, cacheWrite12h: 6, output: 12 },
+  long: { input: 4.80, cached: 0.24, cacheWrite: 6, cacheWrite12h: 12, output: 18 },
+  source: AZURE_SOL_RATES_SOURCE,
+};
+
+export const AZURE_RATES: Record<string, Partial<Record<AzureTableType, AzureTypeRates>>> = {
+  "gpt-6.2-sol": {
+    global: {
+      short: { input: 2, cached: 0.10, cacheWrite: 2.50, cacheWrite12h: 5, output: 10 },
+      long: { input: 4, cached: 0.20, cacheWrite: 5, cacheWrite12h: 10, output: 15 },
+      source: AZURE_SOL_RATES_SOURCE,
+    },
+    dataZone: {
+      short: { input: 2.20, cached: 0.11, cacheWrite: 2.75, cacheWrite12h: 5.50, output: 11 },
+      long: { input: 4.40, cached: 0.22, cacheWrite: 5.50, cacheWrite12h: 11, output: 16.50 },
+      source: AZURE_SOL_RATES_SOURCE,
+    },
+    dataZoneEU: solInternational,
+    dataZoneAPAC: solInternational,
+  },
   "gpt-6.1-sol": {
     global: { short: { input: 2, cached: 0.10, cacheWrite: 2.50, output: 10 }, long: { input: 4, cached: 0.20, cacheWrite: 5, output: 15 } },
     dataZone: { short: { input: 2.20, cached: 0.11, cacheWrite: 2.75, output: 11 }, long: { input: 4.40, cached: 0.22, cacheWrite: 5.50, output: 16.50 } },
