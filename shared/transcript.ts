@@ -5,7 +5,7 @@ import type { FallbackChain } from "./fallbackChain";
 import type { Attachment } from "./attachments";
 import type { ForkedFrom } from "./fork";
 import type { SessionCost } from "./costs";
-import type { BillingSource, CredentialSource } from "./credentials";
+import type { BillingSource } from "./credentials";
 import type { ShellRun } from "./shellRun";
 import type { Watcher, WatchingSummary } from "./watchers";
 
@@ -381,14 +381,11 @@ export interface LiveState {
   /** the last process start for nextBilling failed; the confirmed source is still current */
   sourceSwitchFailed?: boolean;
   /** ticked: when the plan runs out, the session switches to a key and resends (SPEC §10) */
-  autoKey?: boolean;
   fallbackChain?: FallbackChain;
   /** ticked ("Session can text me"): it may text the person, and plain texts can come to it (SPEC §11 Texting). Absent: it never texts */
   canText?: boolean;
   /** the key this session last used or had picked: default when no fallback order is saved */
   lastKey?: BillingSource;
-  /** Allowed automatic fallback keys, in priority order. Empty excludes all keys. */
-  fallbackKeys?: CredentialSource[];
   /** Cumulative API-only session cost. Missing/partial data is never represented as a $0 total. */
   cost?: SessionCost;
   /** the harness account's plan limits (shown only on a `plan` session). Absent: nothing reported */

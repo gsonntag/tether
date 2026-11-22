@@ -2838,12 +2838,11 @@
   background-color: color-mix(in srgb, var(--color-warning, #facc15) 55%, transparent);
 }
 
-.t-fallback-row, .t-fallback-actions {
+.t-fallback-actions {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.t-fallback-row { justify-content: space-between; }
 .t-fallback-actions button {
   min-width: 36px;
   min-height: 36px;

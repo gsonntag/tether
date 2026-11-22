@@ -12,6 +12,7 @@ interface RetryHost {
   held?(s: Session): boolean;
   revision(s: Session): string | undefined;
   send(s: Session, retry: SavedRetry): Promise<void>;
+  exhausted?(s: Session, retry: SavedRetry): void;
 }
 
 export class RetryControl {
@@ -23,7 +24,7 @@ export class RetryControl {
 
   constructor(private core: SessionCore, private host: RetryHost) {}
 
-  recover(s: Session, hit: { retryAt?: number }, sent: Session["lastSend"], error: string): boolean {
+  recover(s: Session, hit: { retryAt?: number }, sent: Session["lastSend"], error: string): boolean | "exhausted" {
     if (this.stopping || !sent || s.retrySuppressed || s.stopped || s.turnActed || s.limitHit || s.summary.parentSessionId || this.host.blocked(s) || s.driver?.busy() || s.shellsRunning) return false;
     const now = this.core.now();
     const identity = this.host.identity(s);
@@ -35,7 +36,7 @@ export class RetryControl {
     for (const [scope, at] of this.cooldowns) if (at <= now) this.cooldowns.delete(scope);
     const shared = this.cooldowns.get(identity.scope) ?? 0;
     const nextAt = this.time(attempt, now, deadline, Math.max(minAt, shared));
-    if (attempt > (old?.maxAttempts ?? RETRY_MAX_ATTEMPTS) || nextAt === undefined) return false;
+    if (attempt > (old?.maxAttempts ?? RETRY_MAX_ATTEMPTS) || nextAt === undefined) return "exhausted";
     const retry: SavedRetry = {
       id: old?.id ?? randomUUID(), attempt, maxAttempts: old?.maxAttempts ?? RETRY_MAX_ATTEMPTS,
       nextAt, deadline, minAt, error: error.slice(0, 4096), phase: "waiting",
@@ -70,7 +71,7 @@ export class RetryControl {
     // Retry now skips our backoff, but never a provider's requested minimum or another session's wait.
     const other = [...this.core.sessions.values()].some((x) => x !== s && x.retry?.scope === r.scope);
     const nextAt = Math.max(this.core.now(), r.minAt ?? 0, other ? this.cooldowns.get(r.scope) ?? 0 : 0);
-    if (nextAt >= r.deadline) return this.fail(s, "The rate limit retry deadline was reached.");
+    if (nextAt >= r.deadline) return this.fail(s, "The rate limit retry deadline was reached.", r);
     r.nextAt = nextAt;
     if (!other) this.cooldowns.set(r.scope, nextAt);
     this.save(s);
@@ -117,7 +118,7 @@ export class RetryControl {
 
   private async run(s: Session, r: SavedRetry) {
     if (this.stopping || s.retry !== r || r.phase !== "waiting") return;
-    if (this.core.now() >= r.deadline) return this.fail(s, "The rate limit retry deadline was reached.");
+    if (this.core.now() >= r.deadline) return this.fail(s, "The rate limit retry deadline was reached.", r);
     if (this.host.held?.(s)) {
       s.retryTimer = setTimeout(() => void this.run(s, r), 250);
       s.retryTimer.unref?.();
@@ -134,7 +135,7 @@ export class RetryControl {
     // next session beyond this one; never let Retry now bypass a provider's requested wait.
     const earliest = Math.max(r.minAt ?? 0, this.cooldowns.get(r.scope) ?? 0);
     if (earliest > this.core.now()) {
-      if (earliest >= r.deadline) return this.fail(s, "The rate limit retry deadline was reached.");
+      if (earliest >= r.deadline) return this.fail(s, "The rate limit retry deadline was reached.", r);
       r.nextAt = earliest;
       this.save(s);
       return this.arm(s);
@@ -150,10 +151,12 @@ export class RetryControl {
     }
   }
 
-  private fail(s: Session, error: string) {
+  private fail(s: Session, error: string, exhausted?: SavedRetry) {
     this.clear(s);
     s.setState({ error });
     s.apply({ type: "msg", msg: { id: `n-${randomUUID()}`, role: "notice", level: "error", ts: this.core.now(), parts: [{ type: "text", text: error }] } });
     this.core.o.bus.emit("turnEnded", { sessionId: s.id, error });
+    if (exhausted && !this.host.blocked(s) && !this.host.held?.(s) && s.state.status === "idle" &&
+      !s.driver?.busy() && exhausted.fingerprint === this.host.identity(s).fingerprint) this.host.exhausted?.(s, exhausted);
   }
 }

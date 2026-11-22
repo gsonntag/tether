@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMenuGroup, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem } from "@astryxdesign/core/DropdownMenu";
+import { DropdownMenu, DropdownMenuDivider, DropdownMenuGroup, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem } from "@astryxdesign/core/DropdownMenu";
 import { ChevronDownIcon } from "@heroicons/react/16/solid";
 import { costChip } from "../../../shared/costs";
 import type { BillingSource, SourceChoices } from "../../../shared/credentials";
@@ -7,9 +7,8 @@ import { isApiBilling, planChip, planLines, usageChip } from "../../../shared/la
 import { UNKNOWN_BILLING, type HarnessCapabilities, type HarnessId, type LiveState, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { navigate } from "../route";
-import { autoKeyItem, billingForDisplay, CURRENT_SOURCE, sourceMenu } from "../sourceMenu";
+import { billingForDisplay, CURRENT_SOURCE, sourceMenu } from "../sourceMenu";
 import { useStore } from "../store";
-import { FallbackKeysDialog } from "./FallbackKeysDialog";
 import { SessionApiCostGroup } from "./SessionApiCostGroup";
 
 const known = new Map<string, SourceChoices>();
@@ -33,8 +32,7 @@ export function useSources(runnerId: string, harness: HarnessId, wanted: boolean
 /**
  * What the session draws from, loud on a key, and the way to change it.
  */
-export function BillingChip({ runnerId, session, state, capabilities, onSwitch, onAutoKey }: { runnerId: string; session: SessionSummary; state: LiveState; capabilities?: HarnessCapabilities; onSwitch: (source: BillingSource) => void; onAutoKey?: (on: boolean) => void }) {
-  const [editingFallback, setEditingFallback] = useState(false);
+export function BillingChip({ runnerId, session, state, capabilities, onSwitch }: { runnerId: string; session: SessionSummary; state: LiveState; capabilities?: HarnessCapabilities; onSwitch: (source: BillingSource) => void }) {
   // A side chat keeps its session's source (SPEC §16a).
   const changeable = !session.parentSessionId && !session.sideOf && !!capabilities?.sourceSwitch;
   const { choices, refresh } = useSources(runnerId, session.harness, changeable);
@@ -53,7 +51,6 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
   if (!hasMenu) return <span {...chip}>{body}</span>;
 
   const menu = choices ? sourceMenu(session.harness, state, choices) : undefined;
-  const autoKey = choices && (!onAutoKey || session.sideOf ? undefined : autoKeyItem(session.harness, state, choices));
   const hasMoreBelowPlan = showSessionCost || (!!menu && (menu.items.length > 0 || menu.addKey));
   return (
     <>
@@ -86,13 +83,9 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
             {menu.items.map((i) => <DropdownMenuRadioItem key={i.value} value={i.value} label={i.label} description={i.reason} isDisabled={!!i.reason} />)}
           </DropdownMenuRadioGroup>
         )}
-        {autoKey && <DropdownMenuDivider />}
-        {autoKey && <DropdownMenuCheckboxItem label={autoKey.label} value={!!state.autoKey} onChange={(on) => onAutoKey?.(on)} />}
-        {autoKey?.order && <DropdownMenuItem label="Fallback keys…" onClick={() => setEditingFallback(true)} />}
         {menu?.addKey && menu.items.length > 0 && <DropdownMenuDivider />}
         {menu?.addKey && <DropdownMenuItem label="Add API key…" onClick={() => navigate({ page: "credentials" })} />}
       </DropdownMenu>
-      {editingFallback && choices && <FallbackKeysDialog harness={session.harness} state={state} choices={choices} onClose={() => setEditingFallback(false)} onSave={async (fallbackKeys) => { await rpc(runnerId, "setAutoKey", { sessionId: session.id, fallbackKeys }); }} />}
     </>
   );
 }

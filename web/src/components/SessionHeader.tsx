@@ -139,7 +139,7 @@ export function SessionHeader({
         </div>
       )}
       <div className={`t-chips${paid ? " t-paid-chips" : ""}`}>
-        <BillingChip runnerId={runnerId} session={session} state={state} capabilities={capabilities} onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))} onAutoKey={(on) => void call(rpc(runnerId, "setAutoKey", { sessionId: session.id, on }))} />
+        <BillingChip runnerId={runnerId} session={session} state={state} capabilities={capabilities} onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))} />
         {!isChild && !session.sideOf && <button type="button" className="t-chip" onClick={() => setEditingFallback(true)}>
           Fallback chain{chain?.enabled ? activeStep && chain.active !== undefined ? ` · ${chain.active + 1}/${chain.steps.length} · ${HARNESS_LABELS[activeStep.harness]}` : " · On" : " · Off"}
         </button>}

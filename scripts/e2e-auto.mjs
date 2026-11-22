@@ -1,4 +1,4 @@
-// The billing chip's plan lines and the switch when the plan runs out (SPEC §10), in a real browser
+// The billing chip's plan lines and the fallback chain (SPEC §10), in a real browser
 // on scripts/limit-runner.ts, at desktop (1280) and phone (375):
 //   BASE=http://127.0.0.1:5299 RUNNER=tether-dev-auto SHOTS=<dir> node scripts/e2e-auto.mjs
 const { chromium } = await import(process.env.PLAYWRIGHT ?? "/home/ubuntu/foliation/web/site/node_modules/playwright/index.mjs");
@@ -27,7 +27,31 @@ const menu = async (p) => {
   await p.waitForTimeout(400);
 };
 const close = (p) => p.keyboard.press("Escape");
-const box = (p) => p.getByRole("menuitemcheckbox");
+const chain = (p) => p.getByRole("button", { name: /^Fallback chain ·/ });
+const editor = async (p) => {
+  await chain(p).click();
+  const dialog = p.getByRole("dialog", { name: "Fallback chain" });
+  await dialog.getByRole("button", { name: "Add step" }).waitFor();
+  return dialog;
+};
+const enabled = (dialog) => dialog.getByRole("checkbox", { name: "Enable for this session" });
+const save = async (dialog) => {
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
+};
+const configure = async (p, harness, source, model) => {
+  const dialog = await editor(p);
+  while (await dialog.getByRole("button", { name: /^Remove step/ }).count()) {
+    // The accessible index changes after each removal.
+    await dialog.getByRole("button", { name: /^Remove step/ }).first().click();
+  }
+  await dialog.getByRole("button", { name: "Add step" }).click();
+  await dialog.getByLabel("Harness", { exact: true }).selectOption(harness);
+  await dialog.getByLabel("Login or key", { exact: true }).selectOption(source);
+  await dialog.getByLabel("Model", { exact: true }).selectOption(model);
+  await enabled(dialog).check();
+  return dialog;
+};
 const send = async (p, text) => {
   await p.locator("textarea.t-input[aria-label=Message]").fill(text);
   await p.locator('button[aria-label="Send"]').click();
@@ -44,25 +68,32 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
   const p = await open(desktop, "claude:plan-a");
   await menu(p);
   want((await lines(p)).length === 0, "nothing reported: no plan lines, no made-up number");
-  want(await box(p).count() === 1, "a plan session with a key has the box");
-  want((await box(p).getAttribute("aria-checked")) === "false", "off by default");
+  want((await chain(p).textContent()).includes("Off"), "off by default");
   await close(p);
   await send(p, "hello");
   await until(p, "on the plan");
   await menu(p);
   const l = await lines(p);
   want(l.length === 2 && /^Week 64% · resets /.test(l[0]) && /^5 hours 12% · resets /.test(l[1]), `the windows reported: ${l.join(" / ")}`);
-  await box(p).click();
-  await p.waitForTimeout(500);
-  want(await box(p).isVisible(), "the menu stays open on a toggle");
-  want((await box(p).getAttribute("aria-checked")) === "true", "ticked");
-  await shot(p, "desktop-plan-menu");
   await close(p);
+  const dialog = await configure(p, "claude", "anthropic", "claude-haiku-5-5");
+  await dialog.getByLabel("Preset name").fill("Claude backup");
+  await dialog.getByRole("button", { name: "Save as preset" }).click();
+  await dialog.getByRole("button", { name: "Rename" }).waitFor();
+  await dialog.getByLabel("Preset name").fill("Claude backup renamed");
+  await dialog.getByRole("button", { name: "Rename" }).click();
+  await dialog.getByRole("option", { name: "Claude backup renamed" }).waitFor({ state: "attached" });
+  await save(dialog);
   await p.reload();
   await chip(p).waitFor();
-  await menu(p);
-  want((await box(p).getAttribute("aria-checked")) === "true", "still ticked after a reload (saved in prefs)");
-  await close(p);
+  const saved = await editor(p);
+  want(await enabled(saved).isChecked(), "enabled and saved across reload");
+  await saved.getByLabel("Runner presets").selectOption({ label: "Claude backup renamed" });
+  await saved.getByRole("button", { name: "Load preset" }).click();
+  want(await saved.getByLabel("Model", { exact: true }).inputValue() === "claude-haiku-5-5", "runner preset loads the saved order");
+  await saved.getByRole("button", { name: "Delete" }).click();
+  await saved.getByRole("option", { name: "Claude backup renamed" }).waitFor({ state: "detached" });
+  await save(saved);
   want(/5h 12%/.test(await chip(p).textContent()), "the chip keeps its plan %");
 
   await send(p, "please limit me");
@@ -79,7 +110,7 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
   const kl = await lines(p);
   want(kl.length === 2, "the key session still sees the plan's lines");
   want(await p.getByRole("menu").first().getByText("Claude plan", { exact: true }).count() >= 1, "under the plan's name");
-  want(await box(p).count() === 0, "no box on a key");
+  want(await p.getByRole("menuitemcheckbox").count() === 0, "the legacy billing toggle is gone");
   await shot(p, "desktop-key-menu");
   await close(p);
   want(!/\d+%/.test(await chip(p).textContent()), "no plan % on the key's chip");
@@ -92,12 +123,9 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
 // Tools already ran: switched, not resent.
 {
   const p = await open(desktop, "claude:plan-b");
-  await menu(p);
-  await box(p).click();
-  await p.waitForTimeout(300);
-  await close(p);
+  await save(await configure(p, "claude", "anthropic", "claude-haiku-5-5"));
   await send(p, "tools limit");
-  await until(p, "Tools had already run in that turn");
+  await until(p, "The turn already acted.");
   await p.waitForTimeout(800);
   want(await p.locator(".t-msg.user", { hasText: "tools limit" }).count() === 1, "tools ran: not resent");
   // Idle, the header shows the source the next turn uses (a Next chip only while work runs).
@@ -107,13 +135,10 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
   await p.close();
 }
 
-// A short 429 with the box ticked: nothing switches.
+// A short 429 while Tether is still retrying: no switch yet.
 {
   const p = await open(desktop, "claude:plan-c");
-  await menu(p);
-  await box(p).click();
-  await p.waitForTimeout(300);
-  await close(p);
+  await save(await configure(p, "claude", "anthropic", "claude-haiku-5-5"));
   await send(p, "short 429");
   await until(p, "temporarily limiting");
   await p.waitForTimeout(1000);
@@ -132,54 +157,36 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
   await shot(p, "phone-codex-menu");
   const b = await p.getByRole("menu").first().boundingBox();
   want(b.x >= 0 && b.x + b.width <= 375, `the menu fits at 375 (${Math.round(b.x)}..${Math.round(b.x + b.width)})`);
-  want(/OpenAI API key/.test(await box(p).textContent()), "both keys: the target is named, OpenAI by default");
-  await p.getByRole("menuitemradio", { name: /Azure/ }).tap();
-  await p.waitForTimeout(600);
-  await close(p).catch(() => {});
-  await p.locator(".t-paid-badge", { hasText: "Azure" }).first().waitFor();
-  await p.waitForTimeout(300);
-  await chip(p).tap();
-  await p.waitForTimeout(500);
-  await p.getByRole("menuitemradio", { name: /ChatGPT plan/ }).tap();
-  await p.waitForTimeout(600);
-  await close(p).catch(() => {});
-  await chip(p).tap();
-  await p.getByRole("menu").first().waitFor();
-  await p.waitForTimeout(800);
-  want(/Azure/.test(await box(p).textContent()), "the last key picked is the target");
-  const fresh = await lines(p);
-  want(fresh.length === 2 && !fresh.some((l) => l.includes("ago")) && fresh[0] !== reads[0], `opening the menu reads again: ${fresh.join(" / ")}`);
-  await box(p).tap();
-  await p.waitForTimeout(400);
-  want((await box(p).getAttribute("aria-checked")) === "true" && await box(p).isVisible(), "ticked on a phone, menu open");
-  await shot(p, "phone-codex-ticked");
-  await close(p).catch(() => {});
-  await p.mouse.click(10, 500).catch(() => {});
+  await close(p);
+  const dialog = await configure(p, "codex", "azure", "fake-deployment");
+  const bounds = await dialog.boundingBox();
+  want(bounds.x >= 0 && bounds.x + bounds.width <= 375, "fallback editor fits at 375px");
+  await shot(p, "phone-fallback-editor");
+  await save(dialog);
   await send(p, "limit please");
   await until(p, "on Azure", 20000);
   await p.waitForTimeout(500);
   await shot(p, "phone-carried");
   want(await p.locator(".t-paid-badge").first().isVisible(), "the loud badge on Azure, at 375");
-  await until(p, "Plan limit reached. Switched to Azure.");
-  ok("the notice crossed the carry");
+  await until(p, "Plan limit reached. Next source: Azure.");
+  await p.getByRole("button", { name: "Fallback chain · 1/1 · Codex" }).waitFor();
+  ok("the notice and chain progress crossed the carry");
   await p.close();
 }
 
-// Removing a key keeps an enabled switch visible so it can be turned off.
+// Removing a key shows the reason on the saved step.
 {
   const p = await open(desktop, "claude:plan-c");
-  const unset = await p.evaluate(async (r) => {
+  await p.evaluate(async (r) => {
     const name = performance.getEntriesByType("resource").map((e) => e.name).find((n) => n.includes("/src/connection.ts"));
     const { rpc } = await import(name);
     await rpc(r, "unsetCredential", { source: "anthropic" });
-    return true;
   }, RUNNER);
-  await menu(p);
-  want(unset && await box(p).count() === 1 && await box(p).getAttribute("aria-checked") === "true", "removed key: enabled switch can still be turned off");
-  await box(p).click();
-  await p.waitForTimeout(300);
-  want(await box(p).count() === 0, "no key set and switch off: no box");
-  await shot(p, "desktop-no-key");
+  const dialog = await editor(p);
+  await dialog.getByText("Login or key unavailable.").waitFor();
+  await enabled(dialog).uncheck();
+  await save(dialog);
+  await p.getByRole("button", { name: "Fallback chain · Off" }).waitFor();
   await p.close();
 }
 

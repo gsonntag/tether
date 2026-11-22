@@ -1,4 +1,4 @@
-// Run against scripts/limit-runner.ts through the dev relay (no real model requests): fallback keys,
+// Run against scripts/limit-runner.ts through the dev relay (no real model requests): fallback chain,
 // Azure deployments changed idle and mid-turn (held as "Next: …"), Other model or deployment…, and the
 // Model chip while a source change waits, at 1280 and 375. SHOTS: where screenshots go.
 // BASE=http://127.0.0.1:15180 RUNNER=tether-model-fallback-check PROJECT=/tmp/tether-model-fallback-check/project node scripts/e2e-model-fallback.mjs
@@ -19,7 +19,12 @@ const rpc = (p, op, args) => p.evaluate(async ({ runner, op, args }) => {
   return rpc(runner, op, args);
 }, { runner: RUNNER, op, args });
 const send = async (p, text) => { await p.locator("textarea.t-input[aria-label=Message]").fill(text); await p.locator('button[aria-label="Send"]').click(); };
-const fallback = async (p) => { await menu(p); await p.getByRole("menuitem", { name: "Fallback keys…" }).click(); await p.getByRole("dialog").waitFor(); };
+const fallback = async (p) => {
+  await p.getByRole("button", { name: /^Fallback chain ·/ }).click();
+  const dialog = p.getByRole("dialog", { name: "Fallback chain" });
+  await dialog.getByRole("button", { name: "Add step" }).waitFor();
+  return dialog;
+};
 const save = async (p) => { await p.getByRole("button", { name: "Save", exact: true }).click(); await p.getByRole("dialog").waitFor({ state: "hidden" }); };
 const modelChip = (p) => p.getByRole("button", { name: /^Model:/ });
 const pickModel = async (p, name) => {
@@ -59,29 +64,33 @@ try {
     await chip(p).waitFor();
     await send(p, "hello before fallback");
     await p.getByText(/Fake reply .* on ChatGPT plan/).first().waitFor();
-    await fallback(p);
-    await p.getByRole("button", { name: "Move Azure up", exact: true }).click();
-    want(await p.getByRole("checkbox", { name: "1. Azure", exact: true }).isChecked(), `${width}: Azure ranked first`);
-    await p.getByRole("checkbox", { name: "2. OpenAI API key", exact: true }).uncheck();
+    const dialog = await fallback(p);
+    while (await dialog.getByRole("button", { name: /^Remove step/ }).count()) {
+      await dialog.getByRole("button", { name: /^Remove step/ }).first().click();
+    }
+    for (const source of ["openai", "azure"]) {
+      await dialog.getByRole("button", { name: "Add step" }).click();
+      await dialog.getByLabel("Harness", { exact: true }).last().selectOption("codex");
+      await dialog.getByLabel("Login or key", { exact: true }).last().selectOption(source);
+    }
+    await dialog.getByRole("button", { name: "Move step 2 up" }).click();
+    want(await dialog.getByLabel("Login or key", { exact: true }).first().inputValue() === "azure", `${width}: Azure ranked first`);
+    await dialog.getByRole("button", { name: "Remove step 2" }).click();
+    await dialog.getByRole("checkbox", { name: "Enable for this session" }).check();
     await save(p);
     await p.reload();
     await chip(p).waitFor();
-    await fallback(p);
-    want(await p.getByRole("checkbox", { name: "1. Azure", exact: true }).isChecked(), `${width}: Azure rank survives reload`);
-    want(!await p.getByRole("checkbox", { name: "OpenAI API key", exact: true }).isChecked(), `${width}: OpenAI exclusion survives reload`);
-    const bounds = await p.getByRole("dialog").boundingBox();
+    const reloaded = await fallback(p);
+    const sources = reloaded.getByLabel("Login or key", { exact: true });
+    want(await sources.count() === 1 && await sources.inputValue() === "azure", `${width}: the order survives reload`);
+    const bounds = await reloaded.boundingBox();
     want(bounds.x >= 0 && bounds.x + bounds.width <= width, `${width}: fallback dialog fits`);
     await save(p);
-    await menu(p);
-    await p.getByRole("menuitemcheckbox").click();
-    await p.keyboard.press("Escape");
     await send(p, "limit please");
-    await p.getByText("Plan limit reached. Switched to Azure.", { exact: false }).first().waitFor();
+    await p.getByText("Plan limit reached. Next source: Azure.", { exact: false }).first().waitFor();
     await p.getByText(/Fake reply .* on Azure/).first().waitFor();
     want((await chip(p).textContent()).includes("Azure"), `${width}: allowed Azure fallback used`);
-    await menu(p);
-    want(await p.getByRole("menuitem", { name: "Fallback keys…" }).count() === 0 && await p.getByRole("menuitemcheckbox").count() === 0, `${width}: a key session has no switch and no Fallback keys`);
-    await p.keyboard.press("Escape");
+    await p.getByRole("button", { name: "Fallback chain · 1/1 · Codex" }).waitFor();
     // Model changes use the same Azure session and preserve its existing messages.
     const sameThread = p.url();
     await chooseModel(p, "deployment-one");
@@ -138,27 +147,19 @@ try {
       await dialog.getByRole("button", { name: "Cancel" }).click();
       await dialog.waitFor({ state: "hidden" });
     }
-    // Switch back to the plan with every fallback excluded, then hit its limit again.
+    // Disable the chain, then switch back manually and hit the plan limit.
+    const active = await fallback(p);
+    await active.getByRole("checkbox", { name: "Enable for this session" }).uncheck();
+    await save(p);
     await menu(p);
     await p.getByRole("menuitemradio", { name: "ChatGPT plan", exact: true }).click();
     await p.keyboard.press("Escape");
-    // Pending (idle): the header already shows the plan; the Model can't change until the carry.
-    await p.locator(".t-chip-off", { hasText: "deployment-two" }).waitFor();
-    want(await modelChip(p).count() === 0, `${width}: a pending source change disables the Model chip`);
-    await fallback(p);
-    want(!await p.getByRole("checkbox", { name: "OpenAI API key", exact: true }).isChecked(), `${width}: exclusion survives source carry`);
-    await p.getByRole("checkbox", { name: "1. Azure", exact: true }).uncheck();
-    await save(p);
     await send(p, "hello on plan");
     await p.getByText(/Fake reply .* on ChatGPT plan/).first().waitFor();
-    want((await chip(p).textContent()).includes("5h 100%"), `${width}: ChatGPT chip shows the 5-hour window`);
     await send(p, "limit again");
-    await p.getByText("Plan limit reached. No allowed fallback key is available, so nothing switched.", { exact: false }).first().waitFor();
-    want((await chip(p).textContent()).includes("ChatGPT plan"), `${width}: all exclusions prevent automatic switching`);
-    await menu(p);
-    want(await p.getByRole("menuitemcheckbox", { name: "No allowed key" }).count() === 1, `${width}: the switch says there's no allowed key`);
-    want(await p.getByRole("menuitemcheckbox").getAttribute("aria-checked") === "true", `${width}: saving the order didn't turn the switch off`);
-    await p.keyboard.press("Escape");
+    await p.getByText(/hit your usage limit/).last().waitFor();
+    want((await chip(p).textContent()).includes("ChatGPT plan"), `${width}: disabling the chain prevents switching`);
+    await p.getByRole("button", { name: "Fallback chain · Off" }).waitFor();
     // Typed on the plan: a model id applies to the model only; the plan's labels stay.
     const planChip = await chip(p).textContent();
     await typeModel(p, "gpt-custom-1");

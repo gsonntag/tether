@@ -8,7 +8,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
-import type { BillingSource, CredentialSource } from "../../shared/credentials";
+import type { BillingSource } from "../../shared/credentials";
 import type { ForkedFrom } from "../../shared/fork";
 import type { RunnerSettings } from "../../shared/protocol";
 import type { Billing, HarnessId, QueuedMessage } from "../../shared/transcript";
@@ -102,15 +102,13 @@ export interface SessionPrefs {
   nextSource?: BillingSource;
   /** with nextSource: the model picked for the new source, which its thread starts on (else the carry's own pick) */
   nextModel?: string;
-  /** switch to a key when the plan runs out, the one exception to no fallback (SPEC §10). Ticked by you */
-  autoKey?: boolean;
+  /** Effort and permission mode for a pending fallback source carry. */
+  nextFallbackSettings?: Pick<SessionPrefs, "effort" | "permissionMode">;
   fallbackChain?: FallbackChain;
   /** "Session can text me", ticked by you: it may text the person, and gets plain texts (SPEC §11 Texting). Kept whatever its age */
   canText?: boolean;
   /** the key this session last used or had picked */
   lastKey?: BillingSource;
-  /** Allowed automatic fallback keys, in priority order. Empty excludes all keys. */
-  fallbackKeys?: CredentialSource[];
   /** its API cost has had an entry in costs.json: one missing there now was lost, not never needed */
   metered?: boolean;
   /** a thread being made for a source change: nobody's until its first message has an answer */
