@@ -253,7 +253,9 @@ export class Mover {
       const { effort, permissionMode } = look.state;
       // An Azure deployment's name means nothing on another source: there, the default model.
       const model = (await this.ctx.sessions.sourceOf(id)) === "azure" && source !== "azure" ? undefined : look.state.model;
-      const opts: StartOpts = { ...(model && model !== "default" ? { model } : {}), ...(effort ? { effort } : {}), permissionMode: moveMode(adapter, permissionMode, adapter) };
+      const azureDeployment = source === "azure" ? look.state.nextDeployment : undefined;
+      const pin = azureDeployment ? { azureDeployment, model: azureDeployment } : model && model !== "default" ? { model } : {};
+      const opts: StartOpts = { ...pin, ...(effort ? { effort } : {}), permissionMode: moveMode(adapter, permissionMode, adapter) };
       const moved = await this.native(adapter, portable, opts, await this.background(adapter, look), source, id);
       const note = contextNote(moved.kept, moved.total);
       if (note) await this.ctx.sessions.notice(moved.sessionId, { ...notice(`n-carried-${moved.sessionId}`, note, id), link: undefined }, moved.after ? { after: moved.after } : {});

@@ -14,6 +14,7 @@ import { markTitle, parseSessionMessage, sessionMessage, TEXTED_VIA } from "../.
 import { LEVELS, mapMode, type Level } from "../../../../shared/move";
 import { waitingNow } from "../../../../shared/schedule";
 import { HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
+import { resolveAzureDeployment, type CredentialSource } from "../../../../shared/credentials";
 import type { SpawnedFamily } from "../../../../shared/protocol";
 import { pickWorktree, type WorktreeJoined, type WorktreeMade } from "../../../../shared/worktree";
 import { LEVEL_WORDS, levelOf } from "../../core/permissionLevel";
@@ -81,6 +82,8 @@ export interface Child {
 export interface StartArgs {
   harness?: string;
   prompt?: string;
+  source?: string;
+  fallbackKeys?: unknown;
   model?: string;
   effort?: string;
   title?: string;
@@ -311,8 +314,31 @@ export class Children {
       existing = w.path;
     }
     const mode = await this.modeFor(harness, level);
-    const source = (await s.sources(harness)).default ?? "subscription";
-    const model = a.model?.trim() || undefined;
+    const { options } = harness === "antigravity"
+      ? { options: [{ source: "subscription" as const, deployments: undefined }] }
+      : await s.sources(harness);
+    const choice = options.find(({ source }) => source === (a.source ?? "subscription"));
+    if (!choice) {
+      const available = options.map(({ source, deployments }) =>
+        deployments?.length ? `${source} (${deployments.map(({ name }) => name).join(", ")})` : source
+      ).join(", ");
+      throw new Error(`Confirm what to bill to with the user before starting a session, then pass its source. Available for ${HARNESS_LABELS[harness]}: ${available || "none"}.`);
+    }
+    const { source } = choice;
+    const fallbackKeys = a.fallbackKeys;
+    if (fallbackKeys !== undefined && (!Array.isArray(fallbackKeys) ||
+      fallbackKeys.some((key) => !options.some((option) => option.source === key && option.source !== source)) ||
+      new Set(fallbackKeys).size !== fallbackKeys.length || (fallbackKeys.length && source !== "subscription"))) {
+      throw new Error("Confirm fallback billing with the user. Choose distinct configured API keys in priority order for a subscription session.");
+    }
+    if (fallbackKeys?.length && !this.ctx.ops) throw new Error("Automatic fallback isn't available on this runner.");
+    let model = a.model?.trim() || undefined;
+    if (source === "azure") {
+      const deployments = choice.deployments ?? [];
+      const deployment = resolveAzureDeployment(deployments, model);
+      if (!deployment) throw new Error(`Choose a configured Azure deployment for ${model}: ${deployments.map(({ name }) => name).join(", ")}.`);
+      model = deployment;
+    }
     const effort = a.effort?.trim() || undefined;
     const title = a.title?.replace(/[\x00-\x1f\x7f]/g, " ").trim().slice(0, 80) || undefined;
     let made: WorktreeMade | undefined;
@@ -323,6 +349,19 @@ export class Children {
       made = await this.ctx.ops.call("newWorktreeSession", { harness, projectPath: folder, source, permissionMode: mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}), name: title || prompt });
     }
     const id = made?.sessionId ?? joined?.sessionId ?? (await s.create({ harness, projectPath: folder, source, permissionMode: mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}) }));
+    if (fallbackKeys?.length) {
+      try {
+        await this.ctx.ops!.call("setAutoKey", { sessionId: id, on: true, fallbackKeys: fallbackKeys as CredentialSource[] });
+      } catch (e) {
+        const detail = (e as Error).message;
+        try {
+          await s.setArchived(id, true);
+          return { text: `Archived session ${id} after fallback setup failed: ${detail}. Its prompt was never sent.`, isError: true };
+        } catch {
+          return { text: `Made session ${id}, but fallback setup failed and archiving could not be confirmed: ${detail}. Its prompt was never sent.`, isError: true };
+        }
+      }
+    }
     this.kids[id] = { parent: starter, depth: (this.kids[starter]?.depth ?? 0) + 1, reports: 0, hops };
     this.save();
     if (title) await s.rename(id, title).catch(() => {});
@@ -337,7 +376,7 @@ export class Children {
       return { text: `Made session ${id}, but couldn't send it the prompt: ${(e as Error).message}. It's idle in Tether with nothing to do.`, isError: true };
     }
     const name = `"${markTitle(title ?? "")}" (${id})`;
-    const how = `${HARNESS_LABELS[harness]}${model ? `, ${model}` : ""}${effort ? `, ${effort} effort` : ""}, ${mode} mode`;
+    const how = `${HARNESS_LABELS[harness]}${model ? `, ${model}` : ""}${effort ? `, ${effort} effort` : ""}, ${mode} mode, billed to ${source}`;
     const where = made
       ? `in a new worktree ${made.path} on branch ${made.branch} (from ${made.base}).${made.setup ? ` The repo's setup (${made.setup}) runs first; the prompt goes once it succeeds.` : ""}`
       : joined

@@ -383,7 +383,7 @@ export class Peers {
     if (why) return this.refused(from, why, "a new session");
     const hops = this.caps.hopsFrom(from);
     const undo = this.caps.count(from);
-    return this.children.start(from, { harness: str(a.harness), prompt: str(a.prompt), model: str(a.model), effort: str(a.effort), title: str(a.title), project: str(a.project), worktree: worktreeArg(a.worktree) }, hops, undo);
+    return this.children.start(from, { harness: str(a.harness), prompt: str(a.prompt), source: str(a.source), fallbackKeys: a.fallbackKeys, model: str(a.model), effort: str(a.effort), title: str(a.title), project: str(a.project), worktree: worktreeArg(a.worktree) }, hops, undo);
   }
 
   /**
