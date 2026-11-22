@@ -15,17 +15,26 @@ export const METHOD_LABELS: Record<InstallMethod, string> = {
 export const updating = (h: HarnessVersion) => h.update?.state === "queued" || h.update?.state === "running";
 
 /** Whether a row shows its Update button: a newer version, a way to install it, and nothing going. */
-export const canUpdate = (h: HarnessVersion) => h.status === "available" && h.updatable && !updating(h);
+export const canUpdate = (h: HarnessVersion) =>
+  ((h.status === "available" && h.updatable) || (h.id === "antigravity" && !!h.installed && h.updatable)) && !updating(h);
 
 /** What "Update all" would start, runner by runner: every row that can update. Bundled ones never do. */
 export function updateAllTargets(reports: Record<string, HarnessReport | undefined>, online: (runnerId: string) => boolean): { runnerId: string; id: string }[] {
-  return Object.entries(reports).flatMap(([runnerId, r]) => (r && online(runnerId) ? r.harnesses.filter(canUpdate).map((h) => ({ runnerId, id: h.id })) : []));
+  return Object.entries(reports).flatMap(([runnerId, r]) =>
+    r && online(runnerId) ? r.harnesses.filter((h) => h.id !== "antigravity" && canUpdate(h)).map((h) => ({ runnerId, id: h.id })) : [],
+  );
 }
 
 /** The line under a row with an update: where it is or how it ended. */
 export function runLine(h: HarnessVersion): string | undefined {
   const u = h.update;
   if (!u) return undefined;
+  if (h.id === "antigravity") {
+    if (u.state === "queued") return "Waiting to run check…";
+    if (u.state === "running") return "Checking compatibility…";
+    if (u.state === "failed") return `Compatibility check failed: ${u.error ?? "unknown error"}`;
+    return "Compatibility checks passed";
+  }
   if (u.state === "queued") return "Waiting for another update to finish…";
   if (u.state === "running") return "Updating…";
   if (u.state === "failed") return `Update failed: ${u.error ?? "unknown error"}`;

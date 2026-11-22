@@ -340,8 +340,9 @@ describe("the fallback chain", () => {
       t.prefs.set("claude:paid", { carrying: true, projectPath: t.dir, source });
       return "claude:paid";
     };
-    t.live.fallbackArchive = async (from) => {
+    t.live.fallbackArchive = async (from, to) => {
       expect(from).toBe("claude:paid");
+      expect(to).toBe("claude:one");
       return "/private/fallback/history.md";
     };
     t.adapter.script = (text) => text === "hit" && t.adapter.drivers.at(-1)?.opts.credential?.source === "subscription"

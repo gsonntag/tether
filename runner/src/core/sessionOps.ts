@@ -3,6 +3,7 @@
 
 import { defang } from "../../../shared/fromTether";
 import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
+import type { WorktreeCleanup } from "../../../shared/protocol";
 import type { HarnessId } from "../../../shared/transcript";
 import type { LiveControl } from "./live";
 import type { OpRegistry } from "./ops";
@@ -17,7 +18,28 @@ const optStr = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 const optNum = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 const harness = (v: unknown): HarnessId => (v === "codex" || v === "antigravity" ? v : v === "claude" || v === undefined ? "claude" : (str(undefined, "A known harness") as never));
 
-export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: LiveControl) {
+/** How long an archive with "remove" waits for the cleanup's word before answering `slow`. */
+export const CLEANUP_WAIT_MS = 30_000;
+
+/** The next worktreeCleaned word on `id`, `slow` past `ms`; `off` stops listening. */
+function cleanupWord(core: SessionCore, id: string, ms: number): { done: Promise<WorktreeCleanup>; off: () => void } {
+  let off = () => {};
+  const done = new Promise<WorktreeCleanup>((resolve) => {
+    const timer = setTimeout(() => resolve({ slow: true }), ms);
+    const unsub = core.o.bus.on("worktreeCleaned", ({ sessionId, removed, why }) => {
+      if (sessionId !== id) return;
+      clearTimeout(timer);
+      resolve({ ...(removed !== undefined ? { removed } : {}), ...(why ? { why } : {}) });
+    });
+    off = () => {
+      clearTimeout(timer);
+      unsub();
+    };
+  });
+  return { done, off };
+}
+
+export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: LiveControl, cleanupWaitMs = CLEANUP_WAIT_MS) {
   ops.register("renameSession", async (a) => {
     const s = await core.open(str(a.sessionId, "sessionId"));
     const title = str(a.title, "A title").trim();
@@ -29,9 +51,18 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
   });
   ops.register("setSessionArchived", async (a) => {
     if (typeof a.archived !== "boolean") throw new Error("archived must be true or false.");
+    if (a.worktree !== undefined && a.worktree !== "remove" && a.worktree !== "keep") throw new Error('worktree must be "remove" or "keep".');
     const s = await core.open(str(a.sessionId, "sessionId"));
-    await core.setArchived(s, a.archived);
-    return null;
+    const worktree = a.archived ? a.worktree : undefined;
+    // "remove": the answer says what the cleanup decided (the worktrees module's word), so the person sees why one stays.
+    const cleaned = worktree === "remove" && core.o.prefs.get(s.id).worktree ? cleanupWord(core, s.id, cleanupWaitMs) : undefined;
+    try {
+      const changed = await core.setArchived(s, a.archived, worktree);
+      if (!cleaned || !changed) return null;
+      return { worktree: await cleaned.done };
+    } finally {
+      cleaned?.off();
+    }
   });
   ops.register("pinSession", async (a) => {
     if (typeof a.pinned !== "boolean") throw new Error("pinned must be true or false.");
@@ -42,6 +73,11 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
     });
     if (s) core.setPinned(s, a.pinned);
     else core.dropPin(id);
+    return null;
+  });
+  ops.register("setRetryThrottled", async (a) => {
+    if (typeof a.on !== "boolean") throw new Error("on must be true or false.");
+    await live.setRetryThrottled(str(a.sessionId, "sessionId"), a.on);
     return null;
   });
   ops.register("setCanText", async (a) => {

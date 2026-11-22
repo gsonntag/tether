@@ -174,6 +174,7 @@ export const pushModule: Module = {
         : later(0, () => n.fallbackStatus(sessionId, status)))),
       ctx.bus.on("attention", ({ sessionId, message }) => void later(0, () => n.attention(sessionId, message))),
       ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering, fallbackPending }) => void (!stopped && !recovering && !fallbackPending && later(FINISH_DELAY_MS, () => n.turnEnded(sessionId, error)))),
+      ctx.bus.on("error", ({ sessionId, message }) => void (!sessionId && later(0, () => n.notify({ kind: "failed", title: "Tether", body: message, tag: "runner-error" })))),
     ];
     const str = (v: unknown, what: string) => {
       if (typeof v !== "string" || !v || v.length > 2000) throw new Error(`${what} is required.`);
