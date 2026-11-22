@@ -154,6 +154,9 @@ export function createRunner(o: RunnerOptions) {
   // Open requests are kept in runner.json, so they survive a restart (SPEC §7).
   const broker = new RequestBroker(o.policy, { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (open, closed) => prefs.setRequests(open, closed), log: o.log });
   const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, maxLive: o.core?.maxLive, attachmentsDir: o.attachmentsDir, credentials: o.credentials, costs });
+  ops.register("fallbackSetup", (a) => live.fallbackSetup(a.sessionId));
+  ops.register("setFallbackChain", (a) => live.setFallbackChain(a.sessionId, a.enabled, a.steps));
+  ops.register("editFallbackPreset", (a) => live.editFallbackPreset(a));
   if (o.credentials) {
     ops.register("credentials", () => o.credentials!.status());
     ops.register("setCredential", (a) => { const result = o.credentials!.set(a.source, a.key, a.endpoint, a.deployment, a.rates); live.credentialsChanged(); return result; });

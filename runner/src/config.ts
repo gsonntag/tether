@@ -2,6 +2,7 @@
 // id, per-session prefs, queued messages, pending retry payloads, read state and open requests.
 // Complete transcripts stay in the harness's own store.
 
+import type { FallbackChain, FallbackPreset, FallbackStep } from "../../shared/fallbackChain";
 import type { RunnerGrant } from "../../shared/access";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -23,6 +24,8 @@ export interface RunnerConfig {
    * server lets the newer connection replace the older), so it is not the hostname.
    */
   runnerId: string;
+  fallbackPresets?: FallbackPreset[];
+  lastFallbackOrder?: FallbackStep[];
   /** what people see; the hostname unless set */
   name?: string;
   /** runner-wide settings (the Settings page) */
@@ -101,6 +104,7 @@ export interface SessionPrefs {
   nextModel?: string;
   /** switch to a key when the plan runs out, the one exception to no fallback (SPEC §10). Ticked by you */
   autoKey?: boolean;
+  fallbackChain?: FallbackChain;
   /** "Session can text me", ticked by you: it may text the person, and gets plain texts (SPEC §11 Texting). Kept whatever its age */
   canText?: boolean;
   /** the key this session last used or had picked */

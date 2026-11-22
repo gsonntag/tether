@@ -10,6 +10,7 @@ import type { Row } from "../sessionList";
 import { loadModels, useStore } from "../store";
 import { forkedFromTitle } from "../fork";
 import { BillingChip, useSources } from "./BillingChip";
+import { FallbackChainDialog } from "./FallbackChainDialog";
 import { ChoiceMenu } from "./ChoiceMenu";
 import { TextMeChip } from "./TextMeChip";
 import { offersCanText } from "../runners";
@@ -42,6 +43,9 @@ export function SessionHeader({
   sideChats?: React.ReactNode;
   capabilities?: HarnessCapabilities;
 }) {
+  const [editingFallback, setEditingFallback] = useState(false);
+  const chain = state.fallbackChain;
+  const activeStep = chain?.active === undefined ? undefined : chain.steps[chain.active];
   const [error, setError] = useState<string>();
   const isChild = !!session.parentSessionId;
   const subagents = children.filter((c) => !c.spawned);
@@ -136,6 +140,10 @@ export function SessionHeader({
       )}
       <div className={`t-chips${paid ? " t-paid-chips" : ""}`}>
         <BillingChip runnerId={runnerId} session={session} state={state} capabilities={capabilities} onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))} onAutoKey={(on) => void call(rpc(runnerId, "setAutoKey", { sessionId: session.id, on }))} />
+        {!isChild && !session.sideOf && <button type="button" className="t-chip" onClick={() => setEditingFallback(true)}>
+          Fallback chain{chain?.enabled ? activeStep && chain.active !== undefined ? ` · ${chain.active + 1}/${chain.steps.length} · ${HARNESS_LABELS[activeStep.harness]}` : " · On" : " · Off"}
+        </button>}
+        {editingFallback && <FallbackChainDialog runnerId={runnerId} sessionId={session.id} onClose={() => setEditingFallback(false)} />}
         {nextBilling && <span className={`t-chip t-chip-info t-next-source${isApiBilling(nextBilling) ? " t-next-api" : ""}`} title={`${nextBilling.label} from the next start`}>Next: {nextBilling.label}</span>}
         <div className="t-chip-options">
         {isChild ? (

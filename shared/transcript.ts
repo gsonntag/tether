@@ -1,6 +1,7 @@
 // The transcript and live state of a session, as every harness is shown (SPEC §5). Adapters
 // translate their harness's own store and stream into these shapes; the UI renders only these.
 
+import type { FallbackChain } from "./fallbackChain";
 import type { Attachment } from "./attachments";
 import type { ForkedFrom } from "./fork";
 import type { SessionCost } from "./costs";
@@ -381,6 +382,7 @@ export interface LiveState {
   sourceSwitchFailed?: boolean;
   /** ticked: when the plan runs out, the session switches to a key and resends (SPEC §10) */
   autoKey?: boolean;
+  fallbackChain?: FallbackChain;
   /** ticked ("Session can text me"): it may text the person, and plain texts can come to it (SPEC §11 Texting). Absent: it never texts */
   canText?: boolean;
   /** the key this session last used or had picked: default when no fallback order is saved */

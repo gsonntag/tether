@@ -3059,3 +3059,11 @@
   align-items: center;
   gap: 6px;
 }
+
+.t-fallback-editor { padding: 16px; max-height: 70dvh; overflow: auto; }
+.t-fallback-editor fieldset { border: 0; min-width: 0; padding: 0; display: grid; gap: 8px; justify-items: start; }
+.t-fallback-field { display: grid; gap: 4px; width: 100%; }
+.t-fallback-field > select, .t-fallback-field > input { width: 100%; }
+.t-fallback-steps { width: 100%; margin: 0; padding-inline-start: 24px; }
+.t-fallback-steps > li { padding: 8px 0; }
+.t-fallback-steps .t-fallback-field { margin-block: 6px; }
