@@ -17,7 +17,7 @@ export interface ConnectionOptions {
   token: string;
   /** what to say in hello, asked on every connect */
   hello: () => Promise<Omit<RunnerInfo, "connectedAt">>;
-  onRpc: (op: string, args: unknown) => Promise<{ ok: true; data: unknown } | { ok: false; error: string }>;
+  onRpc: (op: string, args: unknown, loginOwner?: string) => Promise<{ ok: true; data: unknown } | { ok: false; error: string }>;
   onDetach?: (attachIds: string[]) => void;
   /** no browser watches these sessions any more */
   onUnwatched?: (sessionIds: string[]) => void;
@@ -179,7 +179,7 @@ export class Connection {
         this.log(`connected to ${this.opts.url} as ${this.helloName}`);
         this.opts.onState?.(true, m.push);
       } else if (m.t === "viewers") this.opts.onViewers?.(m.sessions ?? {});
-      else if (m.t === "rpc") void this.answer(sock, m.id, m.op, m.args);
+      else if (m.t === "rpc") void this.answer(sock, m.id, m.op, m.args, m.loginOwner);
       else if (m.t === "detach") this.opts.onDetach?.(m.attachIds);
       else if (m.t === "unwatched") this.opts.onUnwatched?.(m.sessionIds);
       else if (m.t === "textHub") this.opts.onTextHub?.(textHubOf(m.hub));
@@ -225,8 +225,8 @@ export class Connection {
     sock.onerror = () => {};
   }
 
-  private async answer(sock: WebSocket, id: string, op: string, args: unknown) {
-    const r = await this.opts.onRpc(op, args);
+  private async answer(sock: WebSocket, id: string, op: string, args: unknown, loginOwner?: string) {
+    const r = await this.opts.onRpc(op, args, loginOwner);
     if (this.ws !== sock || sock.readyState !== WebSocket.OPEN) return;
     this.write(sock, { t: "result", id, ...r });
   }

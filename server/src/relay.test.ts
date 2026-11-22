@@ -73,6 +73,33 @@ describe("connections", () => {
     expect(JSON.stringify(browser.take())).not.toContain(key);
     expect(other.take()).toEqual([]);
   });
+  test("harness sign-in sends a relay-authenticated owner and keeps the challenge on its requesting socket", () => {
+    const relay = new Relay();
+    const runner = new FakeSocket("runner");
+    const owner = new FakeSocket("owner");
+    const other = new FakeSocket("other");
+    const driver = new FakeSocket("driver");
+    hi(relay, runner, { ...runnerInfo("box"), shared: [{ email: "driver@example.test", access: "drive" }] });
+    relay.addBrowser(owner, { name: "Owner", email: "owner@example.test" }, PROTOCOL_VERSION, "owner-id");
+    relay.addBrowser(other, { name: "Other", email: "other@example.test" }, PROTOCOL_VERSION, "other-id");
+    relay.addBrowser(driver, { name: "Driver", email: "driver@example.test" }, PROTOCOL_VERSION, "driver-id", "editor");
+    runner.take(); owner.take(); other.take(); driver.take();
+
+    const poll = { t: "rpc", id: "browser-call", runnerId: "box", op: "harnessLoginPoll", args: { flowId: "test-flow", loginOwner: "spoofed" } } as const;
+    relay.onBrowserMessage(driver, poll);
+    expect(driver.take("result")).toMatchObject([{ ok: false }]);
+    expect(runner.take()).toEqual([]);
+
+    relay.onBrowserMessage(owner, poll);
+    const [request] = runner.take("rpc");
+    expect(request.loginOwner).toBe("owner-id");
+    const challenge = { state: "pending", deviceCode: "ABCD-EFGH" };
+    relay.onRunnerMessage(runner, { t: "result", id: request.id, ok: true, data: challenge });
+    expect(owner.take("result")).toMatchObject([{ id: poll.id, ok: true, data: challenge }]);
+    expect(other.take()).toEqual([]);
+    expect(driver.take()).toEqual([]);
+  });
+
   test("a browser gets hello and the runner list; runner changes are broadcast", () => {
     const { browser, runner, relay } = setup();
     const b = browser("a");

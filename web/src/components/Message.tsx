@@ -1,3 +1,6 @@
+import { needsHarnessLogin } from "../../../shared/harnessLogin";
+import { parseSessionId } from "../../../shared/ids";
+import { HarnessLoginLink } from "./HarnessLogin";
 // One transcript message: a user prompt, an assistant reply (markdown, thinking, tool cards), or a
 // quiet notice. Parts cut short to travel get "Show all", which loads them whole (fullPart).
 
@@ -103,7 +106,9 @@ function ForkHere({ onFork }: { onFork: () => void }) {
 }
 
 export const Message = memo(function Message({ msg, failed, forkable }: { msg: Msg; failed?: boolean; forkable?: boolean }) {
-  const { projectPath, runnerId, fork } = useSessionCtx();
+  const { projectPath, runnerId, sessionId, fork } = useSessionCtx();
+  const harness = parseSessionId(sessionId)?.harness;
+  const loginLink = harness && <HarnessLoginLink runnerId={runnerId} harness={harness} />;
   const { full, loading, error, load } = useFullParts(msg.id, msg.parts);
   if (msg.role === "notice") {
     const text = msg.parts.map((p) => (p.type === "text" ? (msg.level === "error" ? localizeUsageLimitRetry(p.text, undefined, msg.ts) : p.text) : "")).join("\n");
@@ -119,6 +124,7 @@ export const Message = memo(function Message({ msg, failed, forkable }: { msg: M
           ) : (
             text
           )}
+          {msg.level === "error" && needsHarnessLogin(text) && <>{" "}{loginLink}</>}
           {msg.resetsAt && ` Plan resets ${resetTime(msg.resetsAt)}.`}
           {msg.scheduledFor && ` It was for ${whenLabel(msg.scheduledFor, msg.ts).replace(/^at /, "")}; sent at ${clock(msg.ts)}.`}
           {msg.link && (
@@ -251,7 +257,7 @@ export const Message = memo(function Message({ msg, failed, forkable }: { msg: M
           <PartView key={i} rowKey={`${msg.id}:${i}`} part={p} streaming={!!msg.streaming && i === parts.length - 1} cut={cutFor(i)} root={projectPath} />
         ))}
         {missing.length > 0 && <CutNote loading={missing.some((i) => loading.includes(i))} error={error} onLoad={() => load(missing)} />}
-        {msg.error && <div className="t-msg-error">{localizeUsageLimitRetry(msg.error, undefined, msg.ts)}</div>}
+        {msg.error && <div className="t-msg-error">{localizeUsageLimitRetry(msg.error, undefined, msg.ts)}{needsHarnessLogin(msg.error) && <>{" "}{loginLink}</>}</div>}
         {forkable && fork && (
           // A new session whose conversation ends here (SPEC §16); this one stays as it is.
           <ForkHere onFork={() => fork.from(msg.id)} />

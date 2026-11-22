@@ -1,3 +1,5 @@
+import { HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
+import { HarnessLogin } from "./HarnessLogin";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Heading } from "@astryxdesign/core/Heading";
@@ -23,14 +25,14 @@ type Page = "runners" | "credentials" | "azure" | "bedrock" | "texting" | "notif
 const labels: Record<CredentialSource, string> = { anthropic: "Anthropic API key", openai: "OpenAI API key", azure: "API key", bedrock: "Bedrock API key" };
 
 /** Settings, per runner: Runners (names and sharing), Credentials (Anthropic and OpenAI keys), Azure (its key, resource and deployments) Messaging (iMessage, Discord) and this device's Notifications. */
-export function Settings({ page: asked }: { page: Page }) {
+export function Settings({ page: asked, loginTarget }: { page: Page; loginTarget?: { runnerId?: string; harness?: HarnessId } }) {
   // Everything but Notifications and Display is the owner's: only runners you own, and none for someone a
   // runner is merely shared with (shared/access.ts).
   const runners = useStore((s) => s.runners).filter((r) => accessOf(r) === "manage");
   const role = useStore((s) => s.user?.role);
   const owner = !role || role === "owner" || runners.length > 0;
   const page: Page = owner ? asked : asked === "display" ? "display" : "notifications";
-  const [chosen, setChosen] = useState("");
+  const [chosen, setChosen] = useState(loginTarget?.runnerId ?? "");
   // Usage can show every runner together: its first choice, and where it starts.
   const allRunners = page === "usage" && runners.length > 1 && (chosen === ALL || !chosen);
   const runner = runners.find((r) => r.id === chosen) ?? runners.find((r) => r.online) ?? runners[0];
@@ -69,7 +71,7 @@ export function Settings({ page: asked }: { page: Page }) {
       </> : page === "updates" ? <HarnessUpdates /> : <>
       <Heading level={2}>{page === "azure" ? "Azure" : page === "bedrock" ? "Amazon Bedrock" : page === "texting" ? "Messaging" : page === "agents" ? "Agents" : page === "usage" ? "Usage" : "Credentials"}</Heading>
       {runners.length > 1 && <label className="t-field">Runner<select className="t-select" value={allRunners ? ALL : runner?.id ?? ""} onChange={(e) => setChosen(e.target.value)}>{page === "usage" && <option value={ALL}>All runners</option>}{runners.map((r) => <option key={r.id} value={r.id}>{r.name || r.id}{page === "usage" && !r.online ? " (offline)" : ""}</option>)}</select></label>}
-      {allRunners ? <UsageSettings key={ALL} runners={runners.map((r) => ({ id: r.id, name: r.name || r.id, online: r.online }))} /> : !runner ? <div className="t-inline-status">No runner connected.</div> : !runner.online ? <div className="t-inline-status">Runner offline.</div> : page === "azure" ? <AzureSettings key={runner.id} runnerId={runner.id} /> : page === "bedrock" ? <BedrockSettingsPage key={runner.id} runnerId={runner.id} /> : page === "texting" ? <TextingSettings key={runner.id} runnerId={runner.id} /> : page === "agents" ? <AgentSettings key={runner.id} runnerId={runner.id} /> : page === "usage" ? <UsageSettings key={runner.id} runners={[{ id: runner.id, name: runner.name || runner.id, online: true }]} /> : <RunnerCredentials key={runner.id} runnerId={runner.id} />}
+      {allRunners ? <UsageSettings key={ALL} runners={runners.map((r) => ({ id: r.id, name: r.name || r.id, online: r.online }))} /> : !runner ? <div className="t-inline-status">No runner connected.</div> : !runner.online ? <div className="t-inline-status">Runner offline.</div> : page === "azure" ? <AzureSettings key={runner.id} runnerId={runner.id} /> : page === "bedrock" ? <BedrockSettingsPage key={runner.id} runnerId={runner.id} /> : page === "texting" ? <TextingSettings key={runner.id} runnerId={runner.id} /> : page === "agents" ? <AgentSettings key={runner.id} runnerId={runner.id} /> : page === "usage" ? <UsageSettings key={runner.id} runners={[{ id: runner.id, name: runner.name || runner.id, online: true }]} /> : <RunnerCredentials key={runner.id} runnerId={runner.id} first={runner.id === loginTarget?.runnerId ? loginTarget?.harness : undefined} />}
       </>}
       </div>
       </div>
@@ -97,15 +99,19 @@ export function useCredentials(runnerId: string) {
   return { status, error, busy, disabled: busy || link !== "open", change };
 }
 
-function RunnerCredentials({ runnerId }: { runnerId: string }) {
+function RunnerCredentials({ runnerId, first }: { runnerId: string; first?: HarnessId }) {
   const { status, error, disabled, change } = useCredentials(runnerId);
   const slot = (source: "anthropic" | "openai") => <KeySlot source={source} status={status![source]} disabled={disabled} save={(key) => void change(rpc(runnerId, "setCredential", { source, key }))} unset={() => void change(rpc(runnerId, "unsetCredential", { source }))} />;
+  const harnesses: HarnessId[] = ["claude", "codex", "antigravity"];
+  const ordered = first ? [first, ...harnesses.filter((h) => h !== first)] : harnesses;
   return <>
     {error && <div className="t-inline-status error" role="alert">{error}</div>}
-    {!status ? !error && <div className="t-inline-status">Loading…</div> : <>
-      <section className="t-credential-harness"><Heading level={3}>Claude</Heading>{slot("anthropic")}</section>
-      <section className="t-credential-harness"><Heading level={3}>Codex</Heading>{slot("openai")}</section>
-    </>}
+    {ordered.map((harness) => <section key={harness} className="t-credential-harness">
+      <Heading level={3}>{harness === "claude" ? "Claude" : HARNESS_LABELS[harness]}</Heading>
+      <HarnessLogin runnerId={runnerId} harness={harness} />
+      {status && harness === "claude" && slot("anthropic")}
+      {status && harness === "codex" && slot("openai")}
+    </section>)}
   </>;
 }
 

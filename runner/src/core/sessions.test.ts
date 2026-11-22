@@ -219,6 +219,7 @@ describe("live sessions", () => {
     const s = await core.open("claude:s1");
     expect(s.state.error).toContain("signed in");
     expect(s.state.mode).toBe("stored");
+    expect(core.book.get("claude:s1")).toMatchObject({ unread: "failed", failure: adapter.startError });
   });
 
   const errorRows = (s: Session) => s.transcript!.messages.filter((m) => m.role === "notice" && m.level === "error");

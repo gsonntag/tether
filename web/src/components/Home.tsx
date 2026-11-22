@@ -1,3 +1,5 @@
+import { needsHarnessLogin } from "../../../shared/harnessLogin";
+import { HarnessLoginLink } from "./HarnessLogin";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
@@ -69,7 +71,7 @@ function Inbox() {
   const now = useNow();
   const rows = useMemo(() => inbox(summaries), [summaries]);
   const many = runners.filter((r) => r.online).length > 1;
-  const unread = rows.filter((r) => r.inbox === "failed" || r.inbox === "finished");
+  const unread = rows.filter((r) => r.inbox === "failed" || r.inbox === "finished" || (r.failure && needsHarnessLogin(r.failure)));
   const markRead = (r: InboxRow) => void rpc(r.runnerId, "setRead", { sessionId: r.id, read: true }).catch(() => {});
   return (
     <VStack gap={3}>
@@ -83,31 +85,35 @@ function Inbox() {
         <div className="t-inline-status">Nothing needs you. Finished and failed turns show here until you look at them.</div>
       ) : (
         <div className="t-inbox" role="list">
-          {rows.map((r) => (
-            <div key={`${r.runnerId}:${r.id}`} className={`t-inbox-row ${r.inbox}`} role="listitem" data-session={r.id}>
-              <button type="button" className="t-inbox-main" onClick={() => openSession(r.runnerId, r.id)}>
-                <span className="t-inbox-kind">{KIND_LABEL[r.inbox]}</span>
-                <span className={`t-row-title${isApiBilling(r.billing) ? " t-api-title" : ""}`} title={isApiBilling(r.billing) ? r.billing?.label : undefined}>
-                  <UnknownBillingMarker billing={r.billing} />
-                  {r.title || "Untitled"}
-                </span>
-                <span className="t-row-meta">
-                  <HarnessGlyph harness={r.harness} />
-                  <span className="t-proj">{folderName(r.projectPath)}</span>
-                  {many && <span className="t-proj">· {runners.find((x) => x.id === r.runnerId)?.name ?? r.runnerId}</span>}
-                  <span>· {shortAgo(r.updatedAt, now)}</span>
-                  {r.inbox === "needs" && (r.requests ?? 0) > 1 && <span>· {r.requests} requests</span>}
-                  {(r.queued ?? 0) > 0 && <span>· {r.queued} queued{r.queuePaused ? ", paused" : ""}</span>}
-                  {r.scheduledAt !== undefined && <span>· Scheduled {whenLabel(r.scheduledAt, now).replace(/^at /, "")}</span>}
-                  {r.watching && r.status !== "running" && <span className="t-watching" title={watchingTitle(r.watching)}>· {watchingChip(r.watching, now)}</span>}
-                </span>
-                {r.inbox === "failed" && r.failure && <span className="t-inbox-why">{r.failure}</span>}
-              </button>
-              {(r.inbox === "failed" || r.inbox === "finished") && (
-                <IconButton label={`Mark ${r.title || "this session"} read`} tooltip="Mark read" size="sm" variant="ghost" icon={<Icon icon={CheckIcon} />} onClick={() => markRead(r)} />
-              )}
-            </div>
-          ))}
+          {rows.map((r) => {
+            const login = r.failure && !isApiBilling(r.billing) && needsHarnessLogin(r.failure);
+            return (
+              <div key={`${r.runnerId}:${r.id}`} className={`t-inbox-row ${r.inbox}`} role="listitem" data-session={r.id}>
+                <button type="button" className="t-inbox-main" onClick={() => openSession(r.runnerId, r.id)}>
+                  <span className="t-inbox-kind">{KIND_LABEL[r.inbox]}</span>
+                  <span className={`t-row-title${isApiBilling(r.billing) ? " t-api-title" : ""}`} title={isApiBilling(r.billing) ? r.billing?.label : undefined}>
+                    <UnknownBillingMarker billing={r.billing} />
+                    {r.title || "Untitled"}
+                  </span>
+                  <span className="t-row-meta">
+                    <HarnessGlyph harness={r.harness} />
+                    <span className="t-proj">{folderName(r.projectPath)}</span>
+                    {many && <span className="t-proj">· {runners.find((x) => x.id === r.runnerId)?.name ?? r.runnerId}</span>}
+                    <span>· {shortAgo(r.updatedAt, now)}</span>
+                    {r.inbox === "needs" && (r.requests ?? 0) > 1 && <span>· {r.requests} requests</span>}
+                    {(r.queued ?? 0) > 0 && <span>· {r.queued} queued{r.queuePaused ? ", paused" : ""}</span>}
+                    {r.scheduledAt !== undefined && <span>· Scheduled {whenLabel(r.scheduledAt, now).replace(/^at /, "")}</span>}
+                    {r.watching && r.status !== "running" && <span className="t-watching" title={watchingTitle(r.watching)}>· {watchingChip(r.watching, now)}</span>}
+                  </span>
+                  {r.failure && (r.inbox === "failed" || login) && <span className="t-inbox-why">{r.failure}</span>}
+                </button>
+                {login && <HarnessLoginLink runnerId={r.runnerId} harness={r.harness} />}
+                {(r.inbox === "failed" || r.inbox === "finished" || login) && (
+                  <IconButton label={`Mark ${r.title || "this session"} read`} tooltip="Mark read" size="sm" variant="ghost" icon={<Icon icon={CheckIcon} />} onClick={() => markRead(r)} />
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </VStack>
