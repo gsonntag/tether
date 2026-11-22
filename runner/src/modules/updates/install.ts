@@ -32,6 +32,7 @@ export interface HarnessSpec {
 export function detectInstall(realPath: string, pkg: string): Install {
   const p = realPath.split(sep).join("/");
   if (/\/claude\/versions\/[^/]+$/.test(p) || /\/\.claude\/local\//.test(p)) return { method: "native" };
+  if (/\/agy$/.test(p) || /\/antigravity/.test(p)) return { method: "native" };
   if (/\/(Cellar|Caskroom)\//.test(p) || p.startsWith("/opt/homebrew/") || p.startsWith("/home/linuxbrew/")) return { method: "brew" };
   if (p.includes("/.bun/install/global/node_modules/")) return { method: "bun" };
   const marker = `/lib/node_modules/${pkg}/`;
@@ -54,6 +55,9 @@ export interface UpdatePlan {
  * where the tool picks: `claude update`). None for bundled or unknown installs.
  */
 export function updatePlan(spec: HarnessSpec, install: Install, version: string | undefined, binPath: string | undefined, path = process.env.PATH ?? ""): UpdatePlan | undefined {
+  if (spec.id === "antigravity") {
+    return { argv: ["bun", "scripts/antigravity-compat.ts"] };
+  }
   const target = `${spec.pkg}@${version ?? "latest"}`;
   switch (install.method) {
     case "native":
@@ -83,6 +87,7 @@ export function commandLine(plan: UpdatePlan): string {
 
 /** What updating it changes for sessions: none are stopped. */
 export function effectNote(spec: HarnessSpec, method: InstallMethod): string | undefined {
+  if (spec.id === "antigravity") return "Antigravity updates itself.";
   if (method === "bundled") return "Part of Tether's runner: it moves with a Tether release.";
   if (method === "unknown") return "Installed in a way Tether can't update. Update it on the machine.";
   if (spec.id === "codex") return "Running sessions aren't stopped. Codex's app server keeps the old version until it restarts; terminal sessions get the new one at once.";

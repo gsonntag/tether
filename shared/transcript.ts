@@ -350,6 +350,7 @@ export const UNKNOWN_BILLING: Billing = { kind: "unknown", label: "Unknown" };
 export interface RetryState {
   attempt: number;
   maxAttempts: number;
+  extended?: true;
   nextAt: number;
   deadline: number;
   error: string;
@@ -383,6 +384,8 @@ export interface LiveState {
   autoKey?: boolean;
   /** ticked ("Session can text me"): it may text the person, and plain texts can come to it (SPEC §11 Texting). Absent: it never texts */
   canText?: boolean;
+  /** Whether extended throttle retries are enabled. Absent if unavailable for this session. */
+  retryThrottled?: boolean;
   /** the key this session last used or had picked: default when no fallback order is saved */
   lastKey?: BillingSource;
   /** Allowed automatic fallback keys, in priority order. Empty excludes all keys. */
@@ -469,6 +472,10 @@ export interface SessionSummary {
    * checkout, so a list can group it under its project.
    */
   worktreeOf?: string;
+  /** with worktreeOf: the worktree's branch */
+  worktreeBranch?: string;
+  /** with worktreeOf: made by hand, not by Tether, so never removed by it (archiving asks nothing) */
+  worktreeHandMade?: boolean;
   /** When it was pinned (ms): the Sidebar's Pinned group, in this order, listed however old. */
   pinned?: number;
   /** A pinned session its harness can't find (now): listed as it was last seen, until someone unpins it. */

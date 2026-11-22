@@ -105,6 +105,7 @@ export function createRunner(o: RunnerOptions) {
     // The peers module's op (off with it).
     ...(process.env.TETHER_PEERS === "0" ? {} : { spawnedFamily: true }),
     existingWorktrees: true,
+    archiveWorktree: true,
     canText: true,
     // The relay shows the runner to these people (shared/access.ts) and only its owners see the list.
     ...(prefs.shared().length ? { shared: prefs.shared() } : {}),
@@ -364,7 +365,7 @@ export function createRunner(o: RunnerOptions) {
           core.touch(s, { title });
         },
         interrupt: (id: string) => live.interrupt(id),
-        setArchived: async (id: string, archived: boolean) => core.setArchived(await core.open(id), archived),
+        setArchived: async (id: string, archived: boolean) => void (await core.setArchived(await core.open(id), archived)),
         setWorktree: async (id: string, worktree: WorktreeRecord) => core.setWorktree(await core.open(id), worktree),
         worktree: (id: string) => prefs.get(id).worktree,
         // A session that went on under another id (a source change, a renewal) isn't one: its successor has the record.

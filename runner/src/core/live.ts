@@ -132,6 +132,7 @@ export class LiveControl {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
     this.retries = new RetryControl(core, {
       identity: (s) => this.retryIdentity(s),
+      extended: (s) => s.state.retryThrottled === true && this.sourceOf(s) !== "subscription",
       revision: (s) => core.adapter(s.summary.harness).storeRevision?.(s.summary.nativeId, s.summary.projectPath),
       blocked: (s) => s.state.mode === "terminal" || !!s.state.terminal || !!s.state.requests.length || !!this.terminal?.blocked(s) || !!core.o.prefs.get(s.id).nextSource || this.restartWaits.has(s.id),
       held: (s) => !!this.heldWhy(s.id),
@@ -531,7 +532,7 @@ export class LiveControl {
     // The pin goes with the conversation: the new thread takes the old one's place in Pinned.
     prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
     const { forkedFrom, worktree: _, ...state } = kept;
-    n.setState(state);
+    n.setState({ ...state, retryThrottled: this.sourceOf(n) === "subscription" ? undefined : !!kept.retryThrottled });
     prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextModel: undefined, nextBilling: undefined, nextDeployment: undefined, sourceSwitchFailed: undefined });
     this.core.moveSides(s.id, n.id);
     prefs.flush();
@@ -580,7 +581,7 @@ export class LiveControl {
       const { pinned, pinnedRow } = this.core.o.prefs.get(s.id);
       this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
       const { forkedFrom, worktree: _, ...state } = kept;
-      n.setState(state);
+      n.setState({ ...state, retryThrottled: source === "subscription" ? undefined : !!kept.retryThrottled });
       this.core.touch(n, forkedFrom ? { forkedFrom } : {});
       try {
         await this.ensureDriver(n);
@@ -1486,6 +1487,7 @@ export class LiveControl {
     opts = this.forSource(harness, source, opts);
     const s = this.core.create(harness, await this.newNativeId(harness, folder, opts, source), folder, opts);
     this.core.o.prefs.set(s.id, { source, ...(hasSourceModels(source) && opts.model ? { deployment: opts.model } : {}) });
+    if (source !== "subscription") s.setState({ retryThrottled: false });
     return s;
   }
 
@@ -1562,7 +1564,7 @@ export class LiveControl {
     const settings = model ? { model, deployment: hasSourceModels(asked) ? model : undefined } : {};
     this.core.o.prefs.set(id, { source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...settings });
     this.core.o.prefs.flush();
-    s.setState({ nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...(model ? { model, modelResolved: undefined } : {}), ...(cost ? { cost } : {}) });
+    s.setState({ nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, retryThrottled: asked === "subscription" ? undefined : this.core.o.prefs.get(id).retryThrottled === true, ...(model ? { model, modelResolved: undefined } : {}), ...(cost ? { cost } : {}) });
     this.core.touch(s);
   }
 
@@ -1653,12 +1655,25 @@ export class LiveControl {
     this.core.o.bus.emit("canTextChanged", { sessionId: id, canText: on });
   }
 
+  async setRetryThrottled(id: string, on: boolean) {
+    const s = await this.core.open(id);
+    if (s.summary.parentSessionId || s.summary.sideOf || this.sourceOf(s) === "subscription") {
+      throw new Error("Extended throttle retries require a main session using an API key.");
+    }
+    this.core.o.prefs.set(id, { retryThrottled: on || undefined });
+    this.core.o.prefs.flush();
+    s.setState({ retryThrottled: on });
+    if (!on && s.retry?.extended && s.retry.phase === "waiting") this.cancelRetrySession(s);
+  }
+
   /** What a session's successor on another id keeps (a fork's link back too, SPEC §16; its worktree record, SPEC §4). */
   keptPrefs(s: Session) {
-    const { autoKey, canText, lastKey, fallbackKeys, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
+    const { autoKey, canText, retryThrottled, lastKey, fallbackKeys, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
     // A side chat's successor is one too, read-only (SPEC §16a): failing closed.
     // The worktree goes on with the conversation: cleanup counts the successor as its user (the old id, moved on, no more).
-    return { ...(autoKey ? { autoKey } : {}), ...(canText ? { canText } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree } : {}) };
+    // Not a Keep: that was the person's answer on archiving the old id.
+    const withoutKeep = ({ keep: _keep, ...rec }: NonNullable<typeof worktree>) => rec;
+    return { ...(autoKey ? { autoKey } : {}), ...(canText ? { canText } : {}), ...(retryThrottled === true ? { retryThrottled } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree: withoutKeep(worktree) } : {}) };
   }
 
   /**
