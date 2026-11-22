@@ -1,9 +1,24 @@
+import type { AccountSource } from "./credentials";
 import type { OpName } from "./protocol";
 import type { HarnessId } from "./transcript";
 
+export interface AccountIdentity {
+  email?: string;
+  plan?: string;
+  organization?: string;
+  accountId?: string;
+  displayName?: string;
+}
+
+export interface HarnessAccount {
+  source: AccountSource;
+  status: HarnessLoginStatus;
+  available: boolean;
+}
+
 export type HarnessLoginStatus =
   | { state: "unavailable" | "unknown" | "signedOut" }
-  | { state: "signedIn"; email?: string; plan?: string; organization?: string; accountId?: string; displayName?: string };
+  | ({ state: "signedIn" } & AccountIdentity);
 
 export type HarnessLoginFlow =
   | { state: "pending"; url?: string; deviceCode?: string; acceptsCode?: boolean }
@@ -19,5 +34,5 @@ export const harnessLoginHref = (runnerId: string, harness: HarnessId) =>
 
 export const HARNESS_LOGIN_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "harnessLoginStatus", "harnessLoginStart", "harnessLoginPoll",
-  "renameHarnessAccount", "harnessLoginCode", "harnessLoginCancel", "harnessLogout",
+  "listHarnessAccounts", "removeHarnessAccount", "renameHarnessAccount", "harnessLoginCode", "harnessLoginCancel", "harnessLogout",
 ]);

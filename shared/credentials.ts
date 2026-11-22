@@ -25,8 +25,13 @@ export interface BedrockSettings {
 export type CredentialStatus = Record<Exclude<CredentialSource, "bedrock">, CredentialSlot> & { bedrock?: CredentialSlot & { settings?: BedrockSettings } };
 
 /** What one session draws from. It's chosen when the session is made and kept with it. */
-export type BillingSource = CredentialSource | "subscription";
-export const isBillingSource = (v: unknown): v is BillingSource => v === "subscription" || v === "anthropic" || v === "openai" || v === "azure" || v === "bedrock";
+export type AccountSource = `account:${string}`;
+export const isAccountSource = (v: unknown): v is AccountSource =>
+  typeof v === "string" && /^account:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(v);
+export type BillingSource = CredentialSource | "subscription" | AccountSource;
+export const isCredentialSource = (v: unknown): v is CredentialSource => v === "anthropic" || v === "openai" || v === "azure" || v === "bedrock";
+export const isSubscriptionSource = (v: BillingSource) => v === "subscription" || isAccountSource(v);
+export const isBillingSource = (v: unknown): v is BillingSource => v === "subscription" || isCredentialSource(v) || isAccountSource(v);
 export const hasSourceModels = (source: BillingSource): source is "azure" | "bedrock" => source === "azure" || source === "bedrock";
 
 /** A source that really exists for a harness now: a login it reports, or a key that's set. */

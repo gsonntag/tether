@@ -4,7 +4,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, closeSync, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { AZURE_MAX_DEPLOYMENTS, AZURE_NAME, azureEndpoint, type AzureDeployment, type BedrockModel, type BedrockSettings, type BillingSource, type CredentialSource, type CredentialStatus } from "../../shared/credentials";
+import { AZURE_MAX_DEPLOYMENTS, AZURE_NAME, azureEndpoint, isAccountSource, type AzureDeployment, type BedrockModel, type BedrockSettings, type BillingSource, type CredentialSource, type CredentialStatus } from "../../shared/credentials";
 import { validRates, type TokenRates } from "../../shared/costs";
 import { AZURE_RATES_DATE, AZURE_SOL_RATES_DATE, azureModelId, isAzureType, type AzurePricing } from "../../shared/azureRates";
 import { modelIdProblem } from "../../shared/labels";
@@ -12,6 +12,7 @@ import { CONFIG_DIR } from "./config";
 
 export const DATA_DIR = process.env.TETHER_DATA_DIR || CONFIG_DIR;
 export interface CredentialSnapshot {
+  claudeAccount?: { configDir: string; accountId: string; email: string; organization: string };
   rates?: TokenRates;
   bedrock?: BedrockSettings;
   source: BillingSource;
@@ -230,6 +231,7 @@ export class CredentialStore {
    */
   snapshot(source: BillingSource, deployment?: string): CredentialSnapshot | undefined {
     if (source === "subscription") return { source, revision: "subscription", file: this.file };
+    if (isAccountSource(source)) return undefined;
     if (source === "bedrock") {
       const bedrock = this.saved.bedrockSettings;
       if (!bedrock || (deployment !== undefined && !bedrock.models.some((model) => model.id === deployment))) return undefined;

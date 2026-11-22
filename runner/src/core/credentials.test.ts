@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { RunnerToServer } from "../../../shared/protocol";
+import { ClaudeAccounts } from "../adapters/claude/accounts";
 import { saveConfig } from "../config";
 import { CredentialStore } from "../credentials";
 import { RequestBroker } from "./broker";
@@ -24,10 +25,11 @@ function setup() {
   adapter.addStored("one", []);
   const frames: RunnerToServer[] = [], prefs = new Prefs(file, 0);
   const core = new SessionCore({ adapters: [adapter], bus: new EventBus<CoreEvents>(), send: (m) => (frames.push(m), true), prefs, epoch: "keys", log: () => {} });
-  const live = new LiveControl(core, new RequestBroker(), { credentials, idleMs: 60_000 });
+  const claudeAccounts = new ClaudeAccounts(join(dir, "claude-accounts"));
+  const live = new LiveControl(core, new RequestBroker(), { credentials, claudeAccounts, idleMs: 60_000 });
   const ops = new OpRegistry(); registerSessionOps(ops, core, live);
   cleanups.push(() => core.stop());
-  return { dir, file, adapter, core, live, credentials, prefs, frames, ops };
+  return { dir, file, claudeAccounts, adapter, core, live, credentials, prefs, frames, ops };
 }
 describe("credential process boundaries", () => {
   test("an existing shared TUI can still be observed after its key changes, without allowing a new send", async () => {
@@ -659,6 +661,49 @@ describe("the model while a source change waits, and typed model names", () => {
     expect(last).toMatchObject({ role: "notice", level: "error" });
     expect(JSON.stringify(last.parts)).toContain("unknown model");
   });
+});
+
+test("a Claude account switch keeps the session ID, isolates plan reports, and fails closed after removal", async () => {
+  const { adapter, claudeAccounts, core, dir, file, live } = setup();
+  const prior = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = join(dir, "primary");
+  try {
+    const source = claudeAccounts.create();
+    claudeAccounts.save(source, { accountId: "a".repeat(64), email: "extra@example.test", organization: "Extra Org" });
+    adapter.capabilities = { ...adapter.capabilities, sourceSwitch: true };
+    await live.send("claude:one", "primary");
+    const s = await core.open("claude:one");
+    const primary = adapter.drivers.at(-1)!;
+    core.notePlan("claude", { fiveHour: { percent: 12 } });
+    await live.setSource(s.id, source);
+    const listed = await live.sources("claude");
+    expect(listed.default).toBe(source);
+    expect(JSON.stringify(listed)).not.toContain("extra@example.test");
+    expect(await live.sourceForNew("claude", undefined)).toBe(source);
+    expect(new Prefs(file).get(s.id).source).toBe(source);
+    expect(s.state.plan).toBeUndefined();
+    await live.send(s.id, "extra");
+    const extra = adapter.drivers.at(-1)!;
+    expect(primary.closed).toBe(true);
+    expect(extra.opts.credential).toMatchObject({ source, claudeAccount: { configDir: claudeAccounts.configDir(source) } });
+    expect(extra.sent).toEqual(["extra"]);
+    extra.sink.plan?.({ fiveHour: { percent: 42 } });
+    expect(s.state.plan?.fiveHour?.percent).toBe(42);
+    expect(core.planFor("claude")?.fiveHour?.percent).toBe(12);
+
+    claudeAccounts.remove(source);
+    live.harnessLoginChanged("claude", source);
+    await expect(live.send(s.id, "blocked")).rejects.toThrow("chosen Claude subscription account is unavailable");
+    expect(extra.sent).toEqual(["extra"]);
+    expect(live.sourceOf(s)).toBe(source);
+    await live.setSource(s.id, "subscription");
+    await live.send(s.id, "back to primary");
+    expect(adapter.drivers.at(-1)?.opts.credential?.source).toBe("subscription");
+  } finally {
+    if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prior;
+    rmSync(join(dir, "primary"), { recursive: true, force: true });
+  }
 });
 
 test("Bedrock lists models by harness and switches Claude using a configured model alias", async () => {

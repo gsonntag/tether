@@ -86,10 +86,10 @@ export function NewSessionDialog() {
   const [sources, setSources] = useState<SourceChoices>();
   const sourcesAsked = useRef<Promise<SourceChoices | undefined>>(undefined);
   const [source, setSource] = useState<BillingSource>();
-  const { label: accountLabel } = useAccountLabel(rid, harness, open);
+  const { labels: accountLabels } = useAccountLabel(rid, harness, open);
   // Antigravity has only its implicit subscription and no source switching.
-  const pickerSources: SourceChoices | undefined = harness === "antigravity" && accountLabel && !sources?.options.length
-    ? { options: [{ source: "subscription", billing: { kind: "plan", label: accountLabel } }] }
+  const pickerSources: SourceChoices | undefined = harness === "antigravity" && accountLabels?.subscription && !sources?.options.length
+    ? { options: [{ source: "subscription", billing: { kind: "plan", label: accountLabels.subscription } }] }
     : sources;
 
   useEffect(() => {
@@ -359,7 +359,7 @@ export function NewSessionDialog() {
             ))}
           </div>
         )}
-        <SourcePicker accountLabel={accountLabel} choices={pickerSources} value={source} onChange={setSource} />
+        <SourcePicker accountLabels={accountLabels} choices={pickerSources} value={source} onChange={setSource} />
         {deployments ? (
           <DeploymentPicker deployments={deployments} value={deployment} onChange={setModel} />
         ) : (

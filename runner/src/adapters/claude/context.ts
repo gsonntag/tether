@@ -133,7 +133,7 @@ export function forgetBilling(sessionId: string) {
 }
 export function keptBilling(sessionId: string): Billing {
   const b = load().billing?.[sessionId];
-  return b ? { kind: b.kind, label: b.label } : UNKNOWN_BILLING;
+  return b ? { kind: b.kind, label: b.label, ...(b.source ? { source: b.source } : {}) } : UNKNOWN_BILLING;
 }
 /** The same, with when that start was (ms); undefined when none is kept. */
 export function keptStart(sessionId: string): (Billing & { at: number }) | undefined {

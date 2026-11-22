@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
-import { harnessLoginHref, type HarnessLoginFlow, type HarnessLoginStatus } from "../../../shared/harnessLogin";
+import { harnessLoginHref, type HarnessAccount, type HarnessLoginFlow, type HarnessLoginStatus } from "../../../shared/harnessLogin";
 import { HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { accessOf } from "../runners";
@@ -22,9 +22,17 @@ const statusText = (s: HarnessLoginStatus | undefined) => {
   }
 };
 
-export function HarnessLogin({ runnerId, harness, rename }: { runnerId: string; harness: HarnessId; rename?: boolean }) {
+export function HarnessLogin({ runnerId, harness, rename, extra, add, onChanged }: {
+  runnerId: string;
+  harness: HarnessId;
+  rename?: boolean;
+  extra?: HarnessAccount;
+  add?: boolean;
+  onChanged?: () => void;
+}) {
   const connected = useStore((s) => s.link === "open");
-  const [status, setStatus] = useState<HarnessLoginStatus>();
+  const [primary, setStatus] = useState<HarnessLoginStatus>();
+  const status = extra?.status ?? primary;
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
@@ -45,7 +53,7 @@ export function HarnessLogin({ runnerId, harness, rename }: { runnerId: string; 
   }, [runnerId]);
 
   useEffect(() => {
-    if (!connected) return;
+    if (!connected || extra || add) return;
     let gone = false;
     void rpc(runnerId, "harnessLoginStatus", { harness }).then((result) => {
       if (!gone) setStatus(result);
@@ -53,7 +61,7 @@ export function HarnessLogin({ runnerId, harness, rename }: { runnerId: string; 
       if (!gone) { setStatus({ state: "unknown" }); setError(e.message); }
     });
     return () => { gone = true; };
-  }, [runnerId, harness, connected, revision]);
+  }, [runnerId, harness, connected, revision, extra, add]);
 
   useEffect(() => {
     if (!connected || !flowId) return;
@@ -65,6 +73,7 @@ export function HarnessLogin({ runnerId, harness, rename }: { runnerId: string; 
       setChallenge(undefined);
       setStatus(undefined);
       setRevision((n) => n + 1);
+      onChanged?.();
     };
     const poll = async () => {
       try {
@@ -90,7 +99,7 @@ export function HarnessLogin({ runnerId, harness, rename }: { runnerId: string; 
     setBusy(true);
     setError("");
     try {
-      const { flowId: id } = await rpc(runnerId, "harnessLoginStart", { harness });
+      const { flowId: id } = await rpc(runnerId, "harnessLoginStart", { harness, account: add ? "new" : extra?.source });
       if (!active.current) {
         void rpc(runnerId, "harnessLoginCancel", { flowId: id }).catch(() => {});
         return;
@@ -134,7 +143,12 @@ export function HarnessLogin({ runnerId, harness, rename }: { runnerId: string; 
     setBusy(true);
     setError("");
     try {
-      setStatus(await rpc(runnerId, "harnessLogout", { harness }));
+      if (extra) {
+        await rpc(runnerId, "removeHarnessAccount", { harness, source: extra.source });
+        onChanged?.();
+      } else {
+        setStatus(await rpc(runnerId, "harnessLogout", { harness }));
+      }
       setConfirm(false);
     } catch (e) {
       setError((e as Error).message);
@@ -145,14 +159,16 @@ export function HarnessLogin({ runnerId, harness, rename }: { runnerId: string; 
     setBusy(true);
     setError("");
     try {
-      setStatus(await rpc(runnerId, "renameHarnessAccount", { harness, accountId, displayName }));
+      const result = await rpc(runnerId, "renameHarnessAccount", { harness, accountId, displayName, source: extra?.source });
+      if (extra) onChanged?.();
+      else setStatus(result);
     } catch (e) {
       setError((e as Error).message);
     } finally { setBusy(false); }
   };
 
   return <div className="t-credential-slot">
-    <div className="t-credential-title">{status?.state === "signedIn" && status.displayName ? status.displayName : "Harness account"} <span className="t-credential-status" role="status">{statusText(status)}</span></div>
+    {!add && <div className="t-credential-title">{status?.state === "signedIn" && status.displayName ? status.displayName : harness === "claude" && !extra ? "Primary account" : "Harness account"} <span className="t-credential-status" role="status">{statusText(status)}{extra && !extra.available && " · Sign-in required"}</span></div>}
     {error && <div className="t-inline-status error" role="alert">{error}</div>}
     {rename && !flowId && !confirm && status?.state === "signedIn" && status.accountId && (
       <form className="t-credential-entry" key={status.accountId + (status.displayName ?? "")} onSubmit={(e) => {
@@ -173,14 +189,14 @@ export function HarnessLogin({ runnerId, harness, rename }: { runnerId: string; 
       </form>}
       <div className="t-credential-entry"><Button label="Cancel" variant="secondary" isDisabled={busy || !connected} onClick={() => void cancel()} /></div>
     </> : confirm ? <>
-      <div>Sign out of {HARNESS_LABELS[harness]} on this runner? Its command line uses the same account.</div>
+      <div>{extra ? "Remove this account from the runner? Sessions using it will need another source." : `Sign out of ${HARNESS_LABELS[harness]} on this runner? Its command line uses the same account.`}</div>
       <div className="t-credential-entry">
-        <Button label="Sign out" isDisabled={busy || !connected} onClick={() => void signOut()} />
+        <Button label={extra ? "Remove account" : "Sign out"} isDisabled={busy || !connected} onClick={() => void signOut()} />
         <Button label="Cancel" variant="secondary" isDisabled={busy} onClick={() => setConfirm(false)} />
       </div>
-    </> : status && status.state !== "unavailable" && <div className="t-credential-entry">
-      <Button label={status.state === "signedIn" ? "Sign in again" : "Sign in"} isDisabled={busy || !connected} onClick={() => void start()} />
-      {status.state === "signedIn" && <Button label="Sign out" variant="secondary" isDisabled={busy || !connected} onClick={() => setConfirm(true)} />}
+    </> : (add || (status && status.state !== "unavailable")) && <div className="t-credential-entry">
+      <Button label={add ? "Add Claude account" : status?.state === "signedIn" ? "Sign in again" : "Sign in"} isDisabled={busy || !connected} onClick={() => void start()} />
+      {status?.state === "signedIn" && <Button label={extra ? "Remove" : "Sign out"} variant="secondary" isDisabled={busy || !connected} onClick={() => setConfirm(true)} />}
     </div>}
   </div>;
 }

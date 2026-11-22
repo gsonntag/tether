@@ -47,7 +47,7 @@ export const TOOL_DEFS = [
       properties: {
         harness: { type: "string", enum: ["claude", "codex", "antigravity"], description: "Which agent runs it: claude (Claude Code), codex, or antigravity." },
         prompt: { type: "string", description: "The complete brief: it starts with no other context." },
-        source: { type: "string", enum: ["subscription", "anthropic", "openai", "azure", "bedrock"], description: "Defaults to subscription when available. API-key sources require user confirmation. Azure and Bedrock use the models configured in Tether Settings. tether_models lists what's available." },
+        source: { type: "string", description: "Pass subscription, an account ID from tether_models, or a configured key source (anthropic, openai, azure, bedrock). Defaults to the primary subscription. API-key sources require user confirmation. Azure and Bedrock use the models configured in Tether Settings. tether_models lists what's available." },
         model: { type: "string", description: "Its model, when one was asked for (else the agent's default). On Azure or Bedrock, use a configured deployment or model ID. tether_models lists them." },
         effort: { type: "string", description: "Its reasoning effort (low, medium, high, …), when one was asked for." },
         title: { type: "string", description: "A short title for it, as Tether's sidebar shows it." },

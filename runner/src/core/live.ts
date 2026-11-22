@@ -14,7 +14,8 @@ import { Commands } from "./commands";
 import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { CredentialStore, redact, redactValue, type CredentialSnapshot } from "../credentials";
-import { hasSourceModels, isBillingSource, resolveSourceModel, type BillingSource, type CredentialSource, type SourceChoices, type SourceOption } from "../../../shared/credentials";
+import type { ClaudeAccounts } from "../adapters/claude/accounts";
+import { hasSourceModels, isAccountSource, isCredentialSource, isSubscriptionSource, type AccountSource, isBillingSource, resolveSourceModel, type BillingSource, type CredentialSource, type SourceChoices, type SourceOption } from "../../../shared/credentials";
 import { addSideCost, type CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
@@ -109,7 +110,7 @@ export class LiveControl {
   readonly commands: Commands;
   /** shutting down: drivers close, but their open requests stay saved for the next start */
   private stopping = false;
-  private readonly subscriptionRevisions = new Map<HarnessId, string>();
+  private readonly subscriptionRevisions = new Map<string, string>();
   /** how long a cut-off session's store must be quiet before Tether continues it (tests shorten these) */
   quiet = { quietMs: 15_000, pollMs: 3_000, maxMs: 10 * 60_000 };
   /**
@@ -132,12 +133,12 @@ export class LiveControl {
       idleMs?: number;
       /** the most sessions live at once (TETHER_MAX_LIVE_SESSIONS); absent or 0: no limit */
       maxLive?: number;
-      attachmentsDir?: string; credentials?: CredentialStore; costs?: CostLedger } = {},
+      attachmentsDir?: string; credentials?: CredentialStore; claudeAccounts?: ClaudeAccounts; costs?: CostLedger } = {},
   ) {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
     this.retries = new RetryControl(core, {
       identity: (s) => this.retryIdentity(s),
-      extended: (s) => s.state.retryThrottled === true && this.sourceOf(s) !== "subscription",
+      extended: (s) => s.state.retryThrottled === true && !isSubscriptionSource(this.sourceOf(s)),
       revision: (s) => core.adapter(s.summary.harness).storeRevision?.(s.summary.nativeId, s.summary.projectPath),
       blocked: (s) => s.state.mode === "terminal" || !!s.state.terminal || !!s.state.requests.length || !!this.terminal?.blocked(s) || !!core.o.prefs.get(s.id).nextSource || this.restartWaits.has(s.id),
       held: (s) => !!this.heldWhy(s.id),
@@ -183,8 +184,8 @@ export class LiveControl {
   private retryIdentity(s: Session) {
     const source = this.sourceOf(s);
     const deployment = this.deploymentOf(s);
-    const credential = this.opts.credentials?.snapshot(source, deployment);
-    const scope = createHash("sha256").update(JSON.stringify([s.summary.harness, source, credential?.revision, credential?.endpoint, deployment ?? s.state.model])).digest("hex");
+    const credential = isAccountSource(source) ? undefined : this.opts.credentials?.snapshot(source, deployment);
+    const scope = createHash("sha256").update(JSON.stringify([s.summary.harness, source, isAccountSource(source) ? this.revisionOf(s) : credential?.revision, credential?.endpoint, deployment ?? s.state.model])).digest("hex");
     const fingerprint = createHash("sha256").update(JSON.stringify([scope, s.state.model, s.state.effort, s.state.permissionMode])).digest("hex");
     return { scope, fingerprint };
   }
@@ -220,10 +221,22 @@ export class LiveControl {
     }
   }
 
-  harnessLoginChanged(harness: HarnessId) {
-    this.subscriptionRevisions.set(harness, randomUUID());
+  claudeAccountInUse(source: AccountSource) {
+    return [...this.core.sessions.values()].some((s) => s.summary.harness === "claude" && (this.sourceOf(s) === source || s.state.billing?.source === source)
+      && (s.sending || s.starting || s.driver?.busy() || sourceSwitchBlocker(s.state) === "background" ||
+          s.state.mode === "terminal" || !!this.terminal?.blocked(s)));
+  }
+
+  async releaseClaudeAccount(source: AccountSource) {
+    await Promise.all([...this.core.sessions.values()].filter((s) =>
+      s.summary.harness === "claude" && s.driver && (this.sourceOf(s) === source || s.state.billing?.source === source)
+    ).map((s) => this.release(s)));
+  }
+
+  harnessLoginChanged(harness: HarnessId, source: BillingSource = "subscription") {
+    this.subscriptionRevisions.set(this.subscriptionScope(harness, source), randomUUID());
     for (const s of this.core.sessions.values()) {
-      if (s.summary.harness === harness && s.retry && this.sourceOf(s) === "subscription") this.cancelRetrySession(s);
+      if (s.summary.harness === harness && s.retry && this.sourceOf(s) === source) this.cancelRetrySession(s);
     }
   }
 
@@ -567,7 +580,7 @@ export class LiveControl {
     // The pin goes with the conversation: the new thread takes the old one's place in Pinned.
     prefs.set(n.id, { movedTo: undefined, carried: undefined, carrying: undefined, ...(title ? { title } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
     const { forkedFrom, worktree: _, fallbackProgress: __, ...state } = kept;
-    n.setState({ ...state, continuedIn: undefined, carried: undefined, retryThrottled: this.sourceOf(n) === "subscription" ? undefined : !!kept.retryThrottled });
+    n.setState({ ...state, continuedIn: undefined, carried: undefined, retryThrottled: isSubscriptionSource(this.sourceOf(n)) ? undefined : !!kept.retryThrottled });
     n.movedTo = undefined;
     prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextFallbackSettings: undefined, nextModel: undefined, nextBilling: undefined, nextDeployment: undefined, sourceSwitchFailed: undefined });
     this.core.moveSides(s.id, n.id);
@@ -617,7 +630,7 @@ export class LiveControl {
       const { pinned, pinnedRow } = this.core.o.prefs.get(s.id);
       this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
       const { forkedFrom, worktree: _, fallbackProgress: __, ...state } = kept;
-      n.setState({ ...state, retryThrottled: source === "subscription" ? undefined : !!kept.retryThrottled });
+      n.setState({ ...state, retryThrottled: isSubscriptionSource(source) ? undefined : !!kept.retryThrottled });
       this.core.touch(n, forkedFrom ? { forkedFrom } : {});
       try {
         await this.ensureDriver(n);
@@ -1461,10 +1474,22 @@ export class LiveControl {
     return { ...opts, model };
   }
 
+  private subscriptionScope(harness: HarnessId, source: BillingSource) {
+    return `${harness}:${source}`;
+  }
+
+  private subscriptionRevision(harness: HarnessId, source: BillingSource) {
+    return this.subscriptionRevisions.get(this.subscriptionScope(harness, source)) ?? source;
+  }
+
   /** What a session's process must have been started with to be current. */
   private revisionOf(s: Session): string | undefined {
     const source = this.sourceOf(s);
-    return (source === "subscription" ? this.subscriptionRevisions.get(s.summary.harness) : undefined)
+    if (isAccountSource(source)) {
+      const accounts = this.opts.claudeAccounts;
+      return accounts?.read(source) && !accounts.signingIn.has(source) ? this.subscriptionRevision(s.summary.harness, source) : undefined;
+    }
+    return (source === "subscription" ? this.subscriptionRevisions.get(this.subscriptionScope(s.summary.harness, source)) : undefined)
       ?? this.opts.credentials?.snapshot(source, this.deploymentOf(s))?.revision;
   }
 
@@ -1475,6 +1500,15 @@ export class LiveControl {
   /** The source as it is now: a missing key stops here, naming the source. Nothing stands in for it. */
   credentialFor(harness: HarnessId, source: BillingSource, deployment?: string): CredentialSnapshot | undefined {
     const store = this.opts.credentials;
+    if (isAccountSource(source)) {
+      const accounts = this.opts.claudeAccounts;
+      const identity = harness === "claude" ? accounts?.read(source) : undefined;
+      if (!store || !accounts || !identity || accounts.signingIn.has(source)) {
+        throw new Error("The chosen Claude subscription account is unavailable. Check Accounts or change Source. Nothing was sent.");
+      }
+      const { accountId, email, organization } = identity;
+      return { source, revision: this.subscriptionRevision(harness, source), file: store.file, claudeAccount: { configDir: accounts.configDir(source), accountId, email, organization } };
+    }
     if (!store) return undefined;
     if (source === "bedrock" && !this.sourceModels(harness, source).some((m) => m.name === deployment)) {
       throw new Error("This session needs a configured model for its harness in Settings, Bedrock.");
@@ -1500,20 +1534,30 @@ export class LiveControl {
       if (source === "bedrock") return !!this.opts.credentials?.snapshot(source) && this.sourceModels(harness, source).length > 0;
       return status[source].set && (source !== "azure" || (!!status.azure.endpoint && !!status.azure.deployments?.length));
     };
-    const options = [...(login ? ["subscription" as const] : []), ...billing.keys.filter(ready)].map((source) => ({
+    const extras = harness === "claude" ? (this.opts.claudeAccounts?.list() ?? [])
+      .filter(({ source }) => !this.opts.claudeAccounts?.signingIn.has(source)).map(({ source }) => source) : [];
+    const options = [...(login ? ["subscription" as const] : []), ...extras, ...billing.keys.filter(ready)].map((source) => ({
       source, billing: billing.label(source), ...(hasSourceModels(source) ? { deployments: this.sourceModels(harness, source) } : {}),
     }));
-    const fallback = login ? "subscription" : options[0]?.source;
+    const last = this.core.o.prefs.lastSubscription(harness);
+    const fallback = options.find((o) => o.source === last)?.source ?? options[0]?.source;
     return { options, ...(fallback ? { default: fallback } : {}) };
   }
 
   /**
-   * The source a new session gets. None asked for: the subscription, never a key by surprise.
+   * Without an explicit source, use the last selected Claude login or the primary subscription.
    */
   async sourceForNew(harness: HarnessId, asked: unknown): Promise<BillingSource> {
-    if (asked === undefined) return "subscription";
+    if (asked === undefined) {
+      const last = this.core.o.prefs.lastSubscription(harness);
+      return harness === "claude" && isAccountSource(last) && this.opts.claudeAccounts?.read(last) && !this.opts.claudeAccounts.signingIn.has(last) ? last : "subscription";
+    }
+    if (isAccountSource(asked)) {
+      this.credentialFor(harness, asked);
+      return asked;
+    }
     const a = this.core.adapter(harness);
-    if (!isBillingSource(asked) || (asked !== "subscription" && !a.billing?.keys.includes(asked))) throw new Error(`${HARNESS_LABELS[harness]} can't use that source.`);
+    if (!isBillingSource(asked) || (asked !== "subscription" && (!isCredentialSource(asked) || !a.billing?.keys.includes(asked)))) throw new Error(`${HARNESS_LABELS[harness]} can't use that source.`);
     return asked;
   }
 
@@ -1528,8 +1572,14 @@ export class LiveControl {
   async createSession(harness: HarnessId, folder: string, opts: StartOpts, source: BillingSource): Promise<Session> {
     opts = this.forSource(harness, source, opts);
     const s = this.core.create(harness, await this.newNativeId(harness, folder, opts, source), folder, opts);
-    this.core.o.prefs.set(s.id, { source, ...(hasSourceModels(source) && opts.model ? { deployment: opts.model } : {}) });
-    if (source !== "subscription") s.setState({ retryThrottled: false });
+    const accountBilling = isAccountSource(source) ? this.core.adapter(harness).billing?.label(source) : undefined;
+    if (accountBilling) {
+      s.setState({ nextBilling: accountBilling, plan: this.core.planFor(harness, source) });
+    }
+    this.core.o.prefs.set(s.id, { source, ...(accountBilling ? { nextBilling: accountBilling } : {}), ...(hasSourceModels(source) && opts.model ? { deployment: opts.model } : {}) });
+    if (accountBilling) this.core.o.prefs.flush();
+    if (isSubscriptionSource(source) && harness === "claude") this.core.o.prefs.setLastSubscription(harness, source);
+    if (!isSubscriptionSource(source)) s.setState({ retryThrottled: false });
     return s;
   }
 
@@ -1547,6 +1597,13 @@ export class LiveControl {
     s.setState({ sourceSwitchFailed: true });
   }
 
+  private assertSourceSwitchIdle(s: Session) {
+    if (s.state.mode === "terminal" || s.state.terminal || this.terminal?.blocked(s)) throw new Error(sourceSwitchBlockMessage("terminal"));
+    const blocker = sourceSwitchBlocker(s.state);
+    if (blocker) throw new Error(sourceSwitchBlockMessage(blocker));
+    if (s.sending || s.starting || s.carrying) throw new Error(sourceSwitchBlockMessage("turn"));
+  }
+
   /** From the next process start, which confirms it (only with capabilities.sourceSwitch). */
   async setSource(id: string, asked: unknown, sourceModel?: string, fallback?: { chain: FallbackChain; index: number; settings: StartOpts }) {
     const s = await this.core.open(id);
@@ -1557,11 +1614,9 @@ export class LiveControl {
     if (s.summary.sideOf) throw new Error(SIDE_KEEPS.source);
     if (!s.capabilities.sourceSwitch) throw new Error("Use Move to change this session's source.");
     if (!isBillingSource(asked)) throw new Error("That isn't a source.");
-    if (s.state.mode === "terminal" || s.state.terminal || this.terminal?.blocked(s)) throw new Error(sourceSwitchBlockMessage("terminal"));
-    const blocker = sourceSwitchBlocker(s.state);
-    if (blocker) throw new Error(sourceSwitchBlockMessage(blocker));
-    if (s.sending || s.starting || s.carrying) throw new Error(sourceSwitchBlockMessage("turn"));
+    this.assertSourceSwitchIdle(s);
     const choice = (await this.sources(harness)).options.find((o) => o.source === asked);
+    this.assertSourceSwitchIdle(s);
     if (!choice) throw new Error(`${this.labelOf(harness, asked)} isn't available.`);
     if (sourceModel && !choice.deployments?.some(({ name }) => name === sourceModel)) {
       throw new Error(asked === "azure" ? `Azure deployment ${sourceModel} isn't available.` : "That model is unavailable on the requested source.");
@@ -1575,7 +1630,7 @@ export class LiveControl {
     if (busy || s.sending || s.starting || s.carrying) throw new Error(sourceSwitchBlockMessage(busy ?? "turn"));
     const fallbackChain = fallback ? { ...fallback.chain, active: fallback.index } : undefined;
     const progress = fallbackChain ? { fallbackChain } : {};
-    const lastKey = asked !== "subscription" ? asked : own !== "subscription" ? own : undefined;
+    const lastKey = isCredentialSource(asked) ? asked : isCredentialSource(own) ? own : undefined;
     if (lastKey) {
       this.core.o.prefs.set(id, { lastKey });
       s.setState({ lastKey });
@@ -1609,7 +1664,7 @@ export class LiveControl {
     const confirmed = s.state.billing?.label === next.label;
     // Where its API cost starts is decided now, while what it was on until now is still what's confirmed.
     let cost: SessionCost | undefined;
-    if (asked !== "subscription") {
+    if (isCredentialSource(asked)) {
       try { cost = this.startCost(s); }
       catch { cost = { estimated: true, complete: false, reasons: ["unsaved"] }; this.core.log("Couldn't save this session's API cost coverage. Its total is unknown."); }
     }
@@ -1622,7 +1677,8 @@ export class LiveControl {
     const settings = fallback?.settings;
     this.core.o.prefs.set(id, { ...progress, ...settings, source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...sourceSettings });
     this.core.o.prefs.flush();
-    s.setState({ ...progress, ...settings, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, retryThrottled: asked === "subscription" ? undefined : this.core.o.prefs.get(id).retryThrottled === true, ...(model ? { model, modelResolved: undefined } : {}), ...(cost ? { cost } : {}) });
+    if (harness === "claude" && isSubscriptionSource(asked)) this.core.o.prefs.setLastSubscription(harness, asked);
+    s.setState({ ...progress, ...settings, ...(isAccountSource(asked) || isAccountSource(own) ? { plan: this.core.planFor(harness, asked) } : {}), nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, retryThrottled: isSubscriptionSource(asked) ? undefined : this.core.o.prefs.get(id).retryThrottled === true, ...(model ? { model, modelResolved: undefined } : {}), ...(cost ? { cost } : {}) });
     if (settings && s.driver && asked === own) s.credentialRevision = undefined;
     this.core.touch(s);
   }
@@ -1783,7 +1839,7 @@ export class LiveControl {
 
   async setRetryThrottled(id: string, on: boolean) {
     const s = await this.core.open(id);
-    if (s.summary.parentSessionId || s.summary.sideOf || this.sourceOf(s) === "subscription") {
+    if (s.summary.parentSessionId || s.summary.sideOf || isSubscriptionSource(this.sourceOf(s))) {
       throw new Error("Extended throttle retries require a main session using an API key.");
     }
     this.core.o.prefs.set(id, { retryThrottled: on || undefined });
@@ -1925,7 +1981,7 @@ export class LiveControl {
   private canAdvanceFallback(s: Session, hit?: { resetsAt?: number }) {
     const prefs = this.core.o.prefs.get(s.id);
     return !!s.state.fallbackChain?.enabled && (!!s.capabilities.sourceSwitch || !!this.fallbackMover && !!s.capabilities.move) && !prefs.nextSource && !s.summary.parentSessionId &&
-      !prefs.sideOf && !this.fallingBack.has(s) && (!hit || this.sourceOf(s) === "subscription");
+      !prefs.sideOf && !this.fallingBack.has(s) && (!hit || isSubscriptionSource(this.sourceOf(s)));
   }
 
   private async waitForFallbackHandoff(s: Session, chain: FallbackChain) {
@@ -2165,8 +2221,8 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
     // Live from here: its own events, not the store, update the transcript.
     s.unwatch?.();
     s.unwatch = undefined;
-    const sink = this.sink(s);
-    const subscriptionRevision = this.sourceOf(s) === "subscription" ? this.subscriptionRevisions.get(s.summary.harness) : undefined;
+    const sink = this.sink(s, this.sourceOf(s));
+    const subscriptionRevision = this.sourceOf(s) === "subscription" ? this.subscriptionRevisions.get(this.subscriptionScope(s.summary.harness, "subscription")) : undefined;
     let d: Driver;
     let opts: StartOpts;
     s.setState({ starting: s.fresh ? "start" : "resume" });
@@ -2183,7 +2239,7 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
       // that was starting it ends its turn as failed (send's catch).
       // (A Back to Tether that failed: modeChanged pauses what waited for the terminal, with Resume.)
       this.setMode(s, "stored", { error, starting: undefined, ...(s.sending ? {} : { status: "idle" as const }) });
-      if (!observe && !s.summary.parentSessionId && this.sourceOf(s) === "subscription" && needsHarnessLogin(error)) {
+      if (!observe && !s.summary.parentSessionId && isSubscriptionSource(this.sourceOf(s)) && needsHarnessLogin(error)) {
         this.read.set(s.id, { failure: error });
       }
       this.core.tail(s);
@@ -2272,7 +2328,7 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
   // ---------------- sinks ----------------
 
   /** Where a session's driver reports. */
-  private sink(s: Session): Sink {
+  private sink(s: Session, processSource: BillingSource): Sink {
     const core = this.core;
     const bus = core.o.bus;
     return {
@@ -2352,7 +2408,8 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
       request: (r, signal) => this.desk.ask(s, redactValue(r), signal),
       // The account's, reported by what runs on its login: a key's process says nothing of the plan.
       plan: (p) => {
-        if (this.sourceOf(s) === "subscription") core.notePlan(s.summary.harness, reportedAt(p));
+        const source = processSource;
+        if (isSubscriptionSource(source)) core.notePlan(s.summary.harness, reportedAt(p), source);
       },
       limitReached: (hit) => {
         s.limitHit = hit;
@@ -2479,7 +2536,7 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
     const at = parent.transcript?.findTool(start.parentToolId);
     if (at) parent.apply({ type: "tool", msgId: at.msg.id, toolId: start.parentToolId, patch: { childSessionId: id } });
     const child = c;
-    const sink = this.sink(child);
+    const sink = this.sink(child, this.sourceOf(parent));
     return {
       ...sink,
       // A subagent's status follows its task, not turns.

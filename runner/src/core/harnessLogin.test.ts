@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readlinkSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ClaudeAccounts } from "../adapters/claude/accounts";
+import type { HarnessAccount } from "../../../shared/harnessLogin";
 import { HARNESS_BINS } from "../adapters/detect";
 import { registerHarnessLogin } from "./harnessLogin";
 import { OpRegistry } from "./ops";
@@ -154,5 +156,103 @@ test("Codex uses device authorization on the subscription daemon and cancels its
     stop();
     setConnector(undefined);
     HARNESS_BINS.codex = previous;
+  }
+});
+
+test("additional Claude sign-ins isolate credentials, share session files, and remove only their own folder", async () => {
+  const previousBin = HARNESS_BINS.claude;
+  const previousConfig = process.env.CLAUDE_CONFIG_DIR;
+  const dir = mkdtempSync(join(tmpdir(), "tether-extra-login-"));
+  const primary = join(dir, "primary");
+  const root = join(dir, "accounts");
+  mkdirSync(primary);
+  writeFileSync(join(primary, "settings.json"), "{}");
+  writeFileSync(join(primary, "login"), "primary");
+  const cli = join(dir, "claude");
+  writeFileSync(cli, `#!/bin/sh
+case "$*" in
+  "auth login --claudeai")
+    echo "https://claude.ai/oauth/authorize?state=testing"
+    echo "Paste code here if prompted"
+    read -r code
+    [ -n "$code" ] || exit 1
+    printf '%s' "$code" > "$CLAUDE_CONFIG_DIR/login"
+    ;;
+  *"auth status --json")
+    [ -f "$CLAUDE_CONFIG_DIR/login" ] || exit 1
+    identity=$(cat "$CLAUDE_CONFIG_DIR/login")
+    printf '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"%s@example.test","orgName":"Test Organization","orgId":"%s","subscriptionType":"max"}\n' "$identity" "$identity"
+    ;;
+  "auth logout") touch '${join(dir, "logged-out")}' ;;
+  *) exit 2 ;;
+esac
+`, { mode: 0o700 });
+  HARNESS_BINS.claude = cli;
+  process.env.CLAUDE_CONFIG_DIR = primary;
+  const accounts = new ClaudeAccounts(root);
+  const ops = new OpRegistry();
+  const file = join(dir, "runner.json");
+  writeFileSync(file, JSON.stringify({ runnerId: "test-runner" }));
+  let inUse = false;
+  const stop = registerHarnessLogin(ops, () => {}, new Prefs(file), accounts, () => inUse);
+  const remote = (op: string, args: unknown) => ops.handle(op, args, "owner");
+  const harness = { harness: "claude" };
+  const list = async () => {
+    const result = await remote("listHarnessAccounts", harness);
+    if (!result.ok) throw new Error(result.error);
+    return result.data as HarnessAccount[];
+  };
+  async function signIn(account: string, code: string) {
+    const result = await remote("harnessLoginStart", { ...harness, account });
+    if (!result.ok) throw new Error(result.error);
+    const flow = result.data as { flowId: string };
+    await waitFor(async () => {
+      const poll = await remote("harnessLoginPoll", flow);
+      if (poll.ok && (poll.data as { acceptsCode?: boolean }).acceptsCode) return true;
+    });
+    expect(await remote("harnessLoginCode", { ...flow, code })).toMatchObject({ ok: true });
+    return waitFor(async () => {
+      const poll = await remote("harnessLoginPoll", flow);
+      if (poll.ok && (poll.data as { state: string }).state !== "pending") return poll.data;
+    });
+  }
+  try {
+    expect(await ops.handle("listHarnessAccounts", harness)).toMatchObject({ ok: false });
+    expect(await signIn("new", "secondary")).toEqual({ state: "done" });
+    const [entry] = await list();
+    expect(entry).toMatchObject({ available: true, status: { email: "secondary@example.test", organization: "Test Organization" } });
+    const config = accounts.configDir(entry!.source);
+    expect(statSync(config).mode & 0o777).toBe(0o700);
+    for (const name of ["projects", "history.jsonl", "settings.json", "keybindings.json", "CLAUDE.md", "skills", "commands", "agents", "rules"]) {
+      expect(readlinkSync(join(config, name))).toBe(join(primary, name));
+    }
+    writeFileSync(join(config, "projects", "shared-session"), "transcript");
+    expect(existsSync(join(primary, "projects", "shared-session"))).toBe(true);
+    expect(await signIn("new", "secondary")).toEqual({ state: "failed" });
+    expect(readdirSync(root)).toHaveLength(1);
+    expect(await signIn(entry!.source, "different")).toEqual({ state: "failed" });
+    expect((await list())[0]).toMatchObject({ available: false, status: { email: "secondary@example.test" } });
+    expect(await signIn(entry!.source, "secondary")).toEqual({ state: "done" });
+    const accountId = accounts.read(entry!.source)!.accountId;
+    expect(await remote("renameHarnessAccount", { ...harness, source: entry!.source, accountId, displayName: "Work" })).toMatchObject({ ok: true, data: { displayName: "Work" } });
+    expect((await list())[0]).toMatchObject({ status: { displayName: "Work" } });
+    const removal = { ...harness, source: entry!.source };
+    expect(await ops.handle("removeHarnessAccount", removal)).toMatchObject({ ok: false });
+    inUse = true;
+    expect(await remote("removeHarnessAccount", removal)).toMatchObject({ ok: false });
+    inUse = false;
+    expect(await remote("removeHarnessAccount", removal)).toEqual({ ok: true, data: null });
+    expect(await list()).toEqual([]);
+    expect(existsSync(config)).toBe(false);
+    expect(existsSync(join(dir, "logged-out"))).toBe(false);
+    expect(existsSync(join(primary, "settings.json"))).toBe(true);
+    expect(existsSync(join(primary, "projects", "shared-session"))).toBe(true);
+    expect(await remote("harnessLoginStatus", harness)).toMatchObject({ ok: true, data: { email: "primary@example.test" } });
+  } finally {
+    stop();
+    HARNESS_BINS.claude = previousBin;
+    if (previousConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previousConfig;
+    rmSync(dir, { recursive: true, force: true });
   }
 });

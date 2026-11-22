@@ -25,7 +25,7 @@ export function switchBlocked(state: LiveState): string | undefined {
 export function sourceMenu(harness: HarnessId, state: LiveState, choices: SourceChoices): { items: SourceMenuItem[]; value?: string; addKey: boolean } {
   // A failed start leaves the target queued, so keep it selected in the menu for cancellation.
   const shown = state.sourceSwitchFailed ? state.nextBilling ?? billingForDisplay(state) : billingForDisplay(state);
-  const own = choices.options.find((o) => o.billing.label === shown?.label);
+  const own = choices.options.find((o) => shown?.source ? o.source === shown.source : o.billing.label === shown?.label);
   const reason = switchBlocked(state);
   const items: SourceMenuItem[] = choices.options.map((o) => ({ value: o.source, label: o.billing.label, ...(o !== own && reason ? { reason } : {}) }));
   const gone = !own && shown && shown.kind !== "unknown";

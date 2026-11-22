@@ -1,3 +1,4 @@
+import { isAccountSource } from "../../../../shared/credentials";
 // A live Claude Code session through the Agent SDK (SPEC §6): one query() with streaming input
 // per session, so the process stays up between turns. What it says goes through ClaudeStream into
 // the session's sink; permission prompts go to the broker through the sink.
@@ -20,7 +21,7 @@ import { sessionFile } from "./paths";
 import { movedReadRule } from "./move";
 import { canonicalCommand } from "./content";
 import { keepBilling } from "./context";
-import { claudeAuthSettings, claudeEnv, claudeKeyLease, confirmClaudeBilling } from "./credentials";
+import { claudeAuthSettings, claudeEnv, claudeKeyLease, confirmClaudeBilling, expectedClaudeIdentity } from "./credentials";
 import { claudeAsk, claudeResult } from "./requests";
 import { ClaudeStream, type SessionCron } from "./stream";
 import { ClaudeCostCounter } from "./cost";
@@ -63,6 +64,7 @@ export class ClaudeDriver implements Driver {
   private closed = false;
   private stderr: string[] = [];
   private credential?: CredentialSnapshot;
+  private expectedAccount?: Awaited<ReturnType<typeof expectedClaudeIdentity>>;
   private failedError?: string;
   private interrupting = false;
   private lease?: ReturnType<typeof claudeKeyLease>;
@@ -75,7 +77,7 @@ export class ClaudeDriver implements Driver {
     private projectPath: string,
     private sink: Sink,
   ) {
-    this.stream = new ClaudeStream(sink, { nativeId, contextNow: () => this.contextNow(), keyed: () => this.credential?.source === "anthropic", failed: () => this.failed(), interrupted: () => this.interrupting, goalStatus: (id) => this.goalStatus(id) });
+    this.stream = new ClaudeStream(sink, { nativeId, contextNow: () => this.contextNow(), keyed: () => this.credential?.source === "anthropic", extraAccount: () => isAccountSource(this.credential?.source), failed: () => this.failed(), interrupted: () => this.interrupting, goalStatus: (id) => this.goalStatus(id) });
   }
 
   /** Starts Claude Code on a new session (`resume`: false) or an existing one. Rejects if it can't start. */
@@ -89,6 +91,7 @@ export class ClaudeDriver implements Driver {
 
   private async start(opts: StartOpts, resume: boolean) {
     this.credential = opts.credential;
+    this.expectedAccount = await expectedClaudeIdentity(CLAUDE_BIN ?? "claude", opts.credential);
     this.lease = claudeKeyLease(opts.credential, (cost) => this.sink.cost?.(cost));
     const canUseTool: CanUseTool = async (tool, input, o) => {
       // A subagent's request goes to its own session (it shows in the parent's too).
@@ -196,9 +199,12 @@ export class ClaudeDriver implements Driver {
   }
 
   /** What this start draws from: only Claude Code can say, and only now. */
+  private async confirmAccount() {
+    return confirmClaudeBilling(await this.q.accountInfo().catch(() => undefined), this.credential, this.expectedAccount);
+  }
+
   private async noteBilling() {
-    const account = await this.q.accountInfo().catch(() => undefined);
-    const billing = confirmClaudeBilling(account, this.credential);
+    const billing = await this.confirmAccount();
     keepBilling(this.nativeId, billing);
     this.sink.state({ billing });
   }
@@ -263,6 +269,7 @@ export class ClaudeDriver implements Driver {
   }
 
   async send(text: string, attachments: Attachment[] = []) {
+    if (this.expectedAccount) await this.confirmAccount();
     if (this.closed) throw new Error("Claude Code isn't running.");
     this.interrupting = false;
     this.sink.state({ status: "running", error: undefined });
@@ -275,6 +282,7 @@ export class ClaudeDriver implements Driver {
    * turn ended meanwhile.
    */
   async steer(text: string, attachments: Attachment[] = []) {
+    if (this.expectedAccount) await this.confirmAccount();
     if (this.closed) throw new Error("Claude Code isn't running.");
     this.push(text, attachments);
   }

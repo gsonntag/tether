@@ -1,3 +1,4 @@
+import { isAccountSource, isSubscriptionSource, type BillingSource } from "../../../shared/credentials";
 // The session core (SPEC §3, §4, §5): the session registry, stored and live modes, event
 // numbering, snapshots and pages, and the summary list. Driving a live session (drivers, sinks,
 // idle close) is in live.ts; the rpc ops that call into this are in sessionOps.ts.
@@ -107,7 +108,7 @@ const emptyState = (mode: LiveState["mode"] = "stored"): LiveState => ({ mode, s
 export class SessionCore {
   readonly sessions = new Map<string, Session>();
   /** each harness's latest plan limits report: account-wide, so not any one session's */
-  private plans = new Map<HarnessId, PlanUsage>();
+  private plans = new Map<string, PlanUsage>();
   /** sessions at least one browser has subscribed to (since the last connect) */
   readonly watched = new Set<string>();
   readonly book: SummaryBook;
@@ -332,7 +333,7 @@ export class SessionCore {
     if (!row) throw new Error("That session isn't on this runner any more.");
     const defaults = await a.defaults(row.projectPath, parsed.nativeId).catch(() => ({}) as StartOpts);
     const source = prefs.source ?? a.billing?.recorded?.(parsed.nativeId, row.projectPath);
-    const keySession = source && source !== "subscription" && !row.parentSessionId && !prefs.sideOf;
+    const keySession = source && !isSubscriptionSource(source) && !row.parentSessionId && !prefs.sideOf;
     const state: LiveState = { ...emptyState(), ...(row.billing ? { billing: row.billing } : {}), ...a.unset, ...pick(defaults), ...chosenOf(a, prefs), ...MessageQueue.saved(prefs), ...(prefs.fallbackChain ? { fallbackChain: prefs.fallbackChain } : {}), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), ...(prefs.carried ? { carried: true } : {}), ...(prefs.nextBilling ? { nextBilling: prefs.nextBilling } : {}), ...(prefs.nextDeployment ? { nextDeployment: prefs.nextDeployment } : {}), ...(prefs.nextSource && prefs.nextModel ? { nextModel: prefs.nextModel } : {}), ...(prefs.sourceSwitchFailed ? { sourceSwitchFailed: true } : {}), ...(prefs.canText ? { canText: true } : {}), ...(keySession ? { retryThrottled: prefs.retryThrottled === true } : {}), ...(prefs.lastKey ? { lastKey: prefs.lastKey } : {}), ...(prefs.setup ? { setup: "failed" as const } : {}), requests: this.requestsFor(id) };
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
@@ -356,7 +357,7 @@ export class SessionCore {
       s.state = { ...s.state, cost: this.o.costs.get(s.id) };
       s.summary = { ...s.summary, cost: s.state.cost };
     }
-    const plan = this.plans.get(s.summary.harness);
+    const plan = this.planFor(s.summary.harness, this.o.prefs.get(s.id).source);
     if (plan && !s.summary.parentSessionId) s.state = { ...s.state, plan };
     if (!s.overlay.length) s.overlay = this.notices.get(s.id);
     s.noticeAdded = (n) => this.notices.add(s.id, n);
@@ -490,11 +491,22 @@ export class SessionCore {
     });
   }
 
+  private planScope(harness: HarnessId, source?: BillingSource) {
+    return isAccountSource(source) ? `${harness}:${source}` : harness;
+  }
+
+  planFor(harness: HarnessId, source?: BillingSource) {
+    return this.plans.get(this.planScope(harness, source));
+  }
+
   /** The account's plan limits, the latest report, on all its sessions. */
-  notePlan(harness: HarnessId, report: PlanUsage) {
-    const plan = mergePlan(this.plans.get(harness), report);
-    this.plans.set(harness, plan);
-    for (const s of this.sessions.values()) if (s.summary.harness === harness && !s.summary.parentSessionId) s.setState({ plan });
+  notePlan(harness: HarnessId, report: PlanUsage, source?: BillingSource) {
+    const scope = this.planScope(harness, source);
+    const plan = mergePlan(this.plans.get(scope), report);
+    this.plans.set(scope, plan);
+    for (const s of this.sessions.values()) {
+      if (s.summary.harness === harness && !s.summary.parentSessionId && this.planScope(harness, this.o.prefs.get(s.id).source) === scope) s.setState({ plan });
+    }
   }
 
   private async readPlan(s: Session) {

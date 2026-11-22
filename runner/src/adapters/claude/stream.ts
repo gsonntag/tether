@@ -28,6 +28,7 @@ export interface StreamHost {
   contextNow?(): Promise<ContextUse | undefined>;
   /** On a key: the account's plan limits aren't this process's to report. */
   keyed?(): boolean;
+  extraAccount?(): boolean;
   /** A key-backed failure stops the process, without emitting the provider's raw error text. */
   failed?(): string | undefined;
   /** How the last /goal evaluation went, from the store (the stream doesn't say). */
@@ -212,7 +213,7 @@ export class ClaudeStream {
         else if (info?.status) this.rejected = undefined;
         const plan = planOf(info);
         if (plan && !this.host.keyed?.()) {
-          keepPlan(plan);
+          if (!this.host.extraAccount?.()) keepPlan(plan);
           this.main.sink.plan?.(plan);
         }
         return;

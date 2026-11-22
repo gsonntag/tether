@@ -2,11 +2,11 @@ import { isApiBilling } from "../../../shared/labels";
 import type { BillingSource, SourceChoices, SourceOption } from "../../../shared/credentials";
 
 /** What a session will draw from: a choice when there are several, in the API colour on a key. */
-export function SourcePicker({ choices, value, onChange, accountLabel }: { accountLabel?: string; choices?: SourceChoices; value?: BillingSource; onChange: (source: BillingSource) => void }) {
+export function SourcePicker({ choices, value, onChange, accountLabels }: { accountLabels?: Partial<Record<BillingSource, string>>; choices?: SourceChoices; value?: BillingSource; onChange: (source: BillingSource) => void }) {
   const options = choices?.options ?? [];
   const picked = options.find((o) => o.source === value) ?? options[0];
   if (!picked) return null;
-  const label = (option: SourceOption) => (option.source === "subscription" && accountLabel) || option.billing.label;
+  const label = (option: SourceOption) => accountLabels?.[option.source] || option.billing.label;
   const api = isApiBilling(picked.billing);
   if (options.length === 1) {
     return (

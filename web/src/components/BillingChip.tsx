@@ -47,7 +47,8 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
   const chip = paid ? { className: "t-chip t-paid-badge", title: billing.label } : { className: "t-chip t-chip-info t-usage-chip", title: usage.detail };
   const body = paid ? <><span>{billing.label}</span><span className="t-api-cost" title={cost.detail}>{cost.text}</span></> : limits ? limits.text : usage.text;
 
-  const planName = account.label ?? choices?.options.find((o) => o.source === "subscription")?.billing.label ?? (billing.kind === "plan" ? billing.label : "Plan limits");
+  const planSource = billing.source ?? "subscription";
+  const planName = account.labels?.[planSource] || choices?.options.find((o) => o.source === planSource)?.billing.label || (billing.kind === "plan" ? billing.label : "Plan limits");
   const plan = planLines(state.plan);
   const showRetryThrottled = onRetryThrottled && !session.parentSessionId && !session.sideOf && state.retryThrottled !== undefined;
   const hasMenu = !!choices || plan.length > 0 || showSessionCost || showRetryThrottled;
@@ -84,7 +85,7 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
         </>}
         {menu && menu.items.length > 0 && (
           <DropdownMenuRadioGroup label="Source" value={menu.value} onChange={(value) => { if (value !== menu.value && value !== CURRENT_SOURCE) onSwitch(value as BillingSource); }}>
-            {menu.items.map((i) => <DropdownMenuRadioItem key={i.value} value={i.value} label={(i.value === "subscription" && account.label) || i.label} description={i.reason} isDisabled={!!i.reason} />)}
+            {menu.items.map((i) => <DropdownMenuRadioItem key={i.value} value={i.value} label={account.labels?.[i.value as BillingSource] || i.label} description={i.reason} isDisabled={!!i.reason} />)}
           </DropdownMenuRadioGroup>
         )}
         {showRetryThrottled && <>

@@ -14,7 +14,7 @@ import { markTitle, parseSessionMessage, sessionMessage, TEXTED_VIA } from "../.
 import { LEVELS, mapMode, type Level } from "../../../../shared/move";
 import { waitingNow } from "../../../../shared/schedule";
 import { HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
-import { hasSourceModels, resolveSourceModel } from "../../../../shared/credentials";
+import { hasSourceModels, isSubscriptionSource, resolveSourceModel, type SourceOption } from "../../../../shared/credentials";
 import type { SpawnedFamily } from "../../../../shared/protocol";
 import { pickWorktree, type WorktreeJoined, type WorktreeMade } from "../../../../shared/worktree";
 import { LEVEL_WORDS, levelOf } from "../../core/permissionLevel";
@@ -274,14 +274,14 @@ export class Children {
     if (!adapter) return { text: `${HARNESS_LABELS[harness]} isn't available on this runner.`, isError: true };
     const { options } = harness === "antigravity"
       ? { options: [{ source: "subscription" as const, deployments: undefined }] }
-      : await s.sources(harness).catch(() => ({ options: [] as { source: string; deployments?: { name: string; model?: string }[] }[] }));
+      : await s.sources(harness).catch(() => ({ options: [] as SourceOption[] }));
     const list = await adapter.listModels?.().catch(() => undefined);
     const models = (list?.models ?? []).filter((m) => m.id !== "default").map((m) =>
       `  - ${m.id}${m.label && m.label !== m.id ? ` (${m.label})` : ""}${m.efforts?.length ? `; effort: ${m.efforts.join(", ")}` : ""}`);
     const lines = [`${HARNESS_LABELS[harness]} on this runner. Pass source and model to tether_start. Tether sets up each source's provider and key itself (Settings): no config or environment change is needed.`];
     if (!options.length) lines.push("", "No billing source is available.");
     for (const { source, deployments } of options) {
-      lines.push("", `${source}${source === "subscription" ? "" : " (API key: confirm with the person first)"}:`);
+      lines.push("", `${source}${isSubscriptionSource(source) ? "" : " (API key: confirm with the person first)"}:`);
       if (source === "bedrock") {
         for (const d of deployments ?? []) lines.push(`  - ${d.name}${d.model ? ` (alias: ${d.model})` : ""}`);
       } else if (source === "azure") {

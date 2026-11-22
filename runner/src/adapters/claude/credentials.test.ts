@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { CredentialSnapshot } from "../../credentials";
 import { Transcript } from "../../core/transcript";
 import { ClaudeDriver } from "./driver";
-import { CLAUDE_AUTH_ENV, claudeAuthSettings, claudeEnv, claudeKeyLease, claudeTerminalScripts, confirmClaudeBilling, prepareClaudeTerminal } from "./credentials";
+import { CLAUDE_AUTH_ENV, claudeAuthSettings, claudeEnv, claudeKeyLease, claudeTerminalScripts, confirmClaudeBilling, prepareClaudeTerminal, ptyText } from "./credentials";
 import { ClaudeCostCounter } from "./cost";
 import { ClaudeStream } from "./stream";
 import { claudeAdapter } from "./index";
@@ -170,3 +170,79 @@ test("an API-key failure invalidates the current cost epoch before it shuts down
 });
 
 function dirname(file: string) { return join(file, ".."); }
+
+test("a Claude subscription requires the chosen email and organization before dispatch", () => {
+  const source = "account:b8d64ec2-b923-4e94-811e-3f6fe0235a0f";
+  const credential: CredentialSnapshot = {
+    source, revision: source,
+    claudeAccount: { configDir: "/account", accountId: "a".repeat(64), email: "owner@example.test", organization: "owner@example.test'sOrganization" },
+  };
+  const account = { apiProvider: "firstParty", email: "OWNER@example.test", organization: "owner@example.test’s Organization", subscriptionType: "max" };
+  expect(claudeEnv(credential, { CLAUDE_CONFIG_DIR: "/primary" }).CLAUDE_CONFIG_DIR).toBe("/account");
+  expect(confirmClaudeBilling(account, credential)).toMatchObject({ kind: "plan", source });
+  expect(() => confirmClaudeBilling({ ...account, organization: "Other Organization" }, credential)).toThrow("could not confirm the Claude subscription account");
+  expect(() => confirmClaudeBilling({ ...account, email: "other@example.test" }, credential)).toThrow("could not confirm the Claude subscription account");
+  expect(() => confirmClaudeBilling({ ...account, organization: undefined }, credential)).toThrow("could not confirm the Claude subscription account");
+});
+
+// Claude Code 2.1.330 `auth status --json` in a PTY writes spaces as cursor moves.
+const ptyStatus = (orgName: string) => `\x1b[?25l{\r\n  "email":\x1b[12G"owner@example.test",\r\n  "orgName":\x1b[14G${JSON.stringify(orgName).split(" ").map((w, i, all) => i ? `\x1b[${14 + all.slice(0, i).join(" ").length + 1}G${w}` : w).join("")}\r\n}\x1b[?25h\r\n`;
+
+test("PTY auth status keeps the spaces in a team organization name", () => {
+  const raw = ptyStatus("Acme Corp Team");
+  expect(raw).not.toContain("Acme Corp");
+  expect(() => JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1))).toThrow();
+  expect(JSON.parse(ptyText(raw))).toEqual({ email: "owner@example.test", orgName: "Acme Corp Team" });
+  expect(ptyText("a\x1b[2Cb\x1b[31mc\x1b[0m")).toBe("a  bc");
+});
+
+test("the primary subscription confirms a team organization whose name has spaces", () => {
+  const credential: CredentialSnapshot = { source: "subscription", revision: "subscription" };
+  const account = { apiProvider: "firstParty", email: "owner@example.test", organization: "Acme Corp", subscriptionType: "team" };
+  const status = JSON.parse(ptyText(ptyStatus("Acme Corp")));
+  expect(confirmClaudeBilling(account, credential, { email: status.email, organization: status.orgName })).toMatchObject({ kind: "plan" });
+  expect(confirmClaudeBilling(account, credential, { email: status.email, organization: "AcmeCorp" })).toMatchObject({ kind: "plan" });
+  expect(() => confirmClaudeBilling(account, credential, { email: status.email, organization: "Acme Inc" })).toThrow("could not confirm the Claude subscription account");
+});
+
+test("the Claude terminal launcher checks the account in its own config before running the TUI", async () => {
+  const dir = fresh();
+  const file = join(dir, "credentials.json");
+  const config = join(dir, "account");
+  mkdirSync(config);
+  const { launcher } = claudeTerminalScripts(file);
+  const binary = join(dir, "claude");
+  const email = "owner@example.test";
+  const organization = "Test Org Team";
+  const report = { apiProvider: "firstParty", authMethod: "claude.ai", loggedIn: true, email, orgName: organization, orgId: "id", subscriptionType: "max" };
+  const { accountIdentity } = await import("../../accountIdentity");
+  writeFileSync(join(config, ".tether-account.json"), JSON.stringify(accountIdentity(email, "max", organization, "id")));
+  writeFileSync(binary, `#!/bin/sh
+[ "$CLAUDE_CONFIG_DIR" = '${config}' ] || exit 2
+case "$*" in
+  *"auth status --json") cat "$CLAUDE_CONFIG_DIR/status" ;;
+  "--resume stored-id "*) printf 'resumed' ;;
+  *) exit 3 ;;
+esac
+`, { mode: 0o700 });
+  const source = "account:b8d64ec2-b923-4e94-811e-3f6fe0235a0f";
+  const run = async (orgId: string, orgName = organization) => {
+    // The real CLI writes each space in a PTY as a cursor move.
+    let col = 0;
+    const json = JSON.stringify({ ...report, orgId, orgName }).replace(/ |[^ ]+/g, (m) => {
+      if (m !== " ") { col += m.length; return m; }
+      return `\x1b[${++col + 1}G`;
+    });
+    writeFileSync(join(config, "status"), `\x1b[?25l${json}\x1b[?25h\r\n`);
+    const p = Bun.spawn([process.execPath, launcher, file, source, source, config, binary, "--resume", "stored-id", "--settings", JSON.stringify(claudeAuthSettings())], {
+      env: { ...process.env, CLAUDE_CONFIG_DIR: "/primary" }, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+    });
+    return Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+  };
+  expect(await run("id")).toEqual([0, "resumed", ""]);
+  const [code, output, error] = await run("wrong-organization-id");
+  expect(code).toBe(1);
+  expect(output).toBe("");
+  expect(error).toContain("billing could not be confirmed");
+  expect((await run("id", "Other Org"))[0]).toBe(1);
+});
