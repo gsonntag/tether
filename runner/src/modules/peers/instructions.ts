@@ -18,6 +18,7 @@ export function sessionInstructions(s: RunnerSettings): string {
     "This session runs in Tether: the person reads your replies in Tether's app, often on a phone.",
     ...(s.conciseReplies === false ? [] : [CONCISE_RULE]),
     TEXTING_RULE,
+    "Before starting a session with tether_start, you must confirm with the user what to bill to. This includes replacement and fallback sessions. Get the user’s confirmation for each automatic fallback billing source and its priority before enabling it.",
     STARTED_RULE,
   ].join("\n\n");
 }

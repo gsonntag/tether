@@ -56,7 +56,7 @@ function setup(o: { modes?: Record<string, string>; dataDir?: string } = {}) {
       list: () => rows,
       open: async (id: string) => look(id) ?? Promise.reject(new Error("none")),
       adapters: () => [adapter("claude", claudeMove), adapter("codex", codexMove), adapter("antigravity", agyMove)],
-      sources: async () => ({ default: "subscription" }),
+      sources: async () => ({ options: [{ source: "subscription" }, { source: "azure", deployments: [{ name: "sol-deployment", model: "gpt-6.2-sol" }] }] }),
       folder: (p: string) => p,
       projects: async () => [{ path: "/p/app" }, { path: "/p/other" }],
       create: async (a: any) => {
@@ -84,6 +84,7 @@ function setup(o: { modes?: Record<string, string>; dataDir?: string } = {}) {
     ops: {
       call: async (op: string, a: any) => {
         calls.push(op);
+        if (op === "setAutoKey") return null;
         if (op === "listWorktrees") return a.projectPath === "/p/plain" ? { worktrees: [] } : { repo: "/p/app", worktrees: [{ path: "/p/app-wt", branch: "tether/x", sessions: [] }] };
         if (op === "existingWorktreeSession") return { sessionId: await ctx.sessions.create({ ...a, projectPath: a.worktree }), path: a.worktree, branch: "tether/x", tether: true };
         return { sessionId: await ctx.sessions.create(a), path: "/p/app-wt", branch: "tether/x", base: "main" };
@@ -91,7 +92,7 @@ function setup(o: { modes?: Record<string, string>; dataDir?: string } = {}) {
     },
   };
   const peers = new Peers(ctx);
-  const start = (args: Record<string, unknown>, from = "claude:boss") => peers.call({ from, tool: "tether_start", args } as any);
+  const start = (args: Record<string, unknown>, from = "claude:boss") => peers.call({ from, tool: "tether_start", args: { source: "subscription", ...args } } as any);
   const reply = (id: string, text: string) => recent.set(id, [{ id: "u", role: "user", ts: 0, parts: [{ type: "text", text: "go" }] }, { id: "a", role: "assistant", ts: 1, parts: [{ type: "text", text }] }]);
   const archive = (to: string, from = "claude:boss") => peers.call({ from, tool: "tether_archive", args: { to } } as any);
   const isArchived = (id: string) => !!rows.find((r) => r.id === id)?.archived;
@@ -99,6 +100,25 @@ function setup(o: { modes?: Record<string, string>; dataDir?: string } = {}) {
 }
 
 describe("tether_start", () => {
+  test("requires an explicit billing source and never replaces an unavailable Azure model", async () => {
+    const t = setup();
+    const args = { harness: "codex", prompt: "go" };
+    expect((await t.start({ ...args, source: undefined })).text).toContain("Confirm what to bill to");
+    expect((await t.start({ ...args, source: "azure", model: "gpt-6-luna" })).text).toContain("Choose a configured Azure deployment");
+    expect(t.created).toHaveLength(0);
+    expect((await t.start({ ...args, source: "azure", model: "gpt-6.2-sol" })).isError).toBeFalsy();
+    expect(t.created[0]).toMatchObject({ source: "azure", model: "sol-deployment" });
+  });
+
+  test("enables only the requested fallback keys for a subscription session", async () => {
+    const t = setup();
+    const args = { harness: "codex", prompt: "go" };
+    expect((await t.start({ ...args, fallbackKeys: ["openai"] })).isError).toBe(true);
+    expect(t.created).toHaveLength(0);
+    expect((await t.start({ ...args, fallbackKeys: ["azure"] })).isError).toBeFalsy();
+    expect(t.calls).toEqual(["setAutoKey"]);
+  });
+
   test("starts any harness from any harness, in the caller's folder, and the card links to it", async () => {
     const t = setup();
     const r = await t.start({ harness: "antigravity", prompt: "Fix the bug", model: "gemini-3-pro", effort: "high", title: "Bug fix" });

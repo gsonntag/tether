@@ -1033,7 +1033,7 @@ event (with the message's text) and the queued message's id from `SessionActions
   A message is counted (and an ask opened) right after the check, before anything waits, so calls
   side by side can't all pass; one that doesn't go is given back.
   A refusal is the tool's error and a warning notice in the sender's transcript.
-- **Starting sessions** (`children.ts`). `tether_start {harness, prompt, model?, effort?, title?,
+- **Starting sessions** (`children.ts`). `tether_start {harness, prompt, source, fallbackKeys?, model?, effort?, title?,
   project?, worktree?}` starts an ordinary session on any harness (claude, codex, antigravity),
   from any harness, and returns at once with `"<title>" (<id>)`. Folder: the caller's; `project`
   only names a known project, and only from a caller nothing confines (judged or full), as another
@@ -1041,8 +1041,10 @@ event (with the message's text) and the queued message's id from `SessionActions
   `newWorktreeSession` (§4), only from a caller that may run commands itself (sandboxed or looser),
   as git and the repo's setup run. `worktree: "<path or branch>"` starts in one of the folder's
   repo's existing worktrees (`existingWorktreeSession`): nothing runs, so it's just another folder,
-  as `project`: unless it's the caller's own, only from a judged or full caller. Source: the harness's default for a new session (as New
-  Session). Mode: the loosest mode the target offers whose level is at or under the caller's
+  as `project`: unless it's the caller's own, only from a judged or full caller. The agent must confirm the billing source with the user before starting any session, including a
+  replacement or fallback session. For Azure, `model` can name a configured deployment or its
+  unambiguous model. For a subscription, `fallbackKeys` enables automatic key fallback in the
+  order the user confirmed. Mode: the loosest mode the target offers whose level is at or under the caller's
   (Claude's auto counts as judged), so a child is never looser. The prompt goes in as a peer
   message from the caller (carrying its hops) whose hint says its final reply goes back. Who
   started whom is kept in `<config>/modules/peers/children.json`.
