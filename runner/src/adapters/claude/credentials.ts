@@ -37,12 +37,26 @@ export const claudeAccountLabel = (source: AccountSource) => `Claude plan · ${s
 
 type ClaudeIdentity = { email: string; organization: string };
 
+/** Text from a PTY. The CLI writes spaces as cursor moves there, so replay those moves instead of dropping them. */
+export function ptyText(output: string): string {
+  let text = "";
+  for (const part of output.split(/(\x1b\[[0-?]*[ -/]*[@-~]|\r?\n|\r)/)) {
+    if (part === "\r") continue;
+    if (part === "\n" || part === "\r\n") { text += "\n"; continue; }
+    const move = /^\x1b\[(\d*)([CG])$/.exec(part);
+    if (move) {
+      const col = text.length - text.lastIndexOf("\n") - 1;
+      const n = Number(move[1] || 1);
+      text += " ".repeat(Math.max(0, move[2] === "C" ? n : n - 1 - col));
+    } else if (!part.startsWith("\x1b[")) text += part;
+  }
+  return text;
+}
+
+/** Compared without whitespace: auth status and the SDK space the same name differently. */
 function normalizedOrganization(name: string, email: string) {
-  const normalized = name.trim().replace(/[‘’]/g, "'").replace(/\s+/g, " ");
-  // For personal accounts, auth status and the SDK format the same generated name differently.
-  if (normalized.toLowerCase() === `${email.toLowerCase()}'sorganization` ||
-      normalized.toLowerCase() === `${email.toLowerCase()}'s organization`) return `${email.toLowerCase()}'s organization`;
-  return normalized;
+  const normalized = name.replace(/[‘’]/g, "'").replace(/\s+/g, "");
+  return normalized.toLowerCase() === `${email.toLowerCase()}'sorganization` ? normalized.toLowerCase() : normalized;
 }
 
 function sameClaudeIdentity(actual: unknown, expected: ClaudeIdentity) {
@@ -106,7 +120,7 @@ async function claudeAuthStatus(binary: string, credential: CredentialSnapshot |
   try {
     const status = await result.exited;
     await Bun.sleep(25);
-    const clean = output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\r/g, "");
+    const clean = ptyText(output);
     if (status === 0 || status === 1) try { account = JSON.parse(clean.slice(clean.indexOf("{"), clean.lastIndexOf("}") + 1)); } catch {}
   } finally { clearTimeout(timer); result.terminal?.close(); }
   if (account?.authMethod === "claude.ai" && account.loggedIn === true) account.subscriptionType ||= "Claude plan";
@@ -176,6 +190,8 @@ export function claudeTerminalScripts(file: string): { launcher: string; helper:
   privateScript(launcher, `import { readFileSync, chmodSync, unlinkSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
+const ptyText = ${ptyText.toString()};
+const normalizedOrganization = ${normalizedOrganization.toString()};
 const [file, revision, source, ...argv] = process.argv.slice(2);
 let server, socket;
 try {
@@ -205,11 +221,13 @@ try {
     clearTimeout(timer);
     await Bun.sleep(25);
     status.terminal.close();
-    const account = JSON.parse(report.slice(report.indexOf("{"), report.lastIndexOf("}") + 1));
+    const clean = ptyText(report);
+    const account = JSON.parse(clean.slice(clean.indexOf("{"), clean.lastIndexOf("}") + 1));
     const scope = typeof account.orgId === "string" && account.orgId.length <= 128 ? account.orgId : account.orgName?.trim();
     const identity = createHash("sha256").update(JSON.stringify([account.email?.toLowerCase(), scope])).digest("hex");
     if (identity !== expected.accountId || code !== 0 || account.authMethod !== "claude.ai" || account.loggedIn !== true ||
-        account.email?.toLowerCase() !== expected.email.toLowerCase() || account.orgName?.trim() !== expected.organization ||
+        account.email?.toLowerCase() !== expected.email.toLowerCase() || typeof account.orgName !== "string" ||
+        normalizedOrganization(account.orgName, account.email) !== normalizedOrganization(expected.organization, expected.email) ||
         account.apiProvider !== "firstParty" || (account.apiKeySource && !["none", "oauth"].includes(account.apiKeySource)) ||
         (account.tokenSource && account.tokenSource !== "claude.ai")) throw new Error();
   } else if (source !== "subscription") throw new Error();
