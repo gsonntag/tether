@@ -56,3 +56,12 @@ test("a worktree session shows its branch: beside its main checkout's name, or a
   expect(grouped).not.toContain('<span class="t-proj">web</span>');
   expect(grouped).toContain("tether/fix");
 });
+
+test("session rows in the sidebar have plain title text with no payment-source marker or differentiator", () => {
+  const apiRow = render(row({ billing: { kind: "apiKey", label: "Anthropic API key" } }));
+  expect(apiRow).not.toContain("t-api-title");
+  expect(apiRow).not.toContain("Anthropic API key");
+  expect(apiRow).toContain('aria-label="Open session: Fix login"');
+  expect(apiRow).toContain('<span class="t-row-title t-row-title-editor">');
+  expect(apiRow).toContain('title="Fix login"');
+});

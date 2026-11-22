@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@astryxdesign/core/Icon";
 import { ArchiveBoxIcon, ArrowUturnLeftIcon } from "@heroicons/react/24/outline";
-import { isApiBilling } from "../../../shared/labels";
 import { HARNESS_LABELS, type Billing, type HarnessId, type RunStatus } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
@@ -47,7 +46,6 @@ export function UnknownBillingMarker({ billing }: { billing?: Billing }) {
 /** `hideProject`: shown under its project's subheader (Recent), so the meta line leaves it out. */
 export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hideProject }: { row: Row; now: number; selected: boolean; child?: boolean; runnerLabel?: string; canPin?: boolean; hideProject?: boolean }) {
   const close = () => useStore.setState({ sidebarOpen: false });
-  const apiLabel = isApiBilling(row.billing) ? row.billing?.label : undefined;
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleBusy, setTitleBusy] = useState(false);
   const [renameError, setRenameError] = useState<string>();
@@ -146,7 +144,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hid
       <button
         type="button"
         className="t-row-open"
-        aria-label={`Open session: ${row.title || "Untitled"}${apiLabel ? `, ${apiLabel}` : ""}`}
+        aria-label={`Open session: ${row.title || "Untitled"}`}
         aria-current={selected ? "page" : undefined}
         disabled={row.missing}
         onKeyDown={(e) => {
@@ -162,7 +160,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hid
         }}
       />
       <div className="t-row-content">
-        <span className={`t-row-title t-row-title-editor${apiLabel ? " t-api-title" : ""}`}>
+        <span className="t-row-title t-row-title-editor">
           <UnknownBillingMarker billing={row.billing} />
           {editingTitle ? (
             <input
@@ -180,7 +178,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hid
               }}
             />
           ) : (
-            <span className="t-row-title-text" title={apiLabel ? `${row.title || "Untitled"} · ${apiLabel}` : row.title}>
+            <span className="t-row-title-text" title={row.title}>
               {row.title || "Untitled"}
             </span>
           )}

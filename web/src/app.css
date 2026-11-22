@@ -754,6 +754,23 @@
   gap: 8px;
   align-items: center;
 }
+@keyframes t-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.t-css-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--t-border, currentColor);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  box-sizing: border-box;
+  animation: t-spin 0.8s linear infinite;
+  vertical-align: -2px;
+  flex: none;
+}
 .t-inline-status.error {
   color: var(--color-text-red, var(--color-error));
 }

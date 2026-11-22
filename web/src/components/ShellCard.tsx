@@ -25,7 +25,7 @@ const HELD: Record<NonNullable<LiveState["queueHeldBy"]>, string> = {
 };
 
 export function ShellCard({ msg }: { msg: Msg }) {
-  const { runnerId, sessionId } = useSessionCtx();
+  const { runnerId, sessionId, streamingAnimation } = useSessionCtx();
   const run = msg.shell!;
   const tool = msg.parts[0] as ToolPart | undefined;
   const agent = agentOf(sessionId);
@@ -113,7 +113,7 @@ export function ShellCard({ msg }: { msg: Msg }) {
           </code>
           {running ? (
             <>
-              <Spinner size="sm" aria-label="Running" />
+              {streamingAnimation === false ? <span className="t-css-spinner" aria-label="Running" role="status" /> : <Spinner size="sm" aria-label="Running" />}
               <Button label={stopping ? "Stopping…" : "Stop"} size="sm" variant="secondary" icon={<Icon icon={StopIcon} size="sm" />} isDisabled={stopping} onClick={() => void stop()} />
             </>
           ) : (

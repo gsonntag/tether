@@ -75,6 +75,11 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
     else core.dropPin(id);
     return null;
   });
+  ops.register("setRetryThrottled", async (a) => {
+    if (typeof a.on !== "boolean") throw new Error("on must be true or false.");
+    await live.setRetryThrottled(str(a.sessionId, "sessionId"), a.on);
+    return null;
+  });
   ops.register("setCanText", async (a) => {
     if (typeof a.canText !== "boolean") throw new Error("canText must be true or false.");
     await live.setCanText(str(a.sessionId, "sessionId"), a.canText);

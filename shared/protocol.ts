@@ -177,6 +177,7 @@ export interface Ops {
   /** the box in the billing chip's menu (`on`) and/or the session's fallback key order; each alone leaves the other */
   setAutoKey: { args: { sessionId: string; on?: boolean; fallbackKeys?: CredentialSource[] }; result: null };
   /** the "Session can text me" box: only a ticked session texts the person, or gets plain texts and a place in the picker (SPEC §11 Texting) */
+  setRetryThrottled: { args: { sessionId: string; on: boolean }; result: null };
   setCanText: { args: { sessionId: string; canText: boolean }; result: null };
   /** asks the harness for its plan limits if it has a cheap read; the answer comes as session state */
   refreshPlan: { args: { harness: HarnessId }; result: null };

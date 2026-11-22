@@ -73,10 +73,12 @@ export function dayLabel(day: string, opts: Intl.DateTimeFormatOptions = { month
   return Number.isFinite(t) ? new Date(t).toLocaleDateString(undefined, { ...opts, timeZone: "UTC" }) : day;
 }
 
+const MODEL_HARNESS: Record<HarnessId, string> = { claude: "Claude", codex: "Codex", antigravity: "Antigravity" };
+
 /** "Claude · Opus 5.5"; a dated id keeps its date, so it doesn't read as the same row twice. */
 export function modelName(harness: HarnessId, model: string): string {
   const date = model.match(/-(\d{8})$/)?.[1];
-  return `${harness === "claude" ? "Claude" : "Codex"} · ${prettyModel(model)}${date && prettyModel(model) !== model ? ` (${date})` : ""}`;
+  return `${MODEL_HARNESS[harness] ?? harness} · ${prettyModel(model)}${date && prettyModel(model) !== model ? ` (${date})` : ""}`;
 }
 
 /** The status beside the range: reading (with progress), else when it was read. */
