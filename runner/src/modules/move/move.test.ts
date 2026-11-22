@@ -82,6 +82,33 @@ const convo: Msg[] = [
 ];
 
 describe("cross-harness fallback", () => {
+  test("backs off when target startup fails and tries the next step", async () => {
+    const claude = new Neutral("claude", true), codex = new Neutral("codex", true);
+    claude.capabilities = { ...claude.capabilities, sourceSwitch: true };
+    claude.listModels = codex.listModels = async () => ({
+      models: [{ id: "m", label: "Model" }], efforts: [], permissionModes: [{ id: "ro", label: "Read only" }],
+    });
+    const store = new CredentialStore(join(mkdtempSync(join(tmpdir(), "tether-fallback-failed-move-")), "credentials.json"));
+    store.set("anthropic", "fake-claude-key-long");
+    const { runner } = setup([claude, codex], store);
+    runner.live.fallbackMover = async () => { throw new Error("target startup failed"); };
+    claude.stored_("s1", convo);
+    await runner.live.setFallbackChain("claude:s1", true, [
+      { harness: "codex", source: "subscription", model: "m" },
+      { harness: "claude", source: "anthropic", model: "m" },
+    ]);
+    claude.script = () => [(sink, driver) => {
+      if (driver.opts.credential?.source === "subscription") sink.limitReached?.({});
+      sink.state({ status: "idle" });
+    }];
+    await runner.live.send("claude:s1", "go");
+    const old = await runner.core.open("claude:s1");
+    for (let i = 0; i < 200 && !claude.drivers[1]?.sent.length; i++) await Bun.sleep(5);
+    expect(claude.drivers[1]?.sent).toEqual(["go"]);
+    expect(old.state.fallbackChain?.active).toBe(1);
+    expect(runner.core.o.prefs.get(old.id).fallbackProgress?.steps[0]?.retryAt).toBeGreaterThan(Date.now());
+  });
+
   for (const native of [true, false]) {
     test(`hands off through the ${native ? "native" : "history file"} route after background work ends`, async () => {
       const claude = new Neutral("claude", true), codex = new Neutral("codex", native);

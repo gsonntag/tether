@@ -2007,7 +2007,15 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
             say("The Move module is unavailable on this runner.", "warning");
             return true;
           }
-          const moved = await this.moveFallback(s, chain, start, index, step, settings, progress, resetsAt);
+          const moved = await this.moveFallback(s, chain, start, index, step, settings, progress, resetsAt).catch((e) => {
+            if (e instanceof SendCancelled || s.movedTo || this.core.o.prefs.get(s.id).movedTo) throw e;
+            say(`${HARNESS_LABELS[step.harness]} could not take over: ${redact((e as Error).message)}`, "warning");
+            progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS };
+            this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+            this.core.o.prefs.flush();
+            return undefined;
+          });
+          if (!moved) continue;
           switchedSource = true;
           if (waking) this.core.o.bus.emit("fallbackStatus", { sessionId: moved.session.id, status: "resumed" });
           const last = progress.lastUserText;
