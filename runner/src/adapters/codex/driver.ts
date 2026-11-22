@@ -15,7 +15,7 @@ import { NATIVE_IMAGE_MAX } from "../../core/attachments";
 import { FROM_TETHER, titleText } from "../../../../shared/fromTether";
 import { UNKNOWN_BILLING } from "../../../../shared/transcript";
 import { RESOLVED_ELSEWHERE, SendCancelled, type Driver, type Sink, type StartOpts } from "../../core/adapter";
-import { assertCredentialCurrent, confirmedProxy, newConnection, observedCredential, rememberSource, retirePrivateSource, sourceBilling, sourceProvider, sourceCredentialRevision, stopPrivateSource, threadConnection } from "./sources";
+import { assertCredentialCurrent, confirmedProxy, credentialEndpoint, newConnection, observedCredential, rememberSource, retirePrivateSource, sourceBilling, sourceProvider, sourceCredentialRevision, stopPrivateSource, threadConnection } from "./sources";
 import { CostLedger } from "../../costs";
 import { sourceHome } from "./sources";
 import { join } from "node:path";
@@ -51,7 +51,7 @@ const NO_ROLLOUT = /no rollout found/i;
 export function startSettings(opts: StartOpts) {
   const out: Record<string, unknown> = { approvalsReviewer: "user" };
   if (opts.model && opts.model !== "default") out.model = opts.model;
-  else if (opts.credential?.source === "azure" && opts.credential.deployment) out.model = opts.credential.deployment;
+  else if (opts.credential?.deployment) out.model = opts.credential.deployment;
   const m = knownMode(opts.permissionMode);
   if (m) {
     out.approvalPolicy = m.approvalPolicy;
@@ -261,7 +261,7 @@ export class CodexDriver implements Driver {
       const cfg: any = await this.rpc.call("config/read", { cwd: this.projectPath });
       const configured = cfg?.config?.model_providers?.[sourceProvider(source.source)];
       const proxy = confirmedProxy(source);
-      if (configured?.env_key !== "TETHER_CODEX_API_KEY" || configured?.requires_openai_auth !== false || (configured?.base_url !== proxy.proxyBase || (this.credential && proxy.endpoint?.replace(/\/$/, "") !== (source.source === "openai" ? "https://api.openai.com/v1" : this.credential.endpoint?.replace(/\/$/, ""))))) throw new Error("Codex did not confirm its isolated API authentication. Nothing was sent.");
+      if (configured?.env_key !== "TETHER_CODEX_API_KEY" || configured?.requires_openai_auth !== false || (configured?.base_url !== proxy.proxyBase || (this.credential && proxy.endpoint?.replace(/\/$/, "") !== credentialEndpoint(this.credential)?.replace(/\/$/, "")))) throw new Error("Codex did not confirm its isolated API authentication. Nothing was sent.");
       billing = sourceBilling(source.source);
     }
     if (enforce && !source) {

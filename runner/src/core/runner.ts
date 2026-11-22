@@ -12,7 +12,7 @@ import { PROTOCOL_VERSION, type HarnessInfo, type RunnerBuild, type RunnerInfo }
 import { parseSessionId, sessionId } from "../../../shared/ids";
 import type { ForkedFrom } from "../../../shared/fork";
 import type { SessionPrefs } from "../config";
-import type { BillingSource } from "../../../shared/credentials";
+import { hasSourceModels, type BillingSource } from "../../../shared/credentials";
 import type { Attachment } from "../../../shared/attachments";
 import type { HarnessId, Msg, RequestAnswer } from "../../../shared/transcript";
 import type { Adapter, StartOpts } from "./adapter";
@@ -158,6 +158,7 @@ export function createRunner(o: RunnerOptions) {
     ops.register("credentials", () => o.credentials!.status());
     ops.register("setCredential", (a) => { const result = o.credentials!.set(a.source, a.key, a.endpoint, a.deployment, a.rates); live.credentialsChanged(); return result; });
     ops.register("unsetCredential", (a) => { const result = o.credentials!.unset(a.source); live.credentialsChanged(); return result; });
+    ops.register("setBedrock", (a) => { const result = o.credentials!.setBedrock(a); live.credentialsChanged(); return result; });
     ops.register("setAzure", (a) => { const result = o.credentials!.setAzure({ endpoint: a.endpoint, deployments: a.deployments }); live.credentialsChanged(); return result; });
     ops.register("testAzure", (a) => testAzure(o.credentials!.snapshot("azure", typeof a.deployment === "string" ? a.deployment : "")));
     ops.register("billingSources", (a) => live.sources(a.harness));
@@ -277,8 +278,8 @@ export function createRunner(o: RunnerOptions) {
         open: async (id: string) => lookAt(await core.open(id)),
         adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string, extra: { stored?: boolean; forkedFrom?: ForkedFrom; keys?: Pick<SessionPrefs, "lastKey" | "fallbackKeys">; sideOf?: string } = {}) => {
           const id = sessionId(harness, nativeId);
-          opts = live.forSource(source, opts);
-          core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts), source, ...(source === "azure" && opts.model ? { deployment: opts.model } : {}), ...(from ? { carrying: true } : {}), ...(extra.forkedFrom ? { forkedFrom: extra.forkedFrom } : {}), ...extra.keys, ...(extra.sideOf ? { sideOf: extra.sideOf } : {}) });
+          opts = live.forSource(harness, source, opts);
+          core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts), source, ...(hasSourceModels(source) && opts.model ? { deployment: opts.model } : {}), ...(from ? { carrying: true } : {}), ...(extra.forkedFrom ? { forkedFrom: extra.forkedFrom } : {}), ...extra.keys, ...(extra.sideOf ? { sideOf: extra.sideOf } : {}) });
           for (const n of from ? core.notices.get(from) : []) core.notices.add(id, n);
           // A new session on a key (a Move, or a source change's new thread), metered from its first
           // request: what it brought across was spent elsewhere, and a carry adds that (live.ts

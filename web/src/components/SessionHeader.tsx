@@ -1,3 +1,4 @@
+import { BEDROCK_LABEL } from "../../../shared/credentials";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
@@ -83,11 +84,11 @@ export function SessionHeader({
   // starts on the new one. While a carried change waits, the Model menu picks for the new source:
   // its models (deployments onto Azure), held for the new thread, never sent to the source being left.
   const sourcePending = !!capabilities?.sourceCarry && !!state.nextBilling;
-  const onAzure = (capabilities?.sourceCarry ? state.billing : billingForDisplay(state))?.label === "Azure";
-  const menuAzure = sourcePending ? state.nextBilling?.label === "Azure" : onAzure;
-  const pendingPick = sourcePending ? (menuAzure ? state.nextDeployment : state.nextModel) : undefined;
-  const { choices: sources, refresh: refreshSources } = useSources(runnerId, session.harness, onAzure || menuAzure);
-  const azureModels = sources?.options.find((o) => o.source === "azure")?.deployments?.map((d) => ({ id: d.name, label: d.model ? `${d.name} · ${d.model}` : d.name, description: undefined }));
+  const menuBilling = state.nextBilling ?? state.billing;
+  const menuSource = menuBilling?.label === "Azure" ? "azure" : menuBilling?.label === BEDROCK_LABEL ? "bedrock" : undefined;
+  const pendingPick = sourcePending ? (menuSource ? state.nextDeployment : state.nextModel) : undefined;
+  const { choices: sources, refresh: refreshSources } = useSources(runnerId, session.harness, !!menuSource);
+  const providerModels = sources?.options.find((o) => o.source === menuSource)?.deployments?.map((d) => ({ id: d.name, label: d.model ? `${d.name} · ${d.model}` : d.name, description: undefined }));
   const current = findModel(models?.models ?? [], state.model);
   // A handoff TUI drives (SPEC §8): it takes no settings from Tether.
   const locked = state.mode === "terminal" && capabilities?.terminal === "handoff" ? `${HARNESS_LABELS[session.harness]}'s terminal is driving. Change it there.` : undefined;
@@ -146,13 +147,13 @@ export function SessionHeader({
           <>
             <ChoiceMenu
               name="Model"
-              customLabel={session.harness === "codex" ? "Other model or deployment…" : undefined}
+              customLabel={session.harness === "codex" && menuSource !== "bedrock" ? "Other model or deployment…" : undefined}
               value={sourcePending ? pendingPick ?? "" : current?.id ?? state.model}
               // While the TUI drives, its /model is what runs: Tether shows the last it knew.
-              label={locked ? `Set in the terminal (last seen: ${modelLabel(state.model, models?.models, state.modelResolved)})` : sourcePending ? (pendingPick ? `${menuAzure ? pendingPick : modelLabel(pendingPick, models?.models)} on ${state.nextBilling!.label}` : `Model on ${state.nextBilling!.label}`) : nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model, state.model)}
+              label={locked ? `Set in the terminal (last seen: ${modelLabel(state.model, models?.models, state.modelResolved)})` : sourcePending ? (pendingPick ? `${menuSource ? pendingPick : modelLabel(pendingPick, models?.models)} on ${state.nextBilling!.label}` : `Model on ${state.nextBilling!.label}`) : nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model, state.model)}
               disabled={locked}
-              choices={(menuAzure ? azureModels ?? [] : models?.models ?? []).map((m) => ({ id: m.id, label: m.label, description: m.description }))}
-              onOpen={() => { ensureModels(); if (menuAzure) refreshSources(); }}
+              choices={(menuSource ? providerModels ?? [] : models?.models ?? []).map((m) => ({ id: m.id, label: m.label, description: m.description }))}
+              onOpen={() => { if (menuSource) refreshSources(); else ensureModels(); }}
               // A refusal shows in the chat, from the runner.
               onPick={(model) => void rpc(runnerId, "setModel", { sessionId: session.id, model }).catch(() => {})}
             />

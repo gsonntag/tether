@@ -86,15 +86,16 @@ can turn this off with `TETHER_PEERS=0`.
 **Billing sources** (SPEC §10, *Credentials and billing safety*): each session uses one source, set
 when the session is made:
 
-- Claude: the Claude plan, or an Anthropic API key.
-- Codex: the ChatGPT plan, an OpenAI API key, or Azure.
+- Claude: the Claude plan, an Anthropic API key, or Amazon Bedrock.
+- Codex: the ChatGPT plan, an OpenAI API key, Azure, or Amazon Bedrock.
 - Antigravity: the Google account `agy` is signed in with (its plan, e.g. Google AI Pro).
 
-You add keys under **Settings → Credentials** and **Settings → Azure**, and they're stored on the
-runner. New sessions start on the subscription. The header's billing chip shows the source and
+Configure billing under **Settings → Credentials**, **Settings → Azure**, or **Settings → Bedrock**. Keys are stored on the runner. New sessions start on the subscription. The header's billing chip shows the source and
 switches it, and API sessions show what they've cost in dollars.
 
 For unattended Azure OpenAI jobs, see the [spend guard setup and recovery guide](docs/azure-openai-spend-guard.md).
+
+For Claude or Codex on AWS, see [Amazon Bedrock setup, models, and spend guard](docs/amazon-bedrock.md).
 
 **Usage** (SPEC §10, *Usage*): **Settings → Usage** shows a runner's last 7 or 30 days of tokens
 (input, output, cache reads and writes) by day, by harness and model, and by project, read from

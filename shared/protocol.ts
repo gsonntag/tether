@@ -32,7 +32,7 @@ import type { GitActionResult, GitDraft, GitStatus, PrLookup } from "./gitAction
 import type { MoveOptions } from "./move";
 import type { WorkspaceInfo, WorktreeJoined, WorktreeList, WorktreeMade } from "./worktree";
 import type { Attachment } from "./attachments";
-import type { AzureDeployment, BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
+import type { AzureDeployment, BedrockSettings, BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
 import type { TokenRates } from "./costs";
 import type { AutoUpdateStatus, HarnessReport } from "./harnessUpdates";
 import type { PartChunk } from "./limits";
@@ -157,6 +157,7 @@ export interface Ops {
   /** Azure's endpoint (a resource name or a URL) and its deployments, replacing what was there. Its key is untouched */
   setAzure: { args: { endpoint: string; deployments: AzureDeployment[] }; result: CredentialStatus };
   /** one tiny request to a saved deployment, the way a session's requests go: real Azure usage, only when asked */
+  setBedrock: { args: BedrockSettings; result: CredentialStatus };
   testAzure: { args: { deployment: string }; result: { ok: boolean; text: string } };
   /** the sources a harness can use now, and which to show first. A runner without it hides the picker */
   billingSources: { args: { harness: HarnessId }; result: SourceChoices };

@@ -178,10 +178,10 @@ export function Sidebar() {
           )}
           <button
             type="button"
-            className={route.page === "credentials" || route.page === "azure" || route.page === "texting" || route.page === "notifications" || route.page === "agents" || route.page === "updates" || route.page === "usage" ? "t-settings selected" : "t-settings"}
+            className={route.page === "credentials" || route.page === "azure" || route.page === "bedrock" || route.page === "texting" || route.page === "notifications" || route.page === "agents" || route.page === "updates" || route.page === "usage" ? "t-settings selected" : "t-settings"}
             aria-label="Settings"
             title="Settings"
-            aria-current={route.page === "credentials" || route.page === "azure" || route.page === "texting" || route.page === "notifications" || route.page === "agents" || route.page === "updates" || route.page === "usage" ? "page" : undefined}
+            aria-current={route.page === "credentials" || route.page === "azure" || route.page === "bedrock" || route.page === "texting" || route.page === "notifications" || route.page === "agents" || route.page === "updates" || route.page === "usage" ? "page" : undefined}
             onClick={() => {
               navigate({ page: "credentials" });
               close();

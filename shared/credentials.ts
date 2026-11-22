@@ -2,9 +2,9 @@
 import type { TokenRates } from "./costs";
 import type { AzureType } from "./azureRates";
 import type { Billing, HarnessId } from "./transcript";
-export type CredentialSource = "anthropic" | "openai" | "azure";
+export type CredentialSource = "anthropic" | "openai" | "azure" | "bedrock";
 /** The keys each harness can use. */
-export const HARNESS_KEYS: Record<HarnessId, CredentialSource[]> = { claude: ["anthropic"], codex: ["openai", "azure"], antigravity: [] };
+export const HARNESS_KEYS: Record<HarnessId, CredentialSource[]> = { claude: ["anthropic", "bedrock"], codex: ["openai", "azure", "bedrock"], antigravity: [] };
 /**
  * One Azure deployment: the name requests use as their model, the model it runs and its type, which
  * find its rates in Tether's Azure table, and `rates`: the owner's own, used instead (Override).
@@ -12,24 +12,35 @@ export const HARNESS_KEYS: Record<HarnessId, CredentialSource[]> = { claude: ["a
 export interface AzureDeployment { name: string; model?: string; type?: AzureType; rates?: TokenRates }
 /** Azure's settings are public metadata, kept apart from its key: either can be set first. */
 export interface CredentialSlot { set: boolean; last4?: string; endpoint?: string; deployments?: AzureDeployment[] }
-export type CredentialStatus = Record<CredentialSource, CredentialSlot>;
+export const BEDROCK_LABEL = "Amazon Bedrock";
+export interface BedrockModel { id: string; harness: "claude" | "codex"; alias?: string; rates?: TokenRates; cacheWriteLong?: number }
+export interface BedrockSettings {
+  region: string;
+  auth: "key" | "profile";
+  profile?: string;
+  models: BedrockModel[];
+  dailyLimitUsd?: number;
+}
+// Older runners do not send the Bedrock slot.
+export type CredentialStatus = Record<Exclude<CredentialSource, "bedrock">, CredentialSlot> & { bedrock?: CredentialSlot & { settings?: BedrockSettings } };
 
 /** What one session draws from. It's chosen when the session is made and kept with it. */
 export type BillingSource = CredentialSource | "subscription";
-export const isBillingSource = (v: unknown): v is BillingSource => v === "subscription" || v === "anthropic" || v === "openai" || v === "azure";
+export const isBillingSource = (v: unknown): v is BillingSource => v === "subscription" || v === "anthropic" || v === "openai" || v === "azure" || v === "bedrock";
+export const hasSourceModels = (source: BillingSource): source is "azure" | "bedrock" => source === "azure" || source === "bedrock";
 
 /** A source that really exists for a harness now: a login it reports, or a key that's set. */
 export interface SourceOption {
   source: BillingSource;
   /** what it's called and whether it's billed by the token; the harness confirms it at each start */
   billing: Billing;
-  /** Azure's deployments: on that source, the model is one of these */
+  /** Models configured for the source, using their request names */
   deployments?: { name: string; model?: string }[];
   /** a runner from before deployment lists: its one deployment */
   deployment?: string;
 }
 /** Resolve a deployment name or an unambiguous model alias. With no model, use the first deployment. */
-export function resolveAzureDeployment(deployments: NonNullable<SourceOption["deployments"]>, model?: string): string | undefined {
+export function resolveSourceModel(deployments: NonNullable<SourceOption["deployments"]>, model?: string): string | undefined {
   if (!model) return deployments[0]?.name;
   const named = deployments.find(({ name }) => name === model);
   if (named) return named.name;

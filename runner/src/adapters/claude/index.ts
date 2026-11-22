@@ -9,7 +9,7 @@ import type { Adapter, Driver, QuitStep, ScreenRead, StartOpts } from "../../cor
 import { movedDir } from "../../core/moved";
 import { CLAUDE_BIN } from "./bin";
 import { chainContext, keepBilling, keptBilling, keptPlan, keptStart } from "./context";
-import { HARNESS_KEYS } from "../../../../shared/credentials";
+import { BEDROCK_LABEL, HARNESS_KEYS } from "../../../../shared/credentials";
 import { claudeAsk } from "./ask";
 import { claudeAuthSettings, claudeLoggedIn, claudeTerminalScripts, prepareClaudeTerminal } from "./credentials";
 import { claudeNeverStarted, claudeProjects, claudeSessionInfo, claudeSessions, claudeStoredMode, claudeSubagents } from "./discovery";
@@ -158,10 +158,13 @@ export const claudeAdapter: Adapter = {
   fork: claudeFork,
   billing: {
     keys: HARNESS_KEYS.claude,
-    label: (source) => (source === "anthropic" ? { kind: "apiKey", label: "Anthropic API key" } : { kind: "plan", label: "Claude plan" }),
+    label: (source) => (source === "bedrock" ? { kind: "provider", label: BEDROCK_LABEL } : source === "anthropic" ? { kind: "apiKey", label: "Anthropic API key" } : { kind: "plan", label: "Claude plan" }),
     loggedIn: () => claudeLoggedIn(CLAUDE_BIN ?? "claude"),
     // What it last ran on, as Claude Code confirmed. Nothing recorded: not a key by surprise.
-    recorded: (nativeId) => (keptBilling(splitNative(nativeId).session).label === "Anthropic API key" ? "anthropic" : "subscription"),
+    recorded: (nativeId) => {
+      const label = keptBilling(splitNative(nativeId).session).label;
+      return label === BEDROCK_LABEL ? "bedrock" : label === "Anthropic API key" ? "anthropic" : "subscription";
+    },
   },
 
   async available() {
@@ -291,6 +294,13 @@ export const claudeAdapter: Adapter = {
     if (!credential?.file && opts.fresh === undefined) return { argv, quit: CLAUDE_QUIT, quitAtPrompt: CLAUDE_EXIT, screen: claudeScreen };
     if (!credential?.file) throw new Error("The runner's private credentials file is unavailable. The Claude terminal cannot confirm its billing source.");
     const scripts = claudeTerminalScripts(credential.file);
-    return { argv: [process.execPath, scripts.launcher, credential.file, credential.revision, credential.source, ...argv], quit: CLAUDE_QUIT, quitAtPrompt: CLAUDE_EXIT, screen: claudeScreen };
+    const profileEnv: Record<string, string> = {};
+    if (credential.bedrock?.auth === "profile") {
+      for (const name of ["AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"]) {
+        const path = process.env[name];
+        if (path) profileEnv[name] = path;
+      }
+    }
+    return { argv: [process.execPath, scripts.launcher, credential.file, credential.revision, credential.source, ...argv], ...(Object.keys(profileEnv).length ? { env: profileEnv } : {}), quit: CLAUDE_QUIT, quitAtPrompt: CLAUDE_EXIT, screen: claudeScreen };
   },
 };

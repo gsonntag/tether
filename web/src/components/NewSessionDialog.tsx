@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { findModel, modelLabel, prettyModel } from "../../../shared/labels";
-import type { BillingSource, SourceChoices } from "../../../shared/credentials";
+import { resolveSourceModel, type BillingSource, type SourceChoices } from "../../../shared/credentials";
 import type { ActiveClone, FolderCheck } from "../../../shared/protocol";
 import { worktreeLabel, type WorkspaceInfo, type WorktreeList } from "../../../shared/worktree";
 import { CLAUDE_UNSET, HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
@@ -15,7 +15,7 @@ import { AddProject } from "./AddProject";
 import { focusComposerOf, openTerminalOf } from "./SessionView";
 import { radioKeys } from "../radioKeys";
 import { ago, canJoinWorktree } from "../runners";
-import { azureDeployments, DeploymentPicker, SourcePicker } from "./SourcePicker";
+import { sourceModels, DeploymentPicker, SourcePicker } from "./SourcePicker";
 
 const MODE_KEY = "tether.newSessionMode";
 const HARNESS_KEY = "tether.newSessionHarness";
@@ -241,9 +241,9 @@ export function NewSessionDialog() {
   // Claude with nothing picked: what the runner starts it on, by that name.
   const listed = models?.models.length ? models.models : harness === "claude" ? [{ id: CLAUDE_UNSET.model, label: prettyModel(CLAUDE_UNSET.model) }] : [{ id: "default", label: "Default" }];
   const unpicked = harness === "claude" ? (findModel(listed, CLAUDE_UNSET.model)?.id ?? CLAUDE_UNSET.model) : "default";
-  // On Azure the model is one of its deployments.
-  const deployments = azureDeployments(sources?.options.find((o) => o.source === source));
-  const deployment = deployments && (deployments.find((d) => d.name === model) ?? deployments[0])?.name;
+  // Azure and Bedrock use the model list for the selected source.
+  const deployments = sourceModels(sources?.options.find((o) => o.source === source));
+  const deployment = deployments && ((source === "bedrock" ? resolveSourceModel(deployments, model) : deployments.find((d) => d.name === model)?.name) ?? deployments[0]?.name);
   return (
     <Dialog isOpen={open} onOpenChange={(o) => !o && close()} width={520} purpose="form">
       <DialogHeader title="New session" subtitle={HARNESS_LABELS[harness]} onOpenChange={(o) => !o && close()} />

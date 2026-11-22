@@ -6,8 +6,12 @@ import { CostLedger, priceResponse } from "../../costs";
 import { spawn } from "node:child_process";
 import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { BEARER_FILE, privateEnvironment, providerConfig, sourceProvider, type ApiSource } from "./sources";
+import { BEARER_FILE, isApiSource, privateEnvironment, providerConfig, sourceProvider, type ApiSource } from "./sources";
 import { upstreamFailure, upstreamHeaders, upstreamUrl } from "./upstream";
+import { meterStream, redactStream } from "../../providerStreams";
+export { meterStream, redactStream } from "../../providerStreams";
+import { bedrockGateway } from "../../bedrock";
+import { CredentialStore } from "../../credentials";
 import { safeRetryAt } from "../../rateLimit";
 
 const SAFE_ERROR_CODES = new Map<string, string>([
@@ -77,55 +81,6 @@ export function retryAtFromHeaders(headers: Headers, now = Date.now()): number |
   return Number.isFinite(at) && at > now ? at : undefined;
 }
 
-/** A streaming redactor holds a possible partial key across network chunk boundaries. */
-export function redactStream(key: string): TransformStream<Uint8Array, Uint8Array> {
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  let pending = "";
-  const clean = (text: string) => key ? text.replaceAll(key, "[redacted]") : text;
-  const prefixLength = (text: string) => {
-    for (let n = Math.min(key.length - 1, text.length); n > 0; n--) if (text.endsWith(key.slice(0, n))) return n;
-    return 0;
-  };
-  return new TransformStream({
-    transform(chunk, controller) {
-      pending = clean(pending + decoder.decode(chunk, { stream: true }));
-      const safe = pending.length - prefixLength(pending);
-      if (safe) { controller.enqueue(encoder.encode(pending.slice(0, safe))); pending = pending.slice(safe); }
-    },
-    flush(controller) {
-      const final = clean(pending + decoder.decode());
-      // A truncated upstream error may finish with almost an entire credential. Never flush an
-      // ambiguous key prefix into the native harness's permanent logs or rollout.
-      controller.enqueue(encoder.encode(final.slice(0, final.length - prefixLength(final))));
-    },
-  });
-}
-
-/** Reads complete SSE records while forwarding the same bytes without buffering the response. */
-export function meterStream(report: (response: any) => void, incomplete: () => void): TransformStream<Uint8Array, Uint8Array> {
-  const decoder = new TextDecoder();
-  let pending = "";
-  let completed = false;
-  const consume = () => {
-    pending = pending.replace(/\r\n/g, "\n");
-    let boundary: number;
-    while ((boundary = pending.indexOf("\n\n")) >= 0) {
-      const event = pending.slice(0, boundary); pending = pending.slice(boundary + 2);
-      const data = event.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
-      if (!data || data === "[DONE]") continue;
-      let json: any;
-      try { json = JSON.parse(data); } catch { continue; }
-      if (json.type === "response.completed" || json.type === "response.failed" || json.type === "response.incomplete") { completed = true; report(json.response); }
-    }
-    if (pending.length > 32 * 1024 * 1024) { pending = ""; incomplete(); }
-  };
-  return new TransformStream({
-    transform(chunk, controller) { pending += decoder.decode(chunk, { stream: true }); consume(); controller.enqueue(chunk); },
-    flush() { pending += decoder.decode(); consume(); if (!completed) incomplete(); },
-  });
-}
-
 /** A deployment's pricing applies only to requests naming that deployment. */
 export function deploymentPricing(pricing: AzurePricing | undefined, deployment: string | undefined, request?: string): AzurePricing | undefined {
   if (!pricing || !deployment) return pricing;
@@ -133,17 +88,20 @@ export function deploymentPricing(pricing: AzurePricing | undefined, deployment:
 }
 
 export async function servePrivateHost(args = process.argv.slice(2)) {
-  const [home, projectPath, sourceArg, endpoint, id, bin] = args;
-  if (!home || !projectPath || !endpoint || !id || !bin || (sourceArg !== "openai" && sourceArg !== "azure")) throw new Error("Invalid private Codex launch.");
+  const [home, projectPath, sourceArg, endpoint, id, bin, file, revision, model] = args;
+  if (!home || !projectPath || !endpoint || !id || !bin || !isApiSource(sourceArg)) throw new Error("Invalid private Codex launch.");
   const source: ApiSource = sourceArg;
   const key = process.env.TETHER_GATEWAY_KEY;
-  if (!key) throw new Error("No configured API key for private Codex.");
+  if (!key && source !== "bedrock") throw new Error("No configured API key for private Codex.");
   let pricing: AzurePricing | undefined;
   try { pricing = JSON.parse(process.env.TETHER_GATEWAY_PRICING ?? "null") ?? undefined; } catch {}
   // Azure: the deployment the pricing is for. A request naming another isn't priced with it.
   const deployment = process.env.TETHER_GATEWAY_DEPLOYMENT || undefined;
   const ledger = new CostLedger(join(home, "costs.json"));
   ledger.begin(id, true);
+  const bedrockCredential = source === "bedrock" && file && model ? new CredentialStore(file).snapshot("bedrock", model) : undefined;
+  if (source === "bedrock" && (!bedrockCredential || bedrockCredential.revision !== revision)) throw new Error("Bedrock credentials changed before launch.");
+  const bedrock = bedrockCredential && bedrockGateway(bedrockCredential, "codex", (request, cost) => ledger.report(id, request, cost));
   // A local capability; never the upstream credential. Random, never derived from the session id:
   // the id is on this process's command line, which every local user can read, and the proxy
   // listens on a loopback port every local user can reach. The TUI reads it from the private home.
@@ -151,13 +109,14 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
   writeFileSync(join(home, BEARER_FILE), bearer, { mode: 0o600 });
   chmodSync(join(home, BEARER_FILE), 0o600);
   const server = Bun.serve({
-    hostname: "127.0.0.1", port: 0,
+    hostname: "127.0.0.1", port: 0, ...(bedrock ? { idleTimeout: 0 } : {}),
     async fetch(req) {
       const given = Buffer.from(req.headers.get("authorization") ?? ""), want = Buffer.from(`Bearer ${bearer}`);
       if (given.length !== want.length || !timingSafeEqual(given, want)) return new Response("Unauthorized", { status: 401 });
       const url = new URL(req.url);
       if (!url.pathname.startsWith("/v1/")) return new Response("Not found", { status: 404 });
-      const headers = upstreamHeaders(source, key, req.headers);
+      if (bedrock) return bedrock.handle(req, url.pathname.slice(3));
+      const headers = upstreamHeaders(source, key!, req.headers);
       const inference = req.method === "POST" && url.pathname.endsWith("/responses");
       const requestId = `request-${randomUUID()}`;
       const unknown = () => { if (inference) ledger.report(id, requestId, { estimated: true, complete: false, reasons: ["no-usage"] }); };
@@ -192,11 +151,11 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
         }
         const out = new Headers(upstream.headers);
         for (const h of ["content-length", "content-encoding", "transfer-encoding", "connection"]) out.delete(h);
-        for (const [h,v] of out) if (h.includes(key)) out.delete(h); else out.set(h, v.replaceAll(key, "[redacted]"));
-        let body = upstream.body?.pipeThrough(redactStream(key));
+        for (const [h,v] of out) if (h.includes(key!)) out.delete(h); else out.set(h, v.replaceAll(key!, "[redacted]"));
+        let body = upstream.body?.pipeThrough(redactStream(key!));
         if (inference && upstream.ok && body) body = body.pipeThrough(meterStream((response) => {
           const request = sent && new TextDecoder().decode(sent);
-          const cost = priceResponse(source, response, { pricing: deploymentPricing(pricing, deployment, request), request });
+          const cost = priceResponse(source === "azure" ? "azure" : "openai", response, { pricing: deploymentPricing(pricing, deployment, request), request });
           ledger.report(id, typeof response?.id === "string" ? response.id : requestId, cost);
           if (typeof response?.id === "string") ledger.report(id, requestId, { usd: 0, estimated: false, complete: true });
         }, unknown));
@@ -210,9 +169,9 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
   // OpenAI's upstream is fixed; the host, not this config, owns the actual remote endpoint.
   config[`model_providers.${provider}.base_url`] = proxyBase;
   const lines = [
-    `model_provider=${JSON.stringify(provider)}`, 'model="gpt-6-luna"', 'model_reasoning_effort="low"', 'check_for_update_on_startup=false',
+    `model_provider=${JSON.stringify(provider)}`, `model=${JSON.stringify(model ?? "gpt-6-luna")}`, 'model_reasoning_effort="low"', 'check_for_update_on_startup=false',
     '[history]', 'persistence="none"', '[features]', 'shell_snapshot=false',
-    '[shell_environment_policy]', 'inherit="core"', 'exclude=["TETHER_*","OPENAI_*","AZURE_*","CODEX_*","ANTHROPIC_*"]',
+    '[shell_environment_policy]', 'inherit="core"', 'exclude=["TETHER_*","OPENAI_*","AZURE_*","CODEX_*","ANTHROPIC_*","AWS_*"]',
     `[model_providers.${provider}]`,
     ...Object.entries(config).filter(([k]) => k.startsWith(`model_providers.${provider}.`)).map(([k,v]) => `${k.split(".").at(-1)}=${typeof v === "string" ? JSON.stringify(v) : String(v)}`),
   ];

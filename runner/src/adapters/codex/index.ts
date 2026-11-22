@@ -18,7 +18,7 @@ import { codexMove, importedMsgs } from "./move";
 import { codexFork } from "./fork";
 import { knownMode, modeOf, modelList, UNKNOWN_MODE, type CodexModel } from "./modes";
 import { remembered } from "./remember";
-import { assertThreadSource, privateBearerFile, sourceBilling, sourceHome, sourceProvider, sourceSocket } from "./sources";
+import { assertThreadSource, isApiSource, privateBearerFile, sourceBilling, sourceHome, sourceProvider, sourceSocket } from "./sources";
 
 /**
  * Quitting Codex's TUI without stopping the thread's turn: Ctrl-C clears what's typed (or, with an
@@ -62,7 +62,7 @@ export const codexAdapter: Adapter = {
   toolServer: (server) => codexTools.set(server),
   billing: {
     keys: HARNESS_KEYS.codex,
-    label: (source) => (source === "openai" || source === "azure" ? sourceBilling(source) : { kind: "plan", label: "ChatGPT plan" }),
+    label: (source) => (isApiSource(source) ? sourceBilling(source) : { kind: "plan", label: "ChatGPT plan" }),
     // Asked of the shared daemon, whose login a subscription session uses.
     loggedIn: async () => (await call("account/read", { refreshToken: false }, 10_000))?.account?.type === "chatgpt",
     // A private thread lives with its source. Any other is on the shared daemon: its login.
@@ -154,12 +154,12 @@ export const codexAdapter: Adapter = {
     const remote = source ? `unix://${sourceSocket(source)}` : process.env.CODEX_DAEMON_SOCKET || process.env.CODEX_HOME ? `unix://${DAEMON_SOCKET}` : "unix://";
     const argv = [HARNESS_BINS.codex, "resume", "--remote", remote, nativeId, "-c", "check_for_update_on_startup=false"];
     argv.push("-c", `model_provider=${toml(source ? sourceProvider(source.source) : "openai")}`);
-    const model = opts.model && opts.model !== "default" ? opts.model : opts.credential?.source === "azure" ? opts.credential.deployment : undefined;
+    const model = opts.model && opts.model !== "default" ? opts.model : opts.credential?.deployment;
     if (model && model !== "default") argv.push("-m", model);
     if (opts.effort) argv.push("-c", `model_reasoning_effort=${toml(opts.effort)}`);
     // tmux may have inherited provider keys long before this runner started.
     const remove = new Set(["OPENAI_API_KEY", "CODEX_API_KEY", "AZURE_OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "TETHER_GATEWAY_KEY"]);
-    for (const name of Object.keys(process.env)) if (/^(OPENAI_|AZURE_|ANTHROPIC_|TETHER_GATEWAY_)/.test(name)) remove.add(name);
+    for (const name of Object.keys(process.env)) if (/^(OPENAI_|AZURE_|ANTHROPIC_|TETHER_GATEWAY_|AWS_)/.test(name)) remove.add(name);
     if (!source) remove.add("TETHER_CODEX_API_KEY");
     const command = opts.credential ? ["env", ...[...remove].flatMap((name) => ["-u", name]), ...argv] : argv;
     if (!source) return { argv: command, quit: CODEX_QUIT };
