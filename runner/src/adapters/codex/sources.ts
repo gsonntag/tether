@@ -52,7 +52,7 @@ export function providerConfig(source: ApiSource, endpoint?: string): Record<str
     [`model_providers.${provider}.requires_openai_auth`]: false,
     [`model_providers.${provider}.supports_websockets`]: false,
     [`model_providers.${provider}.request_max_retries`]: 0,
-    [`model_providers.${provider}.stream_max_retries`]: 0,
+    [`model_providers.${provider}.stream_max_retries`]: source === "azure" ? 5 : 0,
   };
 }
 
