@@ -41,13 +41,13 @@ export const TOOL_DEFS = [
   {
     name: PEER_TOOLS.start,
     description:
-      "You must confirm with the user what to bill to before calling this tool, including when starting a replacement or fallback session. Confirm any automatic fallback providers and their order too. Starts a new coding session on any agent (Claude Code, Codex or Antigravity), with your prompt as its first message, and returns at once. It works on its own like one of your subagents, in this session's folder unless you pass `project` (or in a git worktree with `worktree`: a new one, or an existing one). Its permissions are never looser than yours. Each time it finishes a turn, its final reply comes to you as a message from it; if it isn't done, follow up with tether_send to its id, or start a fresh session for new context. It stays in the person's sidebar until you archive it: once you're done with it, archive it with tether_archive. The person can open, steer and stop it in Tether.",
+      "Use the subscription by default when available. You must confirm API-key billing with the user before starting any session, including a replacement or fallback session. Confirm any automatic fallback providers and their order too. Starts a new coding session on any agent (Claude Code, Codex or Antigravity), with your prompt as its first message, and returns at once. It works on its own like one of your subagents, in this session's folder unless you pass `project` (or in a git worktree with `worktree`: a new one, or an existing one). Its permissions are never looser than yours. Each time it finishes a turn, its final reply comes to you as a message from it; if it isn't done, follow up with tether_send to its id, or start a fresh session for new context. It stays in the person's sidebar until you archive it: once you're done with it, archive it with tether_archive. The person can open, steer and stop it in Tether.",
     inputSchema: {
       type: "object",
       properties: {
         harness: { type: "string", enum: ["claude", "codex", "antigravity"], description: "Which agent runs it: claude (Claude Code), codex, or antigravity." },
         prompt: { type: "string", description: "The complete brief: it starts with no other context." },
-        source: { type: "string", enum: ["subscription", "anthropic", "openai", "azure"], description: "The billing source the user confirmed. Azure uses Tether Settings → Azure deployments." },
+        source: { type: "string", enum: ["subscription", "anthropic", "openai", "azure"], description: "Defaults to subscription when available. API-key sources require user confirmation. Azure uses Tether Settings → Azure deployments." },
         fallbackKeys: { type: "array", uniqueItems: true, items: { type: "string", enum: ["anthropic", "openai", "azure"] }, description: "Optional user-confirmed API keys in priority order if a subscription runs out. Omit to disable automatic fallback." },
         model: { type: "string", description: "Its model, when one was asked for (else the agent's default)." },
         effort: { type: "string", description: "Its reasoning effort (low, medium, high, …), when one was asked for." },
@@ -59,7 +59,7 @@ export const TOOL_DEFS = [
             "true: it works in a new git worktree of the project (its own folder and branch), so it doesn't touch this checkout. A path or branch instead: it works in that existing worktree of the project (another session's, to carry on its work, or one made by hand); nothing is made and no setup runs. Only in a git repo.",
         },
       },
-      required: ["harness", "prompt", "source"],
+      required: ["harness", "prompt"],
     },
   },
   {

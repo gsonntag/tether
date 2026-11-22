@@ -317,7 +317,7 @@ export class Children {
     const { options } = harness === "antigravity"
       ? { options: [{ source: "subscription" as const, deployments: undefined }] }
       : await s.sources(harness);
-    const choice = options.find(({ source }) => source === a.source);
+    const choice = options.find(({ source }) => source === (a.source ?? "subscription"));
     if (!choice) {
       const available = options.map(({ source, deployments }) =>
         deployments?.length ? `${source} (${deployments.map(({ name }) => name).join(", ")})` : source

@@ -100,14 +100,16 @@ function setup(o: { modes?: Record<string, string>; dataDir?: string } = {}) {
 }
 
 describe("tether_start", () => {
-  test("requires an explicit billing source and never replaces an unavailable Azure model", async () => {
+  test("defaults to subscription and never replaces an unavailable Azure model", async () => {
     const t = setup();
     const args = { harness: "codex", prompt: "go" };
-    expect((await t.start({ ...args, source: undefined })).text).toContain("Confirm what to bill to");
+    expect((await t.start({ ...args, source: "openai" })).text).toContain("Confirm what to bill to");
     expect((await t.start({ ...args, source: "azure", model: "gpt-6-luna" })).text).toContain("Choose a configured Azure deployment");
     expect(t.created).toHaveLength(0);
     expect((await t.start({ ...args, source: "azure", model: "gpt-6.2-sol" })).isError).toBeFalsy();
     expect(t.created[0]).toMatchObject({ source: "azure", model: "sol-deployment" });
+    expect((await t.start({ ...args, source: undefined })).isError).toBeFalsy();
+    expect(t.created[1]).toMatchObject({ source: "subscription" });
   });
 
   test("enables only the requested fallback keys for a subscription session", async () => {
