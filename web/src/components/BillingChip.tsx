@@ -5,6 +5,7 @@ import { costChip } from "../../../shared/costs";
 import type { BillingSource, SourceChoices } from "../../../shared/credentials";
 import { isApiBilling, planChip, planLines, usageChip } from "../../../shared/labels";
 import { UNKNOWN_BILLING, type HarnessCapabilities, type HarnessId, type LiveState, type SessionSummary } from "../../../shared/transcript";
+import { useAccountLabel } from "../accountLabel";
 import { rpc } from "../connection";
 import { navigate } from "../route";
 import { autoKeyItem, billingForDisplay, CURRENT_SOURCE, sourceMenu } from "../sourceMenu";
@@ -38,6 +39,7 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
   // A side chat keeps its session's source (SPEC §16a).
   const changeable = !session.parentSessionId && !session.sideOf && !!capabilities?.sourceSwitch;
   const { choices, refresh } = useSources(runnerId, session.harness, changeable);
+  const account = useAccountLabel(runnerId, session.harness, changeable);
   const billing = billingForDisplay(state) ?? UNKNOWN_BILLING;
   const usage = usageChip(billing, state.plan);
   const limits = billing.kind === "plan" ? planChip(state.plan) : undefined;
@@ -47,7 +49,7 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
   const chip = paid ? { className: "t-chip t-paid-badge", title: billing.label } : { className: "t-chip t-chip-info t-usage-chip", title: usage.detail };
   const body = paid ? <><span>{billing.label}</span><span className="t-api-cost" title={cost.detail}>{cost.text}</span></> : limits ? limits.text : usage.text;
 
-  const planName = choices?.options.find((o) => o.source === "subscription")?.billing.label ?? (billing.kind === "plan" ? billing.label : "Plan limits");
+  const planName = account.label ?? choices?.options.find((o) => o.source === "subscription")?.billing.label ?? (billing.kind === "plan" ? billing.label : "Plan limits");
   const plan = planLines(state.plan);
   const hasMenu = !!choices || plan.length > 0 || showSessionCost;
   if (!hasMenu) return <span {...chip}>{body}</span>;
@@ -62,6 +64,7 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
         onOpenChange={(open) => {
           if (!open) return;
           refresh();
+          account.refresh();
           void rpc(runnerId, "refreshPlan", { harness: session.harness }).catch(() => {});
         }}
         renderTrigger={(p) => (
@@ -83,7 +86,7 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
         </>}
         {menu && menu.items.length > 0 && (
           <DropdownMenuRadioGroup label="Source" value={menu.value} onChange={(value) => { if (value !== menu.value && value !== CURRENT_SOURCE) onSwitch(value as BillingSource); }}>
-            {menu.items.map((i) => <DropdownMenuRadioItem key={i.value} value={i.value} label={i.label} description={i.reason} isDisabled={!!i.reason} />)}
+            {menu.items.map((i) => <DropdownMenuRadioItem key={i.value} value={i.value} label={(i.value === "subscription" && account.label) || i.label} description={i.reason} isDisabled={!!i.reason} />)}
           </DropdownMenuRadioGroup>
         )}
         {autoKey && <DropdownMenuDivider />}

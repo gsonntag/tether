@@ -19,7 +19,7 @@ import { accessOf } from "../runners";
 /** The Runner menu's "All runners" (Usage only). */
 const ALL = "*all";
 
-type Page = "runners" | "credentials" | "azure" | "texting" | "notifications" | "agents" | "updates" | "usage";
+type Page = "accounts" | "runners" | "credentials" | "azure" | "texting" | "notifications" | "agents" | "updates" | "usage";
 const labels: Record<CredentialSource, string> = { anthropic: "Anthropic API key", openai: "OpenAI API key", azure: "API key" };
 
 /** Settings, per runner: Runners (names and sharing), Credentials (Anthropic and OpenAI keys), Azure (its key, resource and deployments) Messaging (iMessage, Discord) and this device's Notifications. */
@@ -42,6 +42,7 @@ export function Settings({ page: asked, loginTarget }: { page: Page; loginTarget
         {owner && <>
         <a href="#/settings/runners" aria-current={page === "runners" ? "page" : undefined}>Runners</a>
         <a href="#/settings/credentials" aria-current={page === "credentials" ? "page" : undefined}>Credentials</a>
+        <a href="#/settings/accounts" aria-current={page === "accounts" ? "page" : undefined}>Accounts</a>
         <a href="#/settings/azure" aria-current={page === "azure" ? "page" : undefined}>Azure</a>
         <a href="#/settings/texting" aria-current={page === "texting" ? "page" : undefined}>Messaging</a>
         <a href="#/settings/notifications" aria-current={page === "notifications" ? "page" : undefined}>Notifications</a>
@@ -59,9 +60,9 @@ export function Settings({ page: asked, loginTarget }: { page: Page; loginTarget
       <Heading level={2}>Runners</Heading>
       <RunnersSettings />
       </> : page === "updates" ? <HarnessUpdates /> : <>
-      <Heading level={2}>{page === "azure" ? "Azure" : page === "texting" ? "Messaging" : page === "agents" ? "Agents" : page === "usage" ? "Usage" : "Credentials"}</Heading>
+      <Heading level={2}>{page === "accounts" ? "Accounts" : page === "azure" ? "Azure" : page === "texting" ? "Messaging" : page === "agents" ? "Agents" : page === "usage" ? "Usage" : "Credentials"}</Heading>
       {runners.length > 1 && <label className="t-field">Runner<select className="t-select" value={allRunners ? ALL : runner?.id ?? ""} onChange={(e) => setChosen(e.target.value)}>{page === "usage" && <option value={ALL}>All runners</option>}{runners.map((r) => <option key={r.id} value={r.id}>{r.name || r.id}{page === "usage" && !r.online ? " (offline)" : ""}</option>)}</select></label>}
-      {allRunners ? <UsageSettings key={ALL} runners={runners.map((r) => ({ id: r.id, name: r.name || r.id, online: r.online }))} /> : !runner ? <div className="t-inline-status">No runner connected.</div> : !runner.online ? <div className="t-inline-status">Runner offline.</div> : page === "azure" ? <AzureSettings key={runner.id} runnerId={runner.id} /> : page === "texting" ? <TextingSettings key={runner.id} runnerId={runner.id} /> : page === "agents" ? <AgentSettings key={runner.id} runnerId={runner.id} /> : page === "usage" ? <UsageSettings key={runner.id} runners={[{ id: runner.id, name: runner.name || runner.id, online: true }]} /> : <RunnerCredentials key={runner.id} runnerId={runner.id} first={runner.id === loginTarget?.runnerId ? loginTarget?.harness : undefined} />}
+      {allRunners ? <UsageSettings key={ALL} runners={runners.map((r) => ({ id: r.id, name: r.name || r.id, online: r.online }))} /> : !runner ? <div className="t-inline-status">No runner connected.</div> : !runner.online ? <div className="t-inline-status">Runner offline.</div> : page === "accounts" ? <RunnerAccounts key={runner.id} runnerId={runner.id} /> : page === "azure" ? <AzureSettings key={runner.id} runnerId={runner.id} /> : page === "texting" ? <TextingSettings key={runner.id} runnerId={runner.id} /> : page === "agents" ? <AgentSettings key={runner.id} runnerId={runner.id} /> : page === "usage" ? <UsageSettings key={runner.id} runners={[{ id: runner.id, name: runner.name || runner.id, online: true }]} /> : <RunnerCredentials key={runner.id} runnerId={runner.id} first={runner.id === loginTarget?.runnerId ? loginTarget?.harness : undefined} />}
       </>}
       </div>
       </div>
@@ -89,10 +90,18 @@ export function useCredentials(runnerId: string) {
   return { status, error, busy, disabled: busy || link !== "open", change };
 }
 
+const harnesses: HarnessId[] = ["claude", "codex", "antigravity"];
+
+function RunnerAccounts({ runnerId }: { runnerId: string }) {
+  return harnesses.map((harness) => <section key={harness} className="t-credential-harness">
+    <Heading level={3}>{HARNESS_LABELS[harness]}</Heading>
+    <HarnessLogin runnerId={runnerId} harness={harness} rename />
+  </section>);
+}
+
 function RunnerCredentials({ runnerId, first }: { runnerId: string; first?: HarnessId }) {
   const { status, error, disabled, change } = useCredentials(runnerId);
   const slot = (source: "anthropic" | "openai") => <KeySlot source={source} status={status![source]} disabled={disabled} save={(key) => void change(rpc(runnerId, "setCredential", { source, key }))} unset={() => void change(rpc(runnerId, "unsetCredential", { source }))} />;
-  const harnesses: HarnessId[] = ["claude", "codex", "antigravity"];
   const ordered = first ? [first, ...harnesses.filter((h) => h !== first)] : harnesses;
   return <>
     {error && <div className="t-inline-status error" role="alert">{error}</div>}

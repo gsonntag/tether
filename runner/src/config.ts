@@ -27,6 +27,7 @@ export interface RunnerConfig {
   name?: string;
   /** runner-wide settings (the Settings page) */
   settings?: RunnerSettings;
+  accountNames?: Partial<Record<HarnessId, { accountId: string; displayName: string }>>;
   /** who else may use this runner and how (shared/access.ts); the relay enforces it */
   sharedWith?: RunnerGrant[];
   /** per-session settings Tether chose (SPEC §4), by session id */

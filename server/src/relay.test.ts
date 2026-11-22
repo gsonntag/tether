@@ -87,7 +87,9 @@ describe("connections", () => {
 
     const poll = { t: "rpc", id: "browser-call", runnerId: "box", op: "harnessLoginPoll", args: { flowId: "test-flow", loginOwner: "spoofed" } } as const;
     relay.onBrowserMessage(driver, poll);
-    expect(driver.take("result")).toMatchObject([{ ok: false }]);
+    relay.onBrowserMessage(driver, { ...poll, id: "status", op: "harnessLoginStatus", args: { harness: "claude" } });
+    relay.onBrowserMessage(driver, { ...poll, id: "rename", op: "renameHarnessAccount", args: { harness: "claude", accountId: "account", displayName: "Work" } });
+    expect(driver.take("result")).toMatchObject([{ ok: false }, { ok: false }, { ok: false }]);
     expect(runner.take()).toEqual([]);
 
     relay.onBrowserMessage(owner, poll);

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import type { HarnessLoginFlow, HarnessLoginStatus } from "../../../shared/harnessLogin";
 import { HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
@@ -9,6 +9,7 @@ import { call as codexCall, connect as codexConnect } from "../adapters/codex/da
 import { HARNESS_BINS } from "../adapters/detect";
 import { childEnv } from "../childEnv";
 import type { OpRegistry } from "./ops";
+import type { Prefs } from "./prefs";
 
 const FLOW_MS = 15 * 60_000;
 const READ_MS = 10_000;
@@ -30,10 +31,18 @@ function assertHarness(value: HarnessId) {
   if (!Object.hasOwn(HARNESS_LABELS, value)) throw new Error("Unknown harness.");
 }
 
-function account(email: unknown, plan: unknown): HarnessLoginStatus {
+function account(email: unknown, plan: unknown, organization: unknown = undefined, orgId: unknown = undefined): HarnessLoginStatus {
+  const address = typeof email === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= 254 ? email : undefined;
+  const org = typeof organization === "string" && organization.length <= 200 && !/[\u0000-\u001f\u007f]/.test(organization) ? organization.trim() || undefined : undefined;
+  const scope = typeof orgId === "string" && orgId.length <= 128 ? orgId : org;
+  const accountId = address || scope
+    ? createHash("sha256").update(JSON.stringify([address?.toLowerCase(), scope])).digest("hex")
+    : undefined;
   return {
     state: "signedIn",
-    ...(typeof email === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= 254 ? { email } : {}),
+    ...(address ? { email: address } : {}),
+    ...(org ? { organization: org } : {}),
+    ...(accountId ? { accountId } : {}),
     ...(typeof plan === "string" && /^[\w .+-]{1,60}$/.test(plan) ? { plan } : {}),
   };
 }
@@ -55,7 +64,7 @@ async function loginStatus(harness: HarnessId): Promise<HarnessLoginStatus> {
     switch (harness) {
       case "claude": {
         const status = await claudeSubscriptionStatus(HARNESS_BINS.claude);
-        if (status?.authMethod === "claude.ai" && status.loggedIn === true) return account(status.email, status.subscriptionType);
+        if (status?.authMethod === "claude.ai" && status.loggedIn === true) return account(status.email, status.subscriptionType, status.orgName, status.orgId);
         return { state: typeof status?.loggedIn === "boolean" ? "signedOut" : "unknown" };
       }
       case "codex": {
@@ -179,7 +188,7 @@ async function logout(harness: HarnessId) {
   }
 }
 
-export function registerHarnessLogin(ops: OpRegistry, changed: (harness: HarnessId) => void) {
+export function registerHarnessLogin(ops: OpRegistry, changed: (harness: HarnessId) => void, prefs?: Pick<Prefs, "accountName" | "setAccountName">) {
   const flows = new Map<string, Flow>();
   const busy = new Set<HarnessId>();
   const get = (id: string, owner?: string) => {
@@ -198,7 +207,33 @@ export function registerHarnessLogin(ops: OpRegistry, changed: (harness: Harness
     if (harness === "antigravity") await reader.close();
     changed(harness);
   };
-  ops.register("harnessLoginStatus", ({ harness }) => loginStatus(harness));
+  ops.register("harnessLoginStatus", async ({ harness }) => {
+    const status = await loginStatus(harness);
+    if (status.state !== "signedIn" || !status.accountId) return status;
+    const displayName = prefs?.accountName(harness, status.accountId);
+    return displayName ? { ...status, displayName } : status;
+  });
+  ops.register("renameHarnessAccount", async ({ harness, accountId, displayName }) => {
+    if (!prefs) throw new Error("Account settings are unavailable.");
+    if (typeof displayName !== "string" || /[\u0000-\u001f\u007f]/.test(displayName) || displayName.trim().length > 80) {
+      throw new Error("Use a display name of up to 80 characters.");
+    }
+    assertHarness(harness);
+    if (busy.has(harness)) throw new Error("An account update is already running.");
+    busy.add(harness);
+    try {
+      if (harness === "claude") clearClaudeLoginStatus();
+      const status = await loginStatus(harness);
+      if (status.state !== "signedIn" || !status.accountId || status.accountId !== accountId) {
+        throw new Error("The signed-in account changed. Reload Accounts and try again.");
+      }
+      const name = displayName.trim();
+      prefs.setAccountName(harness, accountId, name);
+      return name ? { ...status, displayName: name } : status;
+    } finally {
+      busy.delete(harness);
+    }
+  });
   ops.register("harnessLoginStart", ({ harness }, owner) => {
     if (!owner) throw new Error("Harness sign-in requires an owner connection.");
     assertHarness(harness);

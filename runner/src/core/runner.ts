@@ -158,7 +158,7 @@ export function createRunner(o: RunnerOptions) {
   const stopHarnessLogin = registerHarnessLogin(ops, (harness) => {
     live.harnessLoginChanged(harness);
     void core.refreshPlan(harness).catch(() => {});
-  });
+  }, prefs);
   if (o.credentials) {
     ops.register("credentials", () => o.credentials!.status());
     ops.register("setCredential", (a) => { const result = o.credentials!.set(a.source, a.key, a.endpoint, a.deployment, a.rates); live.credentialsChanged(); return result; });
