@@ -10,7 +10,8 @@ export interface CoreEvents {
   /** `from`: the status before ("waiting": the turn goes on after the person answered it, not a new one) */
   turnStarted: { sessionId: string; from?: RunStatus };
   /** `stopped`: a person stopped it. `recovering`: an intermediate failure, with no final notification. */
-  turnEnded: { sessionId: string; error?: string; stopped?: boolean; recovering?: boolean };
+  turnEnded: { sessionId: string; error?: string; stopped?: boolean; recovering?: boolean; fallbackPending?: boolean };
+  fallbackStatus: { sessionId: string; status: "exhausted" | "resumed" };
   message: { sessionId: string; msg: Msg };
   /** a waiting message left the queue: it went out to the harness, or was cancelled */
   queueGone: { sessionId: string; msgId: string; how: "sent" | "cancelled"; text: string };

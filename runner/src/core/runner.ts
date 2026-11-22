@@ -155,7 +155,7 @@ export function createRunner(o: RunnerOptions) {
   const broker = new RequestBroker(o.policy, { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (open, closed) => prefs.setRequests(open, closed), log: o.log });
   const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, maxLive: o.core?.maxLive, attachmentsDir: o.attachmentsDir, credentials: o.credentials, costs });
   ops.register("fallbackSetup", (a) => live.fallbackSetup(a.sessionId));
-  ops.register("setFallbackChain", (a) => live.setFallbackChain(a.sessionId, a.enabled, a.steps));
+  ops.register("setFallbackChain", (a) => live.setFallbackChain(a.sessionId, a.enabled, a.steps, a.continueOnReset));
   ops.register("editFallbackPreset", (a) => live.editFallbackPreset(a));
   if (o.credentials) {
     ops.register("credentials", () => o.credentials!.status());
@@ -419,7 +419,7 @@ export function createRunner(o: RunnerOptions) {
       // readopted (a queue held for a terminal that is gone must not wait for it).
       // A worktree setup a restart cut off: failed, so what's sent waits for Re-run setup or Send anyway.
       for (const id of live.queue.setupsCutOff()) live.read.set(id, { failure: "The worktree's setup was cut off by a runner restart. What you send waits: re-run the setup, or send anyway." });
-      void rejoined.finally(async () => { await live.restoreRetries(); await live.queue.restore(); });
+      void rejoined.finally(async () => { await live.restoreRetries(); await live.queue.restore(); live.restoreFallbackTimers(); });
       conn.start();
     },
     /** Closes live sessions (their harnesses flush), then the connection. */

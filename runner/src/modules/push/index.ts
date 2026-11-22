@@ -140,6 +140,15 @@ export class Notifier {
     await this.notify({ kind: "request", sessionId, title: this.title(sessionId), body: `${agentOf(sessionId)} needs you in the terminal.`, tag: `att-${sessionId}` });
   }
 
+  async fallbackStatus(sessionId: string, status: "exhausted" | "resumed") {
+    const exhausted = status === "exhausted";
+    await this.notify({
+      kind: exhausted ? "failed" : "finished", sessionId, title: this.title(sessionId),
+      body: exhausted ? "Used every available source." : "Fallback chain resumed.",
+      tag: `fallback-${sessionId}`,
+    });
+  }
+
   async turnEnded(sessionId: string, error?: string) {
     // The queue sent the next message, or the session waits on a request (that notifies itself).
     if (!endWorthTelling(this.ctx.session(sessionId))) return;
@@ -159,8 +168,9 @@ export const pushModule: Module = {
     const offs = [
       ctx.bus.on("connected", ({ push }) => sender.setKeys(push)),
       ctx.bus.on("requestOpened", ({ request }) => void later(REQUEST_DELAY_MS, () => n.request(request))),
+      ctx.bus.on("fallbackStatus", ({ sessionId, status }) => void later(0, () => n.fallbackStatus(sessionId, status))),
       ctx.bus.on("attention", ({ sessionId, message }) => void later(0, () => n.attention(sessionId, message))),
-      ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!stopped && !recovering && later(FINISH_DELAY_MS, () => n.turnEnded(sessionId, error)))),
+      ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering, fallbackPending }) => void (!stopped && !recovering && !fallbackPending && later(FINISH_DELAY_MS, () => n.turnEnded(sessionId, error)))),
     ];
     const str = (v: unknown, what: string) => {
       if (typeof v !== "string" || !v || v.length > 2000) throw new Error(`${what} is required.`);

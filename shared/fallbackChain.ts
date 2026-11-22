@@ -11,6 +11,7 @@ export interface FallbackStep {
 
 export interface FallbackChain {
   enabled: boolean;
+  continueOnReset?: boolean;
   steps: FallbackStep[];
   active?: number;
 }

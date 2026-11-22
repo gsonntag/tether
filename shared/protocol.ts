@@ -151,7 +151,7 @@ export interface User {
 /** Op name -> its args and result. Later phases add the rest of the core ops (SPEC §5). */
 export interface Ops {
   fallbackSetup: { args: { sessionId: string }; result: FallbackSetup };
-  setFallbackChain: { args: { sessionId: string; enabled: boolean; steps: FallbackStep[] }; result: FallbackChain };
+  setFallbackChain: { args: { sessionId: string; enabled: boolean; steps: FallbackStep[]; continueOnReset?: boolean }; result: FallbackChain };
   editFallbackPreset: { args: FallbackPresetEdit; result: FallbackPreset[] };
   retryNow: { args: { sessionId: string }; result: null };
   cancelRetry: { args: { sessionId: string }; result: null };

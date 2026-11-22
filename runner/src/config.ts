@@ -106,6 +106,7 @@ export interface SessionPrefs {
   nextFallbackSettings?: Pick<SessionPrefs, "effort" | "permissionMode">;
   fallbackChain?: FallbackChain;
   fallbackProgress?: FallbackProgress;
+  fallbackResumeAt?: number;
   /** "Session can text me", ticked by you: it may text the person, and gets plain texts (SPEC §11 Texting). Kept whatever its age */
   canText?: boolean;
   /** the key this session last used or had picked */

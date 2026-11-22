@@ -180,7 +180,7 @@ describe("the fallback chain", () => {
     await t.live.send("claude:one", "fix it");
     const s = await settled(t, () => true);
     await Bun.sleep(20);
-    expect(notices(s)).toEqual(["Plan limit reached. No available fallback step on this harness."]);
+    expect(notices(s)[0]).toContain("Used every available source.");
 
     const u = setup();
     u.adapter.script = () => [(s) => at(s), (s, d) => void (u.core.sessions.get("claude:one")!.setState({ terminal: { kind: "shared" } as any }), d), limit()];
@@ -337,6 +337,29 @@ describe("the fallback chain", () => {
     expect(t.prefs.get("claude:one").movedTo).toBeUndefined();
     expect(t.adapter.drivers.at(-1)?.nativeId).toBe("one");
     expect(t.adapter.drivers.at(-1)?.sent[0]).toContain("/private/fallback/history.md");
+  });
+
+  test("sends continue after a reset, and Stop cancels a pending continuation", async () => {
+    for (const stop of [false, true]) {
+      const t = setup();
+      t.live.fallbackResetDelay = 35;
+      const reset = Date.now() + 100;
+      const plan = { harness: "claude", source: "subscription", model: "haiku" } as const;
+      t.prefs.set("claude:one", { model: "haiku" });
+      await t.live.setFallbackChain("claude:one", true, [plan], true);
+      const statuses: string[] = [];
+      t.core.o.bus.on("fallbackStatus", ({ status }) => statuses.push(status));
+      t.adapter.script = (text) => text === "start" ? [(s) => at(s), limit({ resetsAt: reset })] : [reply];
+      await t.live.send("claude:one", "start");
+      await settled(t, (s) => notices(s).some((text: string) => text.includes("Used every available source.")));
+      expect(t.prefs.get("claude:one").fallbackResumeAt).toBe(reset + 35);
+      if (stop) await t.live.interrupt("claude:one");
+      await Bun.sleep(200);
+      expect(statuses).toEqual(stop ? ["exhausted"] : ["exhausted", "resumed"]);
+      expect(t.adapter.drivers.flatMap((driver) => driver.sent)).toEqual(stop ? ["start"] : ["start", "continue"]);
+      expect(t.prefs.get("claude:one").fallbackResumeAt).toBeUndefined();
+      expect(t.prefs.get("claude:one").fallbackChain?.enabled).toBe(true);
+    }
   });
 
   test("stops at a cross-harness hop instead of skipping ahead", async () => {

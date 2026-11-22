@@ -1185,7 +1185,11 @@ records the exhausted step and its reset time, or backs off for ten minutes if n
 reported. It prefers an available higher-priority step at the next turn boundary. If it previously
 left that step's thread, it tries to resume that thread and points it to a private archive of the
 work since the handoff. If the thread is unavailable, the source switch can carry the conversation
-into a fresh thread.
+into a fresh thread. When the order is exhausted, the transcript lists the steps and their known
+reset or retry times. With **Continue when a limit resets** enabled, the runner persists a wakeup
+for one minute after the earliest retry time and sends “continue” when it can take that step.
+Stop and a new message cancel the pending wakeup. Push reports exhaustion and resumption without
+announcing intermediate fallback hops.
 
 | Harness | Exhausted | Not exhausted, whatever it says |
 |---|---|---|
