@@ -4,6 +4,7 @@ import { Sha256 } from "@aws-crypto/sha256-js";
 import { EventStreamCodec } from "@smithy/core/event-streams";
 import { SignatureV4 } from "@smithy/signature-v4";
 import type { SessionCost } from "../../shared/costs";
+import type { BedrockModel } from "../../shared/credentials";
 import { BedrockSpend, bedrockRates, noBedrockCharge, priceBedrock, unpricedBedrock } from "./bedrockCost";
 import { CredentialStore, type CredentialSnapshot } from "./credentials";
 import { CostLedger } from "./costs";
@@ -26,7 +27,7 @@ export const bedrockEndpoint = (region: string, harness: BedrockHarness) => harn
 function parseJson(bytes: Uint8Array) { try { return JSON.parse(decoder.decode(bytes)); } catch { return undefined; } }
 
 /** Native Bedrock Claude streams use AWS event framing with checksums, not SSE. */
-export function meterClaudeBedrock(report: (usage: unknown) => void, key = ""): TransformStream<Uint8Array, Uint8Array> {
+export function meterClaudeBedrock(report: (usage: unknown) => void, key = "", partial: (usage: unknown) => void = () => {}): TransformStream<Uint8Array, Uint8Array> {
   let pending = Buffer.alloc(0);
   let usage: Record<string, unknown> = {};
   return new TransformStream({
@@ -50,6 +51,7 @@ export function meterClaudeBedrock(report: (usage: unknown) => void, key = ""): 
           const message = wrapped ? parseJson(encoder.encode(text)) : payload;
           if (message?.type === "message_start") usage = { ...message.message?.usage };
           if (message?.type === "message_delta") usage = { ...usage, ...message.usage };
+          if (message?.type === "message_start" || message?.type === "message_delta") partial(usage);
           if (message?.type === "message_stop") report(usage);
           if (key && text.includes(key)) {
             const safe = text.replaceAll(key, "[redacted]");
@@ -92,20 +94,29 @@ export function bedrockGateway(credential: CredentialSnapshot, harness: BedrockH
     const requestId = randomUUID();
     let started = false;
     let finished = false;
-    const settle = (cost: SessionCost) => {
+    const settle = (cost: SessionCost, ledger = cost) => {
       if (!started || finished) return;
-      spend.finish(requestId, cost);
+      spend.finish(requestId, ledger);
       finished = true;
       report(requestId, cost);
     };
+    // A Stop, a dropped connection or a mid-stream error leaves no final usage. The session shows partial
+    // coverage, but the guard counts only the usage seen so far, so routine interruptions don't lock it for the day.
+    let seen: Record<string, unknown> | undefined;
+    const interrupted = () => {
+      const partial = seen && model ? priceBedrock(settings, model, { output_tokens: 0, ...seen }, tier).usd : undefined;
+      settle(unpricedBedrock(), { usd: partial ?? 0, estimated: true, complete: true });
+    };
+    let model: BedrockModel | undefined;
+    let tier: string | undefined;
     try {
       const body = req.method === "POST" ? new Uint8Array(await req.arrayBuffer()) : undefined;
       const input = body && parseJson(body);
       const id = operation ? decodeURIComponent(operation[1]!) : input?.model;
       if (models) return Response.json({ object: "list", data: settings.models.filter((row) => row.harness === harness).map((row) => ({ id: row.id, object: "model" })) });
-      const model = settings.models.find((row) => row.harness === harness && row.id === id);
+      model = settings.models.find((row) => row.harness === harness && row.id === id);
       if (!model && !profiles) return errorBody(harness, "Select a configured model in Settings, Bedrock.", 400);
-      const tier = harness === "claude" ? req.headers.get("x-amzn-bedrock-service-tier") ?? undefined : input?.service_tier;
+      tier = harness === "claude" ? req.headers.get("x-amzn-bedrock-service-tier") ?? undefined : input?.service_tier;
       const endpoint = bedrockEndpoint(settings.region, harness);
       const target = new URL((profiles ? endpoint.replace("bedrock-runtime.", "bedrock.") : endpoint) + path);
       // The Claude harness can list and resolve configured inference profiles through the AWS control plane.
@@ -133,7 +144,8 @@ export function bedrockGateway(credential: CredentialSnapshot, harness: BedrockH
       const upstream = await send(target, { method: req.method, headers: outgoing, body: body as Uint8Array<ArrayBuffer> | undefined, redirect: "error", signal: req.signal });
       if (!upstream.ok) {
         await upstream.body?.cancel().catch(() => {});
-        settle(upstream.status < 500 ? noBedrockCharge : unpricedBedrock());
+        // Bedrock does not bill a request that returns an error status, including throttling and 5xx.
+        settle(noBedrockCharge);
         const message = upstream.status === 401 || upstream.status === 403 ? "Amazon Bedrock rejected the credential or model access. Check Settings, Bedrock."
           : `Amazon Bedrock request failed (HTTP ${upstream.status}).`;
         return errorBody(harness, message, upstream.status);
@@ -151,10 +163,10 @@ export function bedrockGateway(credential: CredentialSnapshot, harness: BedrockH
         settle(hostedTools ? { ...cost, complete: false, reasons: [...(cost.reasons ?? []), "tool-fee"] } : cost);
       };
       let stream: ReadableStream<Uint8Array> = upstream.body;
-      if (contentType.includes("application/vnd.amazon.eventstream")) stream = stream.pipeThrough(meterClaudeBedrock(price, key));
+      if (contentType.includes("application/vnd.amazon.eventstream")) stream = stream.pipeThrough(meterClaudeBedrock(price, key, (usage) => { seen = usage as Record<string, unknown>; }));
       else if (contentType.includes("text/event-stream")) {
         if (key) stream = stream.pipeThrough(redactStream(key));
-        stream = stream.pipeThrough(meterStream((response) => price(response?.usage, response?.service_tier, response?.output), () => settle(unpricedBedrock())));
+        stream = stream.pipeThrough(meterStream((response) => price(response?.usage, response?.service_tier, response?.output), interrupted));
       } else {
         const text = await upstream.text();
         const json = parseJson(encoder.encode(text));
@@ -167,15 +179,15 @@ export function bedrockGateway(credential: CredentialSnapshot, harness: BedrockH
           try {
             const next = await reader.read();
             if (next.done) {
-              settle(unpricedBedrock());
+              interrupted();
               controller.close();
             } else controller.enqueue(next.value);
-          } catch (error) { settle(unpricedBedrock()); controller.error(error); }
+          } catch (error) { interrupted(); controller.error(error); }
         },
-        async cancel() { settle(unpricedBedrock()); await reader.cancel(); },
+        async cancel() { interrupted(); await reader.cancel(); },
       }), { status: upstream.status, headers: out });
     } catch {
-      settle(unpricedBedrock());
+      interrupted();
       return errorBody(harness, "Amazon Bedrock could not be reached. Check the runner's AWS credentials and region.", 502);
     }
   }

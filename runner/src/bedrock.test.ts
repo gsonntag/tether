@@ -129,6 +129,46 @@ test("AWS profile signs with the Bedrock Mantle service and never echoes AWS err
   }
 });
 
+test("a Stop, a 5xx or a mid-stream error does not lock the spend guard for the day", async () => {
+  const { store, clean } = setup();
+  store.setBedrock({ ...settings, dailyLimitUsd: 100 });
+  store.set("bedrock", key);
+  let next = "cancel";
+  const start = frame({ type: "message_start", message: { usage: { input_tokens: 1_000_000, output_tokens: 1 } } });
+  const send = (async (input) => {
+    if (next === "503") return new Response("busy", { status: 503 });
+    if (next === "claude") {
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(start); controller.close(); } }),
+        { headers: { "content-type": "application/vnd.amazon.eventstream" } });
+    }
+    return new Response(new ReadableStream({ start(controller) { controller.enqueue(encoder.encode('data: {"type":"response.created"}\n\n')); } }),
+      { headers: { "content-type": "text/event-stream" } });
+  }) as typeof fetch;
+  const costs: unknown[] = [];
+  const codex = bedrockGateway(store.snapshot("bedrock", oss.id)!, "codex", (_, cost) => costs.push(cost), send);
+  const claude = bedrockGateway(store.snapshot("bedrock", sonnet.id)!, "claude", (_, cost) => costs.push(cost), send);
+  const invoke = `/model/${sonnet.id}/invoke-with-response-stream`;
+  try {
+    const stopped = (await codex.handle(post("/responses", { model: oss.id }), "/responses")).body!.getReader();
+    await stopped.read();
+    await stopped.cancel();
+    expect(costs.at(-1)).toMatchObject({ complete: false });
+    next = "503";
+    expect((await codex.handle(post("/responses", { model: oss.id }), "/responses")).status).toBe(503);
+    expect(costs.at(-1)).toEqual(noBedrockCharge);
+    next = "claude";
+    await (await claude.handle(post(invoke, {}), invoke)).arrayBuffer();
+    expect(costs.at(-1)).toMatchObject({ complete: false });
+    next = "cancel";
+    const allowed = await codex.handle(post("/responses", { model: oss.id }), "/responses");
+    expect(allowed.status).toBe(200);
+    await allowed.body!.cancel();
+    // The interrupted Claude stream still counts the input it reported: 1M tokens at $3.
+    const spend = new BedrockSpend(store.file);
+    try { expect(spend.begin("over", 3, Date.now())).toBeFalse(); } finally { spend.close(); }
+  } finally { codex.close(); claude.close(); clean(); }
+});
+
 test("the spend guard persists missing usage and resets on the next UTC day", () => {
   const { store, clean } = setup();
   const day = Date.UTC(2026, 10, 22), first = new BedrockSpend(store.file);
