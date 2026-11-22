@@ -94,6 +94,9 @@ for await (const chunk of Bun.stdin.stream()) {
       case "initialize":
         ok({ protocolVersion: 1, agentCapabilities: { loadSession: true }, agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } });
         break;
+      case "session/new":
+        ok({ sessionId: crypto.randomUUID(), modes: { currentModeId: mode }, configOptions: config(model, effort, mode) });
+        break;
       case "session/load":
         loaded = m.params;
         update(m.params.sessionId, { sessionUpdate: "user_message_chunk", content: { type: "text", text: "earlier" } });
