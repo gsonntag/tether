@@ -61,7 +61,10 @@ export function summary(p: ToolPart, root?: string): string {
 }
 
 function StatusIcon({ status }: { status: ToolPart["status"] }) {
-  if (status === "running") return <Spinner size="sm" aria-label="Running" />;
+  const { streamingAnimation } = useSessionCtx();
+  if (status === "running") {
+    return streamingAnimation === false ? <span className="t-css-spinner" aria-label="Running" role="status" /> : <Spinner size="sm" aria-label="Running" />;
+  }
   return (
     <span className={`t-tool-status ${status}`} role="img" aria-label={status === "done" ? "Done" : "Failed"}>
       <Icon icon={status === "done" ? CheckIcon : XMarkIcon} size="sm" />

@@ -46,3 +46,22 @@ test("under a project's subheader the row leaves the project out", () => {
   expect(grouped).not.toContain('<span class="t-proj">web</span>');
   expect(grouped).toContain('<span class="t-proj">box</span>');
 });
+
+test("a worktree session shows its branch: beside its main checkout's name, or alone under the group", () => {
+  const wt = row({ projectPath: "/p/web-worktrees/tether-fix", worktreeOf: "/p/web", worktreeBranch: "tether/fix" });
+  const flat = render(wt);
+  expect(flat).toContain('<span class="t-proj">web</span>');
+  expect(flat).toContain("tether/fix");
+  const grouped = renderToStaticMarkup(<SessionRow row={wt} now={2} selected={false} hideProject />);
+  expect(grouped).not.toContain('<span class="t-proj">web</span>');
+  expect(grouped).toContain("tether/fix");
+});
+
+test("session rows in the sidebar have plain title text with no payment-source marker or differentiator", () => {
+  const apiRow = render(row({ billing: { kind: "apiKey", label: "Anthropic API key" } }));
+  expect(apiRow).not.toContain("t-api-title");
+  expect(apiRow).not.toContain("Anthropic API key");
+  expect(apiRow).toContain('aria-label="Open session: Fix login"');
+  expect(apiRow).toContain('<span class="t-row-title t-row-title-editor">');
+  expect(apiRow).toContain('title="Fix login"');
+});

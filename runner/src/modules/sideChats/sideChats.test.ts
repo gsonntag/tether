@@ -146,7 +146,7 @@ describe("side chats", () => {
     const { runner, call } = await setup();
     const { sessionId } = await call("openSideChat", { sessionId: "claude:s1" });
     await expect(runner.live.setSource(sessionId, "anthropic")).rejects.toThrow(SIDE_KEEPS.source);
-    await expect(runner.live.setAutoKey(sessionId, true)).rejects.toThrow(SIDE_KEEPS.source);
+    await expect(runner.live.setFallbackChain(sessionId, true, [])).rejects.toThrow("Set the fallback chain on the main session");
     await expect(call("runShell", { sessionId, command: "touch x" })).rejects.toThrow(SIDE_KEEPS.shell);
     await expect(runner.look.sessions.fork(sessionId)).rejects.toThrow(SIDE_KEEPS.fork);
     expect(moveRefusal(await runner.look.sessions.open(sessionId))).toBe(SIDE_KEEPS.move);

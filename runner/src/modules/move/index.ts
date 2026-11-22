@@ -6,8 +6,8 @@ import { unscheduled } from "../../../../shared/schedule";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { parseSessionId } from "../../../../shared/ids";
-import { archiveMarkdown, budgetFor, contextNote, contextOpening, imageName, mapMode, movedFrom, movedTo, PORTABLE_VERSION, planImport, type MoveOptions, type MoveTarget, type PortableSession, type PortableSubagent } from "../../../../shared/move";
-import type { BillingSource } from "../../../../shared/credentials";
+import { archiveMarkdown, budgetFor, contextNote, LEVELS, contextOpening, imageName, mapMode, movedFrom, movedTo, PORTABLE_VERSION, planImport, type MoveOptions, type MoveTarget, type PortableSession, type PortableSubagent } from "../../../../shared/move";
+import { hasSourceModels, type BillingSource } from "../../../../shared/credentials";
 import { HARNESS_LABELS, type HarnessId, type Msg } from "../../../../shared/transcript";
 import { SIDE_KEEPS } from "../../../../shared/sideChat";
 import type { Adapter, StartOpts } from "../../core/adapter";
@@ -242,7 +242,7 @@ export class Mover {
    * and the same settings, confirmed and unlisted. Native import or nothing: the file route is a
    * turn on the new source that the person didn't ask for.
    */
-  async carry(id: string, source: BillingSource, picked?: string): Promise<string> {
+  async carry(id: string, source: BillingSource, picked?: string, settings?: StartOpts): Promise<string> {
     const { look, adapter } = await this.source(id);
     // What's waiting follows the session (live.ts send), so it's no reason to refuse.
     const why = await this.blocked(adapter, { ...look, state: { ...look.state, queue: [] } });
@@ -253,10 +253,10 @@ export class Mover {
       const { effort, permissionMode } = look.state;
       // The model picked for the new source while the change waited, else: an Azure deployment's
       // name means nothing on another source, so there the default model.
-      const model = picked ?? ((await this.ctx.sessions.sourceOf(id)) === "azure" && source !== "azure" ? undefined : look.state.model);
-      const azureDeployment = source === "azure" ? look.state.nextDeployment : undefined;
-      const pin = azureDeployment ? { azureDeployment, model: azureDeployment } : model && model !== "default" ? { model } : {};
-      const opts: StartOpts = { ...pin, ...(effort ? { effort } : {}), permissionMode: moveMode(adapter, permissionMode, adapter) };
+      const model = picked ?? (hasSourceModels(await this.ctx.sessions.sourceOf(id)) && !hasSourceModels(source) ? undefined : look.state.model);
+      const sourceModel = hasSourceModels(source) ? look.state.nextDeployment : undefined;
+      const pin = sourceModel ? { sourceModel, model: sourceModel } : model && model !== "default" ? { model } : {};
+      const opts: StartOpts = { ...pin, ...(effort ? { effort } : {}), permissionMode: moveMode(adapter, permissionMode, adapter), ...settings };
       const moved = await this.native(adapter, portable, opts, await this.background(adapter, look), source, id);
       const note = contextNote(moved.kept, moved.total);
       if (note) await this.ctx.sessions.notice(moved.sessionId, { ...notice(`n-carried-${moved.sessionId}`, note, id), link: undefined }, moved.after ? { after: moved.after } : {});
@@ -291,13 +291,55 @@ export class Mover {
     return made.sessionId;
   }
 
+  async fallbackHop(id: string, to: HarnessId, source: BillingSource, opts: StartOpts) {
+    const { look, adapter } = await this.source(id);
+    const target = this.adapter(to);
+    if (!adapter.capabilities.move || !target.capabilities.move || !target.move) throw new Error("This harness cannot transfer a session.");
+    const why = await this.blocked(adapter, { ...look, state: { ...look.state, queue: [] } });
+    if (why) throw new Error(why);
+    if (await this.background(adapter, look)) throw new Error("Background work is still running.");
+    const fromLevel = levelOf(adapter, look.state.permissionMode) ?? LEVELS.readOnly;
+    const toLevel = levelOf(target, opts.permissionMode);
+    if (toLevel === undefined || toLevel > fromLevel) throw new Error("The fallback step exceeds this session's current permissions.");
+    this.moving.add(id);
+    try {
+      const portable = await exportSession(adapter, look);
+      if (target.capabilities.move.import === "native") {
+        try { return await this.native(target, portable, opts, false, source, id, undefined, false); }
+        catch (e) { this.ctx.log(`Fallback native import into ${to} failed: ${(e as Error).message}`); }
+      }
+      const native = await this.ctx.sessions.newId(to, portable.from.projectPath, opts, source);
+      const dir = movedDir(`${to}:${native}`, this.ctx.dataDir);
+      try {
+        const { file } = writeArchive(portable, dir, this.ctx.attachmentsDir, this.earlier(portable));
+        const sessionId = await this.ctx.sessions.adopt(to, native, portable.from.projectPath, opts, source, id, { fresh: true });
+        return { sessionId, history: file };
+      } catch (e) {
+        rmSync(dir, { recursive: true, force: true });
+        await target.move.discard?.(native).catch(() => {});
+        throw e;
+      }
+    } finally {
+      this.moving.delete(id);
+    }
+  }
+
+  /** The work `id` did after message `after`, archived where `to` (the thread taking over again) may read it. */
+  async fallbackArchive(id: string, to: string, after?: string) {
+    const { look, adapter } = await this.source(id);
+    const history = await exportSession(adapter, look);
+    const index = after ? history.messages.findIndex((msg) => msg.id === after) : -1;
+    history.messages = history.messages.slice(index + 1);
+    return writeArchive(history, join(movedDir(to, this.ctx.dataDir), `fallback-${crypto.randomUUID()}`), this.ctx.attachmentsDir).file;
+  }
+
   /** The history file of the move that made this session, when one did. */
   private earlier(s: PortableSession) {
     return join(movedDir(s.from.sessionId, this.ctx.dataDir), "history.md");
   }
 
   /** The harness takes the history itself. Throws, leaving no session, when it doesn't take. */
-  private async native(t: Adapter, s: PortableSession, opts: StartOpts, background: boolean, source: BillingSource, carriedFrom?: string, extra?: AdoptExtra) {
+  private async native(t: Adapter, s: PortableSession, opts: StartOpts, background: boolean, source: BillingSource, carriedFrom?: string, extra?: AdoptExtra, sameHarnessCarry = true) {
     const { projectPath, title } = s.from;
     const nativeId = await this.ctx.sessions.newId(t.id, projectPath, opts, source);
     const dir = movedDir(`${t.id}:${nativeId}`, this.ctx.dataDir);
@@ -308,7 +350,7 @@ export class Mover {
       const request = { nativeId, projectPath, title, items: plan.items };
       await t.move!.importHistory!(request);
       if (t.move!.imported && !(await t.move!.imported(request))) throw new Error("the history didn't read back");
-      if (carriedFrom) t.move!.carried?.(nativeId, parseSessionId(carriedFrom)!.nativeId);
+      if (carriedFrom && sameHarnessCarry) t.move!.carried?.(nativeId, parseSessionId(carriedFrom)!.nativeId);
       const sessionId = await this.ctx.sessions.adopt(t.id, nativeId, projectPath, opts, source, carriedFrom, extra);
       // Where a person opening the session looks: under what came across, above what's new.
       const after = (await t.readHistory(nativeId, projectPath).catch(() => [])).at(-1)?.id;
@@ -341,7 +383,9 @@ export const moveModule: Module = {
   name: "move",
   start(ctx) {
     const mover = new Mover(ctx);
-    ctx.sessions.carrier((id, source, model) => mover.carry(id, source, model));
+    ctx.sessions.fallbackMover?.((id, harness, source, opts) => mover.fallbackHop(id, harness, source, opts));
+    ctx.sessions.fallbackArchiver?.((from, to, after) => mover.fallbackArchive(from, to, after));
+    ctx.sessions.carrier((id, source, model, settings) => mover.carry(id, source, model, settings));
     ctx.ops.register("moveOptions", (a) => mover.options(String(a.sessionId ?? "")));
     ctx.ops.register("moveSession", (a) => mover.move(String(a.sessionId ?? ""), String(a.harness ?? ""), { ...(typeof a.model === "string" && a.model ? { model: a.model } : {}), ...(typeof a.effort === "string" && a.effort ? { effort: a.effort } : {}), source: a.source }));
   },

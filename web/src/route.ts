@@ -10,17 +10,20 @@ import { HARNESS_LABELS, type HarnessId } from "../../shared/transcript";
 import { useSyncExternalStore } from "react";
 import { linkCache, type LinkCache } from "./linkCache";
 
-export type Route = { page: "home" } | { page: "runners" } | { page: "credentials"; runnerId?: string; harness?: HarnessId } | { page: "azure" } | { page: "texting" } | { page: "notifications" } | { page: "agents" } | { page: "updates" } | { page: "usage" } | { page: "session"; runnerId: string; sessionId: string; code?: string } | { page: "link"; code: string };
+export type Route = { page: "home" } | { page: "runners" } | { page: "credentials"; runnerId?: string; harness?: HarnessId } | { page: "azure" } | { page: "bedrock" } | { page: "texting" } | { page: "notifications" } | { page: "display" } | { page: "agents" } | { page: "updates" } | { page: "usage" } | { page: "session"; runnerId: string; sessionId: string; code?: string } | { page: "link"; code: string };
 
 export function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/");
   if (parts[0] === "settings" && parts[1] === "runners") return { page: "runners" };
+  if (parts[0] === "settings" && parts[1] === "bedrock") return { page: "bedrock" };
   if (parts[0] === "settings" && parts[1] === "azure") return { page: "azure" };
   if (parts[0] === "settings" && parts[1] === "texting") return { page: "texting" };
   if (parts[0] === "settings" && parts[1] === "notifications") return { page: "notifications" };
+  if (parts[0] === "settings" && (parts[1] === "display" || parts[1] === "appearance")) return { page: "display" };
   if (parts[0] === "settings" && parts[1] === "agents") return { page: "agents" };
   if (parts[0] === "settings" && parts[1] === "updates") return { page: "updates" };
   if (parts[0] === "settings" && parts[1] === "usage") return { page: "usage" };
+  if (parts[0] === "display") return { page: "display" };
   if (parts[0] === "settings" && parts[1] === "credentials" && parts[2] && parts[3] && Object.hasOwn(HARNESS_LABELS, parts[3])) {
     try { return { page: "credentials", runnerId: decodeURIComponent(parts[2]), harness: parts[3] as HarnessId }; } catch {}
   }
@@ -53,7 +56,7 @@ export function presenceFor(hash: string, visible: boolean, cache: Pick<LinkCach
 export function formatRoute(r: Route): string {
   if (r.page === "credentials" && r.runnerId && r.harness) return harnessLoginHref(r.runnerId, r.harness);
   if (r.page === "link" || (r.page === "session" && r.code)) return `#/l/${r.code}`;
-  return r.page === "session" ? `#/s/${encodeURIComponent(r.runnerId)}/${encodeURIComponent(r.sessionId)}` : r.page === "runners" ? "#/settings/runners" : r.page === "credentials" ? "#/settings/credentials" : r.page === "azure" ? "#/settings/azure" : r.page === "texting" ? "#/settings/texting" : r.page === "notifications" ? "#/settings/notifications" : r.page === "agents" ? "#/settings/agents" : r.page === "updates" ? "#/settings/updates" : r.page === "usage" ? "#/settings/usage" : "#/";
+  return r.page === "session" ? `#/s/${encodeURIComponent(r.runnerId)}/${encodeURIComponent(r.sessionId)}` : r.page === "runners" ? "#/settings/runners" : r.page === "credentials" ? "#/settings/credentials" : r.page === "azure" ? "#/settings/azure" : r.page === "bedrock" ? "#/settings/bedrock" : r.page === "texting" ? "#/settings/texting" : r.page === "notifications" ? "#/settings/notifications" : r.page === "display" ? "#/settings/display" : r.page === "agents" ? "#/settings/agents" : r.page === "updates" ? "#/settings/updates" : r.page === "usage" ? "#/settings/usage" : "#/";
 }
 
 export function navigate(r: Route) {

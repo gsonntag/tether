@@ -13,7 +13,7 @@ import { PROTOCOL_VERSION, type HarnessInfo, type RunnerBuild, type RunnerInfo }
 import { parseSessionId, sessionId } from "../../../shared/ids";
 import type { ForkedFrom } from "../../../shared/fork";
 import type { SessionPrefs } from "../config";
-import type { BillingSource } from "../../../shared/credentials";
+import { hasSourceModels, type BillingSource } from "../../../shared/credentials";
 import type { Attachment } from "../../../shared/attachments";
 import type { HarnessId, Msg, RequestAnswer } from "../../../shared/transcript";
 import type { Adapter, StartOpts } from "./adapter";
@@ -106,6 +106,7 @@ export function createRunner(o: RunnerOptions) {
     // The peers module's op (off with it).
     ...(process.env.TETHER_PEERS === "0" ? {} : { spawnedFamily: true }),
     existingWorktrees: true,
+    archiveWorktree: true,
     canText: true,
     // The relay shows the runner to these people (shared/access.ts) and only its owners see the list.
     ...(prefs.shared().length ? { shared: prefs.shared() } : {}),
@@ -159,14 +160,17 @@ export function createRunner(o: RunnerOptions) {
     live.harnessLoginChanged(harness);
     void core.refreshPlan(harness).catch(() => {});
   });
+  ops.register("fallbackSetup", (a) => live.fallbackSetup(a.sessionId));
+  ops.register("setFallbackChain", (a) => live.setFallbackChain(a.sessionId, a.enabled, a.steps, a.continueOnReset));
+  ops.register("editFallbackPreset", (a) => live.editFallbackPreset(a));
   if (o.credentials) {
     ops.register("credentials", () => o.credentials!.status());
     ops.register("setCredential", (a) => { const result = o.credentials!.set(a.source, a.key, a.endpoint, a.deployment, a.rates); live.credentialsChanged(); return result; });
     ops.register("unsetCredential", (a) => { const result = o.credentials!.unset(a.source); live.credentialsChanged(); return result; });
+    ops.register("setBedrock", (a) => { const result = o.credentials!.setBedrock(a); live.credentialsChanged(); return result; });
     ops.register("setAzure", (a) => { const result = o.credentials!.setAzure({ endpoint: a.endpoint, deployments: a.deployments }); live.credentialsChanged(); return result; });
     ops.register("testAzure", (a) => testAzure(o.credentials!.snapshot("azure", typeof a.deployment === "string" ? a.deployment : "")));
     ops.register("billingSources", (a) => live.sources(a.harness));
-    ops.register("setAutoKey", async (a) => { await live.setAutoKey(String(a.sessionId ?? ""), typeof a.on === "boolean" ? a.on : undefined, a.fallbackKeys); return null; });
     ops.register("refreshPlan", async (a) => { await core.refreshPlan(a.harness); return null; });
     ops.register("setSessionSource", async (a) => { await live.setSource(String(a.sessionId ?? ""), a.source); return null; });
   }
@@ -280,10 +284,10 @@ export function createRunner(o: RunnerOptions) {
       sessions: {
         adapters: () => o.adapters ?? [],
         open: async (id: string) => lookAt(await core.open(id)),
-        adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string, extra: { stored?: boolean; forkedFrom?: ForkedFrom; keys?: Pick<SessionPrefs, "lastKey" | "fallbackKeys">; sideOf?: string } = {}) => {
+        adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string, extra: { stored?: boolean; forkedFrom?: ForkedFrom; keys?: Pick<SessionPrefs, "lastKey">; sideOf?: string; fresh?: boolean } = {}) => {
           const id = sessionId(harness, nativeId);
-          opts = live.forSource(source, opts);
-          core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts), source, ...(source === "azure" && opts.model ? { deployment: opts.model } : {}), ...(from ? { carrying: true } : {}), ...(extra.forkedFrom ? { forkedFrom: extra.forkedFrom } : {}), ...extra.keys, ...(extra.sideOf ? { sideOf: extra.sideOf } : {}) });
+          opts = live.forSource(harness, source, opts);
+          core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts), source, ...(hasSourceModels(source) && opts.model ? { deployment: opts.model } : {}), ...(from ? { carrying: true } : {}), ...(extra.forkedFrom ? { forkedFrom: extra.forkedFrom } : {}), ...extra.keys, ...(extra.sideOf ? { sideOf: extra.sideOf } : {}) });
           for (const n of from ? core.notices.get(from) : []) core.notices.add(id, n);
           // A new session on a key (a Move, or a source change's new thread), metered from its first
           // request: what it brought across was spent elsewhere, and a carry adds that (live.ts
@@ -291,7 +295,7 @@ export function createRunner(o: RunnerOptions) {
           if (source !== "subscription") {
             try { live.beginCost(id, true); } catch { core.log("Couldn't save this session's API cost coverage. Its total is unknown."); }
           }
-          const s = await core.open(id);
+          const s = extra.fresh ? core.create(harness, nativeId, projectPath, opts) : await core.open(id);
           core.book.upsert([s.summary]);
           if (from) {
             // A source change: nothing is anyone's until the harness has confirmed it.
@@ -319,7 +323,9 @@ export function createRunner(o: RunnerOptions) {
         tell: (id: string, text: string, attachments: Attachment[] = []) => (live.attachments.markUsed(attachments), live.tell(id, defang(text), attachments)),
         answer: (id: string, requestId: string, a: RequestAnswer) =>
           live.answerRequest(id, requestId, a.allow ? { ...a, ...(a.notes ? { notes: defang(a.notes) } : {}) } : { allow: false, ...(a.reason ? { reason: defang(a.reason) } : {}) }),
-        carrier: (f: (id: string, source: BillingSource, model?: string) => Promise<string>) => { live.carrier = f; },
+        carrier: (f: NonNullable<LiveControl["carrier"]>) => { live.carrier = f; },
+        fallbackMover: (f: NonNullable<LiveControl["fallbackMover"]>) => { live.fallbackMover = f; },
+        fallbackArchiver: (f: NonNullable<LiveControl["fallbackArchive"]>) => { live.fallbackArchive = f; },
         fork: (id: string, f: ForkOptions = {}) => (forker ? forker(id, f) : Promise.reject(new Error("This runner can't fork sessions."))),
         forker: (f: (id: string, o: ForkOptions) => Promise<string>) => { forker = f; },
         moveSides: (from: string, to: string) => core.moveSides(from, to),
@@ -368,7 +374,7 @@ export function createRunner(o: RunnerOptions) {
           core.touch(s, { title });
         },
         interrupt: (id: string) => live.interrupt(id),
-        setArchived: async (id: string, archived: boolean) => core.setArchived(await core.open(id), archived),
+        setArchived: async (id: string, archived: boolean) => void (await core.setArchived(await core.open(id), archived)),
         setWorktree: async (id: string, worktree: WorktreeRecord) => core.setWorktree(await core.open(id), worktree),
         worktree: (id: string) => prefs.get(id).worktree,
         // A session that went on under another id (a source change, a renewal) isn't one: its successor has the record.
@@ -421,7 +427,7 @@ export function createRunner(o: RunnerOptions) {
       // readopted (a queue held for a terminal that is gone must not wait for it).
       // A worktree setup a restart cut off: failed, so what's sent waits for Re-run setup or Send anyway.
       for (const id of live.queue.setupsCutOff()) live.read.set(id, { failure: "The worktree's setup was cut off by a runner restart. What you send waits: re-run the setup, or send anyway." });
-      void rejoined.finally(async () => { await live.restoreRetries(); await live.queue.restore(); });
+      void rejoined.finally(async () => { await live.restoreRetries(); await live.queue.restore(); live.restoreFallbackTimers(); });
       conn.start();
     },
     /** Closes live sessions (their harnesses flush), then the connection. */

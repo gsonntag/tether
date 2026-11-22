@@ -23,6 +23,13 @@ test("private OpenAI and Azure providers require only the isolated environment k
   expect(sourceBilling("openai")).toEqual({ kind: "apiKey", label: "OpenAI API key" });
 });
 
+test("only Azure enables native stream retries", () => {
+  const azure = providerConfig("azure", "https://example.openai.azure.com/openai/v1");
+  expect(azure["model_providers.tether_azure.stream_max_retries"]).toBe(5);
+  expect(azure["model_providers.tether_azure.request_max_retries"]).toBe(0);
+  expect(providerConfig("openai")["model_providers.tether_openai.stream_max_retries"]).toBe(0);
+});
+
 test("private processes remove inherited auth and tracing; unset supplies no key", () => {
   const names = ["OPENAI_API_KEY", "CODEX_API_KEY", "AZURE_OPENAI_API_KEY", "ANTHROPIC_API_KEY", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "TETHER_CODEX_API_KEY", "TETHER_GATEWAY_KEY"];
   const old = Object.fromEntries(names.map((k) => [k, process.env[k]]));

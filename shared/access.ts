@@ -46,6 +46,7 @@ export const MANAGE_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "setCredential",
   "unsetCredential",
   "setAzure",
+  "setBedrock",
   "testAzure",
   "textingStatus",
   "setTexting",

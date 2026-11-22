@@ -1,5 +1,5 @@
 // A worktree per session (SPEC §4): New session's "New worktree" makes a git worktree beside the
-// repo, on a new branch, and the session runs there; "Existing worktree" starts one in a worktree
+// repo, on a new branch, and the session runs there; tether_start can start one in a worktree
 // that's already there. Shared by the runner (making it) and the browser (the dialog).
 
 /** New worktrees' branches start with this. */
@@ -47,7 +47,7 @@ export interface WorktreeMade {
   fetched?: boolean;
 }
 
-/** One of a repo's worktrees, as New session's "Existing worktree" lists it (`listWorktrees`). */
+/** One of a repo's worktrees, as `listWorktrees` lists it. */
 export interface WorktreeEntry {
   path: string;
   /** its branch; none: a detached HEAD */
@@ -72,12 +72,6 @@ export interface WorktreeJoined {
   branch?: string;
   /** Tether made it (it's removed once merged and no session uses it); else it's never removed by Tether */
   tether?: boolean;
-}
-
-/** How the picker shows a worktree: "path · branch · used by N sessions". */
-export function worktreeLabel(w: WorktreeEntry): string {
-  const n = w.sessions.length;
-  return [w.path, w.branch ?? "detached HEAD", n ? `used by ${n} session${n === 1 ? "" : "s"}` : "unused"].join(" · ");
 }
 
 /**
