@@ -18,5 +18,15 @@ test("types: Global and Data Zone from the table; Regional has none; gaps stay g
   expect(azureTableRates("gpt-6-luna", "regional")).toBeUndefined();
   expect(azureTableRates("gpt-5.5")?.short.cacheWrite).toBeUndefined();
   expect(azureTableRates("gpt-5.4", "dataZone")?.long).toBeUndefined();
-  expect(Object.keys(AZURE_RATES)).toEqual(["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"]);
+  expect(Object.keys(AZURE_RATES)).toEqual(["gpt-6.2-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"]);
+});
+
+test("GPT-6.2 Sol has distinct write lifetimes and explicit data zones", () => {
+  const sol = "gpt-6.2-sol";
+  expect(azureTableRates(sol)?.short).toEqual({ input: 2, cached: 0.10, cacheWrite: 2.50, cacheWrite12h: 5, output: 10 });
+  expect(azureTableRates(sol, "dataZone")?.long).toEqual({ input: 4.40, cached: 0.22, cacheWrite: 5.50, cacheWrite12h: 11, output: 16.50 });
+  const eu = azureTableRates(sol, "dataZoneEU");
+  expect(eu?.long).toEqual({ input: 4.80, cached: 0.24, cacheWrite: 6, cacheWrite12h: 12, output: 18 });
+  expect(azureTableRates(sol, "dataZoneAPAC")).toEqual(eu);
+  expect(azureTableRates("gpt-6.1-sol", "dataZoneEU")).toBeUndefined();
 });

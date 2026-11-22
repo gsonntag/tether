@@ -3,21 +3,25 @@ import { Button } from "@astryxdesign/core/Button";
 import { Heading } from "@astryxdesign/core/Heading";
 import { rpc } from "../connection";
 import { blankRow, deploymentsOf, manual, resourceOf, rowsOf, tableOf, unchanged, type Row } from "../azureForm";
-import { AZURE_RATES_DATE, AZURE_RATES_SOURCE, type AzureBand, type AzureType } from "../../../shared/azureRates";
+import { AZURE_RATES_DATE, AZURE_RATES_SOURCE, type AzureBand, type AzureType, type AzureTypeRates } from "../../../shared/azureRates";
 import { loadModels, modelListKey, useStore } from "../store";
 import { KeySlot, useCredentials } from "./Credentials";
 
 const RATES = [["input", "Input"], ["cached", "Cached"], ["cacheWrite", "Cache write"], ["output", "Output"]] as const;
-const TYPES: [AzureType, string][] = [["global", "Global"], ["dataZone", "Data Zone"], ["regional", "Regional"]];
+const TYPES: [AzureType, string][] = [["global", "Global"], ["dataZone", "Data Zone (US)"], ["dataZoneEU", "Data Zone (EU)"], ["dataZoneAPAC", "Data Zone (APAC)"], ["regional", "Regional"]];
 const TABLE_NOTE = `${AZURE_RATES_SOURCE}, ${AZURE_RATES_DATE}`;
 const cell = (n?: number) => (n === undefined ? "—" : String(n));
 
 /** The table's rates for a row, read-only: short context, and long where listed. */
-function TableRates({ short, long }: { short: AzureBand; long?: AzureBand }) {
-  const line = (label: string, b?: AzureBand) => <tr><th scope="row">{label}</th>{RATES.map(([k]) => <td key={k}>{b ? cell(b[k]) : "—"}</td>)}</tr>;
+function TableRates({ short, long, source }: AzureTypeRates) {
+  const columns: readonly (readonly [keyof AzureBand, string])[] = short.cacheWrite12h === undefined ? RATES : [
+    ["input", "Input"], ["cached", "Cached"], ["cacheWrite", "Write 30m"], ["cacheWrite12h", "Write 12h"], ["output", "Output"],
+  ];
+  const line = (label: string, band?: AzureBand) => <tr><th scope="row">{label}</th>{columns.map(([k]) => <td key={k}>{cell(band?.[k])}</td>)}</tr>;
   return (
-    <table className="t-azure-table" title={TABLE_NOTE} aria-label="Table rates, USD / 1M tokens">
-      <thead><tr><th scope="col">USD/1M</th>{RATES.map(([k, label]) => <th scope="col" key={k}>{k === "cacheWrite" ? "Write" : label}</th>)}</tr></thead>
+    <table className="t-azure-table" title={source ?? TABLE_NOTE} aria-label="Table rates, USD / 1M tokens">
+      {source && <caption>{source}</caption>}
+      <thead><tr><th scope="col">USD/1M</th>{columns.map(([k, label]) => <th scope="col" key={k}>{label}</th>)}</tr></thead>
       <tbody>{line("≤272K", short)}{line(">272K", long)}</tbody>
     </table>
   );
@@ -84,7 +88,7 @@ export function AzureSettings({ runnerId }: { runnerId: string }) {
                 <label className="t-field">Type<select className="t-select" aria-label="Type" value={row.type} disabled={disabled} onChange={(e) => edit(row.id, { type: e.target.value as AzureType })}>{TYPES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}</select></label>
               </div>
               {table && <label className="t-check t-azure-override"><input type="checkbox" checked={row.override} disabled={disabled} onChange={(e) => edit(row.id, { override: e.target.checked })} /><span>Override</span></label>}
-              {table && !own ? <TableRates short={table.short} long={table.long} /> : table ? fields : (
+              {table && !own ? <TableRates {...table} /> : table ? fields : (
                 <details className="t-credential-rates" open={rated.length > 0 && !whole ? true : undefined}>
                   <summary>{whole ? `USD / 1M · ${RATES.map(([k]) => row[k].trim() || "—").join(" · ")}` : "USD / 1M tokens"}</summary>
                   {fields}

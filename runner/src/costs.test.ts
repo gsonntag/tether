@@ -170,6 +170,18 @@ describe("pricing an Azure response", () => {
   });
   const luna = { model: "gpt-6-luna", type: "global" as const };
   const per = (n: number, rate: number) => (n * rate) / 1e6;
+  test("GPT-6.2 Sol prices both write lifetimes and gives a lower bound for a total alone", () => {
+    const pricing = { model: "gpt-6.2-sol", type: "global" as const };
+    const details = { cache_write_tokens: 30_000 };
+    const full = priceResponse("azure", usage(300_000, {
+      ...details, cache_write_tokens_details: { ttl_30m_tokens: 10_000, ttl_12h_tokens: 20_000 },
+    }), { pricing });
+    expect(full).toMatchObject({ complete: true, notes: ["azure-sol-table"] });
+    expect(full.usd).toBeCloseTo(per(230_000, 4) + per(40_000, 0.20) + per(10_000, 5) + per(20_000, 10) + per(1_000, 15), 12);
+    const partial = priceResponse("azure", usage(300_000, details), { pricing });
+    expect(partial).toMatchObject({ complete: false, reasons: ["no-cache-ttl"], notes: ["azure-sol-table"] });
+    expect(partial.usd).toBeCloseTo(full.usd! - per(20_000, 5), 12);
+  });
   test("short context from the table, with its note, whatever model the response names", () => {
     const cost = priceResponse("azure", usage(100_000, { cache_write_tokens: 0 }), { pricing: luna });
     expect(cost).toMatchObject({ estimated: true, complete: true, notes: ["azure-table"] });
