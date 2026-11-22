@@ -87,6 +87,12 @@ export function deploymentPricing(pricing: AzurePricing | undefined, deployment:
   try { return JSON.parse(request ?? "").model === deployment ? pricing : undefined; } catch { return undefined; }
 }
 
+// No idle timeout, for every source: Bun's default (10s) closes a streamed response whenever
+// the provider goes quiet that long, as Azure does while it reasons, and Codex then reports
+// "stream disconnected before completion: error decoding response body". Codex's own stream
+// idle timeout decides when a silent stream has failed.
+export const PROXY_SERVE = { hostname: "127.0.0.1", port: 0, idleTimeout: 0 } as const;
+
 export async function servePrivateHost(args = process.argv.slice(2)) {
   const [home, projectPath, sourceArg, endpoint, id, bin, file, revision, model] = args;
   if (!home || !projectPath || !endpoint || !id || !bin || !isApiSource(sourceArg)) throw new Error("Invalid private Codex launch.");
@@ -109,7 +115,7 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
   writeFileSync(join(home, BEARER_FILE), bearer, { mode: 0o600 });
   chmodSync(join(home, BEARER_FILE), 0o600);
   const server = Bun.serve({
-    hostname: "127.0.0.1", port: 0, ...(bedrock ? { idleTimeout: 0 } : {}),
+    ...PROXY_SERVE,
     async fetch(req) {
       const given = Buffer.from(req.headers.get("authorization") ?? ""), want = Buffer.from(`Bearer ${bearer}`);
       if (given.length !== want.length || !timingSafeEqual(given, want)) return new Response("Unauthorized", { status: 401 });
@@ -127,7 +133,7 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
         // Whole, for pricing: bytes, because only the upstream has to understand them.
         const sent = inference ? await req.arrayBuffer() : undefined;
         const target = upstreamUrl(endpoint, url.pathname.slice(3) + url.search);
-        const upstream = await fetch(target, { method: req.method, headers, body: sent ?? req.body, redirect: "error", signal: req.signal });
+        const upstream = await fetch(target, { method: req.method, headers, body: sent ?? req.body, redirect: "error", signal: req.signal, timeout: false });
         if (!upstream.ok) {
           // Providers sometimes repeat a partly masked key in auth errors. Do not forward any
           // provider error body or headers into native logs, even when the full key is absent.

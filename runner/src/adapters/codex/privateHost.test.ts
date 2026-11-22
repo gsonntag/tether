@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { readErrorPrefix, redactStream, retryAtFromHeaders, safeProviderErrorCode } from "./privateHost";
+import { PROXY_SERVE, readErrorPrefix, redactStream, retryAtFromHeaders, safeProviderErrorCode } from "./privateHost";
 
 test("upstream credential echoes are removed before the native transcript, including keys split across chunks", async () => {
   const key = randomUUID();
@@ -49,3 +49,21 @@ test("a stalled upstream error body is canceled after the bounded read timeout",
   expect(Date.now() - started).toBeLessThan(500);
   expect(canceled).toBe(true);
 });
+
+test("the proxy keeps a streamed response open across a provider silence longer than Bun's default idle timeout", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 0, fetch() {
+    let n = 0;
+    return new Response(new ReadableStream({ async pull(c) {
+      if (n++ === 2) return c.close();
+      c.enqueue(new TextEncoder().encode(`data: ${n}\n\n`));
+      if (n === 1) await Bun.sleep(15_000);
+    } }), { headers: { "content-type": "text/event-stream" } });
+  } });
+  const proxy = Bun.serve({ ...PROXY_SERVE, async fetch(req) {
+    const up = await fetch(`http://127.0.0.1:${upstream.port}/`, { signal: req.signal, timeout: false });
+    return new Response(up.body, { headers: { "content-type": "text/event-stream" } });
+  } });
+  try {
+    expect(await (await fetch(`http://127.0.0.1:${proxy.port}/`)).text()).toBe("data: 1\n\ndata: 2\n\n");
+  } finally { proxy.stop(true); upstream.stop(true); }
+}, 30_000);
