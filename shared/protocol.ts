@@ -79,6 +79,16 @@ export interface RunnerBuild {
   behind?: number;
 }
 
+/** What to do with a session's worktree when it's archived (setSessionArchived). */
+export type ArchiveWorktree = "remove" | "keep";
+
+/** What the cleanup decided on an archive with "remove": removed, or kept and why; `slow`: still checking past the wait. */
+export interface WorktreeCleanup {
+  removed?: boolean;
+  why?: string;
+  slow?: boolean;
+}
+
 export interface RunnerInfo {
   /** stable and unique: generated once and kept in runner.json */
   id: string;
@@ -106,8 +116,10 @@ export interface RunnerInfo {
   pinning?: boolean;
   /** it takes `spawnedFamily` (SPEC §6a: sessions an agent started show as its children). Absent: an older runner, or peers off */
   spawnedFamily?: boolean;
-  /** it takes `listWorktrees` and `existingWorktreeSession` (SPEC §4 Existing worktree). Absent: an older runner, and no such choice */
+  /** it takes `listWorktrees` and `existingWorktreeSession` (SPEC §4). The browser no longer offers them; kept for older browsers */
   existingWorktrees?: boolean;
+  /** it takes setSessionArchived's `worktree` (SPEC §4: archiving asks whether to delete the worktree). Absent: an older runner, and no question */
+  archiveWorktree?: boolean;
   /** it takes `setCanText` (SPEC §11 Texting: the "Session can text me" box). Absent: an older runner, and no box */
   canText?: boolean;
   /** the people its owner shared it with (shared/access.ts); only sent to its owners */
@@ -169,8 +181,13 @@ export interface Ops {
   /** asks the harness for its plan limits if it has a cheap read; the answer comes as session state */
   refreshPlan: { args: { harness: HarnessId }; result: null };
   renameSession: { args: { sessionId: string; title: string }; result: null };
-  /** Keeps a session out of Recent; archived sessions remain searchable. */
-  setSessionArchived: { args: { sessionId: string; archived: boolean }; result: null };
+  /**
+   * Keeps a session out of Recent; archived sessions remain searchable. `worktree` (archiving only,
+   * RunnerInfo.archiveWorktree): the person's answer to "Delete its worktree too?" (SPEC §4). "remove":
+   * the answer waits for what the cleanup decided; "keep": Tether never removes it while archived.
+   * Without it: the automatic cleanup, as an agent's archive (and an older browser) gets.
+   */
+  setSessionArchived: { args: { sessionId: string; archived: boolean; worktree?: ArchiveWorktree }; result: null | { worktree?: WorktreeCleanup } };
   /** Puts a main session in the Sidebar's Pinned group (the last of it), or takes it out. Archiving unpins. */
   pinSession: { args: { sessionId: string; pinned: boolean }; result: null };
   runnerSettings: { args: Record<string, never>; result: RunnerSettings };

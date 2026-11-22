@@ -1,7 +1,7 @@
 // The sidebar's lists, derived from every runner's summaries.
 
 import type { SummaryState } from "../../shared/summary";
-import type { RunStatus, SessionSummary } from "../../shared/transcript";
+import type { ProjectInfo, RunStatus, SessionSummary } from "../../shared/transcript";
 
 export { activeRunnerFilter, aggregateProjects, filterRowsByRunner } from "./runnerFilter";
 
@@ -66,14 +66,44 @@ export interface ProjectGroup {
   rows: Row[];
 }
 
+const trimmed = (path: string) => path.replace(/(.)\/+$/, "$1");
+
+/** The project a session is listed under: its folder, or for one in a worktree (SPEC §4) the repo's main checkout. */
+export const projectOf = (r: Pick<SessionSummary, "projectPath" | "worktreeOf">) => trimmed(r.worktreeOf ?? r.projectPath);
+
+/** Whether the session belongs in the project list of `folder`: its own, or the main checkout of its worktree. */
+export const inProject = (r: Pick<SessionSummary, "projectPath" | "worktreeOf">, folder: string) => trimmed(r.projectPath) === trimmed(folder) || projectOf(r) === trimmed(folder);
+
 /**
- * Recent, by project: one group per folder, in the order of each group's newest session (`list`
+ * The Projects list with each worktree folder a session is known to be in (its worktreeOf) folded
+ * into its main checkout's entry, so a worktree isn't a project of its own.
+ */
+export function foldWorktrees<P extends ProjectInfo & { runnerIds: string[] }>(projects: P[], rows: Pick<SessionSummary, "projectPath" | "worktreeOf">[]): P[] {
+  const mainOf = new Map(rows.filter((r) => r.worktreeOf).map((r) => [trimmed(r.projectPath), trimmed(r.worktreeOf!)]));
+  if (!mainOf.size) return projects;
+  const by = new Map<string, P>();
+  for (const p of projects) {
+    const path = mainOf.get(trimmed(p.path)) ?? trimmed(p.path);
+    const had = by.get(path);
+    const own = path === trimmed(p.path);
+    by.set(
+      path,
+      !had
+        ? own ? p : { ...p, path, name: folderName(path) }
+        : { ...had, ...(own ? { name: p.name } : {}), sessions: had.sessions + p.sessions, updatedAt: Math.max(had.updatedAt, p.updatedAt), harnesses: [...new Set([...had.harnesses, ...p.harnesses])], runnerIds: [...new Set([...had.runnerIds, ...p.runnerIds])] },
+    );
+  }
+  return [...by.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/**
+ * Recent, by project: one group per folder (a worktree session's under its main checkout), in the order of each group's newest session (`list`
  * comes newest first, so a page of it groups the same way), sessions newest first within.
  */
 export function groupByProject(list: Row[]): ProjectGroup[] {
   const by = new Map<string, Row[]>();
   for (const r of [...list].sort(newestFirst)) {
-    const key = r.projectPath.replace(/(.)\/+$/, "$1");
+    const key = projectOf(r);
     const g = by.get(key);
     if (g) g.push(r);
     else by.set(key, [r]);

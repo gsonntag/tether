@@ -46,3 +46,13 @@ test("under a project's subheader the row leaves the project out", () => {
   expect(grouped).not.toContain('<span class="t-proj">web</span>');
   expect(grouped).toContain('<span class="t-proj">box</span>');
 });
+
+test("a worktree session shows its branch: beside its main checkout's name, or alone under the group", () => {
+  const wt = row({ projectPath: "/p/web-worktrees/tether-fix", worktreeOf: "/p/web", worktreeBranch: "tether/fix" });
+  const flat = render(wt);
+  expect(flat).toContain('<span class="t-proj">web</span>');
+  expect(flat).toContain("tether/fix");
+  const grouped = renderToStaticMarkup(<SessionRow row={wt} now={2} selected={false} hideProject />);
+  expect(grouped).not.toContain('<span class="t-proj">web</span>');
+  expect(grouped).toContain("tether/fix");
+});

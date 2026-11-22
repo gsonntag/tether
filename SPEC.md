@@ -124,8 +124,8 @@ claim any id not starting with `runner-` (`CLOSE_RUNNER_ID` otherwise; server/sr
   exist yet, and only a confirmed `createFolder` on `newSession` makes it, parents too. Only a path
   starting with `/` or `~/` is made.
 - **A worktree per session** (`modules/worktrees`). For a folder in git with a commit
-  (`workspaceInfo`), New session offers **Workspace**: *This folder* (default), *New worktree*,
-  or *Existing worktree* (below), with a branch (shown, and sent, as `tether/<slug>`: a slug of the session's title or brief, a
+  (`workspaceInfo`), New session offers **Workspace**: *This folder* (default) or *New worktree*,
+  with a branch (shown, and sent, as `tether/<slug>`: a slug of the session's title or brief, a
   hash of text with no usable words, else `wt-<random>`). Creates in one repo run one at a time.
   `newWorktreeSession` resolves the base, `origin/HEAD`, else `origin/main|master`, else local
   `main|master`, else `HEAD`; for `origin/<x>` it first runs `git fetch origin <x>` (best effort: 15 s,
@@ -144,7 +144,8 @@ claim any id not starting with `runner-` (`CLOSE_RUNNER_ID` otherwise; server/sr
   content hash, there once it
   was made, plus what each setup run made or changed, taken when it ends before anything waiting goes
   to the agent, against a snapshot at its start; files made by hand before a Re-run setup aren't). The
-  summary carries `worktreeOf` (the main checkout) for grouping. **Setup:** `.tether/setup`
+  summary carries `worktreeOf` (the main checkout) for grouping, `worktreeBranch`, and
+  `worktreeHandMade` for one made by hand. **Setup:** `.tether/setup`
   (executable, run directly) or `.tether/config.json`'s `"setup"` (via `$SHELL -c`), the worktree's
   own (the base's, which the dialog reads from git and shows, marked when cut short; the dialog
 sends back its `setupId`: the script's blob id, or a hash of the whole command; a create whose
@@ -161,11 +162,11 @@ runs whatever the base has) before the main checkout's, runs in
   and what you send next stay held, even with nothing queued; Home shows the session failed, and
   the card offers **Re-run setup** (`rerunSetup`) and **Send anyway** (Resume, which ends the gate).
   Archiving the session removes it once that's safe (§10 Archiving).
-  **Existing worktree** (runners with `existingWorktrees`): `listWorktrees` lists the repo's
+  **Existing worktrees** (runners with `existingWorktrees`; New session no longer offers it, agents
+  use it through `tether_start`): `listWorktrees` lists the repo's
   worktrees from `git worktree list --porcelain` (not the main checkout, bare or prunable ones):
   path, branch, and the sessions working in each (not archived: listed ones whose folder is in it,
-  and any of any age whose runner.json `worktree` names it). The picker shows path · branch · used
-  by N. `existingWorktreeSession {…, worktree}` (a path or branch) runs `newSession` there: nothing
+  and any of any age whose runner.json `worktree` names it). `existingWorktreeSession {…, worktree}` (a path or branch) runs `newSession` there: nothing
   made, no setup rerun. It records `worktree` with `joined`, as a live (not archived) user's record
   on the worktree's current branch has it, else `handMade` (a person's `git worktree add`, or a
   record that can't be trusted: never removed by Tether). Joining and the removal on archive of one
@@ -1112,7 +1113,11 @@ event (with the message's text) and the queued message's id from `SessionActions
 - **Sidebar:** recent sessions grouped by project (title, harness glyph, how long ago, status dot,
   under the project's folder name, which opens that project's list; groups ordered by their newest
   session; same-named folders show parent folders until they differ; paging counts sessions, and older
-  sessions from "Show more" join their groups), with projects below; pinned sessions flat above it. Search results and a project's list stay flat. New session (pick a project,
+  sessions from "Show more" join their groups), with projects below; pinned sessions flat above it. A
+  session in a worktree (`worktreeOf`, §4) is grouped, listed and counted under the repo's main
+  checkout, not its worktree folder, and its row shows "⑂ <branch>" (the worktree folder's name from a
+  runner that doesn't send `worktreeBranch`); Projects folds a worktree folder a session is known to be
+  in into its main checkout. Search results and a project's list stay flat. New session (pick a project,
   harness, model). Archive and pin (Archiving, Pinning below).
 - **Session view:** the transcript (markdown, thinking folded, tool cards rendered by `kind` with
   diffs and shell output), the requests dock, the queue, the composer, and a header with model, effort,
@@ -1638,11 +1643,23 @@ leaves it archived), under its worktree's lock (§4), so never while cleanup rem
 session that went on under another id sends to that one, which is what comes back; a closed side
 chat stays closed.
 
+**Asking first.** Archiving a session in a worktree Tether made (the summary's `worktreeOf`, not
+`worktreeHandMade`), from the row or ⋯, on a runner with `archiveWorktree`, asks "Delete its worktree
+too?": **Delete worktree** archives with `worktree: "remove"`: the cleanup below, and the answer waits
+for its word (up to 30 s; past that, it says the session's notice will tell), so when the worktree
+stays the dialog says why. **Keep worktree** archives with `worktree: "keep"`: the session's
+runner.json `worktree` gets `keep`, saved with the archive, and Tether never removes that worktree
+(no cleanup, no sweep, not another user's archive) while it's set. Unarchiving drops `keep`, so the
+next archive asks again. **Cancel** archives nothing. Agents' archives (`tether_archive`, cascades),
+an older browser, and archives without the argument get the automatic cleanup. An older runner
+(no `archiveWorktree`) isn't asked: it archives as it always did.
+
 **Worktree cleanup.** Archiving a session, any way (`setSessionArchived`), removes the worktree Tether
 made for it (§4, runner.json's `worktree`) and its branch, once that's safe (`modules/worktrees`
-cleanUp, on the `archived` event). Never one made by hand (`handMade`); never while another session
+cleanUp, on the `archived` event). Never one made by hand (`handMade`) or kept (any record there with
+`keep`); never while another session
 that isn't archived works there (any stored session of any age with its folder there, or one recorded
-as using it: Existing worktree, a fork, a Move; the last one archived removes it); never while any session that uses it, archived or not
+as using it: an existing worktree through `tether_start`, a fork, a Move; the last one archived removes it); never while any session that uses it, archived or not
 (each recorded user, every session in memory whose folder is in it, and each one's side chats), has
 work going (a turn or a request, queued or held messages, a rate-limit retry waiting, a setup
 running, background work or watchers, a terminal) or an open side chat; never while a process

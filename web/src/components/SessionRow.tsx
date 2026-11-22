@@ -5,7 +5,8 @@ import { isApiBilling } from "../../../shared/labels";
 import { HARNESS_LABELS, type Billing, type HarnessId, type RunStatus } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
-import { folderName, type Row } from "../sessionList";
+import { folderName, projectOf, type Row } from "../sessionList";
+import { asksWorktree } from "../runners";
 import { watchingChip, watchingTitle } from "../watching";
 import { setArchived as saveArchived, setPinned as savePinned, useStore } from "../store";
 
@@ -58,6 +59,8 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hid
   const pinnable = !!canPin && !child && !archived;
   const titleInput = useRef<HTMLInputElement>(null);
   const editing = useRef(false);
+  // Listed under its main checkout (sessionList.ts projectOf): the worktree's branch tells it apart.
+  const wt = !child && row.worktreeOf ? row.worktreeBranch || folderName(row.projectPath) : undefined;
 
   useEffect(() => {
     if (editingTitle) {
@@ -103,6 +106,8 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hid
   };
   const toggleArchive = async () => {
     if (archiveBusy) return;
+    // In a worktree Tether made: ask what becomes of it first (ArchiveWorktreeDialog).
+    if (asksWorktree(useStore.getState().runners, row.runnerId, { ...row, archived })) return useStore.setState({ archiveAsk: { runnerId: row.runnerId, session: row } });
     setArchiveBusy(true);
     setArchiveError(undefined);
     try {
@@ -188,8 +193,9 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hid
               <span className="t-spawned">started by agent</span>
             </>
           ) : child ? <span>{row.agentType ?? "subagent"}</span> : <HarnessGlyph harness={row.harness} />}
-          {!child && !hideProject && <span className="t-proj">{folderName(row.projectPath)}</span>}
-          {runnerLabel && <span className="t-proj">{hideProject ? "" : "· "}{runnerLabel}</span>}
+          {!child && !hideProject && <span className="t-proj">{folderName(projectOf(row))}</span>}
+          {wt && <span className="t-proj t-wt" title={`In the worktree ${row.projectPath}`}>{hideProject ? "" : "· "}⑂ {wt}</span>}
+          {runnerLabel && <span className="t-proj">{hideProject && !wt ? "" : "· "}{runnerLabel}</span>}
           <span>· {shortAgo(row.updatedAt, now)}</span>
           {archived && <span className="t-archived">· Archived</span>}
           {row.missing && <span className="t-archived">· Not found on this computer</span>}

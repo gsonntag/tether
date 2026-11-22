@@ -14,7 +14,7 @@ import { dirname, resolve } from "node:path";
 import type { CostLedger } from "../costs";
 import type { SessionPrefs, WorktreeRecord } from "../config";
 import { partChunk, type PartChunk } from "../../../shared/limits";
-import type { FolderCheck, RunnerToServer } from "../../../shared/protocol";
+import type { ArchiveWorktree, FolderCheck, RunnerToServer } from "../../../shared/protocol";
 import { parseSessionId, sessionId } from "../../../shared/ids";
 import { mergePlan } from "../../../shared/labels";
 import type { HarnessId, LiveState, Msg, PlanUsage, ProjectInfo, Request, SessionEvent, SessionSnapshot, SessionSummary } from "../../../shared/transcript";
@@ -585,15 +585,23 @@ export class SessionCore {
     return partChunk(p, offset);
   }
 
-  /** Keeps a session out of Recent (or back in); archived sessions stay searchable. */
-  async setArchived(s: Session, archived: boolean) {
-    if ((this.o.prefs.get(s.id).archived === true) === archived) return;
+  /**
+   * Keeps a session out of Recent (or back in); archived sessions stay searchable. `worktree`
+   * (archiving): "keep" marks its worktree record kept, saved with the archive (SPEC §4);
+   * unarchiving drops the mark, so the next archive asks again. False: it already was.
+   */
+  async setArchived(s: Session, archived: boolean, worktree?: ArchiveWorktree): Promise<boolean> {
+    const p = this.o.prefs.get(s.id);
+    if ((p.archived === true) === archived) return false;
+    const rec = p.worktree;
+    const kept = rec && (archived ? worktree === "keep" : false);
     // Archiving unpins: an archived session is out of every list.
-    this.o.prefs.set(s.id, { projectPath: s.summary.projectPath, archived: archived || undefined, ...(archived ? { pinned: undefined, pinnedRow: undefined } : {}) });
+    this.o.prefs.set(s.id, { projectPath: s.summary.projectPath, archived: archived || undefined, ...(archived ? { pinned: undefined, pinnedRow: undefined } : {}), ...(rec && !!rec.keep !== !!kept ? { worktree: { ...rec, keep: kept || undefined } } : {}) });
     this.o.prefs.flush();
     this.touch(s);
     await this.discover();
-    this.o.bus.emit("archived", { sessionId: s.id, archived });
+    this.o.bus.emit("archived", { sessionId: s.id, archived, ...(archived && worktree ? { worktree } : {}) });
+    return true;
   }
 
   /** Records the worktree a session works in as its own (New or Existing worktree, SPEC §4): saved at once. */
@@ -670,7 +678,7 @@ export class SessionCore {
   }
 
   touch(s: Session, patch: Partial<SessionSummary> = {}) {
-    const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, watching: _watching, archived: _archived, pinned: _pinned, retry: _retry, scheduledAt: _scheduledAt, ...rest } = { ...s.summary, ...patch };
+    const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, watching: _watching, archived: _archived, pinned: _pinned, retry: _retry, scheduledAt: _scheduledAt, worktreeOf: _worktreeOf, worktreeBranch: _worktreeBranch, worktreeHandMade: _worktreeHandMade, ...rest } = { ...s.summary, ...patch };
     const beside = s.state.backgroundSubagents;
     const watching = watchingSummary(s.state.watching);
     const n = s.state.requests.length;
@@ -686,7 +694,7 @@ export class SessionCore {
 }
 
 /** A session in a worktree Tether made: the summary names that repo's main checkout. */
-const worktreeOf = (p: SessionPrefs) => (p.worktree?.repo ? { worktreeOf: p.worktree.repo } : {});
+const worktreeOf = (p: SessionPrefs) => (p.worktree?.repo ? { worktreeOf: p.worktree.repo, ...(p.worktree.branch ? { worktreeBranch: p.worktree.branch } : {}), ...(p.worktree.handMade ? { worktreeHandMade: true } : {}) } : {});
 
 /** The settings fields of prefs or defaults, without empty ones. */
 function pick(o: StartOpts): StartOpts {
