@@ -110,7 +110,9 @@ const phone = await browser.newContext({ viewport: { width: 375, height: 812 }, 
   const kl = await lines(p);
   want(kl.length === 2, "the key session still sees the plan's lines");
   want(await p.getByRole("menu").first().getByText("Claude plan", { exact: true }).count() >= 1, "under the plan's name");
-  want(await p.getByRole("menuitemcheckbox").count() === 0, "the legacy billing toggle is gone");
+  // The only checkbox left on a key session is "Keep retrying when throttled".
+  const boxes = await p.getByRole("menuitemcheckbox").allTextContents();
+  want(boxes.every((b) => /Keep retrying when throttled/.test(b)), `the legacy billing toggle is gone (${boxes.join(" | ") || "none"})`);
   await shot(p, "desktop-key-menu");
   await close(p);
   want(!/\d+%/.test(await chip(p).textContent()), "no plan % on the key's chip");

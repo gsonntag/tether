@@ -34,3 +34,18 @@ test("retry controls render an announced wait without making the ticking countdo
     Date.now = realNow;
   }
 });
+
+test("extended retry shows the local retry time and a Stop button", () => {
+  const nextAt = Date.now() + 60_000;
+  const time = new Date(nextAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const html = renderToStaticMarkup(
+    <RateLimitRetry
+      retry={{ ...retry, extended: true, nextAt }}
+      onRetryNow={() => Promise.resolve()}
+      onCancel={() => Promise.resolve()}
+      onFailed={() => {}}
+    />,
+  );
+  expect(html).toContain(`Throttled; retrying at ${time}`);
+  expect(html).toContain("Stop");
+});

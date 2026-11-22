@@ -194,12 +194,14 @@ async function sideBySide(p,phone,cfg,planId,keyId) {
   assert(rows.find((r)=>r.id===planId)?.billing===cfg.plan,`list has ${JSON.stringify(rows.find((r)=>r.id===planId))} for the plan session`);
   assert(rows.find((r)=>r.id===keyId)?.billing===cfg.label,`list has ${JSON.stringify(rows.find((r)=>r.id===keyId))} for the key session`);
   await p.evaluate(()=>{location.hash="#/";});
-  await p.locator(".t-rows .t-api-title").first().waitFor({timeout:15000});
+  await p.locator(".t-rows .t-row").first().waitFor({timeout:15000});
+  assert(await p.locator(".t-rows .t-api-title").count() === 0, "sidebar has payment-source differentiator");
   await noOverflow(p);
   await screenshot(p,`side-${cfg.source}-desktop`);
   await phone.reload();
   await phone.getByRole("button",{name:/navigation|menu/i}).first().tap();
-  await phone.locator(".t-rows .t-api-title").first().waitFor({timeout:15000});
+  await phone.locator(".t-rows .t-row").first().waitFor({timeout:15000});
+  assert(await phone.locator(".t-rows .t-api-title").count() === 0, "phone sidebar has payment-source differentiator");
   await screenshot(phone,`side-${cfg.source}-phone`);
   await phone.keyboard.press("Escape");
 }
@@ -755,9 +757,9 @@ try {
     await inject(p, { kind: "apiKey", label: "Anthropic API key" }, "dark");
     await p.evaluate(() => { location.hash = "#/"; });
     await p.locator(`.t-inbox-row[data-session="${session}"] .t-api-title`).waitFor();
-    if (name === "desktop") assert(await p.locator(".t-rows .t-api-title").count() > 0, "sidebar API title missing");
+    if (name === "desktop") assert(await p.locator(".t-rows .t-api-title").count() === 0, "sidebar has API title styling");
     await screenshot(p, `${name}-home-api`);
-    console.log(`ok ${name}: all source badges, neutral unknown, quiet subscription, phone pinning, neutral composer, tinted Home/sidebar titles, title cancel`);
+    console.log(`ok ${name}: all source badges, neutral unknown, quiet subscription, phone pinning, neutral composer, tinted Home titles, plain sidebar titles, title cancel`);
   }
   await audit();
 } catch(error) {

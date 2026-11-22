@@ -782,6 +782,10 @@ describe("Existing worktree", () => {
     const made = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/moving" });
     const old = await t.runner.core.open(made.sessionId);
     expect(t.runner.live.keptPrefs(old).worktree).toEqual(t.runner.look.sessions.worktree!(made.sessionId));
+    // A Keep was the answer on archiving the old id: the successor doesn't inherit it.
+    t.runner.core.o.prefs.set(made.sessionId, { worktree: { ...t.runner.look.sessions.worktree!(made.sessionId)!, keep: true } });
+    expect((t.runner.live.keptPrefs(old).worktree as { keep?: boolean } | undefined)?.keep).toBeUndefined();
+    t.runner.core.o.prefs.set(made.sessionId, { worktree: { ...t.runner.look.sessions.worktree!(made.sessionId)!, keep: undefined } });
     // As replaceWith and renew leave it: the old id moved on, the successor with what it kept.
     const next = await t.runner.look.sessions.create({ harness: "claude", projectPath: made.path, source: "subscription" });
     t.runner.core.o.prefs.set(next, { ...t.runner.live.keptPrefs(old) });
@@ -1245,6 +1249,65 @@ describe("Cleanup on archive", () => {
     const made = await merged(t, r.dir, "tether/evented");
     await t.runner.ops.call("setSessionArchived", { sessionId: made.sessionId, archived: true });
     await until(() => !existsSync(made.path) && sh(r.dir, "branch", "--list", "tether/evented") === "");
+  });
+
+  test("the person's answer on archive: Delete says what the cleanup decided, Keep stays (restart and sweep too) until unarchived", async () => {
+    const t = runnerFor();
+    const { worktreesModule } = await import(".");
+    const stop = await worktreesModule.start({ ...t.runner.look, bus: t.runner.bus, ops: t.runner.ops, dataDir: scratch(), log: () => {}, runnerId: "t", appUrl: "http://x" } as never);
+    if (stop) cleanups.push(stop);
+    const r = repo();
+    // Delete: the answer waits for the removal.
+    const gone = await merged(t, r.dir, "tether/delete-me");
+    expect(await t.runner.ops.call("setSessionArchived", { sessionId: gone.sessionId, archived: true, worktree: "remove" })).toEqual({ worktree: { removed: true } });
+    expect(existsSync(gone.path)).toBe(false);
+    // Delete with uncommitted work: it stays, and the answer says why.
+    const dirty = await merged(t, r.dir, "tether/delete-dirty");
+    writeFileSync(join(dirty.path, "README.md"), "changed\n");
+    const kept = (await t.runner.ops.call("setSessionArchived", { sessionId: dirty.sessionId, archived: true, worktree: "remove" })) as { worktree: { removed: boolean; why: string } };
+    expect(kept.worktree.removed).toBe(false);
+    expect(kept.worktree.why).toBeTruthy();
+    expect(existsSync(dirty.path)).toBe(true);
+    // Keep: merged and clean, still it stays; saved on the record, so the sweep (after a restart too) leaves it.
+    const keep = await merged(t, r.dir, "tether/keep-me");
+    expect(await t.runner.ops.call("setSessionArchived", { sessionId: keep.sessionId, archived: true, worktree: "keep" })).toBeNull();
+    expect(t.runner.look.sessions.worktree!(keep.sessionId)?.keep).toBe(true);
+    expect(JSON.parse(readFileSync(t.prefsFile, "utf8")).sessions[keep.sessionId].worktree.keep).toBe(true);
+    expect(await t.w.cleanUp(keep.sessionId)).toBeUndefined();
+    await t.w.sweep();
+    expect(existsSync(keep.path)).toBe(true);
+    // Unarchived, the mark goes: archived again without an answer (an agent's archive), the automatic cleanup removes it.
+    await t.runner.ops.call("setSessionArchived", { sessionId: keep.sessionId, archived: false });
+    expect(t.runner.look.sessions.worktree!(keep.sessionId)?.keep).toBeUndefined();
+    await t.runner.ops.call("setSessionArchived", { sessionId: keep.sessionId, archived: true });
+    await until(() => !existsSync(keep.path));
+  });
+
+  test("a main checkout's list has the sessions in its recorded worktrees, stored ones of any age too", async () => {
+    const t = runnerFor();
+    const r = repo();
+    const made = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/listed" });
+    t.adapter.addStored("older", [], { projectPath: made.path });
+    t.adapter.addStored("main", [], { projectPath: r.dir });
+    t.adapter.addStored("elsewhere", [], { projectPath: r.root });
+    const ids = (await t.runner.ops.call("listSessions", { projectPath: r.dir })).sessions.map((s) => s.id);
+    expect(ids).toEqual(expect.arrayContaining([made.sessionId, "claude:older", "claude:main"]));
+    expect(ids).not.toContain("claude:elsewhere");
+    // The worktree's own list is just its own.
+    expect((await t.runner.ops.call("listSessions", { projectPath: made.path })).sessions.map((s) => s.id)).not.toContain("claude:main");
+  });
+
+  test("a worktree another session's archive kept stays when its other user is archived", async () => {
+    const t = runnerFor();
+    const r = repo();
+    const made = await merged(t, r.dir, "tether/shared-keep");
+    const other = await t.w.join({ harness: "claude", projectPath: r.dir, worktree: "tether/shared-keep" });
+    await t.runner.core.setArchived(await t.runner.core.open(made.sessionId), true, "keep");
+    await archive(t, other.sessionId);
+    const r2 = await t.w.cleanUp(other.sessionId);
+    expect(r2?.removed).toBe(false);
+    expect(r2?.why).toContain("keep");
+    expect(existsSync(made.path)).toBe(true);
   });
 
   test("outsideUsers counts every process working in the folder but this one", async () => {

@@ -4,12 +4,15 @@
 import { join } from "node:path";
 import type { Module } from "..";
 import { AutoUpdater } from "./auto";
-import { UpdateChecker } from "./check";
+import { FileCompatStore, UpdateChecker } from "./check";
 
 export const updatesModule: Module = {
   name: "updates",
   start(ctx) {
-    const checker = new UpdateChecker(undefined, undefined, ctx.log);
+    const compatStore = new FileCompatStore(join(ctx.dataDir, "antigravity-compat.json"), (version, err) => {
+      ctx.bus.emit("error", { message: `Antigravity compatibility check failed after agy updated to ${version}: ${err}` });
+    });
+    const checker = new UpdateChecker(undefined, undefined, ctx.log, compatStore);
     const auto = new AutoUpdater({
       checker,
       looks: () => ctx.loaded?.() ?? [],
@@ -21,6 +24,7 @@ export const updatesModule: Module = {
     ctx.ops.register("harnessUpdate", async (a) => ({ ...(await checker.update(String(a?.id ?? ""))), auto: auto.status() }));
     ctx.ops.register("harnessAutoUpdate", (a) => (typeof a?.on === "boolean" ? auto.set(a.on) : auto.status()));
     const stopAuto = auto.start();
+    void checker.report().catch(() => {});
     return stopAuto;
   },
 };
