@@ -33,7 +33,6 @@ import { PanelHandle } from "./WidthHandle";
 import { ChangesPane } from "./ChangesPane";
 import { PrChip, usePr } from "./PrChip";
 import { reviewSent } from "../reviewStore";
-import { billingForDisplay } from "../sourceMenu";
 import { RateLimitRetry } from "./RateLimitRetry";
 
 /** A session to focus the composer of once it opens (a new session just created). */
@@ -217,7 +216,6 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     setSide(null);
     if (id) void rpc(runnerId, "closeSideChat", { sessionId: id }).catch((e) => failedSend(runnerId, sessionId, `Closing the side chat failed: ${(e as Error).message}`));
   };
-  const billing = billingForDisplay(state);
   const inTerminal = state.mode === "terminal";
   const agent = AGENT_NAMES[summary.harness];
   // "waiting" (Claude waits on a request, in the dock above the composer) is busy too: Stop, not Send.
@@ -409,7 +407,6 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           <Composer
             ref={composer}
             draftKey={k}
-            billing={billing}
             running
             steerOnly
             agent="The subagent"
@@ -431,7 +428,6 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           <Composer
             ref={composer}
             draftKey={k}
-            billing={billing}
             running={running}
             mainFree={beside > 0}
             waiting={waiting && state.status !== "running"}

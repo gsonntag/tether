@@ -9,12 +9,13 @@ import { List, ListItem } from "@astryxdesign/core/List";
 import { VStack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { CheckIcon, ComputerDesktopIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { isApiBilling } from "../../../shared/labels";
 import { HARNESS_LABELS } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { accessOf, type KnownRunner } from "../runners";
 import { openSession } from "../route";
 import { folderName, inbox, waitingOn, type InboxKind, type InboxRow } from "../sessionList";
-import { BillingMarker, HarnessGlyph, shortAgo } from "./SessionRow";
+import { HarnessGlyph, shortAgo, UnknownBillingMarker } from "./SessionRow";
 import { forgetRunner, useStore } from "../store";
 import { RunnerDot, runnerStatus } from "./RunnerStatus";
 import { useNow } from "./useNow";
@@ -86,7 +87,10 @@ function Inbox() {
             <div key={`${r.runnerId}:${r.id}`} className={`t-inbox-row ${r.inbox}`} role="listitem" data-session={r.id}>
               <button type="button" className="t-inbox-main" onClick={() => openSession(r.runnerId, r.id)}>
                 <span className="t-inbox-kind">{KIND_LABEL[r.inbox]}</span>
-                <span className="t-row-title"><BillingMarker billing={r.billing} />{r.title || "Untitled"}</span>
+                <span className={`t-row-title${isApiBilling(r.billing) ? " t-api-title" : ""}`} title={isApiBilling(r.billing) ? r.billing?.label : undefined}>
+                  <UnknownBillingMarker billing={r.billing} />
+                  {r.title || "Untitled"}
+                </span>
                 <span className="t-row-meta">
                   <HarnessGlyph harness={r.harness} />
                   <span className="t-proj">{folderName(r.projectPath)}</span>

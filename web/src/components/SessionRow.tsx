@@ -37,8 +37,7 @@ export function StatusDot({ status, requests }: { status: RunStatus; requests?: 
   return <span className={`t-dot ${s}`} role="img" aria-label={STATUS_LABEL[s]} title={STATUS_LABEL[s]} />;
 }
 
-export function BillingMarker({ billing }: { billing?: Billing }) {
-  if (isApiBilling(billing)) return <span className="t-api-marker" role="img" aria-label={billing!.label} title={billing!.label}>$</span>;
+export function UnknownBillingMarker({ billing }: { billing?: Billing }) {
   if (!billing || billing.kind === "unknown") return <span className="t-billing-unknown" title="Billing unknown" aria-label="Billing unknown">?</span>;
   return null;
 }
@@ -47,6 +46,7 @@ export function BillingMarker({ billing }: { billing?: Billing }) {
 /** `hideProject`: shown under its project's subheader (Recent), so the meta line leaves it out. */
 export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hideProject }: { row: Row; now: number; selected: boolean; child?: boolean; runnerLabel?: string; canPin?: boolean; hideProject?: boolean }) {
   const close = () => useStore.setState({ sidebarOpen: false });
+  const apiLabel = isApiBilling(row.billing) ? row.billing?.label : undefined;
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleBusy, setTitleBusy] = useState(false);
   const [renameError, setRenameError] = useState<string>();
@@ -141,7 +141,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hid
       <button
         type="button"
         className="t-row-open"
-        aria-label={`Open session: ${row.title || "Untitled"}`}
+        aria-label={`Open session: ${row.title || "Untitled"}${apiLabel ? `, ${apiLabel}` : ""}`}
         aria-current={selected ? "page" : undefined}
         disabled={row.missing}
         onKeyDown={(e) => {
@@ -157,8 +157,8 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hid
         }}
       />
       <div className="t-row-content">
-        <span className="t-row-title t-row-title-editor">
-          <BillingMarker billing={row.billing} />
+        <span className={`t-row-title t-row-title-editor${apiLabel ? " t-api-title" : ""}`}>
+          <UnknownBillingMarker billing={row.billing} />
           {editingTitle ? (
             <input
               ref={titleInput}
@@ -175,7 +175,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hid
               }}
             />
           ) : (
-            <span className="t-row-title-text" title={row.title}>
+            <span className="t-row-title-text" title={apiLabel ? `${row.title || "Untitled"} · ${apiLabel}` : row.title}>
               {row.title || "Untitled"}
             </span>
           )}
