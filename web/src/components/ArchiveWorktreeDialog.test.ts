@@ -15,3 +15,22 @@ test("after Delete: nothing to say once it's gone, else why it stays (or that it
   expect(cleanupText({ removed: false, why: "it has uncommitted changes" })).toBe("Archived, but its worktree stays: it has uncommitted changes.");
   expect(cleanupText({ slow: true })).toContain("still checking");
 });
+
+test("the question is one wrapping paragraph and the buttons can wrap (not a flex row of text runs that clips on a phone)", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { readFileSync } = await import("node:fs");
+  const { ArchiveWorktreeQuestion } = await import("./ArchiveWorktreeDialog");
+  const session = { id: "claude:s", title: "Fix it", projectPath: "/home/u/wt/feature-x", worktreeBranch: "tether/feature-x" } as any;
+  const html = renderToStaticMarkup(createElement(ArchiveWorktreeQuestion, { session }));
+  expect(html.startsWith('<p class="t-dialog-text">')).toBe(true);
+  expect(html).toContain("<code>feature-x</code> on <code>tether/feature-x</code>");
+  const src = readFileSync(new URL("./ArchiveWorktreeDialog.tsx", import.meta.url), "utf8");
+  expect(src).not.toContain("t-inline-status");
+  expect(src.match(/className="t-dialog-actions"/g)?.length).toBe(2);
+  const css = readFileSync(new URL("../app.css", import.meta.url), "utf8");
+  const rule = (sel: string) => css.match(new RegExp(`\\n${sel.replace(".", "\\.")} \\{([^}]*)\\}`))?.[1] ?? "";
+  expect(rule(".t-dialog-text")).toContain("overflow-wrap: anywhere");
+  expect(rule(".t-dialog-text")).not.toContain("display: flex");
+  expect(rule(".t-dialog-actions")).toContain("flex-wrap: wrap");
+});

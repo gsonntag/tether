@@ -853,6 +853,24 @@
 .t-form > * {
   flex-shrink: 0;
 }
+/* A dialog's prose: one wrapping block (not a flex row of text runs); long paths and branches break anywhere. */
+.t-dialog-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--t-muted);
+  overflow-wrap: anywhere;
+}
+.t-dialog-text code {
+  overflow-wrap: anywhere;
+}
+/* A dialog's buttons: right-aligned, wrapping onto a new line on a narrow screen rather than truncating. */
+.t-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
 .t-form-error {
   color: var(--color-text-red, var(--color-error));
   font-size: 13px;

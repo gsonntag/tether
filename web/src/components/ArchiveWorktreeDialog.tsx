@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import type { ArchiveWorktree, WorktreeCleanup } from "../../../shared/protocol";
+import type { SessionSummary } from "../../../shared/transcript";
 import { folderName } from "../sessionList";
 import { setArchived, useStore } from "../store";
 
@@ -11,6 +12,17 @@ export function cleanupText(r: WorktreeCleanup | undefined): string | undefined 
   // Neither removed nor kept ({}): there was nothing to remove.
   if (r?.removed !== false) return undefined;
   return `Archived, but its worktree stays: ${r.why ?? "Tether couldn't confirm it's safe to remove"}.`;
+}
+
+/** The question, as one wrapping paragraph (long paths and branches break anywhere, so nothing is clipped on a phone). */
+export function ArchiveWorktreeQuestion({ session }: { session: SessionSummary }) {
+  const branch = session.worktreeBranch;
+  return (
+    <p className="t-dialog-text">
+      "{session.title || "Untitled"}" works in a worktree Tether made: <code>{folderName(session.projectPath)}</code>
+      {branch ? <> on <code>{branch}</code></> : null}. Delete removes it and its branch, but never uncommitted or unmerged work, nor while another session uses it. Keep leaves it until you remove it yourself.
+    </p>
+  );
 }
 
 /**
@@ -43,26 +55,22 @@ export function ArchiveWorktreeDialog() {
       setBusy(undefined);
     }
   };
-  const branch = ask.session.worktreeBranch;
   return (
     <Dialog isOpen onOpenChange={(o) => !o && close()} width={440} purpose="form">
       <DialogHeader title={said ? "Archived" : "Delete its worktree too?"} onOpenChange={(o) => !o && close()} />
       <div className="t-form" style={{ padding: 16 }}>
         {said ? (
           <>
-            <span className="t-inline-status">{said}</span>
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <p className="t-dialog-text">{said}</p>
+            <div className="t-dialog-actions">
               <Button label="OK" variant="primary" onClick={close} />
             </div>
           </>
         ) : (
           <>
-            <span className="t-inline-status">
-              "{ask.session.title || "Untitled"}" works in a worktree Tether made: <code>{folderName(ask.session.projectPath)}</code>
-              {branch ? <> on <code>{branch}</code></> : null}. Delete removes it and its branch, but never uncommitted or unmerged work, nor while another session uses it. Keep leaves it until you remove it yourself.
-            </span>
+            <ArchiveWorktreeQuestion session={ask.session} />
             {error && <div className="t-form-error">{error}</div>}
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <div className="t-dialog-actions">
               <Button label="Cancel" variant="secondary" isDisabled={!!busy} onClick={close} />
               <Button label={busy === "keep" ? "Archiving…" : "Keep worktree"} variant="secondary" isDisabled={!!busy} onClick={() => void answer("keep")} />
               <Button label={busy === "remove" ? "Archiving…" : "Delete worktree"} variant="primary" isDisabled={!!busy} onClick={() => void answer("remove")} />
