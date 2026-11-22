@@ -41,15 +41,15 @@ export const TOOL_DEFS = [
   {
     name: PEER_TOOLS.start,
     description:
-      "Use the subscription by default when available. You must confirm API-key billing with the user before starting any session, including a replacement or fallback session. Confirm any automatic fallback providers and their order too. Starts a new coding session on any agent (Claude Code, Codex or Antigravity), with your prompt as its first message, and returns at once. It works on its own like one of your subagents, in this session's folder unless you pass `project` (or in a git worktree with `worktree`: a new one, or an existing one). Its permissions are never looser than yours. Each time it finishes a turn, its final reply comes to you as a message from it; if it isn't done, follow up with tether_send to its id, or start a fresh session for new context. It stays in the person's sidebar until you archive it: once you're done with it, archive it with tether_archive. The person can open, steer and stop it in Tether.",
+      "Use the subscription by default when available. You must confirm API-key billing with the user before starting any session, including a replacement or fallback session. Confirm any automatic fallback providers and their order too. Tether configures each source itself from its Settings (keys, Azure resource and deployments): never edit the agent's own config or set API-key environment variables for it. tether_models lists the sources and models you can pass. Starts a new coding session on any agent (Claude Code, Codex or Antigravity), with your prompt as its first message, and returns at once. It works on its own like one of your subagents, in this session's folder unless you pass `project` (or in a git worktree with `worktree`: a new one, or an existing one). Its permissions are never looser than yours. Each time it finishes a turn, its final reply comes to you as a message from it; if it isn't done, follow up with tether_send to its id, or start a fresh session for new context. It stays in the person's sidebar until you archive it: once you're done with it, archive it with tether_archive. The person can open, steer and stop it in Tether.",
     inputSchema: {
       type: "object",
       properties: {
         harness: { type: "string", enum: ["claude", "codex", "antigravity"], description: "Which agent runs it: claude (Claude Code), codex, or antigravity." },
         prompt: { type: "string", description: "The complete brief: it starts with no other context." },
-        source: { type: "string", enum: ["subscription", "anthropic", "openai", "azure"], description: "Defaults to subscription when available. API-key sources require user confirmation. Azure uses Tether Settings → Azure deployments." },
+        source: { type: "string", enum: ["subscription", "anthropic", "openai", "azure"], description: "Defaults to subscription when available. API-key sources require user confirmation. Azure uses Tether Settings → Azure deployments. tether_models lists what's available." },
         fallbackKeys: { type: "array", uniqueItems: true, items: { type: "string", enum: ["anthropic", "openai", "azure"] }, description: "Optional user-confirmed API keys in priority order if a subscription runs out. Omit to disable automatic fallback." },
-        model: { type: "string", description: "Its model, when one was asked for (else the agent's default)." },
+        model: { type: "string", description: "Its model, when one was asked for (else the agent's default). On azure: a deployment name, or the model one runs. tether_models lists them." },
         effort: { type: "string", description: "Its reasoning effort (low, medium, high, …), when one was asked for." },
         title: { type: "string", description: "A short title for it, as Tether's sidebar shows it." },
         project: { type: "string", description: "Another project folder to run in, instead of this session's." },
@@ -61,6 +61,12 @@ export const TOOL_DEFS = [
       },
       required: ["harness", "prompt"],
     },
+  },
+  {
+    name: PEER_TOOLS.models,
+    description:
+      "Lists, for one agent, the billing sources tether_start can use on this runner (subscription, Anthropic or OpenAI API key, Azure) and the models each offers, with their effort levels. Azure's models are the deployments set in Tether's Settings. Tether sets up each source's provider and key itself.",
+    inputSchema: { type: "object", properties: { harness: { type: "string", enum: ["claude", "codex", "antigravity"], description: "Which agent: claude (Claude Code), codex, or antigravity." } }, required: ["harness"] },
   },
   {
     name: PEER_TOOLS.archive,

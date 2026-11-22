@@ -264,6 +264,35 @@ export class Children {
   }
 
   /**
+   * tether_models: what tether_start can pass as source and model for a harness. Each source with
+   * its billing; Azure's models are its deployments (Settings, Azure), the others the harness's list.
+   */
+  async models(harnessArg: string): Promise<PeerAnswer> {
+    const s = this.ctx.sessions;
+    const harness = harnessArg.trim() as HarnessId;
+    if (!HARNESSES.includes(harness)) return { text: `harness must be one of ${HARNESSES.join(", ")}.`, isError: true };
+    const adapter = s.adapters().find((x) => x.id === harness);
+    if (!adapter) return { text: `${HARNESS_LABELS[harness]} isn't available on this runner.`, isError: true };
+    const { options } = harness === "antigravity"
+      ? { options: [{ source: "subscription" as const, deployments: undefined }] }
+      : await s.sources(harness).catch(() => ({ options: [] as { source: string; deployments?: { name: string; model?: string }[] }[] }));
+    const list = await adapter.listModels?.().catch(() => undefined);
+    const models = (list?.models ?? []).filter((m) => m.id !== "default").map((m) =>
+      `  - ${m.id}${m.label && m.label !== m.id ? ` (${m.label})` : ""}${m.efforts?.length ? `; effort: ${m.efforts.join(", ")}` : ""}`);
+    const lines = [`${HARNESS_LABELS[harness]} on this runner. Pass source and model to tether_start. Tether sets up each source's provider and key itself (Settings): no config or environment change is needed.`];
+    if (!options.length) lines.push("", "No billing source is available.");
+    for (const { source, deployments } of options) {
+      lines.push("", `${source}${source === "subscription" ? "" : " (API key: confirm with the person first)"}:`);
+      if (source === "azure") {
+        if (!deployments?.length) lines.push("  No deployments: add one in Tether's Settings, Azure.");
+        else for (const d of deployments) lines.push(`  - ${d.name}${d.model ? ` (runs ${d.model})` : ""}`);
+        lines.push("  model: a deployment name, or the model one of them runs.");
+      } else lines.push(...(models.length ? models : ["  The agent's default model (Tether couldn't read its list)."]));
+    }
+    return { text: lines.join("\n") };
+  }
+
+  /**
    * Why `from` can't start a child now, if it can't. Otherwise a slot is reserved at once (so starts
    * side by side can't all pass); start() gives it back.
    */

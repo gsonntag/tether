@@ -980,8 +980,11 @@ event (with the message's text) and the queued message's id from `SessionActions
   text}` (returns at once), `tether_ask {to, text, timeout_minutes}` (waits for the answer: 15
   minutes by default, 60 at most) and `tether_broadcast {text, project?, scope?, status?}`
   (fire-and-forget, at most 20 sessions, never the sender; the sender's own project unless it
-  passes `project`, or `scope: "all"` for every project), plus `tether_start` and `tether_archive`
-  (below). `to` is an id or a title only one session has. The tools run without a prompt: Claude allows `mcp__tether__*`; Codex gets
+  passes `project`, or `scope: "all"` for every project), plus `tether_start`, `tether_models` and `tether_archive`
+  (below). `tether_models {harness}` lists the billing sources `tether_start` can pass for that
+  agent and each one's models with their efforts (Azure's: its deployments and the model each runs);
+  it says Tether sets up each source's provider and key from its Settings, so an agent never edits
+  its own config or sets key variables. `to` is an id or a title only one session has. The tools run without a prompt: Claude allows `mcp__tether__*`; Codex gets
   `default_tools_approval_mode = "approve"`; Antigravity asks for each MCP call, and its driver
   approves those of `mcp_tether_*` itself.
 - **Transport.** The MCP server posts each call to the runner's Unix socket
