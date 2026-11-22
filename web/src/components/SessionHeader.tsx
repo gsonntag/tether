@@ -140,9 +140,6 @@ export function SessionHeader({
       )}
       <div className={`t-chips${paid ? " t-paid-chips" : ""}`}>
         <BillingChip runnerId={runnerId} session={session} state={state} capabilities={capabilities} onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))} onAutoKey={(on) => void call(rpc(runnerId, "setAutoKey", { sessionId: session.id, on }))} />
-        {!isChild && !session.sideOf && <button type="button" className="t-chip" onClick={() => setEditingFallback(true)}>
-          Fallback chain{chain?.enabled ? activeStep && chain.active !== undefined ? ` · ${chain.active + 1}/${chain.steps.length} · ${HARNESS_LABELS[activeStep.harness]}` : " · On" : " · Off"}
-        </button>}
         {editingFallback && <FallbackChainDialog runnerId={runnerId} sessionId={session.id} onClose={() => setEditingFallback(false)} />}
         {nextBilling && <span className={`t-chip t-chip-info t-next-source${isApiBilling(nextBilling) ? " t-next-api" : ""}`} title={`${nextBilling.label} from the next start`}>Next: {nextBilling.label}</span>}
         <div className="t-chip-options">
@@ -180,6 +177,10 @@ export function SessionHeader({
               onOpen={ensureModels}
               onPick={(mode) => void call(rpc(runnerId, "setPermissionMode", { sessionId: session.id, mode }))}
             />}
+            {/* With the choices, so on a phone it scrolls with them instead of narrowing them. */}
+            {!session.sideOf && <button type="button" className="t-chip t-fallback-chip" onClick={() => setEditingFallback(true)}>
+              Fallback chain{chain?.enabled ? activeStep && chain.active !== undefined ? ` · ${chain.active + 1}/${chain.steps.length} · ${HARNESS_LABELS[activeStep.harness]}` : " · On" : " · Off"}
+            </button>}
           </>
         )}
         {textMe && <TextMeChip on={!!state.canText} onChange={(canText) => void call(rpc(runnerId, "setCanText", { sessionId: session.id, canText }))} />}
