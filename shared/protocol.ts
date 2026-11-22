@@ -219,7 +219,7 @@ export interface Ops {
    * Settings → Usage: tokens and API-price estimates from the harness stores, by day in `timeZone`
    * (IANA; the browser's), by model and by project, for the last `days` (≤ 30, default 30). Answers at
    * once with what's read: a scan runs in the background when the last is over a minute old or `refresh`
-   * asks, and `scan.running` says to ask again. Reveals every project's activity: a drive op.
+   * asks, and `scan.running` says to ask again. Reveals every project's activity: owners only (shared/access.ts MANAGE_OPS).
    */
   usage: { args: { days?: number; timeZone?: string; refresh?: boolean }; result: UsageReport };
   /** a round trip through the relay to the runner */

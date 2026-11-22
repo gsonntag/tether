@@ -85,7 +85,9 @@ share only ever views. Settings → Runners shows each runner's version (short g
 ("Behind <branch> by N commits: pull and restart the runner to update"); in production the server has no `.git/`,
 so the runner's own `behind` count drives the note, with a server build comparison as fallback in dev mode. The list lives on the runner (runner.json `sharedWith`, op
 `setRunnerAccess`) and the relay enforces it on every frame (shared/access.ts: `VIEW_OPS`, and
-`MANAGE_OPS` that stay the owner's: sharing, name, keys, texting, updates, runner settings). View never includes the git or files modules' ops (they read the folder,
+`MANAGE_OPS` that stay the owner's: sharing, name, keys, texting, updates, runner settings, usage). Settings
+pages and runner pickers show only what the person's access allows (`shared/access.ts`); pages with no usable
+runners are hidden from the menu, and shared people see only their own device notifications. View never includes the git or files modules' ops (they read the folder,
 secrets too) or making short links. A runner not shared with you leaves no trace: the server never
 lists it, and the browser remembers only runners you own (to show one that went offline), keyed by
 who is signed in, so a runner shared with you that leaves the list (unshared, or offline) is just

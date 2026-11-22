@@ -1,14 +1,20 @@
 import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { disablePush, enablePush, pushState, testPush, type PushState } from "../push";
+import type { KnownRunner } from "../runners";
+import { isPageVisible } from "../settings";
 import { useStore } from "../store";
 
 /** This device's notifications: on or off, and a test. */
-export function DeviceNotifications() {
-  const pushKey = useStore((s) => s.pushKey);
-  const runners = useStore((s) => s.runners);
+export function DeviceNotifications({ runners: propRunners, pushKey: propPushKey, state: propState }: { runners?: KnownRunner[]; pushKey?: string; state?: PushState } = {}) {
+  const storePushKey = useStore((s) => s.pushKey);
+  const storeRunners = useStore((s) => s.runners);
+  const pushKey = propPushKey ?? storePushKey;
+  const runners = propRunners ?? storeRunners;
+  const canText = isPageVisible(runners, "texting");
   const online = runners.filter((r) => r.online).map((r) => r.id);
-  const [state, setState] = useState<PushState>();
+  const [internalState, setState] = useState<PushState>();
+  const state = propState ?? internalState;
   const [note, setNote] = useState<string>();
   useEffect(() => {
     let gone = false;
@@ -38,7 +44,7 @@ export function DeviceNotifications() {
     <div className="t-notify" aria-label="Notifications">
       <div className="t-notify-text">
         <span className="t-notify-title">Notifications on this device</span>
-        <span className="t-inline-status">{note ?? text[state]} <a href="#/settings/texting">Get texts too</a></span>
+        <span className="t-inline-status">{note ?? text[state]}{canText ? <> <a href="#/settings/texting">Get texts too</a></> : ""}</span>
         <span className="t-inline-status">May not work on macOS yet.</span>
       </div>
       {state === "off" && <Button label="Turn on" size="sm" variant="primary" clickAction={() => run(() => enablePush(pushKey!, online))} />}

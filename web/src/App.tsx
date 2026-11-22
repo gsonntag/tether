@@ -12,6 +12,7 @@ import { SessionView } from "./components/SessionView";
 import { ShortLink } from "./components/ShortLink";
 import { Sidebar } from "./components/Sidebar";
 import { useRoute } from "./route";
+import { isSettingsPage } from "./settings";
 import { useStore } from "./store";
 import { textingDown } from "./runners";
 
@@ -42,7 +43,7 @@ export function App() {
     >
       {auth !== "ok" ? (
         <Blocked auth={auth} />
-      ) : route.page === "accounts" || route.page === "runners" || route.page === "credentials" || route.page === "azure" || route.page === "bedrock" || route.page === "texting" || route.page === "notifications" || route.page === "display" || route.page === "agents" || route.page === "updates" || route.page === "usage" ? (
+      ) : isSettingsPage(route.page) ? (
         <Settings key={route.page === "credentials" ? route.runnerId : undefined} page={route.page} loginTarget={route.page === "credentials" ? route : undefined} />
       ) : route.page === "link" ? (
         <ShortLink key={route.code} code={route.code} />
