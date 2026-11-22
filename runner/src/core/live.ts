@@ -140,7 +140,11 @@ export class LiveControl {
       blocked: (s) => s.state.mode === "terminal" || !!s.state.terminal || !!s.state.requests.length || !!this.terminal?.blocked(s) || !!core.o.prefs.get(s.id).nextSource || this.restartWaits.has(s.id),
       held: (s) => !!this.heldWhy(s.id),
       send: (s, r) => this.send(s.id, r.text, r.attachments, { tether: r.tether, retryId: r.id }),
-      exhausted: (s, r) => void this.advanceFallback(s, undefined, r, false),
+      exhausted: (s, r, error) => {
+        if (!this.canAdvanceFallback(s)) return false;
+        void this.advanceFallback(s, undefined, r, false, false, false, error);
+        return true;
+      },
     });
     this.desk = new RequestDesk(core, broker, {
       send: (id, text) => this.send(id, text, [], { tether: true }),
@@ -300,6 +304,7 @@ export class LiveControl {
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     this.sideCommand(id, text);
     const s = await this.core.open(id);
+    if (!o.fallback && !o.continuedFallback && !o.retryId) this.cancelFallbackTimer(id);
     const fallback = this.fallingBack.get(s);
     if (fallback && fallback !== o.fallback) throw new Error("The fallback chain is switching this session. Try again shortly.");
     if (o.retryId && (s.retry?.id !== o.retryId || s.retry.phase !== "sending")) throw new SendCancelled();
@@ -816,6 +821,7 @@ export class LiveControl {
   async interrupt(id: string) {
     const s = await this.core.open(id);
     if (s.retry) this.cancelRetrySession(s, { due: "stopped" });
+    this.cancelFallbackTimer(id);
     if (this.fallingBack.has(s)) s.retrySuppressed = true;
     const parentId = s.summary.parentSessionId;
     if (parentId) {
@@ -1135,6 +1141,8 @@ export class LiveControl {
     // What's open now is asked again after the restart: it stays saved.
     this.stopping = true;
     this.retries.stop();
+    for (const timer of this.fallbackTimers.values()) clearTimeout(timer);
+    this.fallbackTimers.clear();
     this.queue.stop();
     this.desk.broker.freeze();
     await Promise.all([...this.core.sessions.values()].filter((s) => s.driver).map((s) => this.close(s)));
@@ -1701,18 +1709,19 @@ export class LiveControl {
     };
   }
 
-  async setFallbackChain(id: string, enabled: boolean, steps: FallbackStep[]): Promise<FallbackChain> {
+  async setFallbackChain(id: string, enabled: boolean, steps: FallbackStep[], continueOnReset = false): Promise<FallbackChain> {
     const s = await this.fallbackSession(id);
     const order = this.cleanFallbackSteps(steps);
     if (typeof enabled !== "boolean" || (enabled && !order.length)) throw new Error("Add a step before enabling the fallback chain.");
     const old = s.state.fallbackChain;
     const active = enabled && old?.enabled && JSON.stringify(old.steps) === JSON.stringify(order) ? old.active : undefined;
-    const chain = redactValue({ enabled, steps: order, ...(active === undefined ? {} : { active }) });
+    const chain = redactValue({ enabled, steps: order, ...(continueOnReset === true ? { continueOnReset: true } : {}), ...(active === undefined ? {} : { active }) });
     if (this.core.o.prefs.get(id).nextFallbackSettings && (!enabled || active === undefined)) {
       const cleared = { nextBilling: undefined, nextModel: undefined, nextDeployment: undefined, sourceSwitchFailed: undefined };
       this.core.o.prefs.set(id, { ...cleared, nextSource: undefined, nextFallbackSettings: undefined });
       s.setState(cleared);
     }
+    if (!enabled || !continueOnReset || active === undefined) this.cancelFallbackTimer(id);
     if (!enabled || JSON.stringify(old?.steps) !== JSON.stringify(order)) this.core.o.prefs.set(id, { fallbackProgress: undefined });
     this.core.o.prefs.setFallbackOrder(id, chain);
     s.setState({ fallbackChain: chain });
@@ -1827,24 +1836,102 @@ export class LiveControl {
     return { session: old, note: `Another agent worked on this; read ${file} and continue.` };
   }
 
+  private fallbackTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  fallbackResetDelay = 60_000;
+
+  restoreFallbackTimers() {
+    for (const id of this.core.o.prefs.ids((p) => p.fallbackResumeAt !== undefined && !!p.fallbackChain?.enabled &&
+      !!p.fallbackChain.continueOnReset && !p.movedTo && !p.archived)) this.armFallbackTimer(id);
+  }
+
+  private cancelFallbackTimer(id: string) {
+    clearTimeout(this.fallbackTimers.get(id));
+    this.fallbackTimers.delete(id);
+    const prefs = this.core.o.prefs;
+    if (prefs.get(id).fallbackResumeAt === undefined) return;
+    prefs.set(id, { fallbackResumeAt: undefined });
+    prefs.flush();
+  }
+
+  private scheduleFallbackTimer(id: string, at: number) {
+    this.core.o.prefs.set(id, { fallbackResumeAt: at });
+    this.core.o.prefs.flush();
+    this.armFallbackTimer(id);
+  }
+
+  private armFallbackTimer(id: string) {
+    clearTimeout(this.fallbackTimers.get(id));
+    const at = this.core.o.prefs.get(id).fallbackResumeAt;
+    if (this.stopping || at === undefined) return;
+    const timer = setTimeout(() => void this.wakeFallback(id, at).catch((e) => this.core.log(
+      `${id}: couldn't continue the fallback chain: ${redact((e as Error).message)}`)), Math.min(2 ** 31 - 1, Math.max(0, at - this.core.now())));
+    timer.unref?.();
+    this.fallbackTimers.set(id, timer);
+  }
+
+  private async wakeFallback(id: string, at: number) {
+    const prefs = this.core.o.prefs;
+    if (this.stopping || prefs.get(id).fallbackResumeAt !== at) return;
+    if (this.core.now() < at) return this.armFallbackTimer(id);
+    const s = await this.core.open(id).catch(() => undefined);
+    if (this.stopping || prefs.get(id).fallbackResumeAt !== at) return;
+    if (!s || s.movedTo || prefs.get(id).archived || !s.state.fallbackChain?.continueOnReset) return this.cancelFallbackTimer(id);
+    if (sourceSwitchBlocker(s.state) || s.sending || s.starting || s.driver?.busy() || s.retry || this.heldWhy(id)) {
+      this.scheduleFallbackTimer(id, this.core.now() + this.fallbackResetDelay);
+      return;
+    }
+    this.cancelFallbackTimer(id);
+    s.retrySuppressed = false;
+    const continued = await this.advanceFallback(s, undefined, { text: "continue", attachments: [], tether: true }, false, true, true);
+    if (!continued && !s.retrySuppressed && !s.movedTo && s.state.fallbackChain?.continueOnReset) {
+      this.scheduleFallbackTimer(id, this.core.now() + FALLBACK_BACKOFF_MS + this.fallbackResetDelay);
+    }
+  }
+
+  private fallbackExhausted(s: Session, chain: FallbackChain, progress: FallbackProgress) {
+    const times: number[] = [];
+    const entries = chain.steps.map((step, index) => {
+      const retryAt = progress.steps[index]?.retryAt;
+      if (retryAt && retryAt > this.core.now()) times.push(retryAt);
+      return `${index + 1}. ${HARNESS_LABELS[step.harness]} · ${step.source} · ${step.model} — ${retryAt ? `retry after ${new Date(retryAt).toISOString()}` : "no reset known"}`;
+    });
+    this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+    this.core.o.prefs.flush();
+    const text = "Used every available source.";
+    s.apply({ type: "msg", msg: notice([text, ...entries].join("\n"), "warning") });
+    s.setState({ error: text });
+    // The turn's own end (with fallbackPending) was already reported: no second turnEnded.
+    this.core.o.bus.emit("fallbackStatus", { sessionId: s.id, status: "exhausted" });
+    if (chain.continueOnReset && times.length) this.scheduleFallbackTimer(s.id, Math.min(...times) + this.fallbackResetDelay);
+  }
+
+  private canAdvanceFallback(s: Session, hit?: { resetsAt?: number }) {
+    const prefs = this.core.o.prefs.get(s.id);
+    return !!s.state.fallbackChain?.enabled && !!s.capabilities.sourceSwitch && !prefs.nextSource && !s.summary.parentSessionId &&
+      !prefs.sideOf && !this.fallingBack.has(s) && (!hit || this.sourceOf(s) === "subscription");
+  }
+
   /** Advance in order after an exhausted plan or the end of rate-limit recovery. */
-  private async advanceFallback(s: Session, hit: { resetsAt?: number } | undefined, sent: Session["lastSend"], acted: boolean, returning = false): Promise<boolean> {
+  /** `ended`: why the turn ended, told to the person when the chain stops and waits on them. */
+  private async advanceFallback(s: Session, hit: { resetsAt?: number } | undefined, sent: Session["lastSend"], acted: boolean, returning = false, waking = false, ended?: string): Promise<boolean> {
     const prefs = this.core.o.prefs.get(s.id);
     const chain = s.state.fallbackChain;
     const harness = s.summary.harness;
-    if (!chain?.enabled || !s.capabilities.sourceSwitch || prefs.nextSource || s.summary.parentSessionId ||
-      prefs.sideOf || this.fallingBack.has(s)) return false;
+    if (!chain || !this.canAdvanceFallback(s, hit)) return false;
     const source = this.sourceOf(s);
-    if (hit && source !== "subscription") return false;
     const matchesCurrent = (step: FallbackStep) => step.harness === harness && step.source === source &&
       step.model === s.state.model && (!step.effort || step.effort === s.state.effort) &&
       (!step.permissionMode || step.permissionMode === s.state.permissionMode);
     const start = chain.active ?? chain.steps.findIndex(matchesCurrent);
-    const cause = returning ? "Higher-priority source available." : hit ? "Plan limit reached." : "Rate limit retries exhausted.";
+    const cause = waking ? "Fallback chain resumed." : returning ? "Higher-priority source available." : hit ? "Plan limit reached." : "Rate limit retries exhausted.";
     let resetsAt: number | undefined;
     const say = (text: string, level: Msg["level"] = "info") => s.apply({
       type: "msg", msg: { ...notice(`${cause} ${text}`, level), ...(resetsAt ? { resetsAt } : {}) },
     });
+    // The turn end before this carried fallbackPending, so push waits for this instead.
+    const waiting = (error = ended) => {
+      if (!returning) this.core.o.bus.emit("fallbackStatus", { sessionId: s.id, status: "waiting", ...(error ? { error } : {}) });
+    };
     const reservation = Symbol();
     this.fallingBack.set(s, reservation);
     this.core.pin(s);
@@ -1854,9 +1941,12 @@ export class LiveControl {
       const until = this.core.now() + 5000;
       while ((s.sending || s.starting) && this.core.now() < until) await Bun.sleep(20);
       if (hit) resetsAt = await this.planReset(harness, s, hit);
-      if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) return false;
+      if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) {
+        if (!waking && !s.retrySuppressed && !this.stopping) waiting();
+        return false;
+      }
       const progress: FallbackProgress = { steps: { ...prefs.fallbackProgress?.steps } };
-      if (returning && start >= 0) {
+      if (returning && !waking && start >= 0) {
         progress.steps[start] = { sessionId: s.id, after: s.transcript?.messages.at(-1)?.id };
       }
       if (!returning && start >= 0) {
@@ -1864,20 +1954,27 @@ export class LiveControl {
         this.core.o.prefs.set(s.id, { fallbackProgress: progress });
         this.core.o.prefs.flush();
       }
-      const indexes = fallbackOrder(chain.steps.length, start, progress, this.core.now(), returning)
-        .filter((index) => index > start || progress.steps[index]?.retryAt !== undefined);
+      const indexes = fallbackOrder(chain.steps.length, waking ? -1 : start, progress, this.core.now(), returning && !waking)
+        .filter((index) => waking ? progress.steps[index]?.retryAt !== undefined : index > start || progress.steps[index]?.retryAt !== undefined);
       const catalog = await this.fallbackCatalog(s, harness);
-      if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) return false;
+      if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) {
+        if (!waking && !s.retrySuppressed && !this.stopping) waiting();
+        return false;
+      }
       for (const index of indexes) {
         const step = chain.steps[index]!;
         // A different harness takes the next hop once cross-harness switching is supported.
         if (step.harness !== harness) {
           if (returning) continue;
           say("The next step needs another harness.", "warning");
+          waiting();
           return true;
         }
-        if (fallbackStepProblem(step, catalog)) continue;
-        if (step.source === source && step.model === s.state.model && (!step.effort || step.effort === s.state.effort) &&
+        if (fallbackStepProblem(step, catalog)) {
+          if (!returning) progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS };
+          continue;
+        }
+        if (!waking && step.source === source && step.model === s.state.model && (!step.effort || step.effort === s.state.effort) &&
           (!step.permissionMode || step.permissionMode === s.state.permissionMode)) continue;
         // Azure steps name a deployment; a Bedrock step's model resolves to one of its configured models.
         const sourceModel = step.source === "azure" ? step.model
@@ -1888,6 +1985,7 @@ export class LiveControl {
         const returned = index < start ? await this.returnToFallback(s, chain, index, step, settings, progress, sourceModel) : undefined;
         if (returned) {
           switchedSource = true;
+          if (waking) this.core.o.bus.emit("fallbackStatus", { sessionId: returned.session.id, status: "resumed" });
           say(`Returned to ${this.labelOf(harness, step.source)}.`);
           returned.session.apply({ type: "msg", msg: notice(returned.note) });
           if (sent && !acted) await this.send(returned.session.id, `${returned.note}
@@ -1897,6 +1995,7 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
         }
         await this.setSource(s.id, step.source, sourceModel, { chain, index, settings });
         switchedSource = true;
+        if (waking) this.core.o.bus.emit("fallbackStatus", { sessionId: s.id, status: "resumed" });
         const label = this.labelOf(harness, step.source);
         const switched = s.capabilities.sourceCarry && step.source !== source ? `Next source: ${label}.` : `Switched to ${label}.`;
         delete progress.steps[index]?.retryAt;
@@ -1904,6 +2003,7 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
         this.core.o.prefs.flush();
         if (!sent || acted) {
           say(`${switched} ${acted ? "The turn already acted. " : ""}Send a message to continue.`);
+          waiting();
           return true;
         }
         say(`${switched} Resending your message.`);
@@ -1912,10 +2012,14 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
         return true;
       }
       if (returning) return false;
-      say("No available fallback step on this harness.", "warning");
+      this.fallbackExhausted(s, chain, progress);
       return true;
     } catch (e) {
-      if (!(e instanceof SendCancelled)) say(redact((e as Error)?.message ?? String(e)), "warning");
+      if (!(e instanceof SendCancelled)) {
+        const error = redact((e as Error)?.message ?? String(e));
+        say(error, "warning");
+        if (!switchedSource) waiting(error);
+      }
       return !returning || switchedSource;
     } finally {
       if (this.fallingBack.get(s) === reservation) this.fallingBack.delete(s);
@@ -2210,9 +2314,10 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
       s.limitHit = undefined;
       // A process start can report idle before the turn: the send isn't over.
       if (limitHit || !s.sending) s.lastSend = undefined;
-      bus.emit("turnEnded", { sessionId: s.id, error, ...(stopped ? { stopped } : {}), ...(recovering ? { recovering } : {}) });
+      const fallbackPending = !stopped && (limitHit || retry === "exhausted") && this.canAdvanceFallback(s, limitHit);
+      bus.emit("turnEnded", { sessionId: s.id, error, ...(stopped ? { stopped } : {}), ...(recovering ? { recovering } : {}), ...(fallbackPending ? { fallbackPending: true } : {}) });
       s.turnError = undefined;
-      if (!stopped && (limitHit || retry === "exhausted")) void this.advanceFallback(s, limitHit, lastSend, turnActed);
+      if (fallbackPending) void this.advanceFallback(s, limitHit, lastSend, turnActed, false, false, error);
       this.scheduleIdle(s);
       void this.refreshTitle(s);
     }

@@ -31,6 +31,7 @@ function newStep(catalog: FallbackHarness, source = catalog.sources[0]?.source ?
 export function FallbackChainDialog({ runnerId, sessionId, onClose }: { runnerId: string; sessionId: string; onClose: () => void }) {
   const [setup, setSetup] = useState<FallbackSetup>();
   const [steps, setSteps] = useState<FallbackStep[]>([]);
+  const [continueOnReset, setContinueOnReset] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -44,6 +45,7 @@ export function FallbackChainDialog({ runnerId, sessionId, onClose }: { runnerId
       setSetup(result);
       setSteps(result.chain.steps);
       setEnabled(result.chain.enabled || !result.saved);
+      setContinueOnReset(!!result.chain.continueOnReset);
     }, (e: Error) => { if (open) setError(e.message); });
     return () => { open = false; };
   }, [runnerId, sessionId]);
@@ -74,6 +76,7 @@ export function FallbackChainDialog({ runnerId, sessionId, onClose }: { runnerId
       {!setup && !error && <p role="status">Loading fallback chain…</p>}
       {setup && <fieldset disabled={busy}>
         <label className="t-check"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /> Enable for this session</label>
+        <label className="t-check"><input type="checkbox" checked={continueOnReset} disabled={!enabled} onChange={(e) => setContinueOnReset(e.target.checked)} /> Continue when a limit resets</label>
         <Field label="Runner presets" value={presetId} empty="Choose a preset" options={setup.presets.map(({ id, name: label }) => ({ id, label }))} onChange={(id) => {
           setPresetId(id);
           setName(setup.presets.find((preset) => preset.id === id)?.name ?? "");
@@ -123,7 +126,7 @@ export function FallbackChainDialog({ runnerId, sessionId, onClose }: { runnerId
       <div className="t-fallback-actions">
         <Button label="Cancel" variant="secondary" isDisabled={busy} onClick={onClose} />
         <Button label="Save" variant="primary" isDisabled={!setup || busy || incomplete || (enabled && !steps.length)} onClick={() => void run(async () => {
-          await rpc(runnerId, "setFallbackChain", { sessionId, enabled, steps });
+          await rpc(runnerId, "setFallbackChain", { sessionId, enabled, steps, continueOnReset });
           onClose();
         })} />
       </div>
