@@ -365,9 +365,13 @@ export async function setArchived(runnerId: string, sessionId: string, archived:
   return r?.worktree;
 }
 
-/** Pins or unpins a session (SPEC §10 Pinning); throws the runner's error. The row's change comes as a summary. */
-export async function setPinned(runnerId: string, sessionId: string, pinned: boolean) {
+/**
+ * Pins or unpins a session (SPEC §10 Pinning); throws the runner's error. The row's change comes as a
+ * summary. Pinning unarchives an archived session, so a cached row (a search's) takes that at once.
+ */
+export async function setPinned(runnerId: string, sessionId: string, pinned: boolean, archived?: boolean) {
   await rpc(runnerId, "pinSession", { sessionId, pinned });
+  if (pinned && archived) set({ archiveEdit: { runnerId, sessionId, archived: false } });
 }
 
 /** Drops a disconnected runner from this browser's list. */

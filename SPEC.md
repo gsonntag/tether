@@ -1730,7 +1730,7 @@ the store changes or after a minute); a failed lookup keeps the row. The pin kee
 seen (`pinnedRow`): a session the harness can't find is listed from it, dimmed, "Not found on this
 computer" (`missing`), and stays pinned until the person unpins it. The pin follows a conversation to
 its new thread (a source change, a renewed id). Modules see the lists without old sessions listed only
-because they're pinned, or missing ones. Archiving unpins; an archived session, a subagent, a side chat (§16a) or
+because they're pinned, or missing ones. Archiving unpins; pinning an archived session unarchives it. A subagent, a side chat (§16a) or
 a session in a hidden folder can't be pinned. No reordering.
 
 ### API session dollars and retry times

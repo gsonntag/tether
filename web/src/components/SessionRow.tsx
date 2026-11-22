@@ -54,7 +54,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hid
   const [archiveError, setArchiveError] = useState<string>();
   const [pinned, setPinned] = useState(!!row.pinned);
   const [pinBusy, setPinBusy] = useState(false);
-  const pinnable = !!canPin && !child && !archived;
+  const pinnable = !!canPin && !child;
   const titleInput = useRef<HTMLInputElement>(null);
   const editing = useRef(false);
   // Listed under its main checkout (sessionList.ts projectOf): the worktree's branch tells it apart.
@@ -124,8 +124,9 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hid
     setPinBusy(true);
     setArchiveError(undefined);
     try {
-      await savePinned(row.runnerId, row.id, !pinned);
+      await savePinned(row.runnerId, row.id, !pinned, !!archived);
       setPinned(!pinned);
+      if (!pinned) setArchived(false);
     } catch (e) {
       setArchiveError(`${pinned ? "Unpin" : "Pin"} failed: ${(e as Error).message}`);
     } finally {

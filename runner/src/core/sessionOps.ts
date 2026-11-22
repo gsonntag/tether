@@ -71,7 +71,7 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
     const s = await core.open(id).catch((e) => {
       if (a.pinned || !core.o.prefs.get(id).pinned) throw e;
     });
-    if (s) core.setPinned(s, a.pinned);
+    if (s) await core.setPinned(s, a.pinned);
     else core.dropPin(id);
     return null;
   });

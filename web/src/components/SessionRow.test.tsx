@@ -24,9 +24,9 @@ test("the pin button: one stable label, pressed when pinned, room kept only on a
   expect(on).toContain("t-pinned");
 });
 
-test("no pin button on a runner from before pinSession, an archived row or a subagent", () => {
+test("no pin button on a runner from before pinSession or a subagent; an archived row has one (pinning unarchives)", () => {
   expect(render(row(), false)).not.toContain("t-row-pin");
-  expect(render(row({ archived: true }))).not.toContain("t-row-pin");
+  expect(render(row({ archived: true }))).toContain("t-row-pin");
   expect(renderToStaticMarkup(<SessionRow row={row({ parentSessionId: "claude:b" })} now={2} selected={false} child canPin />)).not.toContain("t-row-pin");
 });
 

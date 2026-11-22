@@ -26,7 +26,7 @@ export function SessionMenu({ runnerId, session, state, canMove, canFork, onSide
     if (pinBusy) return;
     setPinBusy(true);
     try {
-      await setPinned(runnerId, session.id, !session.pinned);
+      await setPinned(runnerId, session.id, !session.pinned, !!session.archived);
     } catch (e) {
       failedSend(runnerId, session.id, `${session.pinned ? "Unpin" : "Pin"} failed: ${(e as Error).message}`);
     } finally {

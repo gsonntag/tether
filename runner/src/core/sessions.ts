@@ -641,15 +641,20 @@ export class SessionCore {
     this.touch(s);
   }
 
-  /** Puts a main session in the Sidebar's Pinned group, last (or takes it out); it is listed however old. */
-  setPinned(s: Session, pinned: boolean) {
+  /**
+   * Puts a main session in the Sidebar's Pinned group, last (or takes it out); it is listed however old.
+   * Pinning an archived session unarchives it: the person wants it in the list.
+   */
+  async setPinned(s: Session, pinned: boolean) {
     if (!!this.o.prefs.get(s.id).pinned === pinned) return;
     if (pinned && s.summary.parentSessionId) throw new Error("Only a main session can be pinned.");
     // A side chat (SPEC §16a) isn't in the lists: it shows under its session.
     if (pinned && (s.summary.sideOf || this.o.prefs.get(s.id).sideOf)) throw new Error("A side chat can't be pinned: it shows under its session.");
-    if (pinned && this.o.prefs.get(s.id).archived) throw new Error("Unarchive the session to pin it.");
     // TETHER_HIDE_PROJECTS folders are never in the lists.
     if (pinned && this.hide?.test(s.summary.projectPath)) throw new Error("Sessions in this folder aren't listed, so they can't be pinned.");
+    if (pinned && this.o.prefs.get(s.id).archived) await this.setArchived(s, false);
+    // Unarchiving awaited a discovery: another pin call may have landed meanwhile.
+    if (!!this.o.prefs.get(s.id).pinned === pinned) return;
     const { title, projectPath, updatedAt } = s.summary;
     this.o.prefs.set(s.id, { projectPath, pinned: pinned ? this.now() : undefined, pinnedRow: pinned ? { title, projectPath, updatedAt } : undefined });
     this.o.prefs.flush();
