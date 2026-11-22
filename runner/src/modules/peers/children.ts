@@ -14,7 +14,7 @@ import { markTitle, parseSessionMessage, sessionMessage, TEXTED_VIA } from "../.
 import { LEVELS, mapMode, type Level } from "../../../../shared/move";
 import { waitingNow } from "../../../../shared/schedule";
 import { HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
-import type { CredentialSource } from "../../../../shared/credentials";
+import { resolveAzureDeployment, type CredentialSource } from "../../../../shared/credentials";
 import type { SpawnedFamily } from "../../../../shared/protocol";
 import { pickWorktree, type WorktreeJoined, type WorktreeMade } from "../../../../shared/worktree";
 import { LEVEL_WORDS, levelOf } from "../../core/permissionLevel";
@@ -333,12 +333,11 @@ export class Children {
     }
     if (fallbackKeys?.length && !this.ctx.ops) throw new Error("Automatic fallback isn't available on this runner.");
     let model = a.model?.trim() || undefined;
-    if (source === "azure" && model) {
+    if (source === "azure") {
       const deployments = choice.deployments ?? [];
-      const matches = deployments.filter((deployment) => deployment.model === model);
-      const deployment = deployments.find(({ name }) => name === model) ?? (matches.length === 1 ? matches[0] : undefined);
+      const deployment = resolveAzureDeployment(deployments, model);
       if (!deployment) throw new Error(`Choose a configured Azure deployment for ${model}: ${deployments.map(({ name }) => name).join(", ")}.`);
-      model = deployment.name;
+      model = deployment;
     }
     const effort = a.effort?.trim() || undefined;
     const title = a.title?.replace(/[\x00-\x1f\x7f]/g, " ").trim().slice(0, 80) || undefined;
@@ -350,7 +349,19 @@ export class Children {
       made = await this.ctx.ops.call("newWorktreeSession", { harness, projectPath: folder, source, permissionMode: mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}), name: title || prompt });
     }
     const id = made?.sessionId ?? joined?.sessionId ?? (await s.create({ harness, projectPath: folder, source, permissionMode: mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}) }));
-    if (fallbackKeys?.length) await this.ctx.ops!.call("setAutoKey", { sessionId: id, on: true, fallbackKeys: fallbackKeys as CredentialSource[] });
+    if (fallbackKeys?.length) {
+      try {
+        await this.ctx.ops!.call("setAutoKey", { sessionId: id, on: true, fallbackKeys: fallbackKeys as CredentialSource[] });
+      } catch (e) {
+        const detail = (e as Error).message;
+        try {
+          await s.setArchived(id, true);
+          return { text: `Archived session ${id} after fallback setup failed: ${detail}. Its prompt was never sent.`, isError: true };
+        } catch {
+          return { text: `Made session ${id}, but fallback setup failed and archiving could not be confirmed: ${detail}. Its prompt was never sent.`, isError: true };
+        }
+      }
+    }
     this.kids[id] = { parent: starter, depth: (this.kids[starter]?.depth ?? 0) + 1, reports: 0, hops };
     this.save();
     if (title) await s.rename(id, title).catch(() => {});

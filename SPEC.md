@@ -1041,10 +1041,13 @@ event (with the message's text) and the queued message's id from `SessionActions
   `newWorktreeSession` (§4), only from a caller that may run commands itself (sandboxed or looser),
   as git and the repo's setup run. `worktree: "<path or branch>"` starts in one of the folder's
   repo's existing worktrees (`existingWorktreeSession`): nothing runs, so it's just another folder,
-  as `project`: unless it's the caller's own, only from a judged or full caller. The source defaults to the subscription when available. The agent must confirm API-key billing
-  with the user before starting any session, including a replacement or fallback session. For Azure, `model` can name a configured deployment or its
-  unambiguous model. For a subscription, `fallbackKeys` enables automatic key fallback in the
-  order the user confirmed. Mode: the loosest mode the target offers whose level is at or under the caller's
+  as `project`: unless it's the caller's own, only from a judged or full caller. The source defaults
+  to the subscription when available. The agent must confirm API-key billing with the user before
+  starting any session, including a replacement or fallback session. For Azure, `model` can name a
+  configured deployment or its unambiguous model. The start reply names the deployment. For a
+  subscription, `fallbackKeys` enables automatic key fallback in the order the user confirmed.
+  Azure is eligible for fallback when a deployment matches the current model, or the model is unset.
+  Mode: the loosest mode the target offers whose level is at or under the caller's
   (Claude's auto counts as judged), so a child is never looser. The prompt goes in as a peer
   message from the caller (carrying its hops) whose hint says its final reply goes back. Who
   started whom is kept in `<config>/modules/peers/children.json`.

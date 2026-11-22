@@ -11,7 +11,7 @@ import { Commands } from "./commands";
 import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { CredentialStore, redact, redactValue, type CredentialSnapshot } from "../credentials";
-import { isBillingSource, keyTarget, type BillingSource, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
+import { isBillingSource, keyTargets, resolveAzureDeployment, type BillingSource, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
 import { addSideCost, type CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
@@ -532,7 +532,7 @@ export class LiveControl {
     prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
     const { forkedFrom, worktree: _, ...state } = kept;
     n.setState(state);
-    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
+    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextBilling: undefined, nextDeployment: undefined, sourceSwitchFailed: undefined });
     this.core.moveSides(s.id, n.id);
     prefs.flush();
     s.movedTo = n.id;
@@ -1396,7 +1396,7 @@ export class LiveControl {
   /** On Azure, the model is a deployment: the one asked for if it's there, else the first. */
   forSource(source: BillingSource, opts: StartOpts): StartOpts {
     if (source !== "azure" || !this.opts.credentials) return opts;
-    const deployment = this.pickDeployment(opts.model);
+    const deployment = opts.azureDeployment ?? this.pickDeployment(opts.model);
     return { ...opts, model: deployment };
   }
 
@@ -1477,7 +1477,7 @@ export class LiveControl {
   }
 
   /** From the next process start, which confirms it (only with capabilities.sourceSwitch). */
-  async setSource(id: string, asked: unknown) {
+  async setSource(id: string, asked: unknown, azureDeployment?: string) {
     const s = await this.core.open(id);
     if (s.retry) this.cancelRetrySession(s);
     const harness = s.summary.harness;
@@ -1489,7 +1489,11 @@ export class LiveControl {
     const blocker = sourceSwitchBlocker(s.state);
     if (blocker) throw new Error(sourceSwitchBlockMessage(blocker));
     if (s.sending || s.starting || s.carrying) throw new Error(sourceSwitchBlockMessage("turn"));
-    if (!(await this.sources(harness)).options.some((o) => o.source === asked)) throw new Error(`${this.labelOf(harness, asked)} isn't available.`);
+    const choice = (await this.sources(harness)).options.find((o) => o.source === asked);
+    if (!choice) throw new Error(`${this.labelOf(harness, asked)} isn't available.`);
+    if (azureDeployment && !choice.deployments?.some(({ name }) => name === azureDeployment)) {
+      throw new Error(`Azure deployment ${azureDeployment} isn't available.`);
+    }
     const carries = !!s.capabilities.sourceCarry;
     const own = this.sourceOf(s);
     const lastKey = asked !== "subscription" ? asked : own !== "subscription" ? own : undefined;
@@ -1500,9 +1504,10 @@ export class LiveControl {
     if (asked === own) {
       // Thought better of it: the thread never left.
       if (carries) {
-        this.core.o.prefs.set(id, { nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
+        const pendingDeployment = this.core.o.prefs.get(id).nextSource ? { nextDeployment: undefined } : {};
+        this.core.o.prefs.set(id, { nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
         this.core.o.prefs.flush();
-        s.setState({ nextBilling: undefined, sourceSwitchFailed: undefined });
+        s.setState({ nextBilling: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
       }
       return;
     }
@@ -1513,9 +1518,9 @@ export class LiveControl {
     }
     const next = this.core.adapter(harness).billing!.label(asked);
     if (carries) {
-      this.core.o.prefs.set(id, { nextSource: asked, nextBilling: next, sourceSwitchFailed: undefined });
+      this.core.o.prefs.set(id, { nextSource: asked, nextBilling: next, nextDeployment: azureDeployment, sourceSwitchFailed: undefined });
       this.core.o.prefs.flush();
-      s.setState({ nextBilling: next, sourceSwitchFailed: undefined });
+      s.setState({ nextBilling: next, nextDeployment: azureDeployment, sourceSwitchFailed: undefined });
       return this.core.touch(s);
     }
     const confirmed = s.state.billing?.label === next.label;
@@ -1525,9 +1530,10 @@ export class LiveControl {
       try { cost = this.startCost(s); }
       catch { cost = { estimated: true, complete: false, reasons: ["unsaved"] }; this.core.log("Couldn't save this session's API cost coverage. Its total is unknown."); }
     }
-    this.core.o.prefs.set(id, { source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined });
+    const azure = azureDeployment ? { deployment: azureDeployment, model: azureDeployment } : {};
+    this.core.o.prefs.set(id, { source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...azure });
     this.core.o.prefs.flush();
-    s.setState({ nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...(cost ? { cost } : {}) });
+    s.setState({ nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...(azure.model ? { model: azure.model } : {}), ...(cost ? { cost } : {}) });
     this.core.touch(s);
   }
 
@@ -1643,14 +1649,26 @@ export class LiveControl {
       while ((s.sending || s.starting) && this.core.now() < until) await Bun.sleep(20);
       const resetsAt = await this.planReset(harness, s, hit);
       const say = (text: string, level: Msg["level"] = "info") => s.apply({ type: "msg", msg: { ...notice(text, level), ...(resetsAt ? { resetsAt } : {}) } });
-      const target = keyTarget((await this.sources(harness)).options, prefs.lastKey, prefs.fallbackKeys);
-      if (!target) return void say(prefs.fallbackKeys !== undefined ? "Plan limit reached. No allowed fallback key is available, so nothing switched." : "Plan limit reached. No API key is set, so nothing switched.", "warning");
+      const selectedModel = this.core.o.prefs.get(s.id).model ?? s.state.model;
+      const model = selectedModel === "default" ? undefined : selectedModel;
+      const candidates = keyTargets((await this.sources(harness)).options, prefs.lastKey, prefs.fallbackKeys);
+      const ranked = candidates.map((option) => {
+        const compatible = option.deployments?.filter((d) => !model || !d.model || d.model === model) ?? [];
+        return { option, deployment: resolveAzureDeployment(compatible, model) };
+      });
+      const fallback = ranked.find(({ option, deployment }) => option.source !== "azure" || deployment);
+      if (!fallback) {
+        const reason = candidates.some(({ source }) => source === "azure") ? `No Azure deployment matches ${model ?? "the current model"}`
+          : prefs.fallbackKeys !== undefined ? "No allowed fallback key is available" : "No API key is set";
+        return void say(`Plan limit reached. ${reason}, so nothing switched.`, "warning");
+      }
+      const { option: target, deployment } = fallback;
       try {
-        await this.setSource(s.id, target.source);
+        await this.setSource(s.id, target.source, deployment);
       } catch (e) {
         return void say(`Plan limit reached. Not switched: ${redact((e as Error)?.message ?? String(e))}`, "warning");
       }
-      const switched = `Plan limit reached. Switched to ${target.billing.label}.`;
+      const switched = `Plan limit reached. Switched to ${target.billing.label}${deployment ? ` (${deployment})` : ""}.`;
       if (!sent) return void say(`${switched} Send your message again.`);
       if (acted) return void say(`${switched} Tools had already run in that turn, so it wasn't resent: replaying could repeat edits. Send a message to continue.`);
       if (s.driver?.busy()) return void say(`${switched} Background work still runs, so nothing was resent. Send your message again once it's done.`);

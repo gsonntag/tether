@@ -26,7 +26,7 @@ const agyMove = {
 
 const row = (id: string, o: Partial<SessionSummary> = {}): SessionSummary => ({ id, harness: id.split(":")[0] as HarnessId, nativeId: id.split(":")[1]!, projectPath: "/p/app", title: id, mode: "live", status: "idle", updatedAt: 0, ...o });
 
-function setup(o: { modes?: Record<string, string>; dataDir?: string } = {}) {
+function setup(o: { modes?: Record<string, string>; dataDir?: string; failFallback?: boolean } = {}) {
   const rows: SessionSummary[] = [row("claude:boss")];
   const modes: Record<string, string> = { "claude:boss": "auto", ...o.modes };
   const queued: { to: string; text: string }[] = [];
@@ -84,7 +84,10 @@ function setup(o: { modes?: Record<string, string>; dataDir?: string } = {}) {
     ops: {
       call: async (op: string, a: any) => {
         calls.push(op);
-        if (op === "setAutoKey") return null;
+        if (op === "setAutoKey") {
+          if (o.failFallback) throw new Error("fallback unavailable");
+          return null;
+        }
         if (op === "listWorktrees") return a.projectPath === "/p/plain" ? { worktrees: [] } : { repo: "/p/app", worktrees: [{ path: "/p/app-wt", branch: "tether/x", sessions: [] }] };
         if (op === "existingWorktreeSession") return { sessionId: await ctx.sessions.create({ ...a, projectPath: a.worktree }), path: a.worktree, branch: "tether/x", tether: true };
         return { sessionId: await ctx.sessions.create(a), path: "/p/app-wt", branch: "tether/x", base: "main" };
@@ -119,6 +122,23 @@ describe("tether_start", () => {
     expect(t.created).toHaveLength(0);
     expect((await t.start({ ...args, fallbackKeys: ["azure"] })).isError).toBeFalsy();
     expect(t.calls).toEqual(["setAutoKey"]);
+  });
+
+  test("reports the deployment selected for an Azure start without a model", async () => {
+    const t = setup();
+    const result = await t.start({ harness: "codex", source: "azure", prompt: "go" });
+    expect(result.isError).toBeFalsy();
+    expect(result.text).toContain("sol-deployment");
+    expect(t.created[0]).toMatchObject({ source: "azure", model: "sol-deployment" });
+  });
+
+  test("archives the new session and holds the prompt when fallback setup fails", async () => {
+    const t = setup({ failFallback: true });
+    const result = await t.start({ harness: "codex", prompt: "go", fallbackKeys: ["azure"], worktree: true });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("Archived session codex:c1");
+    expect(t.isArchived("codex:c1")).toBe(true);
+    expect(t.sent).toEqual([]);
   });
 
   test("starts any harness from any harness, in the caller's folder, and the card links to it", async () => {
