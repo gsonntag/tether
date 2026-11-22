@@ -6,7 +6,7 @@ import { unscheduled } from "../../../../shared/schedule";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { parseSessionId } from "../../../../shared/ids";
-import { archiveMarkdown, budgetFor, contextNote, contextOpening, imageName, mapMode, movedFrom, movedTo, PORTABLE_VERSION, planImport, type MoveOptions, type MoveTarget, type PortableSession, type PortableSubagent } from "../../../../shared/move";
+import { archiveMarkdown, budgetFor, contextNote, LEVELS, contextOpening, imageName, mapMode, movedFrom, movedTo, PORTABLE_VERSION, planImport, type MoveOptions, type MoveTarget, type PortableSession, type PortableSubagent } from "../../../../shared/move";
 import type { BillingSource } from "../../../../shared/credentials";
 import { HARNESS_LABELS, type HarnessId, type Msg } from "../../../../shared/transcript";
 import { SIDE_KEEPS } from "../../../../shared/sideChat";
@@ -291,6 +291,39 @@ export class Mover {
     return made.sessionId;
   }
 
+  async fallbackHop(id: string, to: HarnessId, source: BillingSource, opts: StartOpts) {
+    const { look, adapter } = await this.source(id);
+    const target = this.adapter(to);
+    if (!adapter.capabilities.move || !target.capabilities.move || !target.move) throw new Error("This harness cannot transfer a session.");
+    const why = await this.blocked(adapter, { ...look, state: { ...look.state, queue: [] } });
+    if (why) throw new Error(why);
+    if (await this.background(adapter, look)) throw new Error("Background work is still running.");
+    const fromLevel = levelOf(adapter, look.state.permissionMode) ?? LEVELS.readOnly;
+    const toLevel = levelOf(target, opts.permissionMode);
+    if (toLevel === undefined || toLevel > fromLevel) throw new Error("The fallback step exceeds this session's current permissions.");
+    this.moving.add(id);
+    try {
+      const portable = await exportSession(adapter, look);
+      if (target.capabilities.move.import === "native") {
+        try { return await this.native(target, portable, opts, false, source, id, undefined, false); }
+        catch (e) { this.ctx.log(`Fallback native import into ${to} failed: ${(e as Error).message}`); }
+      }
+      const native = await this.ctx.sessions.newId(to, portable.from.projectPath, opts, source);
+      const dir = movedDir(`${to}:${native}`, this.ctx.dataDir);
+      try {
+        const { file } = writeArchive(portable, dir, this.ctx.attachmentsDir, this.earlier(portable));
+        const sessionId = await this.ctx.sessions.adopt(to, native, portable.from.projectPath, opts, source, id, { fresh: true });
+        return { sessionId, history: file };
+      } catch (e) {
+        rmSync(dir, { recursive: true, force: true });
+        await target.move.discard?.(native).catch(() => {});
+        throw e;
+      }
+    } finally {
+      this.moving.delete(id);
+    }
+  }
+
   async fallbackArchive(id: string, after?: string) {
     const { look, adapter } = await this.source(id);
     const history = await exportSession(adapter, look);
@@ -305,7 +338,7 @@ export class Mover {
   }
 
   /** The harness takes the history itself. Throws, leaving no session, when it doesn't take. */
-  private async native(t: Adapter, s: PortableSession, opts: StartOpts, background: boolean, source: BillingSource, carriedFrom?: string, extra?: AdoptExtra) {
+  private async native(t: Adapter, s: PortableSession, opts: StartOpts, background: boolean, source: BillingSource, carriedFrom?: string, extra?: AdoptExtra, sameHarnessCarry = true) {
     const { projectPath, title } = s.from;
     const nativeId = await this.ctx.sessions.newId(t.id, projectPath, opts, source);
     const dir = movedDir(`${t.id}:${nativeId}`, this.ctx.dataDir);
@@ -316,7 +349,7 @@ export class Mover {
       const request = { nativeId, projectPath, title, items: plan.items };
       await t.move!.importHistory!(request);
       if (t.move!.imported && !(await t.move!.imported(request))) throw new Error("the history didn't read back");
-      if (carriedFrom) t.move!.carried?.(nativeId, parseSessionId(carriedFrom)!.nativeId);
+      if (carriedFrom && sameHarnessCarry) t.move!.carried?.(nativeId, parseSessionId(carriedFrom)!.nativeId);
       const sessionId = await this.ctx.sessions.adopt(t.id, nativeId, projectPath, opts, source, carriedFrom, extra);
       // Where a person opening the session looks: under what came across, above what's new.
       const after = (await t.readHistory(nativeId, projectPath).catch(() => [])).at(-1)?.id;
@@ -349,6 +382,7 @@ export const moveModule: Module = {
   name: "move",
   start(ctx) {
     const mover = new Mover(ctx);
+    ctx.sessions.fallbackMover?.((id, harness, source, opts) => mover.fallbackHop(id, harness, source, opts));
     ctx.sessions.fallbackArchiver?.((from, after) => mover.fallbackArchive(from, after));
     ctx.sessions.carrier((id, source, model, settings) => mover.carry(id, source, model, settings));
     ctx.ops.register("moveOptions", (a) => mover.options(String(a.sessionId ?? "")));

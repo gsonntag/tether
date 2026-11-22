@@ -488,6 +488,7 @@ export class SessionCore {
   async refreshPlan(harness: HarnessId) {
     const plan = await this.adapter(harness).planUsage?.().catch(() => undefined);
     if (plan) this.notePlan(harness, plan);
+    return this.plans.get(harness);
   }
 
   /** The context and billing as they're stored, when no driver reports them. Main sessions only. */

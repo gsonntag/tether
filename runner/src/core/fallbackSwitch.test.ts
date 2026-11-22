@@ -362,15 +362,15 @@ describe("the fallback chain", () => {
     }
   });
 
-  test("stops at a cross-harness hop instead of skipping ahead", async () => {
+  test("skips an unavailable cross-harness step and keeps the configured order", async () => {
     const t = setup();
     await t.live.setFallbackChain("claude:one", true, [
       { harness: "codex", source: "subscription", model: "gpt" }, ...steps,
     ]);
     await t.live.send("claude:one", "go");
-    const s = await settled(t, (s) => notices(s).includes("Plan limit reached. The next step needs another harness."));
-    expect(s.state.fallbackChain?.active).toBeUndefined();
-    expect(t.sends()).toBe(1);
+    const s = await settled(t, (s) => s.state.fallbackChain?.active === 1);
+    expect(s.state.billing?.kind).toBe("apiKey");
+    expect(t.sends()).toBe(2);
   });
 
   test("a plan report from a key's process doesn't reach the plan", async () => {

@@ -1177,10 +1177,12 @@ mode to the target harness. A hop checks that its permission mode is at or below
 current level. Runner presets can be loaded, saved, renamed or deleted. The editor starts a new
 chain with the runner's most recently saved order and shows why saved steps are unavailable.
 
-A plan-exhausted signal or exhausted rate-limit recovery advances to the next usable step on the
-same harness. The switch uses the same source checks as the billing chip and applies the step's
-model, effort and permission mode. The notice includes the plan reset when available. The chain
-stops at a step on a different harness until cross-harness switching is supported. The runner
+A plan-exhausted signal or exhausted rate-limit recovery advances to the next usable step. Same-harness switches use the same source checks as the billing chip. For a different
+harness, Tether waits for background work to finish, then uses the Move module’s native or private
+history-file route. The old transcript links to the new session and open views follow. The
+destination gets the selected model, effort and permission mode, and receives “Continue the task
+where it stopped” with the last user message quoted. The notice includes the reset when available.
+The runner
 records the exhausted step and its reset time, or backs off for ten minutes if no reset was
 reported. It prefers an available higher-priority step at the next turn boundary. If it previously
 left that step's thread, it tries to resume that thread and points it to a private archive of the
@@ -2049,7 +2051,7 @@ hands over, switching back doesn't; copying works on desktop and phone; the phon
 shell.
 
 **Later (each a module, in an order you choose):** the Tether judge (a policy step), checkpoints with
-the Changes view and file panel, cross-harness fallback, pi, opencode and other harnesses.
+the Changes view and file panel, pi, opencode and other harnesses.
 
 ## 12. Carried over from v1 (`~/web-coder`)
 

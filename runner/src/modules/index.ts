@@ -51,6 +51,7 @@ export interface AdoptExtra {
   sideOf?: string;
   /** a fork's: the original's key preferences (the switch itself is ticked per session, so it isn't carried) */
   keys?: { lastKey?: BillingSource };
+  fresh?: boolean;
 }
 
 /** How to fork: the reply its conversation ends at (shared/fork.ts forkPoints); absent, all of it (the last finished turn while one runs). */
@@ -73,6 +74,7 @@ export interface SessionActions {
   adopt(harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string, extra?: AdoptExtra): Promise<string>;
   /** what makes the thread a session's source change goes to (Mover.carry) */
   carrier(make: (id: string, source: BillingSource, model?: string, settings?: StartOpts) => Promise<string>): void;
+  fallbackMover?(move: (id: string, harness: HarnessId, source: BillingSource, opts: StartOpts) => Promise<{ sessionId: string; history?: string; after?: string }>): void;
   fallbackArchiver?(write: (from: string, after?: string) => Promise<string>): void;
   /** a fork of a session (SPEC §16): a new stored session with its conversation, through `messageId` when given. Its id */
   fork(id: string, o?: ForkOptions): Promise<string>;

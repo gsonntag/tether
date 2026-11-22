@@ -81,6 +81,65 @@ const convo: Msg[] = [
   { id: "a1", role: "assistant", ts: 11, parts: [{ type: "tool", id: "call_native_1", name: "bash", kind: "shell", input: { command: "ls" }, command: "ls", status: "done", output: "vault-4417.txt" }, { type: "text", text: "One file." }] },
 ];
 
+describe("cross-harness fallback", () => {
+  for (const native of [true, false]) {
+    test(`hands off through the ${native ? "native" : "history file"} route after background work ends`, async () => {
+      const claude = new Neutral("claude", true), codex = new Neutral("codex", native);
+      claude.capabilities = { ...claude.capabilities, sourceSwitch: true };
+      claude.listModels = async () => ({ models: [{ id: "sonnet", label: "Sonnet" }], efforts: [], permissionModes: [{ id: "ro", label: "Read only" }, { id: "ask", label: "Ask" }] });
+      codex.listModels = async () => ({ models: [{ id: "gpt", label: "GPT" }], efforts: [], permissionModes: [{ id: "ro", label: "Read only" }] });
+      const store = new CredentialStore(join(mkdtempSync(join(tmpdir(), "tether-fallback-move-")), "credentials.json"));
+      const { mover, runner } = setup([claude, codex], store);
+      runner.live.fallbackMover = (id, harness, source, opts) => mover.fallbackHop(id, harness, source, opts);
+      runner.live.fallbackArchive = (id, after) => mover.fallbackArchive(id, after);
+      claude.stored_("s1", convo);
+      runner.core.o.prefs.set("claude:s1", { model: "sonnet", permissionMode: "ask", source: "subscription" });
+      await runner.live.setFallbackChain("claude:s1", true, [
+        { harness: "claude", source: "subscription", model: "sonnet" },
+        { harness: "codex", source: "subscription", model: "gpt", permissionMode: "ro" },
+      ]);
+      claude.script = () => [(sink, driver) => {
+        driver.isBusy = true;
+        sink.limitReached?.({ resetsAt: Date.now() + 60_000 });
+        sink.state({ status: "idle" });
+      }];
+      codex.script = () => [(sink) => sink.state({ status: "idle" })];
+      const statuses: { error?: string; fallbackPending?: boolean }[] = [];
+      runner.core.o.bus.on("turnEnded", (event) => statuses.push(event));
+      await runner.live.send("claude:s1", "please keep working");
+      const old = await runner.core.open("claude:s1");
+      for (let i = 0; i < 80 && !old.state.fallbackWaiting; i++) await Bun.sleep(5);
+      expect(old.state.fallbackWaiting).toBe(true);
+      expect(codex.drivers).toHaveLength(0);
+      expect(statuses[0]?.fallbackPending).toBe(true);
+      claude.drivers[0]!.isBusy = false;
+      for (let i = 0; i < 200 && !codex.drivers[0]?.sent.length; i++) await Bun.sleep(5);
+      const id = old.state.continuedIn!;
+      expect(id).toStartWith("codex:");
+      expect(old.transcript?.messages.find((message) => message.link?.sessionId === id)?.parts[0]).toMatchObject({ text: expect.stringContaining("Moved to this Codex session") });
+      expect((await runner.core.open(id)).state.fallbackChain?.active).toBe(1);
+      const driver = codex.drivers.at(-1)!;
+      expect(driver.opts).toMatchObject({ permissionMode: "ro", model: "gpt" });
+      expect(driver.sent[0]).toContain("Continue the task where it stopped.");
+      expect(driver.sent[0]).toContain("> please keep working");
+      if (native) {
+        expect(codex.imports[0]?.items.map(({ text }) => text).join("\n")).toContain("vault-4417.txt");
+        const progress = runner.core.o.prefs.get(id).fallbackProgress!;
+        runner.core.o.prefs.set(id, { fallbackProgress: { ...progress, steps: { ...progress.steps, 0: { ...progress.steps[0], retryAt: Date.now() - 1 } } } });
+        claude.script = () => [(sink) => sink.state({ status: "idle" })];
+        await runner.live.send(id, "keep going now");
+        expect((await runner.core.open(id)).state.continuedIn).toBe("claude:s1");
+        expect(old.state.continuedIn).toBeUndefined();
+        expect(claude.drivers.at(-1)?.nativeId).toBe("s1");
+        expect(claude.drivers.at(-1)?.sent[0]).toContain("Another agent worked on this");
+      } else {
+        const path = /at (.*history\.md)\./.exec(driver.sent[0]!)?.[1];
+        expect(readFileSync(path!, "utf8")).toContain("vault-4417.txt");
+      }
+    });
+  }
+});
+
 describe("a source change (Mover.carry)", () => {
   test("the same harness, settings and history, unlisted and marked as taking over", async () => {
     const pi = new Neutral("pi", true);
