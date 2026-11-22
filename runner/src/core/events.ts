@@ -11,7 +11,8 @@ export interface CoreEvents {
   turnStarted: { sessionId: string; from?: RunStatus };
   /** `stopped`: a person stopped it. `recovering`: an intermediate failure, with no final notification. */
   turnEnded: { sessionId: string; error?: string; stopped?: boolean; recovering?: boolean; fallbackPending?: boolean };
-  fallbackStatus: { sessionId: string; status: "exhausted" | "resumed" };
+  /** `waiting`: the chain stopped and waits on the person; `error` is why the turn ended (the end it follows carried `fallbackPending`). */
+  fallbackStatus: { sessionId: string; status: "exhausted" | "resumed" | "waiting"; error?: string };
   message: { sessionId: string; msg: Msg };
   /** a waiting message left the queue: it went out to the harness, or was cancelled */
   queueGone: { sessionId: string; msgId: string; how: "sent" | "cancelled"; text: string };

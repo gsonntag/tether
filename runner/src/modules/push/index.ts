@@ -168,7 +168,10 @@ export const pushModule: Module = {
     const offs = [
       ctx.bus.on("connected", ({ push }) => sender.setKeys(push)),
       ctx.bus.on("requestOpened", ({ request }) => void later(REQUEST_DELAY_MS, () => n.request(request))),
-      ctx.bus.on("fallbackStatus", ({ sessionId, status }) => void later(0, () => n.fallbackStatus(sessionId, status))),
+      // waiting: the end the turn would have told, held back while the chain tried the next step.
+      ctx.bus.on("fallbackStatus", ({ sessionId, status, error }) => void (status === "waiting"
+        ? later(FINISH_DELAY_MS, () => n.turnEnded(sessionId, error))
+        : later(0, () => n.fallbackStatus(sessionId, status)))),
       ctx.bus.on("attention", ({ sessionId, message }) => void later(0, () => n.attention(sessionId, message))),
       ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering, fallbackPending }) => void (!stopped && !recovering && !fallbackPending && later(FINISH_DELAY_MS, () => n.turnEnded(sessionId, error)))),
     ];

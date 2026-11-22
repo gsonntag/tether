@@ -12,7 +12,7 @@ interface RetryHost {
   held?(s: Session): boolean;
   revision(s: Session): string | undefined;
   send(s: Session, retry: SavedRetry): Promise<void>;
-  exhausted?(s: Session, retry: SavedRetry): boolean;
+  exhausted?(s: Session, retry: SavedRetry, error: string): boolean;
 }
 
 export class RetryControl {
@@ -156,7 +156,7 @@ export class RetryControl {
     s.setState({ error });
     s.apply({ type: "msg", msg: { id: `n-${randomUUID()}`, role: "notice", level: "error", ts: this.core.now(), parts: [{ type: "text", text: error }] } });
     const fallbackPending = exhausted && !this.host.blocked(s) && !this.host.held?.(s) && s.state.status === "idle" &&
-      !s.driver?.busy() && exhausted.fingerprint === this.host.identity(s).fingerprint && this.host.exhausted?.(s, exhausted);
+      !s.driver?.busy() && exhausted.fingerprint === this.host.identity(s).fingerprint && this.host.exhausted?.(s, exhausted, error);
     this.core.o.bus.emit("turnEnded", { sessionId: s.id, error, ...(fallbackPending ? { fallbackPending: true } : {}) });
   }
 }

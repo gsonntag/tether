@@ -139,9 +139,9 @@ export class LiveControl {
       blocked: (s) => s.state.mode === "terminal" || !!s.state.terminal || !!s.state.requests.length || !!this.terminal?.blocked(s) || !!core.o.prefs.get(s.id).nextSource || this.restartWaits.has(s.id),
       held: (s) => !!this.heldWhy(s.id),
       send: (s, r) => this.send(s.id, r.text, r.attachments, { tether: r.tether, retryId: r.id }),
-      exhausted: (s, r) => {
+      exhausted: (s, r, error) => {
         if (!this.canAdvanceFallback(s)) return false;
-        void this.advanceFallback(s, undefined, r, false);
+        void this.advanceFallback(s, undefined, r, false, false, false, error);
         return true;
       },
     });
@@ -1866,7 +1866,7 @@ export class LiveControl {
     const text = "Used every available source.";
     s.apply({ type: "msg", msg: notice([text, ...entries].join("\n"), "warning") });
     s.setState({ error: text });
-    this.core.o.bus.emit("turnEnded", { sessionId: s.id, error: text, fallbackPending: true });
+    // The turn's own end (with fallbackPending) was already reported: no second turnEnded.
     this.core.o.bus.emit("fallbackStatus", { sessionId: s.id, status: "exhausted" });
     if (chain.continueOnReset && times.length) this.scheduleFallbackTimer(s.id, Math.min(...times) + this.fallbackResetDelay);
   }
@@ -1878,7 +1878,8 @@ export class LiveControl {
   }
 
   /** Advance in order after an exhausted plan or the end of rate-limit recovery. */
-  private async advanceFallback(s: Session, hit: { resetsAt?: number } | undefined, sent: Session["lastSend"], acted: boolean, returning = false, waking = false): Promise<boolean> {
+  /** `ended`: why the turn ended, told to the person when the chain stops and waits on them. */
+  private async advanceFallback(s: Session, hit: { resetsAt?: number } | undefined, sent: Session["lastSend"], acted: boolean, returning = false, waking = false, ended?: string): Promise<boolean> {
     const prefs = this.core.o.prefs.get(s.id);
     const chain = s.state.fallbackChain;
     const harness = s.summary.harness;
@@ -1893,6 +1894,10 @@ export class LiveControl {
     const say = (text: string, level: Msg["level"] = "info") => s.apply({
       type: "msg", msg: { ...notice(`${cause} ${text}`, level), ...(resetsAt ? { resetsAt } : {}) },
     });
+    // The turn end before this carried fallbackPending, so push waits for this instead.
+    const waiting = (error = ended) => {
+      if (!returning) this.core.o.bus.emit("fallbackStatus", { sessionId: s.id, status: "waiting", ...(error ? { error } : {}) });
+    };
     const reservation = Symbol();
     this.fallingBack.set(s, reservation);
     this.core.pin(s);
@@ -1901,7 +1906,10 @@ export class LiveControl {
       const until = Date.now() + 5000;
       while ((s.sending || s.starting) && Date.now() < until) await Bun.sleep(20);
       if (hit) resetsAt = await this.planReset(harness, s, hit);
-      if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) return false;
+      if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) {
+        if (!waking && !s.retrySuppressed && !this.stopping) waiting();
+        return false;
+      }
       const progress: FallbackProgress = { steps: { ...prefs.fallbackProgress?.steps } };
       if (returning && !waking && start >= 0) {
         progress.steps[start] = { sessionId: s.id, after: s.transcript?.messages.at(-1)?.id };
@@ -1914,13 +1922,17 @@ export class LiveControl {
       const indexes = fallbackOrder(chain.steps.length, waking ? -1 : start, progress, this.core.now(), returning && !waking)
         .filter((index) => waking ? progress.steps[index]?.retryAt !== undefined : index > start || progress.steps[index]?.retryAt !== undefined);
       const catalog = await this.fallbackCatalog(s, harness);
-      if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) return false;
+      if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) {
+        if (!waking && !s.retrySuppressed && !this.stopping) waiting();
+        return false;
+      }
       for (const index of indexes) {
         const step = chain.steps[index]!;
         // A different harness takes the next hop once cross-harness switching is supported.
         if (step.harness !== harness) {
           if (returning) continue;
           say("The next step needs another harness.", "warning");
+          waiting();
           return true;
         }
         if (fallbackStepProblem(step, catalog)) {
@@ -1951,6 +1963,7 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
         this.core.o.prefs.flush();
         if (!sent || acted) {
           say(`${switched} ${acted ? "The turn already acted. " : ""}Send a message to continue.`);
+          waiting();
           return true;
         }
         say(`${switched} Resending your message.`);
@@ -1965,7 +1978,7 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
       if (!(e instanceof SendCancelled)) {
         const error = redact((e as Error)?.message ?? String(e));
         say(error, "warning");
-        if (!returning && !switchedSource) this.core.o.bus.emit("turnEnded", { sessionId: s.id, error });
+        if (!switchedSource) waiting(error);
       }
       return !returning || switchedSource;
     } finally {
@@ -2264,7 +2277,7 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
       const fallbackPending = !stopped && (limitHit || retry === "exhausted") && this.canAdvanceFallback(s, limitHit);
       bus.emit("turnEnded", { sessionId: s.id, error, ...(stopped ? { stopped } : {}), ...(recovering ? { recovering } : {}), ...(fallbackPending ? { fallbackPending: true } : {}) });
       s.turnError = undefined;
-      if (fallbackPending) void this.advanceFallback(s, limitHit, lastSend, turnActed);
+      if (fallbackPending) void this.advanceFallback(s, limitHit, lastSend, turnActed, false, false, error);
       this.scheduleIdle(s);
       void this.refreshTitle(s);
     }

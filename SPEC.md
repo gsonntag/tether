@@ -1189,7 +1189,8 @@ into a fresh thread. When the order is exhausted, the transcript lists the steps
 reset or retry times. With **Continue when a limit resets** enabled, the runner persists a wakeup
 for one minute after the earliest retry time and sends “continue” when it can take that step.
 Stop and a new message cancel the pending wakeup. Push reports exhaustion and resumption without
-announcing intermediate fallback hops.
+announcing intermediate fallback hops; a hop that stops and waits for a message reports the turn's
+failure as usual. The turn's end is reported once, exhaustion included.
 
 | Harness | Exhausted | Not exhausted, whatever it says |
 |---|---|---|
