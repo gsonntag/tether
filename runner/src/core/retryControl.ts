@@ -3,11 +3,12 @@ import { randomUUID } from "node:crypto";
 import type { RetryState } from "../../../shared/transcript";
 import type { Session } from "./session";
 import type { SessionCore } from "./sessions";
-import { isSavedRetry, RETRY_DEADLINE_MS, RETRY_MAX_ATTEMPTS, retryTime, type SavedRetry } from "./retryPolicy";
+import { EXTENDED_RETRY_DEADLINE_MS, EXTENDED_RETRY_MAX_ATTEMPTS, isSavedRetry, RETRY_DEADLINE_MS, RETRY_MAX_ATTEMPTS, retryTime, type SavedRetry } from "./retryPolicy";
 
 interface RetryHost {
   identity(s: Session): { fingerprint: string; scope: string };
   blocked(s: Session): boolean;
+  extended(s: Session): boolean;
   /** a module holds the session for a moment (live.ts `hold`): the retry waits for the release */
   held?(s: Session): boolean;
   revision(s: Session): string | undefined;
@@ -29,19 +30,24 @@ export class RetryControl {
     const identity = this.host.identity(s);
     const old = s.retry;
     if (old && (old.phase !== "sending" || old.fingerprint !== identity.fingerprint)) return false;
-    const deadline = old?.deadline ?? now + RETRY_DEADLINE_MS;
+    const enabled = this.host.extended(s);
+    const extended = old ? old.extended : enabled;
+    if (extended && !enabled) return false;
+    const maxAttempts = old?.maxAttempts ?? (extended ? EXTENDED_RETRY_MAX_ATTEMPTS : RETRY_MAX_ATTEMPTS);
+    const deadline = old?.deadline ?? now + (extended ? EXTENDED_RETRY_DEADLINE_MS : RETRY_DEADLINE_MS);
     const attempt = (old?.attempt ?? 0) + 1;
     const minAt = Math.max(now, Number.isFinite(hit.retryAt) ? hit.retryAt! : now);
     for (const [scope, at] of this.cooldowns) if (at <= now) this.cooldowns.delete(scope);
     const shared = this.cooldowns.get(identity.scope) ?? 0;
-    const nextAt = this.time(attempt, now, deadline, Math.max(minAt, shared));
-    if (attempt > (old?.maxAttempts ?? RETRY_MAX_ATTEMPTS) || nextAt === undefined) return false;
+    const nextAt = this.time(attempt, now, deadline, Math.max(minAt, shared), undefined, extended);
+    if (attempt > maxAttempts || nextAt === undefined) return false;
     const retry: SavedRetry = {
-      id: old?.id ?? randomUUID(), attempt, maxAttempts: old?.maxAttempts ?? RETRY_MAX_ATTEMPTS,
+      id: old?.id ?? randomUUID(), attempt, maxAttempts, ...(extended ? { extended: true } : {}),
       nextAt, deadline, minAt, error: error.slice(0, 4096), phase: "waiting",
       ...sent, ...identity, storeRevision: this.host.revision(s),
     };
-    this.cooldowns.set(retry.scope, nextAt);
+    // Share provider timing and dispatch spacing without imposing this session's opt-in backoff.
+    this.cooldowns.set(retry.scope, extended ? Math.max(minAt, shared) : nextAt);
     s.retry = retry;
     this.save(s);
     s.apply({ type: "msg", msg: {
@@ -79,10 +85,15 @@ export class RetryControl {
 
   /** Waiting is safe to restore. A request that may already have gone out is never replayed. */
   restore(s: Session, saved: unknown): boolean {
-    if (!isSavedRetry(saved) || saved.phase !== "waiting" || saved.deadline <= this.core.now() || saved.deadline > this.core.now() + RETRY_DEADLINE_MS || this.host.blocked(s) || s.state.status !== "idle" || s.driver?.busy() || saved.fingerprint !== this.host.identity(s).fingerprint || saved.scope !== this.host.identity(s).scope) return false;
+    if (!isSavedRetry(saved) || saved.phase !== "waiting" || (saved.extended && !this.host.extended(s))) return false;
+    const now = this.core.now();
+    const maxDuration = saved.extended ? EXTENDED_RETRY_DEADLINE_MS : RETRY_DEADLINE_MS;
+    const { fingerprint, scope } = this.host.identity(s);
+    if (saved.deadline <= now || saved.deadline > now + maxDuration || this.host.blocked(s) || s.state.status !== "idle" || s.driver?.busy() || saved.fingerprint !== fingerprint || saved.scope !== scope) return false;
     if (!s.capabilities.persistent && (!saved.storeRevision || saved.storeRevision !== this.host.revision(s))) return false;
     s.retry = { ...saved, attachments: [...saved.attachments] };
-    this.cooldowns.set(saved.scope, Math.max(saved.nextAt, this.cooldowns.get(saved.scope) ?? 0));
+    const sharedAt = saved.extended ? saved.minAt ?? 0 : saved.nextAt;
+    this.cooldowns.set(scope, Math.max(sharedAt, this.cooldowns.get(scope) ?? 0));
     this.save(s);
     this.arm(s);
     return true;
@@ -94,8 +105,8 @@ export class RetryControl {
   }
 
   private publicState(r: SavedRetry): RetryState {
-    const { attempt, maxAttempts, nextAt, deadline, error } = r;
-    return { attempt, maxAttempts, nextAt, deadline, error };
+    const { attempt, maxAttempts, nextAt, deadline, error, extended } = r;
+    return { attempt, maxAttempts, nextAt, deadline, error, ...(extended ? { extended } : {}) };
   }
 
   private save(s: Session) {
@@ -123,7 +134,7 @@ export class RetryControl {
       s.retryTimer.unref?.();
       return;
     }
-    if (this.host.blocked(s) || s.state.status !== "idle" || s.driver?.busy() || r.fingerprint !== this.host.identity(s).fingerprint) return this.fail(s, "The session changed while a rate limit retry was waiting. Send a message to continue.");
+    if ((r.extended && !this.host.extended(s)) || this.host.blocked(s) || s.state.status !== "idle" || s.driver?.busy() || r.fingerprint !== this.host.identity(s).fingerprint) return this.fail(s, "The session changed while a rate limit retry was waiting. Send a message to continue.");
     // A harness may finish its turn before the send promise resolves. Do not race that send.
     if (s.sending || s.starting) {
       s.retryTimer = setTimeout(() => void this.run(s, r), 25);

@@ -397,7 +397,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             retry={retry}
             offline={offline}
             onRetryNow={() => rpc(runnerId, "retryNow", { sessionId })}
-            onCancel={() => rpc(runnerId, "cancelRetry", { sessionId })}
+            onCancel={() => rpc(runnerId, retry.extended ? "interrupt" : "cancelRetry", { sessionId })}
             onFailed={(message) => failedSend(runnerId, sessionId, message)}
           />
         )}

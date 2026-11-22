@@ -835,11 +835,17 @@ with no background work, shell command or agent terminal running. The session, s
 revision, model, effort, permission mode and attachments stay the same. After tools or steering,
 a notice explains why the message wasn't resent and asks the person to continue.
 
-There are at most five additional attempts, delayed about 15, 30, 60, 120 and 120 seconds with
+By default there are at most five additional attempts, delayed about 15, 30, 60, 120 and 120 seconds with
 20% jitter. A valid provider retry time is a minimum. No new retry starts after ten minutes from
 the first terminal throttle; restarting the runner preserves this deadline and attempt count.
 Sessions sharing a known source, credential revision and model/deployment share a runner-local
 cooldown, with a gap between dispatches. This does not coordinate different runners.
+
+For a session using an Azure, OpenAI or Anthropic key, the Source menu's **Keep retrying when
+throttled** setting opts into a six-hour deadline and up to 60 additional attempts. The backoff
+starts around one minute and doubles with jitter up to ten minutes. A provider's retry time
+can require a longer wait. Extended recovery keeps using the same key and displays the local
+time of the next retry and a **Stop** button. Turning the setting off stops a waiting extended retry.
 
 The chat shows the next attempt's countdown, **Retry now** and **Cancel**. Retry now skips Tether's
 backoff but honors provider timing and concurrent-session cooldowns. Stop, a direct message, a
