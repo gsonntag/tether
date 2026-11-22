@@ -1282,8 +1282,8 @@ A Codex thread whose record disagrees with its session's source stops, naming bo
 
 The session label changes only after harness confirmation. API billing has one accessible colour
 token in light and dark themes: a loud source badge first in the session's chip row, visible at
-phone width without sideways scrolling and matching title text on Sidebar and Home rows. The
-composer keeps its regular styling. Subscription sessions remain quiet. Unknown billing is plainly neutral. Plan usage appears
+phone width without sideways scrolling and matching title text on Home rows. Session rows in the
+sidebar use plain white text with no payment-source differentiator. The composer keeps its regular styling. Subscription sessions remain quiet. Unknown billing is plainly neutral. Plan usage appears
 early in the chip row on phones and never appears on an API session's chip. Terminal mode must use the same
 confirmed source, or refuse to open. No terminal launch may edit the user's harness configuration.
 Codex's remote TUI joins the thread's confirmed permissions and approval reviewer; its launch
@@ -1795,9 +1795,13 @@ a key, any other provider is a provider, OpenAI's own whose token count after it
 source from then on; before it unknown, since it may have been another. A Codex token count of rate
 limits only (no usage) marks only the record just before it.
 
-The `usage` module reads the harness stores, not Tether's records: each adapter's
+The `usage` module scans each adapter's
 `usageStores()` (Claude's `projects/`, subagents included; Codex's `sessions/`, `archived_sessions/`
-and the private homes of Tether's key threads, `codex-keys/`). The ledger and the hidden folders come
+and the private homes of Tether's key threads, `codex-keys/`; Antigravity's runner-local
+`antigravity-usage/`). Antigravity records one aggregate entry per live Tether prompt with usage in
+its ACP result. It uses the selected model at prompt submission, includes thought tokens in output,
+and leaves the entry unpriced. The page labels this scope. Older turns, standalone CLI or terminal
+turns, and work without a prompt result are outside the recording scope. The ledger and the hidden folders come
 through `ModuleContext` (`apiCost`, `hiddenFolder`). A request is one record. Claude: one per message
 id and request id, at the largest counts its streamed entries carry; a compaction's own request isn't
 in the store. Codex: `token_usage_record` by response id; before a file's first one, each

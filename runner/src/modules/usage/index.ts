@@ -1,5 +1,5 @@
 // Settings → Usage (SPEC §10 Usage): the `usage` op. Tokens and API-price estimates for the last
-// 30 days, read from the harness stores themselves (scan.ts), so CLI sessions count as Tether's do.
+// 30 days, read from Claude and Codex session logs and Tether's live Antigravity turn records.
 // Nothing is read until the page first asks: then the scan runs in the background (again when asked
 // and the last is over a minute old) and the op answers at once with what's read so far.
 
@@ -15,7 +15,7 @@ import { UsageScanner, type UsageRoot } from "./scan";
 const FRESH_MS = 60_000;
 const PLAN_LABELS: Record<HarnessId, string> = { claude: "Claude plan", codex: "ChatGPT plan", antigravity: "Google AI plan" };
 
-/** Every adapter's session logs. */
+/** The usage stores exposed by the adapters. */
 export const usageRoots = (adapters: Adapter[]): UsageRoot[] => adapters.flatMap((a) => (a.usageStores?.() ?? []).map((s) => ({ harness: a.id, ...s })));
 
 /**
