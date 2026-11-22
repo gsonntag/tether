@@ -3,6 +3,8 @@
 // person marks it read. It is kept in runner.json, so every device sees the same, and it rides on
 // the session's summary row (`unread`, `failure`).
 
+import { needsHarnessLogin } from "../../../shared/harnessLogin";
+import { isApiBilling } from "../../../shared/labels";
 import type { SessionSummary } from "../../../shared/transcript";
 import type { SessionCore } from "./sessions";
 
@@ -30,8 +32,9 @@ export class ReadState {
     bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => {
       const s = core.sessions.get(sessionId);
       if (!s || s.summary.parentSessionId) return;
-      // You stopped it, or you're looking at it: nothing to catch up on.
-      if (stopped || recovering || this.viewed(sessionId)) return;
+      // Sign-in failures need an inbox action even if the session was open when it stopped.
+      const login = error && !isApiBilling(s.state.billing ?? s.summary.billing) && needsHarnessLogin(error);
+      if (stopped || recovering || (!login && this.viewed(sessionId))) return;
       this.set(sessionId, error ? { failure: error } : true);
     });
   }

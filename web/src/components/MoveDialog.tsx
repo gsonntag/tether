@@ -3,17 +3,17 @@ import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu";
 import { effortLabel, findModel, isApiBilling, modelLabel, permissionModeLabel, prettyModel } from "../../../shared/labels";
-import type { BillingSource } from "../../../shared/credentials";
+import { resolveSourceModel, type BillingSource } from "../../../shared/credentials";
 import type { MoveOptions } from "../../../shared/move";
 import { CLAUDE_UNSET, type HarnessCapabilities, type HarnessId, type LiveState, type SessionSummary } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { forkSession, useForking } from "../fork";
 import { openSession } from "../route";
-import { canPin } from "../runners";
+import { asksWorktree, canPin } from "../runners";
 import { pinMenuLabel } from "../sessionList";
 import { failedSend, loadModels, modelListKey, setArchived, setPinned, useStore } from "../store";
 import { focusComposerOf } from "./SessionView";
-import { azureDeployments, DeploymentPicker, SourcePicker } from "./SourcePicker";
+import { sourceModels, DeploymentPicker, SourcePicker } from "./SourcePicker";
 
 /** The session's menu, in the header: Side chat, Fork (SPEC §16), Change session harness and its dialog (SPEC §15), Pin, Archive. */
 export function SessionMenu({ runnerId, session, state, canMove, canFork, onSideChat }: { runnerId: string; session: SessionSummary; state: LiveState; canMove: boolean; canFork?: boolean; onSideChat?: () => void }) {
@@ -35,6 +35,8 @@ export function SessionMenu({ runnerId, session, state, canMove, canFork, onSide
   };
   const archive = async () => {
     if (archiveBusy) return;
+    // In a worktree Tether made: ask what becomes of it first (ArchiveWorktreeDialog).
+    if (asksWorktree(useStore.getState().runners, runnerId, session)) return useStore.setState({ archiveAsk: { runnerId, session } });
     setArchiveBusy(true);
     try {
       await setArchived(runnerId, session.id, !session.archived);
@@ -84,9 +86,9 @@ function MoveDialog({ runnerId, session, state, onClose }: { runnerId: string; s
   const [sources, setSources] = useState<Partial<Record<HarnessId, BillingSource>>>({});
   const source = harness ? (sources[harness] ?? target?.sources?.default) : undefined;
   const option = target?.sources?.options.find((o) => o.source === source);
-  // On Azure the model is one of its deployments.
-  const deployments = azureDeployments(option) ?? (target?.deployment ? [{ name: target.deployment }] : undefined);
-  const deployment = deployments && (deployments.find((d) => d.name === model) ?? deployments[0])?.name;
+  // Azure and Bedrock use the model list for the selected source.
+  const deployments = sourceModels(option) ?? (target?.deployment ? [{ name: target.deployment }] : undefined);
+  const deployment = deployments && ((source === "bedrock" ? resolveSourceModel(deployments, model) : deployments.find((d) => d.name === model)?.name) ?? deployments[0]?.name);
   useEffect(() => {
     // The same harness carries on with what the session runs.
     setModel(target?.sameHarness ? (state.model ?? "") : "");

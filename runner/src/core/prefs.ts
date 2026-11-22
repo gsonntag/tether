@@ -3,6 +3,7 @@
 // Settings are saved shortly after a change, open requests at once; atomically, with the rest of
 // the file left as it is.
 
+import type { FallbackPreset, FallbackStep } from "../../../shared/fallbackChain";
 import { readFileSync } from "node:fs";
 import { CONFIG_FILE, saveConfig, type RunnerConfig, type SessionPrefs } from "../config";
 import { redactValue } from "../credentials";
@@ -27,7 +28,7 @@ const MAX_ENTRIES = 2000;
 /** A message scheduled far ahead (SPEC §9) keeps its session's entry however old it is. */
 const timed = (p: SessionPrefs) => Array.isArray(p.queue) && p.queue.some((m) => typeof m?.at === "number");
 /** Entries kept whatever their age: a replaced thread (the only thing that says so), a pin, an archive, a scheduled message, a session that may text. */
-const keep = (p: SessionPrefs) => !!(p.carried || p.pinned || p.archived || p.canText || timed(p));
+const keep = (p: SessionPrefs) => !!(p.carried || p.pinned || p.archived || p.canText || p.fallbackChain || p.retryThrottled || timed(p));
 /** Carried, scheduled and pinned entries first, so the cap cuts them last. Archived ones sort by age with the rest: they never expire, so ranking them up too would crowd out every new entry. */
 const rank = (p: SessionPrefs) => (p.carried ? 3 : timed(p) ? 2 : p.pinned ? 1 : 0);
 
@@ -110,6 +111,20 @@ export class Prefs {
     return this.shared();
   }
 
+  accountName(harness: HarnessId, accountId: string): string | undefined {
+    const entry = read(this.file).accountNames?.[harness];
+    return entry?.accountId === accountId && typeof entry.displayName === "string" ? entry.displayName : undefined;
+  }
+
+  setAccountName(harness: HarnessId, accountId: string, displayName: string) {
+    const cfg = read(this.file);
+    if (!cfg.runnerId) throw new Error("Runner configuration is unavailable.");
+    const accountNames = { ...cfg.accountNames };
+    if (displayName) accountNames[harness] = { accountId, displayName };
+    else delete accountNames[harness];
+    saveConfig({ ...cfg, runnerId: cfg.runnerId, accountNames }, this.file);
+  }
+
   /** The runner-wide settings. */
   settings(): RunnerSettings {
     return { ...this.runnerSettings };
@@ -135,6 +150,25 @@ export class Prefs {
     if (!cfg.runnerId) return;
     const { name: _, ...rest } = cfg;
     saveConfig({ ...rest, runnerId: cfg.runnerId, ...(name ? { name } : {}) }, this.file);
+  }
+
+  fallbackOrders() {
+    const { fallbackPresets = [], lastFallbackOrder = [] } = read(this.file);
+    return { fallbackPresets, lastFallbackOrder };
+  }
+
+  setFallbackPresets(fallbackPresets: FallbackPreset[]) {
+    this.saveFallbackOrders({ fallbackPresets });
+  }
+
+  setFallbackOrder(id: string, chain: NonNullable<SessionPrefs["fallbackChain"]>) {
+    this.set(id, { fallbackChain: chain });
+    this.flush({ lastFallbackOrder: redactValue(chain.steps) });
+  }
+
+  private saveFallbackOrders(patch: Partial<RunnerConfig>) {
+    this.dirty = true;
+    this.flush(patch);
   }
 
   /** The open requests saved last time. */
@@ -211,7 +245,7 @@ export class Prefs {
   }
 
   /** Writes now (also on shutdown). */
-  flush() {
+  flush(patch: Partial<RunnerConfig> = {}) {
     clearTimeout(this.timer);
     this.timer = undefined;
     if (!this.dirty) return;
@@ -228,7 +262,7 @@ export class Prefs {
     if (!cfg.runnerId) return; // not a runner's file: never invent one here
     const { requests: _, closedRequests: __, settings: ___, aliveAt: ____, ...rest } = cfg;
     saveConfig(
-      { ...rest, runnerId: cfg.runnerId, ...(this.alive !== undefined ? { aliveAt: this.alive } : {}), ...(Object.keys(this.runnerSettings).length ? { settings: this.runnerSettings } : {}), sessions: this.map, ...(this.open.length ? { requests: this.open } : {}), ...(this.closed.length ? { closedRequests: this.closed } : {}) },
+      { ...rest, ...patch, runnerId: cfg.runnerId, ...(this.alive !== undefined ? { aliveAt: this.alive } : {}), ...(Object.keys(this.runnerSettings).length ? { settings: this.runnerSettings } : {}), sessions: this.map, ...(this.open.length ? { requests: this.open } : {}), ...(this.closed.length ? { closedRequests: this.closed } : {}) },
       this.file,
     );
   }

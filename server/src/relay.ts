@@ -1,3 +1,4 @@
+import { HARNESS_LOGIN_OPS } from "../../shared/harnessLogin";
 // The relay between browsers and runners. It holds no session state: runners own sessions, so
 // restarting or redeploying the server never interrupts an agent. What it does keep is routing:
 // which runners are connected, which browser subscribed to which session, which browser owns
@@ -316,7 +317,9 @@ export class Relay {
     const id = `s${++this.seq}`;
     const timer = setTimeout(() => this.settle(id, { ok: false, error: "The runner didn't answer in time." }), Object.hasOwn(this.longOps, m.op) ? Math.max(this.rpcTimeoutMs, this.longOps[m.op]!) : this.rpcTimeoutMs);
     this.pending.set(id, { browser: sock, browserRpcId: m.id, runnerId: m.runnerId, op: m.op, key, route, timer });
-    this.out(runner.sock, { t: "rpc", id, op: m.op, args });
+    // This field is set only on an authorized flow RPC. Older relays omit it.
+    const loginOwner = level === "manage" && HARNESS_LOGIN_OPS.has(m.op) ? b.viewerId || b.email : undefined;
+    this.out(runner.sock, { t: "rpc", id, op: m.op, args, ...(loginOwner ? { loginOwner } : {}) });
   }
 
   /**

@@ -1,7 +1,8 @@
-// The plan runs out on a session with the box ticked (SPEC §10), on the real core and a fake harness.
+// Fallback on the real core with a scripted harness.
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import type { FallbackStep } from "../../../shared/fallbackChain";
 import { saveConfig } from "../config";
 import { CredentialStore } from "../credentials";
 import { RequestBroker } from "./broker";
@@ -15,6 +16,7 @@ import { SessionCore } from "./sessions";
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((f) => f()));
 
+const steps: FallbackStep[] = [{ harness: "claude", source: "anthropic", model: "sonnet", effort: "high", permissionMode: "plan" }];
 const PLAN = { kind: "plan", label: "Claude plan" } as const;
 const KEY = { kind: "apiKey", label: "Anthropic API key" } as const;
 const at = (s: any, kind = PLAN) => s.state({ billing: kind });
@@ -37,7 +39,7 @@ const settled = async (t: ReturnType<typeof setup>, want: (s: any) => boolean) =
   throw new Error("never settled");
 };
 
-function setup({ ticked = true, key = true } = {}) {
+function setup({ ticked = true, key = true, now = Date.now } = {}) {
   const base = "/tmp/claude-1001/auto/unit";
   mkdirSync(base, { recursive: true });
   const dir = mkdtempSync(join(base, "core-")), file = join(dir, "runner.json");
@@ -46,11 +48,17 @@ function setup({ ticked = true, key = true } = {}) {
   adapter.capabilities = { ...adapter.capabilities, sourceSwitch: true };
   adapter.addStored("one", []);
   const prefs = new Prefs(file, 0);
-  const core = new SessionCore({ adapters: [adapter], bus: new EventBus<CoreEvents>(), send: () => true, prefs, epoch: "auto", log: () => {} });
+  const core = new SessionCore({ adapters: [adapter], now, bus: new EventBus<CoreEvents>(), send: () => true, prefs, epoch: "auto", log: () => {} });
   const live = new LiveControl(core, new RequestBroker(), { credentials, idleMs: 60_000 });
   cleanups.push(() => core.stop());
   if (key) credentials.set("anthropic", `fake-auto-${crypto.randomUUID()}`);
-  if (ticked) prefs.set("claude:one", { autoKey: true, source: "subscription" });
+  Object.assign(adapter, { move: { modes: [{ mode: "plan", level: 0 }, { mode: "full", level: 5 }] } });
+  adapter.listModels = async () => ({
+    models: [{ id: "sonnet", label: "Sonnet" }, { id: "haiku", label: "Haiku" }],
+    efforts: [{ id: "high", label: "High" }],
+    permissionModes: [{ id: "plan", label: "Plan" }, { id: "full", label: "Full" }],
+  });
+  if (ticked) prefs.set("claude:one", { fallbackChain: { enabled: true, steps }, source: "subscription" });
   // A turn on the plan runs out; anything on the key answers.
   const t = { dir, file, adapter, core, live, credentials, prefs, sends: () => adapter.drivers.reduce((n, d) => n + d.sent.length, 0) };
   adapter.script = () => {
@@ -61,7 +69,7 @@ function setup({ ticked = true, key = true } = {}) {
 const notices = (s: any) => s.transcript.messages.filter((m: any) => m.role === "notice").map((m: any) => m.parts[0].text);
 const sentOn = (t: ReturnType<typeof setup>) => t.adapter.drivers.map((d) => [d.opts.credential?.source, d.sent]);
 
-describe("the plan runs out", () => {
+describe("the fallback chain", () => {
   test("on: the source changes, one notice, the same message once, and it stays on the key", async () => {
     const t = setup();
     await t.live.send("claude:one", "fix it");
@@ -93,7 +101,20 @@ describe("the plan runs out", () => {
     expect(t.adapter.drivers[0]!.sent).toEqual(["fix it"]);
     expect(t.adapter.drivers).toHaveLength(1);
     expect(t.prefs.get(s.id).source).toBe("anthropic");
-    expect(notices(s)[0]).toContain("Switched to Anthropic API key. Tools had already run in that turn, so it wasn't resent");
+    expect(notices(s)[0]).toContain("Switched to Anthropic API key. The turn already acted. Send a message to continue.");
+  });
+
+  test("a hop that waits on the person says so once: the held-back end comes as waiting", async () => {
+    const t = setup();
+    const ends: CoreEvents["turnEnded"][] = [], statuses: CoreEvents["fallbackStatus"][] = [];
+    t.core.o.bus.on("turnEnded", (e) => ends.push(e));
+    t.core.o.bus.on("fallbackStatus", (e) => statuses.push(e));
+    t.adapter.script = () => [(s) => at(s), tool, limit()];
+    await t.live.send("claude:one", "fix it");
+    await settled(t, (s) => notices(s).some((text: string) => text.includes("Send a message to continue.")));
+    await Bun.sleep(20);
+    expect(ends).toEqual([{ sessionId: "claude:one", error: "You've hit your session limit", fallbackPending: true }]);
+    expect(statuses).toEqual([{ sessionId: "claude:one", status: "waiting", error: "You've hit your session limit" }]);
   });
 
   test("a steer in that turn isn't resent either", async () => {
@@ -110,7 +131,7 @@ describe("the plan runs out", () => {
     const s = await settled(t, () => true);
     await Bun.sleep(30);
     expect(t.adapter.drivers).toHaveLength(1);
-    expect(notices(s)[0]).toContain("wasn't resent");
+    expect(notices(s)[0]).toContain("The turn already acted.");
   });
 
   test("the notice carries the reset the signal gave, else a full window's, else none", async () => {
@@ -169,17 +190,23 @@ describe("the plan runs out", () => {
 
   test("no key left, or a terminal open: it stays, and says so", async () => {
     const t = setup({ key: false });
+    const ends: CoreEvents["turnEnded"][] = [], statuses: string[] = [];
+    t.core.o.bus.on("turnEnded", (e) => ends.push(e));
+    t.core.o.bus.on("fallbackStatus", ({ status }) => statuses.push(status));
     await t.live.send("claude:one", "fix it");
     const s = await settled(t, () => true);
     await Bun.sleep(20);
-    expect(notices(s)).toEqual(["Plan limit reached. No API key is set, so nothing switched."]);
+    expect(notices(s)[0]).toContain("Used every available source.");
+    // One turn end (texting and peers report it once); push tells the exhaustion itself.
+    expect(ends).toEqual([{ sessionId: "claude:one", error: "You've hit your session limit", fallbackPending: true }]);
+    expect(statuses).toEqual(["exhausted"]);
 
     const u = setup();
     u.adapter.script = () => [(s) => at(s), (s, d) => void (u.core.sessions.get("claude:one")!.setState({ terminal: { kind: "shared" } as any }), d), limit()];
     await u.live.send("claude:one", "fix it");
     await Bun.sleep(40);
     const v = await u.core.open("claude:one");
-    expect(notices(v)).toEqual(["Plan limit reached. Not switched: Close the terminal first."]);
+    expect(notices(v)).toEqual(["Plan limit reached. Close the terminal first."]);
     expect(u.prefs.get(v.id).source).toBe("subscription");
   });
 
@@ -199,17 +226,6 @@ describe("the plan runs out", () => {
     expect(t.adapter.drivers.at(-1)!.sent).toEqual(["fix it", "after"]);
   });
 
-  test("the box is saved, and what follows the session keeps it", async () => {
-    const t = setup({ ticked: false });
-    await t.live.setAutoKey("claude:one", true);
-    expect(t.prefs.get("claude:one").autoKey).toBe(true);
-    expect((await t.core.open("claude:one")).state.autoKey).toBe(true);
-    await t.live.setAutoKey("claude:one", false);
-    expect(t.prefs.get("claude:one").autoKey).toBeUndefined();
-    t.prefs.set("claude:one", { autoKey: true, lastKey: "azure" });
-    expect(t.live.keptPrefs(await t.core.open("claude:one"))).toEqual({ autoKey: true, lastKey: "azure" });
-  });
-
   test("the last key picked from the chip is remembered, called off too", async () => {
     const t = setup({ ticked: false });
     t.prefs.set("claude:one", { source: "subscription" });
@@ -222,10 +238,12 @@ describe("the plan runs out", () => {
     expect(t.prefs.get("claude:one").lastKey).toBe("anthropic");
   });
 
-  test("a carried harness: the change goes with the resend, and the new thread keeps the box", async () => {
+  test("a carried harness: the change goes with the resend, and the new thread keeps chain progress", async () => {
     const t = setup();
     t.adapter.capabilities = { ...t.adapter.capabilities, sourceCarry: true };
-    t.live.carrier = async (_from, source) => {
+    t.live.carrier = async (_from, source, model, settings) => {
+      expect(model).toBe("sonnet");
+      expect(settings).toEqual({ effort: "high", permissionMode: "plan" });
       t.adapter.addStored("carried-1", []);
       const id = "claude:carried-1";
       t.prefs.set(id, { carrying: true, projectPath: t.dir, source });
@@ -236,8 +254,143 @@ describe("the plan runs out", () => {
     for (let i = 0; i < 200 && !t.prefs.get("claude:one").movedTo; i++) await Bun.sleep(5);
     const on = t.adapter.drivers.at(-1)!;
     expect([on.nativeId, on.opts.credential?.source, on.sent]).toEqual(["carried-1", "anthropic", ["fix it"]]);
-    expect(t.prefs.get("claude:carried-1")).toMatchObject({ autoKey: true, lastKey: "anthropic" });
+    expect(t.prefs.get("claude:carried-1")).toMatchObject({ fallbackChain: { enabled: true, steps, active: 0 }, lastKey: "anthropic" });
     expect(t.prefs.get("claude:one").movedTo).toBe("claude:carried-1");
+  });
+
+  test("skips unavailable and overly permissive steps, and records the chosen settings", async () => {
+    const t = setup();
+    await t.live.setFallbackChain("claude:one", true, [
+      { ...steps[0]!, model: "missing" },
+      { ...steps[0]!, permissionMode: "full" },
+      steps[0]!,
+    ]);
+    await t.live.send("claude:one", "go");
+    const s = await settled(t, (s) => s.state.billing?.kind === "apiKey");
+    expect(s.id).toBe("claude:one");
+    expect(t.adapter.drivers.at(-1)?.opts).toMatchObject({ model: "sonnet", effort: "high", permissionMode: "plan" });
+    expect(new Prefs(t.file).get(s.id).fallbackChain?.active).toBe(2);
+  });
+
+  test("waits for Tether's rate-limit retries before switching sources", async () => {
+    const t = setup();
+    t.live.retries.gapMs = 0;
+    t.live.retries.time = (attempt, now) => attempt === 1 ? now + 10 : undefined;
+    t.adapter.script = () => t.adapter.drivers.at(-1)!.opts.credential?.source === "anthropic"
+      ? [(s) => at(s, KEY as any), reply]
+      : [(s) => at(s), (s) => s.rateLimited?.({}), (s) => s.state({ status: "idle" })];
+    await t.live.send("claude:one", "go");
+    const s = await settled(t, (s) => s.state.billing?.kind === "apiKey");
+    expect(sentOn(t)).toEqual([["subscription", ["go", "go"]], ["anthropic", ["go"]]]);
+    expect(notices(s).at(-1)).toContain("Rate limit retries exhausted.");
+  });
+
+  test("resumes a saved chain from its active step", async () => {
+    const t = setup();
+    const active = { ...steps[0]!, model: "sonnet" };
+    t.prefs.set("claude:one", {
+      source: "anthropic", model: active.model, permissionMode: "plan", effort: "high",
+      fallbackChain: { enabled: true, active: 1, steps: [
+        { ...active, source: "subscription" }, active, { ...active, model: "haiku" },
+      ] },
+    });
+    t.live.retries.time = () => undefined;
+    t.adapter.script = () => t.adapter.drivers.at(-1)!.opts.model === "haiku"
+      ? [reply]
+      : [(s) => s.rateLimited?.({}), (s) => s.state({ status: "idle" })];
+    await t.live.send("claude:one", "go");
+    const s = await settled(t, (s) => s.state.fallbackChain?.active === 2);
+    expect(s.id).toBe("claude:one");
+    expect(t.adapter.drivers.map((d) => d.opts.model)).toEqual(["sonnet", "haiku"]);
+    expect(sentOn(t)).toEqual([["anthropic", ["go"]], ["anthropic", ["go"]]]);
+  });
+
+  test("saves a plan reset and returns to it before sending the next message", async () => {
+    let now = Date.now();
+    const t = setup({ now: () => now });
+    const resetsAt = now + 60_000;
+    const plan = { harness: "claude", source: "subscription", model: "haiku" } as const;
+    t.prefs.set("claude:one", { model: "haiku" });
+    await t.live.setFallbackChain("claude:one", true, [plan, ...steps]);
+    t.adapter.script = (text) => text === "hit" && t.adapter.drivers.at(-1)?.opts.credential?.source === "subscription"
+      ? [(s) => at(s), limit({ resetsAt })]
+      : [reply];
+    await t.live.send("claude:one", "hit");
+    await settled(t, (s) => s.state.fallbackChain?.active === 1);
+    expect(new Prefs(t.file).get("claude:one").fallbackProgress?.steps[0]?.retryAt).toBe(resetsAt);
+    await t.live.send("claude:one", "before reset");
+    now = resetsAt + 1;
+    await t.live.send("claude:one", "after reset");
+    const active = await settled(t, (s) => s.state.fallbackChain?.active === 0);
+    expect(active.id).toBe("claude:one");
+    expect(sentOn(t)).toEqual([
+      ["subscription", ["hit"]], ["anthropic", ["hit", "before reset"]], ["subscription", ["after reset"]],
+    ]);
+  });
+
+  test("returns to a carried chain's original session with a handoff file", async () => {
+    let now = Date.now();
+    const t = setup({ now: () => now });
+    const reset = now + 60_000;
+    t.adapter.capabilities = { ...t.adapter.capabilities, sourceCarry: true };
+    t.prefs.set("claude:one", { model: "haiku" });
+    await t.live.setFallbackChain("claude:one", true, [{ harness: "claude", source: "subscription", model: "haiku" }, ...steps]);
+    t.live.carrier = async (_from, source) => {
+      t.adapter.addStored("paid", []);
+      t.prefs.set("claude:paid", { carrying: true, projectPath: t.dir, source });
+      return "claude:paid";
+    };
+    t.live.fallbackArchive = async (from, to) => {
+      expect(from).toBe("claude:paid");
+      expect(to).toBe("claude:one");
+      return "/private/fallback/history.md";
+    };
+    t.adapter.script = (text) => text === "hit" && t.adapter.drivers.at(-1)?.opts.credential?.source === "subscription"
+      ? [(s) => at(s), limit({ resetsAt: reset })]
+      : [reply];
+    await t.live.send("claude:one", "hit");
+    for (let i = 0; i < 200 && !t.prefs.get("claude:one").movedTo; i++) await Bun.sleep(5);
+    expect(t.prefs.get("claude:one").movedTo).toBe("claude:paid");
+    now = reset + 1;
+    await t.live.send("claude:paid", "keep working");
+    expect(t.prefs.get("claude:paid").movedTo).toBe("claude:one");
+    expect(t.prefs.get("claude:one").movedTo).toBeUndefined();
+    expect(t.adapter.drivers.at(-1)?.nativeId).toBe("one");
+    expect(t.adapter.drivers.at(-1)?.sent[0]).toContain("/private/fallback/history.md");
+  });
+
+  test("sends continue after a reset, and Stop cancels a pending continuation", async () => {
+    for (const stop of [false, true]) {
+      const t = setup();
+      t.live.fallbackResetDelay = 35;
+      const reset = Date.now() + 100;
+      const plan = { harness: "claude", source: "subscription", model: "haiku" } as const;
+      t.prefs.set("claude:one", { model: "haiku" });
+      await t.live.setFallbackChain("claude:one", true, [plan], true);
+      const statuses: string[] = [];
+      t.core.o.bus.on("fallbackStatus", ({ status }) => statuses.push(status));
+      t.adapter.script = (text) => text === "start" ? [(s) => at(s), limit({ resetsAt: reset })] : [reply];
+      await t.live.send("claude:one", "start");
+      await settled(t, (s) => notices(s).some((text: string) => text.includes("Used every available source.")));
+      expect(t.prefs.get("claude:one").fallbackResumeAt).toBe(reset + 35);
+      if (stop) await t.live.interrupt("claude:one");
+      await Bun.sleep(200);
+      expect(statuses).toEqual(stop ? ["exhausted"] : ["exhausted", "resumed"]);
+      expect(t.adapter.drivers.flatMap((driver) => driver.sent)).toEqual(stop ? ["start"] : ["start", "continue"]);
+      expect(t.prefs.get("claude:one").fallbackResumeAt).toBeUndefined();
+      expect(t.prefs.get("claude:one").fallbackChain?.enabled).toBe(true);
+    }
+  });
+
+  test("skips an unavailable cross-harness step and keeps the configured order", async () => {
+    const t = setup();
+    await t.live.setFallbackChain("claude:one", true, [
+      { harness: "codex", source: "subscription", model: "gpt" }, ...steps,
+    ]);
+    await t.live.send("claude:one", "go");
+    const s = await settled(t, (s) => s.state.fallbackChain?.active === 1);
+    expect(s.state.billing?.kind).toBe("apiKey");
+    expect(t.sends()).toBe(2);
   });
 
   test("a plan report from a key's process doesn't reach the plan", async () => {
@@ -253,116 +406,5 @@ describe("the plan runs out", () => {
     t.adapter.script = () => [(s) => s.plan?.({ week: { percent: 9 } }), reply];
     await t.live.send("claude:one", "hello");
     expect((await t.core.open("claude:one")).state.plan?.week?.at).toBeGreaterThan(Date.now() - 5000);
-  });
-});
-
-
-describe("allowed fallback keys", () => {
-  function multiKey() {
-    const t = setup();
-    t.adapter.billing = {
-      keys: ["openai", "azure"], loggedIn: async () => true,
-      label: (source) => source === "subscription" ? PLAN : source === "azure" ? { kind: "provider", label: "Azure" } : { kind: "apiKey", label: "OpenAI API key" },
-    };
-    t.credentials.set("openai", `fake-${crypto.randomUUID()}`);
-    t.credentials.set("azure", `fake-${crypto.randomUUID()}`, "https://fake.invalid", "default-deploy");
-    t.adapter.script = () => {
-      const source = t.adapter.drivers.at(-1)!.opts.credential?.source ?? "subscription";
-      return source === "subscription" ? [(s) => at(s), limit()] : [(s) => s.state({ billing: t.adapter.billing.label(source) }), reply];
-    };
-    return t;
-  }
-
-  test("Azure ranked first beats OpenAI and the last-used key; the policy persists", async () => {
-    const t = multiKey();
-    t.prefs.set("claude:one", { lastKey: "openai" });
-    await t.live.setAutoKey("claude:one", true, ["azure", "openai"]);
-    expect(new Prefs(t.file).get("claude:one").fallbackKeys).toEqual(["azure", "openai"]);
-    await t.live.send("claude:one", "fix it");
-    const s = await settled(t, (s) => s.state.billing?.label === "Azure");
-    expect(sentOn(t)).toEqual([["subscription", ["fix it"]], ["azure", ["fix it"]]]);
-    expect(s.state.fallbackKeys).toEqual(["azure", "openai"]);
-    expect(t.live.keptPrefs(s).fallbackKeys).toEqual(["azure", "openai"]);
-    const reopened = new SessionCore({ adapters: [t.adapter], bus: new EventBus<CoreEvents>(), send: () => true, prefs: new Prefs(t.file), epoch: "reload", log: () => {} });
-    cleanups.push(() => reopened.stop());
-    const state = (await reopened.open("claude:one")).state;
-    expect(state.fallbackKeys).toEqual(["azure", "openai"]);
-  });
-
-  test("Azure fallback keeps the session's model and persists the matching deployment", async () => {
-    const t = multiKey();
-    t.credentials.setAzure({ endpoint: "https://fake.invalid", deployments: [{ name: "luna", model: "gpt-6-luna" }, { name: "sol", model: "gpt-6.2-sol" }] });
-    t.prefs.set("claude:one", { model: "gpt-6.2-sol" });
-    await t.live.setAutoKey("claude:one", true, ["azure"]);
-    await t.live.send("claude:one", "fix it");
-    const s = await settled(t, (s) => s.state.billing?.label === "Azure");
-    expect(t.adapter.drivers.at(-1)!.opts.credential?.deployment).toBe("sol");
-    expect(t.prefs.get(s.id).deployment).toBe("sol");
-    expect(notices(s)[0]).toContain("Azure (sol)");
-  });
-
-  test("Azure fallback stops when no allowed deployment matches the session's model", async () => {
-    const t = multiKey();
-    t.prefs.set("claude:one", { model: "gpt-6.2-sol" });
-    await t.live.setAutoKey("claude:one", true, ["azure"]);
-    await t.live.send("claude:one", "fix it");
-    const s = await settled(t, (s) => notices(s).length > 0);
-    expect(t.sends()).toBe(1);
-    expect(t.prefs.get(s.id).source).toBe("subscription");
-    expect(notices(s)[0]).toContain("No Azure deployment matches gpt-6.2-sol");
-  });
-
-  test("an unset preferred key falls through only to the next allowed key", async () => {
-    const t = multiKey();
-    await t.live.setAutoKey("claude:one", true, ["azure", "openai"]);
-    t.credentials.unset("azure");
-    await t.live.send("claude:one", "fix it");
-    await settled(t, (s) => s.state.billing?.label === "OpenAI API key");
-    expect(sentOn(t)).toEqual([["subscription", ["fix it"]], ["openai", ["fix it"]]]);
-  });
-
-  test("excluded keys stay excluded when the only allowed key is unset", async () => {
-    const t = multiKey();
-    await t.live.setAutoKey("claude:one", true, ["azure"]);
-    t.credentials.unset("azure");
-    await t.live.send("claude:one", "fix it");
-    const s = await settled(t, (s) => notices(s).length > 0);
-    expect(t.sends()).toBe(1);
-    expect(t.prefs.get(s.id).source).toBe("subscription");
-    expect(notices(s)).toEqual(["Plan limit reached. No allowed fallback key is available, so nothing switched."]);
-  });
-
-  test("all keys can be excluded, even the last-used key", async () => {
-    const t = multiKey();
-    t.prefs.set("claude:one", { lastKey: "openai" });
-    await t.live.setAutoKey("claude:one", true, []);
-    await t.live.send("claude:one", "fix it");
-    const s = await settled(t, (s) => notices(s).length > 0);
-    expect(t.sends()).toBe(1);
-    expect(s.state.fallbackKeys).toEqual([]);
-    expect(t.live.keptPrefs(s).fallbackKeys).toEqual([]);
-  });
-
-  test("toggling preserves the policy and rejects unsupported or duplicate keys", async () => {
-    const t = setup({ ticked: false });
-    await t.live.setAutoKey("claude:one", true, ["anthropic"]);
-    await t.live.setAutoKey("claude:one", false);
-    expect(t.prefs.get("claude:one").fallbackKeys).toEqual(["anthropic"]);
-    await expect(t.live.setAutoKey("claude:one", true, ["openai"])).rejects.toThrow("supported fallback key");
-    await expect(t.live.setAutoKey("claude:one", true, ["anthropic", "anthropic"])).rejects.toThrow("at most once");
-    await expect(t.live.setAutoKey("claude:one", true, null as any)).rejects.toThrow("supported fallback key");
-  });
-
-  test("saving the order alone never flips the switch, either way", async () => {
-    const t = setup({ ticked: false });
-    await t.live.setAutoKey("claude:one", true);
-    await t.live.setAutoKey("claude:one", undefined, []);
-    expect(t.prefs.get("claude:one")).toMatchObject({ autoKey: true, fallbackKeys: [] });
-    expect((await t.core.open("claude:one")).state.autoKey).toBe(true);
-    await t.live.setAutoKey("claude:one", false);
-    await t.live.setAutoKey("claude:one", undefined, ["anthropic"]);
-    expect(t.prefs.get("claude:one").autoKey).toBeUndefined();
-    expect(t.prefs.get("claude:one").fallbackKeys).toEqual(["anthropic"]);
-    await expect(t.live.setAutoKey("claude:one", undefined)).rejects.toThrow("Nothing to change");
   });
 });

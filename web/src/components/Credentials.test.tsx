@@ -36,6 +36,10 @@ test("shared person with only drive or view runners sees only Notifications in m
   expect(html).not.toContain('href="#/settings/agents"');
   expect(html).not.toContain('href="#/settings/updates"');
   expect(html).not.toContain('href="#/settings/usage"');
+  expect(html).not.toContain('href="#/settings/accounts"');
+  expect(html).not.toContain('href="#/settings/bedrock"');
+  // Display is about this device, like Notifications.
+  expect(html).toContain('href="#/settings/display"');
 
   // Renders Notifications directly instead of "No runner connected" or "offline" error
   expect(html).toContain("Notifications");
@@ -57,6 +61,9 @@ test("owner with managed runner sees full settings menu", () => {
   expect(html).toContain('href="#/settings/agents"');
   expect(html).toContain('href="#/settings/updates"');
   expect(html).toContain('href="#/settings/usage"');
+  expect(html).toContain('href="#/settings/accounts"');
+  expect(html).toContain('href="#/settings/bedrock"');
+  expect(html).toContain('href="#/settings/display"');
 });
 
 test("runner pickers list only runners that allow the page's ops", () => {

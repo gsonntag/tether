@@ -126,8 +126,8 @@ claim any id not starting with `runner-` (`CLOSE_RUNNER_ID` otherwise; server/sr
   exist yet, and only a confirmed `createFolder` on `newSession` makes it, parents too. Only a path
   starting with `/` or `~/` is made.
 - **A worktree per session** (`modules/worktrees`). For a folder in git with a commit
-  (`workspaceInfo`), New session offers **Workspace**: *This folder* (default), *New worktree*,
-  or *Existing worktree* (below), with a branch (shown, and sent, as `tether/<slug>`: a slug of the session's title or brief, a
+  (`workspaceInfo`), New session offers **Workspace**: *This folder* (default) or *New worktree*,
+  with a branch (shown, and sent, as `tether/<slug>`: a slug of the session's title or brief, a
   hash of text with no usable words, else `wt-<random>`). Creates in one repo run one at a time.
   `newWorktreeSession` resolves the base, `origin/HEAD`, else `origin/main|master`, else local
   `main|master`, else `HEAD`; for `origin/<x>` it first runs `git fetch origin <x>` (best effort: 15 s,
@@ -146,7 +146,8 @@ claim any id not starting with `runner-` (`CLOSE_RUNNER_ID` otherwise; server/sr
   content hash, there once it
   was made, plus what each setup run made or changed, taken when it ends before anything waiting goes
   to the agent, against a snapshot at its start; files made by hand before a Re-run setup aren't). The
-  summary carries `worktreeOf` (the main checkout) for grouping. **Setup:** `.tether/setup`
+  summary carries `worktreeOf` (the main checkout) for grouping, `worktreeBranch`, and
+  `worktreeHandMade` for one made by hand. **Setup:** `.tether/setup`
   (executable, run directly) or `.tether/config.json`'s `"setup"` (via `$SHELL -c`), the worktree's
   own (the base's, which the dialog reads from git and shows, marked when cut short; the dialog
 sends back its `setupId`: the script's blob id, or a hash of the whole command; a create whose
@@ -163,11 +164,11 @@ runs whatever the base has) before the main checkout's, runs in
   and what you send next stay held, even with nothing queued; Home shows the session failed, and
   the card offers **Re-run setup** (`rerunSetup`) and **Send anyway** (Resume, which ends the gate).
   Archiving the session removes it once that's safe (§10 Archiving).
-  **Existing worktree** (runners with `existingWorktrees`): `listWorktrees` lists the repo's
+  **Existing worktrees** (runners with `existingWorktrees`; New session no longer offers it, agents
+  use it through `tether_start`): `listWorktrees` lists the repo's
   worktrees from `git worktree list --porcelain` (not the main checkout, bare or prunable ones):
   path, branch, and the sessions working in each (not archived: listed ones whose folder is in it,
-  and any of any age whose runner.json `worktree` names it). The picker shows path · branch · used
-  by N. `existingWorktreeSession {…, worktree}` (a path or branch) runs `newSession` there: nothing
+  and any of any age whose runner.json `worktree` names it). `existingWorktreeSession {…, worktree}` (a path or branch) runs `newSession` there: nothing
   made, no setup rerun. It records `worktree` with `joined`, as a live (not archived) user's record
   on the worktree's current branch has it, else `handMade` (a person's `git worktree add`, or a
   record that can't be trusted: never removed by Tether). Joining and the removal on archive of one
@@ -384,7 +385,7 @@ relay directly.
   launch. Its launcher holds an immutable key lease in memory; the real TUI and its tools never
   inherit the raw key in their environment. External/historical proxy starts remain a label gap
   (docs/ISSUES.md).
-- **Plan exhausted:** §10 **When the plan runs out** has the signals.
+- **Plan exhausted:** §10 **Fallback chain** has the signals.
 - **Plan limits:** `rate_limit_event` frames: `rate_limit_info.unifiedWindows.{five_hour,seven_day}`
   (`utilization` 0 to 1, `resetsAt` in seconds), or the top-level `rateLimitType`/`utilization` on a
   frame without them. A frame can have no number at all (status only), or just one window. The latest
@@ -411,6 +412,19 @@ relay directly.
   `thread/settings/update` and pinned on `turn/start`, in a read-only sandbox. The app-server has
   no review step (its TUI's "Implement this plan?" is client-side), so a turn that completes with a
   `plan` item raises a plan request (`planFollowUp`, §7) that Tether answers itself.
+- **Input to a background command with more access.** A command in one of Codex's background
+  terminals keeps the settings of the turn that started it (`running.ts`). Once the session is
+  tightened, a later turn's `write_stdin` raises `item/commandExecution/requestApproval` with
+  `kind: "writeStdin"` (its `itemId` is the command's). If that command has more access than the
+  session now has, or Tether can't find it or its settings (fail closed), Tether declines without
+  asking anyone: approved, the command would do what the tighter turn tells it with its own wider
+  access. The agent gets the reason as a steer, the person a notice. Input to a command no looser
+  than shown is asked as usual ("Send input to a running command"). With **Approve for me**
+  (`@codex-reviews`) Codex's reviewer answers inside Codex and Tether never gets the request, only
+  `item/autoApprovalReview/started` (action `writeStdin`, with the `processId`). For a looser command
+  Tether stops it (`thread/backgroundTerminals/terminate`) as the review starts. The review takes
+  seconds, so the write fails ("Unknown process id"). Checked on codex-cli 0.171.0, 2026-11-21: with
+  no fix, the reviewer approved and the write went through.
 - **History:** rollout files under `~/.codex/sessions/`, or `thread/read`. The parser comes from v1.
 - **Terminal:** `terminal: "shared"`. `codex resume --remote <socket> <id>` attaches the TUI to the
   same live thread through the daemon (without `--remote` the TUI runs its own app-server). Tether
@@ -429,7 +443,7 @@ relay directly.
   key only in the daemon's environment shows that way, and isn't used. The account is the daemon's now,
   so it's read at each driver start and remembered per thread (`codex-threads.json`); a stored `openai`
   thread Tether never started is Unknown (the provider of any stored thread is known).
-- **Plan exhausted:** §10 **When the plan runs out** has the signals.
+- **Plan exhausted:** §10 **Fallback chain** has the signals.
 - **Plan limits:** `account/rateLimits/read` when a session opens (at most once a minute, no turn) and
   `account/rateLimits/updated` on a live connection (sparse). `primary`/`secondary` are placed by
   `windowDurationMins` (300, 10080); `usedPercent`, `resetsAt` in seconds.
@@ -837,11 +851,17 @@ with no background work, shell command or agent terminal running. The session, s
 revision, model, effort, permission mode and attachments stay the same. After tools or steering,
 a notice explains why the message wasn't resent and asks the person to continue.
 
-There are at most five additional attempts, delayed about 15, 30, 60, 120 and 120 seconds with
+By default there are at most five additional attempts, delayed about 15, 30, 60, 120 and 120 seconds with
 20% jitter. A valid provider retry time is a minimum. No new retry starts after ten minutes from
 the first terminal throttle; restarting the runner preserves this deadline and attempt count.
 Sessions sharing a known source, credential revision and model/deployment share a runner-local
 cooldown, with a gap between dispatches. This does not coordinate different runners.
+
+For a session using an Azure, OpenAI or Anthropic key, the Source menu's **Keep retrying when
+throttled** setting opts into a six-hour deadline and up to 60 additional attempts. The backoff
+starts around one minute and doubles with jitter up to ten minutes. A provider's retry time
+can require a longer wait. Extended recovery keeps using the same key and displays the local
+time of the next retry and a **Stop** button. Turning the setting off stops a waiting extended retry.
 
 The chat shows the next attempt's countdown, **Retry now** and **Cancel**. Retry now skips Tether's
 backoff but honors provider timing and concurrent-session cooldowns. Stop, a direct message, a
@@ -1038,7 +1058,7 @@ event (with the message's text) and the queued message's id from `SessionActions
   A message is counted (and an ask opened) right after the check, before anything waits, so calls
   side by side can't all pass; one that doesn't go is given back.
   A refusal is the tool's error and a warning notice in the sender's transcript.
-- **Starting sessions** (`children.ts`). `tether_start {harness, prompt, source?, fallbackKeys?, model?, effort?, title?,
+- **Starting sessions** (`children.ts`). `tether_start {harness, prompt, source?, model?, effort?, title?,
   project?, worktree?}` starts an ordinary session on any harness (claude, codex, antigravity),
   from any harness, and returns at once with `"<title>" (<id>)`. Folder: the caller's; `project`
   only names a known project, and only from a caller nothing confines (judged or full), as another
@@ -1049,9 +1069,7 @@ event (with the message's text) and the queued message's id from `SessionActions
   as `project`: unless it's the caller's own, only from a judged or full caller. The source defaults
   to the subscription when available. The agent must confirm API-key billing with the user before
   starting any session, including a replacement or fallback session. For Azure, `model` can name a
-  configured deployment or its unambiguous model. The start reply names the deployment. For a
-  subscription, `fallbackKeys` enables automatic key fallback in the order the user confirmed.
-  Azure is eligible for fallback when a deployment matches the current model, or the model is unset.
+  configured deployment or its unambiguous model. The start reply names the deployment.
   Mode: the loosest mode the target offers whose level is at or under the caller's
   (Claude's auto counts as judged), so a child is never looser. The prompt goes in as a peer
   message from the caller (carrying its hops) whose hint says its final reply goes back. Who
@@ -1114,7 +1132,13 @@ event (with the message's text) and the queued message's id from `SessionActions
 - **Sidebar:** recent sessions grouped by project (title, harness glyph, how long ago, status dot,
   under the project's folder name, which opens that project's list; groups ordered by their newest
   session; same-named folders show parent folders until they differ; paging counts sessions, and older
-  sessions from "Show more" join their groups), with projects below; pinned sessions flat above it. Search results and a project's list stay flat. New session (pick a project,
+  sessions from "Show more" join their groups), with projects below; pinned sessions flat above it. A
+  session in a worktree (`worktreeOf`, §4) is grouped, listed and counted under the repo's main
+  checkout, not its worktree folder, and its row shows "⑂ <branch>" (the worktree folder's name from a
+  runner that doesn't send `worktreeBranch`); Projects folds a worktree folder a session is known to be
+  in (any the browser knows, whatever the search) into its main checkout; `listSessions` for a main
+  checkout also lists the sessions in each worktree runner.json records with it as `repo`, of any age.
+  Search results and a project's list stay flat. New session (pick a project,
   harness, model). Archive and pin (Archiving, Pinning below).
 - **Session view:** the transcript (markdown, thinking folded, tool cards rendered by `kind` with
   diffs and shell output), the requests dock, the queue, the composer, and a header with model, effort,
@@ -1132,20 +1156,24 @@ event (with the message's text) and the queued message's id from `SessionActions
 
 ### Credentials and billing safety
 
-Settings belongs to a runner and has two subpages in one nav. **Credentials** (`#/settings/credentials`)
-holds keys only: **Anthropic API key** for Claude and **OpenAI API key** for Codex. **Azure**
-(`#/settings/azure`, below) holds Azure's key, its resource and its deployments, for Codex. All can be
-set together. Setting, replacing or
-unsetting a key touches no other slot and changes no session's source. There is no enable toggle,
-fallback chain or automatic source migration, with one exception you tick per session (**When the
-plan runs out**, below). AWS for either harness is backlog only.
+Billing settings belong to a runner. **Credentials** (`#/settings/credentials`) shows the selected
+runner's Claude Code, Codex and Antigravity sign-in states, plus its keys: **Anthropic API key** for
+Claude and **OpenAI API key** for Codex. Owners can sign in, sign in again and sign out. Claude Code
+and Antigravity open the harness's authorization link in a browser tab and accept the returned code in
+Tether. Codex shows a device code for its authorization page. Each flow expires and can be cancelled.
+The relay sends the challenge only to the requesting browser. The harness keeps its credentials in the
+selected runner's existing CLI profile. An auth failure in a session offers its owner a link back to
+that runner's Credentials, in the transcript and Home inbox.
+
+**Azure** (`#/settings/azure`, below) holds Azure's key, its resource and its deployments for Codex. **Bedrock**
+(`#/settings/bedrock`) holds the AWS region, credentials and model lists for Claude and Codex. Setting, replacing or
+unsetting a key touches no other slot and changes no session's source. Automatic source changes use the session's opt-in **Fallback chain**.
 
 **Each session has one billing source**, chosen when it's made and saved with it (`SessionPrefs.source`,
 which is a source's name, never a key). New session and the Move dialog show **Source**, listing what
 really exists for that harness: a subscription when the harness reports a login (Codex's `account/read`
 on the shared daemon, Claude's read-only `auth status`), a key when it's set (Azure: its key, its
-resource and at least one deployment), labelled "ChatGPT plan",
-"OpenAI API key", "Azure", "Claude plan", "Anthropic API key". With one source it's shown without a
+resource and at least one deployment), or Bedrock when a credential and a model are configured for the harness. With one source it's shown without a
 picker; a key in the picker has the API colour. It always starts on the subscription when there's
 a login, and on the first key only when there isn't. `newSession` or `moveSession` with no source (an older web) is the subscription,
 never a key by surprise.
@@ -1176,27 +1204,29 @@ before switching: under the plan's name, each window the harness reported, "Week
 `account/rateLimits/read`, at most once a minute; Claude has only its latest report. The chip itself
 keeps its rule: plan % only on a plan session.
 
-**When the plan runs out.** The menu has a checkbox (`SessionPrefs.autoKey`, off by default, per
-session; it doesn't close the menu), shown on a plan session when a key is set for that harness, or
-when it's already on, so it can be turned off. Its label names its target, "Switch to OpenAI API key
-when plan runs out"; with no allowed key set it reads "No allowed key". No description under it.
-Below it, only where the checkbox shows and only for a harness with more than one key (Codex: OpenAI
-and Azure; not Claude), "Fallback keys…" opens a dialog to rank and exclude the harness's keys for that
-session (`SessionPrefs.fallbackKeys`): the switch goes to the first key in that order that's set, never
-an excluded one. An empty list excludes all. With nothing saved, the target is the session's last-used
-key (`SessionPrefs.lastKey`), then the harness's other set keys, and the dialog opens on all the
-harness's keys in that order, all ticked, keys not set included, so Save without edits excludes
-nothing. Saving the order sends only `fallbackKeys` (`setAutoKey` with no `on`): it never flips the
-switch, and the switch never changes the order. The order and exclusions survive reopening, restarts,
-toggling and source carries. Unsetting a preferred key only falls through to another allowed key; no
-allowed key set means no switch and a notice. This is the only automatic source change, and exists
-because you ticked it for that session.
+**Fallback chain.** The header pill opens the editor. The session starts off, and the runner
+saves its switch, ordered steps and progress across restarts. Each step selects a harness, login
+or key, model, effort and permission mode. The default permission mode maps the session's current
+mode to the target harness. A hop checks that its permission mode is at or below the session's
+current level. Runner presets can be loaded, saved, renamed or deleted. The editor starts a new
+chain with the runner's most recently saved order and shows why saved steps are unavailable.
 
-When a turn on the plan ends on the harness's own exhausted signal (`Sink.limitReached`,
-`LiveControl.planOut`), the source changes as from the chip, one chat notice says so ("Plan limit
-reached. Switched to OpenAI API key."), with when the plan resets if that's known, and the message that
-started the turn goes again, once. A Codex switch takes the carry route above, with its cost of
-re-sending the history. The loud badge shows as for any key. Push is unchanged.
+A plan-exhausted signal or exhausted rate-limit recovery advances to the next usable step. Same-harness switches use the same source checks as the billing chip. For a different
+harness, Tether waits for background work to finish, then uses the Move module’s native or private
+history-file route. The old transcript links to the new session and open views follow. The
+destination gets the selected model, effort and permission mode, and receives “Continue the task
+where it stopped” with the last user message quoted. The notice includes the reset when available.
+The runner
+records the exhausted step and its reset time, or backs off for ten minutes if no reset was
+reported. It prefers an available higher-priority step at the next turn boundary. If it previously
+left that step's thread, it tries to resume that thread and points it to a private archive of the
+work since the handoff. If the thread is unavailable, the source switch can carry the conversation
+into a fresh thread. When the order is exhausted, the transcript lists the steps and their known
+reset or retry times. With **Continue when a limit resets** enabled, the runner persists a wakeup
+for one minute after the earliest retry time and sends “continue” when it can take that step.
+Stop and a new message cancel the pending wakeup. Push reports exhaustion and resumption without
+announcing intermediate fallback hops; a hop that stops and waits for a message reports the turn's
+failure as usual. The turn's end is reported once, exhaustion included.
 
 | Harness | Exhausted | Not exhausted, whatever it says |
 |---|---|---|
@@ -1207,14 +1237,9 @@ Codes come first: text decides only with no code, except that Claude's `rate_lim
 text, since a short 429 has the same code. The reset is the signal's `resetsAt`, else that of the
 fullest window a fresh read shows at 100%.
 
-A turn that had already run a tool or taken a steer isn't resent, since replaying could repeat
-edits: the source still changes and the notice says so, leaving you to continue. The same goes for
-background work still running, and a turn Tether didn't start. An open terminal keeps the session
-where it is and the notice says why, as does no key being set.
-
-It stays on the key until you change it from the chip. It never switches back, and a key session
-never comes here: a key that fails stops with the usual error, with no further switch. A queue the
-failed turn held goes on after the resend.
+The original message is replayed after a switch if Tether sent it and the turn did not run a tool
+or take a steer. The chat asks for a new message when replay would be unsafe. A terminal or ongoing
+background work blocks switching.
 
 On Claude (`capabilities.sourceSwitch`) the next message's process start takes the new source.
 
@@ -1246,8 +1271,8 @@ of a Codex compaction: it's encrypted for its account, so a new source couldn't 
 themselves are carried instead, as far as they fit. Subagents of the old thread stay viewable from
 the transcript, and aren't listed under the new one.
 
-`credentials.json` is version 3: one slot per key, and `azureSettings` (`endpoint`, `deployments`)
-apart from Azure's key, so either can be set first and unsetting the key keeps them. A version 2 file
+`credentials.json` is version 3, with one slot per key and separate settings for Azure and Bedrock.
+Settings survive when a key is unset. A version 2 file
 (Azure's endpoint, one optional deployment and its rates in the key's slot) and a version 1 file (one
 `codex` slot) still read, their revisions kept: the one deployment becomes a list of one with its rates,
 and rates with no deployment are dropped (they priced whatever model was picked). A deployment saved
@@ -1257,7 +1282,7 @@ ahead of its runner gets no `billingSources` answer and hides the picker.
 
 Keys are written only to `credentials.json`, mode 600, under the runner's data directory
 (`TETHER_DATA_DIR`, otherwise its existing config/data directory). The runner sends browsers only
-set/unset status and optional last four characters, plus Azure's endpoint and deployments. The
+set/unset status and optional last four characters, plus non-secret Azure and Bedrock configuration. The
 browser clears the password field when submitting. Keys never belong in session prefs, summaries,
 transcripts, notifications, logs or argv. Subprocesses receive them by private file or environment.
 The relay forwards credential RPCs without recording their arguments. Error paths redact submitted
@@ -1278,8 +1303,8 @@ A Codex thread whose record disagrees with its session's source stops, naming bo
 
 The session label changes only after harness confirmation. API billing has one accessible colour
 token in light and dark themes: a loud source badge first in the session's chip row, visible at
-phone width without sideways scrolling and matching title text on Sidebar and Home rows. The
-composer keeps its regular styling. Subscription sessions remain quiet. Unknown billing is plainly neutral. Plan usage appears
+phone width without sideways scrolling and matching title text on Home rows. Session rows in the
+sidebar use plain white text with no payment-source differentiator. The composer keeps its regular styling. Subscription sessions remain quiet. Unknown billing is plainly neutral. Plan usage appears
 early in the chip row on phones and never appears on an API session's chip. Terminal mode must use the same
 confirmed source, or refuse to open. No terminal launch may edit the user's harness configuration.
 Codex's remote TUI joins the thread's confirmed permissions and approval reviewer; its launch
@@ -1640,11 +1665,23 @@ leaves it archived), under its worktree's lock (§4), so never while cleanup rem
 session that went on under another id sends to that one, which is what comes back; a closed side
 chat stays closed.
 
+**Asking first.** Archiving a session in a worktree Tether made (the summary's `worktreeOf`, not
+`worktreeHandMade`), from the row or ⋯, on a runner with `archiveWorktree`, asks "Delete its worktree
+too?": **Delete worktree** archives with `worktree: "remove"`: the cleanup below, and the answer waits
+for its word (up to 30 s; past that, it says the session's notice will tell), so when the worktree
+stays the dialog says why. **Keep worktree** archives with `worktree: "keep"`: the session's
+runner.json `worktree` gets `keep`, saved with the archive, and Tether never removes that worktree
+(no cleanup, no sweep, not another user's archive) while it's set. Unarchiving drops `keep`, so the
+next archive asks again. **Cancel** archives nothing. Agents' archives (`tether_archive`, cascades),
+an older browser, and archives without the argument get the automatic cleanup. An older runner
+(no `archiveWorktree`) isn't asked: it archives as it always did.
+
 **Worktree cleanup.** Archiving a session, any way (`setSessionArchived`), removes the worktree Tether
 made for it (§4, runner.json's `worktree`) and its branch, once that's safe (`modules/worktrees`
-cleanUp, on the `archived` event). Never one made by hand (`handMade`); never while another session
+cleanUp, on the `archived` event). Never one made by hand (`handMade`) or kept (any record there with
+`keep`); never while another session
 that isn't archived works there (any stored session of any age with its folder there, or one recorded
-as using it: Existing worktree, a fork, a Move; the last one archived removes it); never while any session that uses it, archived or not
+as using it: an existing worktree through `tether_start`, a fork, a Move; the last one archived removes it); never while any session that uses it, archived or not
 (each recorded user, every session in memory whose folder is in it, and each one's side chats), has
 work going (a turn or a request, queued or held messages, a rate-limit retry waiting, a setup
 running, background work or watchers, a terminal) or an open side chat; never while a process
@@ -1716,7 +1753,7 @@ when Tether knows what it spent on an API before; otherwise it's partial, `earli
 so. Known means: a new session (nothing before), a session whose confirmed source until now was the
 plan (`state.billing` from the harness, kept across restarts as Claude's `keptBilling` and Codex's
 remembered thread), or what the ledger already holds. The chip's switch and the plan running out
-(`planOut`) decide it at the switch, while the plan is still what's confirmed; otherwise the first
+(`advanceFallback`) decide it at the switch, while the plan is still what's confirmed; otherwise the first
 start that confirms a key decides it from what that start replaced. A Move into a key, on any harness,
 is a new session that starts whole: what came across was spent in the old one, which keeps its total.
 A Codex source change's new thread starts whole and adds what the old thread's entry holds. Unknown
@@ -1791,9 +1828,13 @@ a key, any other provider is a provider, OpenAI's own whose token count after it
 source from then on; before it unknown, since it may have been another. A Codex token count of rate
 limits only (no usage) marks only the record just before it.
 
-The `usage` module reads the harness stores, not Tether's records: each adapter's
+The `usage` module scans each adapter's
 `usageStores()` (Claude's `projects/`, subagents included; Codex's `sessions/`, `archived_sessions/`
-and the private homes of Tether's key threads, `codex-keys/`). The ledger and the hidden folders come
+and the private homes of Tether's key threads, `codex-keys/`; Antigravity's runner-local
+`antigravity-usage/`). Antigravity records one aggregate entry per live Tether prompt with usage in
+its ACP result. It uses the selected model at prompt submission, includes thought tokens in output,
+and leaves the entry unpriced. The page labels this scope. Older turns, standalone CLI or terminal
+turns, and work without a prompt result are outside the recording scope. The ledger and the hidden folders come
 through `ModuleContext` (`apiCost`, `hiddenFolder`). A request is one record. Claude: one per message
 id and request id, at the largest counts its streamed entries carry; a compaction's own request isn't
 in the store. Codex: `token_usage_record` by response id; before a file's first one, each
@@ -1814,6 +1855,12 @@ after the runner stops. The op answers at once with what's read and `scan.runnin
 polls while it runs. Days are calendar days in the browser's IANA zone (`timeZone`), so DST and
 quarter-hour zones bucket correctly. It reveals every project's activity: a drive op, and with
 shared runners it belongs in `MANAGE_OPS` (shared/access.ts), never to view-only access.
+
+### Amazon Bedrock
+
+Settings → Bedrock configures one AWS region and authentication by Bedrock API key or a named AWS profile on the runner. The owner's model list is specific to each harness. Claude uses Bedrock Runtime with model IDs and inference profiles. Codex uses a private Responses provider connected to Bedrock Mantle.
+
+Model choices use the provider's IDs. Manual changes to Bedrock keep a configured ID or match an unambiguous alias, with the first configured entry as the default. The destination's own defaults apply when leaving Bedrock. Requests are priced from AWS usage and configured or dated regional rates. The optional USD guard uses recorded spend across both harnesses for the UTC day. See [Amazon Bedrock setup](docs/amazon-bedrock.md).
 
 ## 11. Phases
 
@@ -2061,7 +2108,7 @@ hands over, switching back doesn't; copying works on desktop and phone; the phon
 shell.
 
 **Later (each a module, in an order you choose):** the Tether judge (a policy step), checkpoints with
-the Changes view and file panel, fallback chains, pi, opencode and other harnesses.
+the Changes view and file panel, pi, opencode and other harnesses.
 
 ## 12. Carried over from v1 (`~/web-coder`)
 
@@ -2258,9 +2305,7 @@ exception to "the label changes only after harness confirmation". It's safe beca
 exactly that source saved (a pending change refuses the fork), the label says what the harness
 confirmed for that source, so the API colour shows before anything is typed, and nothing is sent
 until the fork's own start confirms it again; a mismatch refuses the send as for any session. A
-key's copy starts that key's private app-server to make its thread, but no turn. The original's key
-preferences (`lastKey`, `fallbackKeys`) come along; its **When the plan runs out** switch doesn't,
-as it's ticked per session.
+key's copy starts that key's private app-server to make its thread, but no turn. The fork inherits `lastKey`. Each fork starts with its own fallback chain off.
 
 **Links.** `SessionSummary.forkedFrom { sessionId, messageId?, title }` (`SessionPrefs.forkedFrom`,
 kept across a source change like the session's other settings): the header says "Forked from

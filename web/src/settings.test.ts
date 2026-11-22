@@ -21,6 +21,8 @@ describe("settings access filtering", () => {
     expect(runnersForPage(list, "updates").map((r) => r.id)).toEqual(["box-managed"]);
     expect(runnersForPage(list, "usage").map((r) => r.id)).toEqual(["box-managed"]);
     expect(runnersForPage(list, "runners").map((r) => r.id)).toEqual(["box-managed"]);
+    expect(runnersForPage(list, "accounts").map((r) => r.id)).toEqual(["box-managed"]);
+    expect(runnersForPage(list, "bedrock").map((r) => r.id)).toEqual(["box-managed"]);
 
     // Notifications is device-level: keeps all runners
     expect(runnersForPage(list, "notifications").map((r) => r.id)).toEqual(["box-managed", "box-driven", "box-viewed"]);
@@ -36,7 +38,10 @@ describe("settings access filtering", () => {
     expect(isPageVisible(sharedOnly, "updates")).toBe(false);
     expect(isPageVisible(sharedOnly, "usage")).toBe(false);
     expect(isPageVisible(sharedOnly, "runners")).toBe(false);
+    expect(isPageVisible(sharedOnly, "accounts")).toBe(false);
+    expect(isPageVisible(sharedOnly, "bedrock")).toBe(false);
     expect(isPageVisible(sharedOnly, "notifications")).toBe(true);
+    expect(isPageVisible(sharedOnly, "display")).toBe(true);
 
     // App owner with no runners sees Runners and Notifications
     expect(isPageVisible([], "runners", "owner")).toBe(true);
@@ -48,18 +53,21 @@ describe("settings access filtering", () => {
     expect(isPageVisible([], "notifications", "editor")).toBe(true);
   });
 
-  test("visibleSettingsPages: shared person sees only Notifications", () => {
+  test("visibleSettingsPages: shared person sees only Notifications and Display", () => {
     const sharedOnly = [driven];
-    expect(visibleSettingsPages(sharedOnly, "editor")).toEqual(["notifications"]);
+    expect(visibleSettingsPages(sharedOnly, "editor")).toEqual(["notifications", "display"]);
 
     // Owner with managed runner sees all pages
     const ownerList = [managed];
     expect(visibleSettingsPages(ownerList, "owner")).toEqual([
       "runners",
       "credentials",
+      "accounts",
       "azure",
+      "bedrock",
       "texting",
       "notifications",
+      "display",
       "agents",
       "updates",
       "usage",
@@ -87,6 +95,9 @@ describe("settings access filtering", () => {
     expect(isSettingsPage("agents")).toBe(true);
     expect(isSettingsPage("updates")).toBe(true);
     expect(isSettingsPage("usage")).toBe(true);
+    expect(isSettingsPage("accounts")).toBe(true);
+    expect(isSettingsPage("bedrock")).toBe(true);
+    expect(isSettingsPage("display")).toBe(true);
 
     expect(isSettingsPage("home")).toBe(false);
     expect(isSettingsPage("session")).toBe(false);

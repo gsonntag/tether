@@ -1,3 +1,4 @@
+import { HARNESS_LOGIN_OPS } from "./harnessLogin";
 // Sharing a runner with people the app is shared with on Foliation (SPEC §3, "Who may connect").
 //
 // - The app's owners (with TETHER_RUNNER_OWNERS: the people listed for the runner's token) see
@@ -42,9 +43,11 @@ export const MANAGE_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "setRunnerSettings",
   "runnerSettings",
   "credentials",
+  ...HARNESS_LOGIN_OPS,
   "setCredential",
   "unsetCredential",
   "setAzure",
+  "setBedrock",
   "testAzure",
   "textingStatus",
   "setTexting",

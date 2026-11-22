@@ -138,7 +138,7 @@ function Row({ h, disabled, onUpdate }: { h: HarnessVersion; disabled: boolean; 
         <td data-label="Latest">{h.latest ?? "—"}</td>
         <td data-label="Status"><span className={`t-updates-status ${tone}`} title={h.error}>{statusLabel(h)}</span></td>
         <td className="t-updates-action">
-          {canUpdate(h) && <Button label="Update" variant="primary" size="sm" isDisabled={disabled} tooltip={h.command} onClick={() => onUpdate(h.id)} />}
+          {canUpdate(h) && <Button label={h.id === "antigravity" ? "Check" : "Update"} variant="primary" size="sm" isDisabled={disabled} tooltip={h.command} onClick={() => onUpdate(h.id)} />}
         </td>
       </tr>
       {(h.error || line) && (

@@ -32,7 +32,7 @@ partial because the session wasn't new, and with no reason the chip had no subto
 
 - Unit: `runner/src/core/costStart.test.ts` on the real core and a real ledger file: the chip after
   plan turns, a stored plan session after a restart, earlier source Unknown, a lost entry, a last
-  start on a key before the ledger, key/plan/key, a new key session, a stray report, `planOut`, and
+  start on a key before the ledger, key/plan/key, a new key session, a stray report, the fallback switch, and
   a Codex source change from the plan, from a key with an entry and from one whose entry was lost.
   `runner/src/modules/move/move.test.ts`: a Move into a key starts whole. `runner/src/costs.test.ts`:
   entry reasons, the old file shapes (the prod entry's among them), an unreadable ledger.
@@ -52,7 +52,7 @@ No source ever changes by itself, with one exception: the checkbox in the billin
 by you, for that session (SPEC §10 has the signals). Without it, an exhausted plan stops on the plan.
 
 - Unit: `runner/src/adapters/claude/limits.test.ts` and `codex/limits.test.ts` have a fixture for each
-  signal and each non-signal, `runner/src/core/planOut.test.ts` the switch on the real core.
+  signal and each non-signal, `runner/src/core/fallbackSwitch.test.ts` the switch on the real core.
 - Browser, desktop and 375 px, on the real core with scripted frames through the real stream parsers
   (`scripts/limit-runner.ts`, `scripts/e2e-auto.mjs`, with made-up keys): plan lines on plan and key
   sessions, no line when nothing is reported, a stale figure's age, the box saved over a reload and
@@ -96,24 +96,16 @@ the running runner, or the shared Codex daemon for a key test. Keep artifacts un
 below 8 and at least 5 GB free before starting. Hash `~/.codex/config.toml` before and after: stop
 immediately if it changes. Never accept a trust prompt. Use only Haiku and gpt-6-luna at Low.
 
-## When the plan runs out
+## Fallback chain
 
-- [ ] Desktop and 375 px: the billing chip's menu shows the plan's windows on a plan session and on a
-  key session, by the plan's name; nothing reported is no line; the chip shows a % only on a plan.
-  For both harnesses the chip uses 5h when current; Week when there's no 5h figure, or when Week is at
-  100% or reported exhausted.
-- [ ] The box shows on a plan session with a key set or the switch already enabled, off by default,
-  and toggling keeps the menu open. Its label names the target ("Switch to OpenAI API key when plan
-  runs out"), or reads "No allowed key"; nothing under it. Fallback keys… shows only with the box, and
-  only on Codex (two keys): it opens on every key, last-used first, all ticked, so Save unchanged
-  excludes nothing and never flips the box. It ranks Azure before OpenAI, excludes either or both, and
-  saves. Reload and source carry preserve the order and exclusions. No explanatory lines in the dialog.
-- [ ] Unset the preferred fallback: only the next allowed key is chosen. Exclude that key too:
-  no switch, with a notice saying no allowed fallback is available. Toggling preserves the policy.
-- [ ] Ticked, a real exhausted signal switches once, with one notice and the loud badge, and the message
-  goes once more; if tools ran it isn't resent and the notice says so. It stays on the key.
-- [ ] Unticked, or on a short 429, a network error, auth, overloaded or a 5xx: nothing switches.
-- [ ] A key that fails after the switch stops with the usual error, with no further switch.
+- [ ] Desktop and 375 px: the billing menu shows the plan's windows, and the chip shows a percent
+  only on a plan.
+- [ ] The chain starts off. Use its header pill to add, reorder and remove steps. Save, rename, load
+  and delete a runner preset. Reload to check persistence, and remove a credential to see the reason
+  on its saved step.
+- [ ] An exhausted plan or exhausted rate-limit recovery advances to the next usable same-harness
+  step and shows the chain position. The original message is sent again if the turn did no work.
+- [ ] With the chain off or while retries remain, the source stays put.
 
 ## Credentials page
 

@@ -6,6 +6,7 @@ import { Icon } from "@astryxdesign/core/Icon";
 import { LockClosedIcon } from "@heroicons/react/24/outline";
 import { Settings } from "./components/Credentials";
 import { Home } from "./components/Home";
+import { ArchiveWorktreeDialog } from "./components/ArchiveWorktreeDialog";
 import { NewSessionDialog } from "./components/NewSessionDialog";
 import { SessionView } from "./components/SessionView";
 import { ShortLink } from "./components/ShortLink";
@@ -43,7 +44,7 @@ export function App() {
       {auth !== "ok" ? (
         <Blocked auth={auth} />
       ) : isSettingsPage(route.page) ? (
-        <Settings page={route.page} />
+        <Settings key={route.page === "credentials" ? route.runnerId : undefined} page={route.page} loginTarget={route.page === "credentials" ? route : undefined} />
       ) : route.page === "link" ? (
         <ShortLink key={route.code} code={route.code} />
       ) : route.page === "session" ? (
@@ -52,6 +53,7 @@ export function App() {
         <Home />
       )}
       <NewSessionDialog />
+      <ArchiveWorktreeDialog />
     </AppShell>
   );
 }

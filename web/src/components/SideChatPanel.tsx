@@ -21,6 +21,7 @@ import { RequestDock } from "./RequestDock";
 import { dropRows, SessionCtx } from "./sessionContext";
 import { StatusDot } from "./SessionRow";
 import { Transcript } from "./Transcript";
+import { shouldAnimateStreaming, useStreamingAnimationSetting } from "../streamingSettings";
 
 /** What the panel shows: a side chat being made (its question), or one by id. */
 export type SideState = { opening: true; question: string } | { id: string };
@@ -162,7 +163,10 @@ function SideChat({ runnerId, sessionId, onBringBack, onClose }: { runnerId: str
   const pending = usePending(runnerId, sessionId);
   const [bringing, setBringing] = useState(false);
   const [error, setError] = useState<string>();
-  const ctx = useMemo(() => ({ runnerId, sessionId, projectPath: summary?.projectPath }), [runnerId, sessionId, summary?.projectPath]);
+  const [streamingSetting] = useStreamingAnimationSetting();
+  const loadedCount = view?.window?.messages.length ?? 0;
+  const animateStreaming = shouldAnimateStreaming(streamingSetting, loadedCount);
+  const ctx = useMemo(() => ({ runnerId, sessionId, projectPath: summary?.projectPath, streamingAnimation: animateStreaming }), [runnerId, sessionId, summary?.projectPath, animateStreaming]);
   const state = view?.state;
   const agent = summary ? AGENT_NAMES[summary.harness] : "The agent";
   const waiting = !!state && state.requests.length > 0;
@@ -217,7 +221,7 @@ function SideChat({ runnerId, sessionId, onBringBack, onClose }: { runnerId: str
                 <PendingSends runnerId={runnerId} sessionId={sessionId} list={pending} />
                 {(running || bringing) && (
                   <div className="t-inline-status" style={{ padding: "8px 0 12px" }}>
-                    {waiting ? "Waiting for you below." : <><Spinner size="sm" /> {bringing ? "Writing a summary…" : `${agent} is answering…`}</>}
+                    {waiting ? "Waiting for you below." : <>{animateStreaming ? <Spinner size="sm" /> : <span className="t-css-spinner" aria-hidden />} {bringing ? "Writing a summary…" : `${agent} is answering…`}</>}
                   </div>
                 )}
               </>

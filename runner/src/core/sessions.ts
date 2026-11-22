@@ -6,6 +6,7 @@
 // or while a subagent of it runs. Its transcript is read from the harness's store on first open
 // (never kept on disk by Tether) and tailed while it's stored and watched.
 
+import { needsHarnessLogin } from "../../../shared/harnessLogin";
 import { nextScheduled, unscheduled } from "../../../shared/schedule";
 import { watchingSummary } from "../../../shared/watchers";
 import { accessSync, constants, existsSync, lstatSync, mkdirSync, statSync } from "node:fs";
@@ -14,7 +15,7 @@ import { dirname, resolve } from "node:path";
 import type { CostLedger } from "../costs";
 import type { SessionPrefs, WorktreeRecord } from "../config";
 import { partChunk, type PartChunk } from "../../../shared/limits";
-import type { FolderCheck, RunnerToServer } from "../../../shared/protocol";
+import type { ArchiveWorktree, FolderCheck, RunnerToServer } from "../../../shared/protocol";
 import { parseSessionId, sessionId } from "../../../shared/ids";
 import { mergePlan } from "../../../shared/labels";
 import type { HarnessId, LiveState, Msg, PlanUsage, ProjectInfo, Request, SessionEvent, SessionSnapshot, SessionSummary } from "../../../shared/transcript";
@@ -194,8 +195,8 @@ export class SessionCore {
             return { ...f, ...(p.archived ? { archived: true } : {}), ...(p.pinned ? { pinned: p.pinned } : {}), ...forked(p), ...worktreeOf(p) };
           }),
           (id) => this.owned(id),
-          // Open in a browser, or pinned (a lookup may have failed, pinnedRows.ts): listed still.
-          (id) => this.watched.has(id) || !!this.o.prefs.get(id).pinned,
+          // Keep a login failure in Home even if the harness has not created the session record.
+          (id) => this.watched.has(id) || !!this.o.prefs.get(id).pinned || this.pendingHarnessLogin(id),
         );
       } catch (e: any) {
         this.log(`discovery failed: ${e?.message ?? e}`);
@@ -204,6 +205,11 @@ export class SessionCore {
       }
     })();
     return this.discovering;
+  }
+
+  private pendingHarnessLogin(id: string) {
+    const p = this.o.prefs.get(id);
+    return p.unread === "failed" && !!p.failure && needsHarnessLogin(p.failure);
   }
 
   /** Rows the core keeps current itself: live sessions, running subagents, and sessions waiting on a person. */
@@ -277,15 +283,24 @@ export class SessionCore {
       return { sessions: [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit) };
     }
     if (args.projectPath === undefined && !args.query?.trim() && !args.archived && !args.all) return this.book.all();
-    const all = (await Promise.all(this.o.adapters.map((a) => a.listSessions(args.projectPath ? { projectPath: expandPath(args.projectPath) } : {}).catch(() => [] as SessionSummary[])))).flat();
+    // A main checkout's list has its worktrees' sessions too (SPEC §4: the web lists them under it): each worktree recorded with it as its repo.
+    const folders: (string | undefined)[] = args.projectPath ? this.withWorktrees(expandPath(args.projectPath)) : [undefined];
+    const all = (await Promise.all(folders.flatMap((f) => this.o.adapters.map((a) => a.listSessions(f ? { projectPath: f } : {}).catch(() => [] as SessionSummary[]))))).flat();
     // Live sessions not yet in any store (a new session before its first message).
     const byId = new Map(this.overlay(all).map((s) => [s.id, s]));
     for (const s of this.sessions.values())
-      if (s.live && !s.summary.parentSessionId && (!args.projectPath || s.summary.projectPath === expandPath(args.projectPath))) byId.set(s.id, s.summary);
+      if (s.live && !s.summary.parentSessionId && (!args.projectPath || folders.includes(s.summary.projectPath))) byId.set(s.id, s.summary);
     const q = args.query?.trim().toLowerCase();
     // Side chats (SPEC §16a) are listed under their session only.
     const rows = [...byId.values()].filter((s) => this.shown(s) && !s.sideOf && (args.all ? !s.parentSessionId : args.archived ? !!s.archived && !s.parentSessionId : !s.archived || !!q) && (!q || s.title.toLowerCase().includes(q)));
     return { sessions: rows.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, q ? Math.min(limit, 100) : limit) };
+  }
+
+  /** `folder` and the worktrees runner.json records with it as their main checkout. */
+  private withWorktrees(folder: string): string[] {
+    const main = resolve(folder);
+    const trees = this.o.prefs.ids((p) => !!p.worktree?.repo && resolve(p.worktree.repo) === main).map((id) => this.o.prefs.get(id).worktree!.path);
+    return [...new Set([folder, ...trees.filter((t) => resolve(t) !== main)])];
   }
 
   // ---------------- sessions ----------------
@@ -316,7 +331,9 @@ export class SessionCore {
     const row: SessionSummary | undefined = known ?? (blank ? { id, harness: parsed.harness, nativeId: parsed.nativeId, projectPath: prefs.projectPath!, title: "New session", mode: "stored", status: "idle", updatedAt: prefs.at ?? this.now() } : undefined);
     if (!row) throw new Error("That session isn't on this runner any more.");
     const defaults = await a.defaults(row.projectPath, parsed.nativeId).catch(() => ({}) as StartOpts);
-    const state: LiveState = { ...emptyState(), ...(row.billing ? { billing: row.billing } : {}), ...a.unset, ...pick(defaults), ...chosenOf(a, prefs), ...MessageQueue.saved(prefs), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), ...(prefs.carried ? { carried: true } : {}), ...(prefs.nextBilling ? { nextBilling: prefs.nextBilling } : {}), ...(prefs.nextDeployment ? { nextDeployment: prefs.nextDeployment } : {}), ...(prefs.nextSource && prefs.nextModel ? { nextModel: prefs.nextModel } : {}), ...(prefs.sourceSwitchFailed ? { sourceSwitchFailed: true } : {}), ...(prefs.autoKey ? { autoKey: true } : {}), ...(prefs.canText ? { canText: true } : {}), ...(prefs.lastKey ? { lastKey: prefs.lastKey } : {}), ...(prefs.fallbackKeys !== undefined ? { fallbackKeys: prefs.fallbackKeys } : {}), ...(prefs.setup ? { setup: "failed" as const } : {}), requests: this.requestsFor(id) };
+    const source = prefs.source ?? a.billing?.recorded?.(parsed.nativeId, row.projectPath);
+    const keySession = source && source !== "subscription" && !row.parentSessionId && !prefs.sideOf;
+    const state: LiveState = { ...emptyState(), ...(row.billing ? { billing: row.billing } : {}), ...a.unset, ...pick(defaults), ...chosenOf(a, prefs), ...MessageQueue.saved(prefs), ...(prefs.fallbackChain ? { fallbackChain: prefs.fallbackChain } : {}), ...(prefs.movedTo ? { continuedIn: prefs.movedTo } : {}), ...(prefs.carried ? { carried: true } : {}), ...(prefs.nextBilling ? { nextBilling: prefs.nextBilling } : {}), ...(prefs.nextDeployment ? { nextDeployment: prefs.nextDeployment } : {}), ...(prefs.nextSource && prefs.nextModel ? { nextModel: prefs.nextModel } : {}), ...(prefs.sourceSwitchFailed ? { sourceSwitchFailed: true } : {}), ...(prefs.canText ? { canText: true } : {}), ...(keySession ? { retryThrottled: prefs.retryThrottled === true } : {}), ...(prefs.lastKey ? { lastKey: prefs.lastKey } : {}), ...(prefs.setup ? { setup: "failed" as const } : {}), requests: this.requestsFor(id) };
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;
@@ -488,6 +505,7 @@ export class SessionCore {
   async refreshPlan(harness: HarnessId) {
     const plan = await this.adapter(harness).planUsage?.().catch(() => undefined);
     if (plan) this.notePlan(harness, plan);
+    return this.plans.get(harness);
   }
 
   /** The context and billing as they're stored, when no driver reports them. Main sessions only. */
@@ -525,8 +543,8 @@ export class SessionCore {
     const t = setTimeout(() => {
       this.evictTimers.delete(s.id);
       if (this.held(s) || this.sessions.get(s.id) !== s) return;
-      // A new session that never got a message has nothing in any store: no row to keep.
-      if (s.fresh) return this.dropFresh(s);
+      // An unused session normally vanishes. A login failure is actionable from Home.
+      if (s.fresh && !this.pendingHarnessLogin(s.id)) return this.dropFresh(s);
       this.sessions.delete(s.id);
       this.seqs.set(s.id, s.seq);
     }, this.o.evictMs ?? 60_000);
@@ -585,15 +603,23 @@ export class SessionCore {
     return partChunk(p, offset);
   }
 
-  /** Keeps a session out of Recent (or back in); archived sessions stay searchable. */
-  async setArchived(s: Session, archived: boolean) {
-    if ((this.o.prefs.get(s.id).archived === true) === archived) return;
+  /**
+   * Keeps a session out of Recent (or back in); archived sessions stay searchable. `worktree`
+   * (archiving): "keep" marks its worktree record kept, saved with the archive (SPEC §4);
+   * unarchiving drops the mark, so the next archive asks again. False: it already was.
+   */
+  async setArchived(s: Session, archived: boolean, worktree?: ArchiveWorktree): Promise<boolean> {
+    const p = this.o.prefs.get(s.id);
+    if ((p.archived === true) === archived) return false;
+    const rec = p.worktree;
+    const kept = rec && (archived ? worktree === "keep" : false);
     // Archiving unpins: an archived session is out of every list.
-    this.o.prefs.set(s.id, { projectPath: s.summary.projectPath, archived: archived || undefined, ...(archived ? { pinned: undefined, pinnedRow: undefined } : {}) });
+    this.o.prefs.set(s.id, { projectPath: s.summary.projectPath, archived: archived || undefined, ...(archived ? { pinned: undefined, pinnedRow: undefined } : {}), ...(rec && !!rec.keep !== !!kept ? { worktree: { ...rec, keep: kept || undefined } } : {}) });
     this.o.prefs.flush();
     this.touch(s);
     await this.discover();
-    this.o.bus.emit("archived", { sessionId: s.id, archived });
+    this.o.bus.emit("archived", { sessionId: s.id, archived, ...(archived && worktree ? { worktree } : {}) });
+    return true;
   }
 
   /** Records the worktree a session works in as its own (New or Existing worktree, SPEC §4): saved at once. */
@@ -670,7 +696,7 @@ export class SessionCore {
   }
 
   touch(s: Session, patch: Partial<SessionSummary> = {}) {
-    const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, watching: _watching, archived: _archived, pinned: _pinned, retry: _retry, scheduledAt: _scheduledAt, ...rest } = { ...s.summary, ...patch };
+    const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, watching: _watching, archived: _archived, pinned: _pinned, retry: _retry, scheduledAt: _scheduledAt, worktreeOf: _worktreeOf, worktreeBranch: _worktreeBranch, worktreeHandMade: _worktreeHandMade, ...rest } = { ...s.summary, ...patch };
     const beside = s.state.backgroundSubagents;
     const watching = watchingSummary(s.state.watching);
     const n = s.state.requests.length;
@@ -681,12 +707,12 @@ export class SessionCore {
     const stuck = s.state.queue.some((m) => m.held);
     const title = this.o.prefs.get(s.id).title;
     s.summary = { ...rest, ...(s.state.retry ? { retry: s.state.retry } : {}), ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...(this.o.prefs.get(s.id).pinned ? { pinned: this.o.prefs.get(s.id).pinned } : {}), ...worktreeOf(this.o.prefs.get(s.id)), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(watching ? { watching } : {}), ...(at !== undefined ? { scheduledAt: at } : {}), ...(stuck || (q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait && s.state.setup !== "running" && !s.retry) ? { queuePaused: true } : {}) };
-    if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
+    if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id) || (this.pendingHarnessLogin(s.id) && this.shown(s.summary))) this.book.upsert([s.summary]);
   }
 }
 
 /** A session in a worktree Tether made: the summary names that repo's main checkout. */
-const worktreeOf = (p: SessionPrefs) => (p.worktree?.repo ? { worktreeOf: p.worktree.repo } : {});
+const worktreeOf = (p: SessionPrefs) => (p.worktree?.repo ? { worktreeOf: p.worktree.repo, ...(p.worktree.branch ? { worktreeBranch: p.worktree.branch } : {}), ...(p.worktree.handMade ? { worktreeHandMade: true } : {}) } : {});
 
 /** The settings fields of prefs or defaults, without empty ones. */
 function pick(o: StartOpts): StartOpts {

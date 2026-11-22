@@ -177,4 +177,20 @@ export function codexLine(line: string, f: FileState, index: Map<string, number>
   if (plan && (reports || fresh) && f.last !== undefined && f.recs[f.last]) f.recs[f.last]![8] |= PLAN;
 }
 
-export const lineParser = (h: HarnessId) => (h === "claude" ? { marks: claudeMarks, parse: claudeLine } : { marks: codexMarks, parse: codexLine });
+function agyLine(line: string, f: FileState, index: Map<string, number>) {
+  let e: any;
+  try { e = JSON.parse(line); } catch { return; }
+  if (e?.type !== "agy_turn_usage" || typeof e.id !== "string" || typeof e.session !== "string" || typeof e.project !== "string") return;
+  const t = time(e.timestamp);
+  if (t === undefined) return;
+  f.session = e.session;
+  f.project = e.project;
+  const r: Rec = [keyOf(`agy:${e.id}`), t, typeof e.model === "string" && e.model ? e.model : "unknown", n(e.input), n(e.output), n(e.read), n(e.write), 0, OWN | (e.plan === true ? PLAN : 0)];
+  if (r[3] || r[4] || r[5] || r[6]) put(f, index, r);
+}
+
+export const lineParser = (h: HarnessId) => ({
+  claude: { marks: claudeMarks, parse: claudeLine },
+  codex: { marks: codexMarks, parse: codexLine },
+  antigravity: { marks: (head: string) => head.includes('"agy_turn_usage"'), parse: agyLine },
+})[h];

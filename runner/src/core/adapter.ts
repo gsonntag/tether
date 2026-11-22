@@ -18,8 +18,8 @@ export interface StartOpts {
   observe?: boolean;
   /** Ephemeral runner-only credential snapshot. Never persist or report this object. */
   credential?: CredentialSnapshot;
-  /** A runner-selected Azure deployment that must still exist when the thread is made. */
-  azureDeployment?: string;
+  /** A runner-selected provider model that must still exist when the thread is made. */
+  sourceModel?: string;
   model?: string;
   effort?: string;
   permissionMode?: string;
