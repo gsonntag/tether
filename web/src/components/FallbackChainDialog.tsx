@@ -9,7 +9,7 @@ function Field({ label, value, options, empty, onChange }: {
   label: string; value: string; options: Choice[]; empty: ReactNode; onChange: (value: string) => void;
 }) {
   return <label className="t-fallback-field">{label}
-    <select value={value} onChange={(e) => onChange(e.target.value)}>
+    <select aria-label={label} value={value} onChange={(e) => onChange(e.target.value)}>
       <option value="">{empty}</option>
       {value && !options.some(({ id }) => id === value) && <option value={value}>{value} (unavailable)</option>}
       {options.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
