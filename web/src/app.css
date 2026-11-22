@@ -754,6 +754,23 @@
   gap: 8px;
   align-items: center;
 }
+@keyframes t-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.t-css-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--t-border, currentColor);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  box-sizing: border-box;
+  animation: t-spin 0.8s linear infinite;
+  vertical-align: -2px;
+  flex: none;
+}
 .t-inline-status.error {
   color: var(--color-text-red, var(--color-error));
 }
@@ -824,14 +841,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Existing worktree's picker: the whole "path · branch · used by N sessions", wrapped (its end is the point). */
-.t-wt-opt {
-  flex-shrink: 0;
-}
-.t-wt-opt .t-path {
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
 .t-form {
   max-height: calc(100dvh - 120px);
   box-sizing: border-box;
@@ -860,6 +869,24 @@
 }
 .t-form > * {
   flex-shrink: 0;
+}
+/* A dialog's prose: one wrapping block (not a flex row of text runs); long paths and branches break anywhere. */
+.t-dialog-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--t-muted);
+  overflow-wrap: anywhere;
+}
+.t-dialog-text code {
+  overflow-wrap: anywhere;
+}
+/* A dialog's buttons: right-aligned, wrapping onto a new line on a narrow screen rather than truncating. */
+.t-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 .t-form-error {
   color: var(--color-text-red, var(--color-error));
@@ -2501,6 +2528,8 @@
   .t-header > .t-chips { order: 2; flex: 1 1 100%; overflow: visible; }
   .t-chip-options { display: flex; flex: 1 1 0; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
   .t-chip-options::-webkit-scrollbar { display: none; }
+  /* The strip scrolls; its chips keep their values instead of narrowing to fit. */
+  .t-chip-options > .t-chip { flex: none; }
   .t-chips > .t-chip.t-paid-badge { padding: 6px 10px; min-height: 30px; align-self: center; }
   /* The loud pill stays 30 px; the button around it is a full tap target. */
   .t-chips > .t-chip.t-paid-badge.t-source-chip::after { content: ""; position: absolute; inset: -7px 0; }

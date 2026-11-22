@@ -702,6 +702,11 @@ export class Texter {
     this.store.save();
   }
 
+  /** Texts the person a note from the runner itself, about no session (e.g. a failed compatibility check). Whether it went. */
+  async notice(text: string): Promise<boolean> {
+    return (await this.send(text)).sent;
+  }
+
   /** Texts about a session, unless someone is looking at it (or at `also`) in Tether right now (`always`: even then). Whether it went. */
   async tell(sessionId: string, status: string, body: string, o: { also?: string[]; quick?: boolean; requestId?: string; always?: boolean; link?: boolean; via?: Back; image?: OutImage } = {}): Promise<{ sent: boolean; imageSent?: boolean }> {
     const { also = [], quick = false, requestId, always = false } = o;
@@ -1276,6 +1281,7 @@ export const textingModule: Module = {
       ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) =>
         stopped || recovering ? t.turnStopped(sessionId, !stopped) : void later(FINISH_DELAY_MS, ((end) => () => t.turnEnded(sessionId, error, end))(t.endOf(sessionId))),
       ),
+      ctx.bus.on("error", ({ sessionId, message }) => void (!sessionId && later(0, () => t.notice(message).then(() => {})))),
     ];
     // iMessage's own ops, for a web from before connectors.
     const imessage = t.channel(IMESSAGE)!;

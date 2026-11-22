@@ -104,6 +104,19 @@ describe("the fallback chain", () => {
     expect(notices(s)[0]).toContain("Switched to Anthropic API key. The turn already acted. Send a message to continue.");
   });
 
+  test("a hop that waits on the person says so once: the held-back end comes as waiting", async () => {
+    const t = setup();
+    const ends: CoreEvents["turnEnded"][] = [], statuses: CoreEvents["fallbackStatus"][] = [];
+    t.core.o.bus.on("turnEnded", (e) => ends.push(e));
+    t.core.o.bus.on("fallbackStatus", (e) => statuses.push(e));
+    t.adapter.script = () => [(s) => at(s), tool, limit()];
+    await t.live.send("claude:one", "fix it");
+    await settled(t, (s) => notices(s).some((text: string) => text.includes("Send a message to continue.")));
+    await Bun.sleep(20);
+    expect(ends).toEqual([{ sessionId: "claude:one", error: "You've hit your session limit", fallbackPending: true }]);
+    expect(statuses).toEqual([{ sessionId: "claude:one", status: "waiting", error: "You've hit your session limit" }]);
+  });
+
   test("a steer in that turn isn't resent either", async () => {
     const t = setup();
     t.adapter.capabilities = { ...t.adapter.capabilities, canSteer: true };
@@ -177,10 +190,16 @@ describe("the fallback chain", () => {
 
   test("no key left, or a terminal open: it stays, and says so", async () => {
     const t = setup({ key: false });
+    const ends: CoreEvents["turnEnded"][] = [], statuses: string[] = [];
+    t.core.o.bus.on("turnEnded", (e) => ends.push(e));
+    t.core.o.bus.on("fallbackStatus", ({ status }) => statuses.push(status));
     await t.live.send("claude:one", "fix it");
     const s = await settled(t, () => true);
     await Bun.sleep(20);
     expect(notices(s)[0]).toContain("Used every available source.");
+    // One turn end (texting and peers report it once); push tells the exhaustion itself.
+    expect(ends).toEqual([{ sessionId: "claude:one", error: "You've hit your session limit", fallbackPending: true }]);
+    expect(statuses).toEqual(["exhausted"]);
 
     const u = setup();
     u.adapter.script = () => [(s) => at(s), (s, d) => void (u.core.sessions.get("claude:one")!.setState({ terminal: { kind: "shared" } as any }), d), limit()];
@@ -321,8 +340,9 @@ describe("the fallback chain", () => {
       t.prefs.set("claude:paid", { carrying: true, projectPath: t.dir, source });
       return "claude:paid";
     };
-    t.live.fallbackArchive = async (from) => {
+    t.live.fallbackArchive = async (from, to) => {
       expect(from).toBe("claude:paid");
+      expect(to).toBe("claude:one");
       return "/private/fallback/history.md";
     };
     t.adapter.script = (text) => text === "hit" && t.adapter.drivers.at(-1)?.opts.credential?.source === "subscription"

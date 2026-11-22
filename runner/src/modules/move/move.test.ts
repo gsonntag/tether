@@ -118,7 +118,7 @@ describe("cross-harness fallback", () => {
       const store = new CredentialStore(join(mkdtempSync(join(tmpdir(), "tether-fallback-move-")), "credentials.json"));
       const { mover, runner } = setup([claude, codex], store);
       runner.live.fallbackMover = (id, harness, source, opts) => mover.fallbackHop(id, harness, source, opts);
-      runner.live.fallbackArchive = (id, after) => mover.fallbackArchive(id, after);
+      runner.live.fallbackArchive = (id, to, after) => mover.fallbackArchive(id, to, after);
       claude.stored_("s1", convo);
       runner.core.o.prefs.set("claude:s1", { model: "sonnet", permissionMode: "ask", source: "subscription" });
       await runner.live.setFallbackChain("claude:s1", true, [
@@ -165,6 +165,19 @@ describe("cross-harness fallback", () => {
       }
     });
   }
+});
+
+describe("a fallback chain's return (Mover.fallbackArchive)", () => {
+  test("the work since the handoff goes where the returning thread may read it", async () => {
+    const pi = new Neutral("pi", true);
+    const { mover, dir } = setup([pi]);
+    pi.stored_("paid", [...convo, { id: "a2", role: "assistant", ts: 12, parts: [{ type: "text", text: "Done on the key." }] }]);
+    const file = await mover.fallbackArchive("pi:paid", "pi:one", "a1");
+    expect(file.startsWith(join(movedDir("pi:one", join(dir, "modules/move")), "fallback-"))).toBe(true);
+    const text = readFileSync(file, "utf8");
+    expect(text).toContain("Done on the key.");
+    expect(text).not.toContain("vault-4417.txt");
+  });
 });
 
 describe("a source change (Mover.carry)", () => {

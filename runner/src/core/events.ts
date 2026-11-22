@@ -1,6 +1,6 @@
 // The session core's events (SPEC §3). Modules subscribe to these; the core never imports a module.
 
-import type { PushKeys } from "../../../shared/protocol";
+import type { ArchiveWorktree, PushKeys } from "../../../shared/protocol";
 import type { Msg, Request, RunStatus, SessionMode, ToolPart } from "../../../shared/transcript";
 
 /** How a request closed: decided, stopped with its turn, or answered in the harness's own UI. */
@@ -11,7 +11,8 @@ export interface CoreEvents {
   turnStarted: { sessionId: string; from?: RunStatus };
   /** `stopped`: a person stopped it. `recovering`: an intermediate failure, with no final notification. */
   turnEnded: { sessionId: string; error?: string; stopped?: boolean; recovering?: boolean; fallbackPending?: boolean };
-  fallbackStatus: { sessionId: string; status: "exhausted" | "resumed" };
+  /** `waiting`: the chain stopped and waits on the person; `error` is why the turn ended (the end it follows carried `fallbackPending`). */
+  fallbackStatus: { sessionId: string; status: "exhausted" | "resumed" | "waiting"; error?: string };
   message: { sessionId: string; msg: Msg };
   /** a waiting message left the queue: it went out to the harness, or was cancelled */
   queueGone: { sessionId: string; msgId: string; how: "sent" | "cancelled"; text: string };
@@ -28,7 +29,8 @@ export interface CoreEvents {
    */
   attention: { sessionId: string; message?: string };
   /** a session was archived or unarchived (the worktrees module removes a merged worktree Tether made) */
-  archived: { sessionId: string; archived: boolean };
+  /** `worktree`: the person's answer to "Delete its worktree too?" (setSessionArchived); none: the automatic cleanup */
+  archived: { sessionId: string; archived: boolean; worktree?: ArchiveWorktree };
   /** archiving's worktree cleanup decided (worktrees module): removed, or kept and why; neither: it had none to clean up */
   worktreeCleaned: { sessionId: string; removed?: boolean; why?: string };
   /** the "Session can text me" box changed (texting drops an unticked session's number) */

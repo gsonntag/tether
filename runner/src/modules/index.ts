@@ -75,7 +75,7 @@ export interface SessionActions {
   /** what makes the thread a session's source change goes to (Mover.carry) */
   carrier(make: (id: string, source: BillingSource, model?: string, settings?: StartOpts) => Promise<string>): void;
   fallbackMover?(move: (id: string, harness: HarnessId, source: BillingSource, opts: StartOpts) => Promise<{ sessionId: string; history?: string; after?: string }>): void;
-  fallbackArchiver?(write: (from: string, after?: string) => Promise<string>): void;
+  fallbackArchiver?(write: (from: string, to: string, after?: string) => Promise<string>): void;
   /** a fork of a session (SPEC §16): a new stored session with its conversation, through `messageId` when given. Its id */
   fork(id: string, o?: ForkOptions): Promise<string>;
   /** closes a session's harness process if it has one (it starts again at its next send) */

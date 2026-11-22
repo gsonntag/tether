@@ -1,7 +1,7 @@
 // A worktree per session (SPEC §4). New session's "New worktree" (and tether_start with a
 // worktree) makes a git worktree beside the folder's repo, on a new branch from the
-// default branch (fetched first, best effort), and starts the session there. "Existing worktree"
-// starts one in a worktree that's already there (made for another session, or by hand):
+// default branch (fetched first, best effort), and starts the session there. tether_start with an
+// existing worktree starts one in a worktree that's already there (made for another session, or by hand):
 //
 //   workspaceInfo           is the folder in git? where would a worktree go, from what, with what setup?
 //   newWorktreeSession      (one per repo at a time) fetch -> git worktree add -> newSession in it ->
@@ -9,7 +9,8 @@
 //   listWorktrees           the repo's other worktrees (git worktree list), and who works in each
 //   existingWorktreeSession newSession in one of them -> recorded as one of its users (no setup)
 //   rerunSetup              the setup again, after it failed or a restart cut it off
-//   (archived event)        cleanUp: archiving a session removes the worktree Tether made, once safe
+//   (archived event)        cleanUp: archiving a session removes the worktree Tether made, once safe;
+//                           not when the person answered "Keep" (the record's `keep`, until unarchived)
 //
 // The record (runner.json's `worktree` on the session: path, branch, main checkout, and the ignored
 // files there once it was set up) is what makes the worktree the session's own: the summary carries
@@ -282,8 +283,8 @@ export class Worktrees {
 
   /**
    * A session was archived: the worktree Tether made for it (or another, that it joined) goes, with
-   * its branch, once that's safe, and a notice in the session says so. Never one made by hand, nor
-   * while another session that isn't archived works there, any session that uses it (recorded or in
+   * its branch, once that's safe, and a notice in the session says so. Never one made by hand or
+   * one the person kept (a record there with `keep`: "Keep" on archive), nor while another session that isn't archived works there, any session that uses it (recorded or in
    * memory, archived or not, the side chats of each too) still has work going or a side chat open,
    * a process outside this runner (a tmux session, a dev server) has its folder there or Tether
    * can't tell, or git can't confirm everything is in main and the tree is clean
@@ -293,7 +294,7 @@ export class Worktrees {
    */
   async cleanUp(sessionId: string, o: { quiet?: boolean } = {}): Promise<{ removed: boolean; why?: string } | undefined> {
     const own = this.o.sessions.worktree?.(sessionId);
-    if (!own || own.handMade || !own.branch) return undefined;
+    if (!own || own.handMade || own.keep || !own.branch) return undefined;
     const look = await this.o.sessions.open(sessionId).catch(() => undefined);
     // Only the session whose folder it is (one moved elsewhere since doesn't own it any more).
     if (!look || resolve(look.summary.projectPath) !== resolve(own.path)) return undefined;
@@ -344,6 +345,9 @@ export class Worktrees {
     const inside = (f: string) => resolve(f) === root || resolve(f).startsWith(`${root}/`);
     const users = this.o.sessions.worktreeUsers?.(path) ?? [];
     if (!users.find((u) => u.id === sessionId)?.archived) return { why: "it was unarchived", quiet: true, ids: [] };
+    // Kept by the person when they archived a session there ("Keep", SPEC §4): never removed by Tether.
+    const keeper = users.find((u) => u.worktree.keep);
+    if (keeper) return { why: keeper.id === sessionId ? "you chose to keep it" : "you chose to keep it when you archived another session there", quiet: true, ids: [] };
     const stored = this.o.sessions.all ? await this.o.sessions.all() : this.o.sessions.list();
     const others = [...stored, ...this.o.sessions.list()].filter((r) => r.id !== sessionId && !r.archived && !r.parentSessionId).map((r) => r.projectPath);
     const user = [...others, ...users.filter((u) => u.id !== sessionId && !u.archived).map((u) => u.worktree.path)].find(inside);
@@ -402,7 +406,7 @@ export class Worktrees {
     const seen = new Set<string>();
     for (const u of this.o.sessions.worktreeUsers?.() ?? []) {
       const path = resolve(u.worktree.path);
-      if (!u.archived || u.worktree.handMade || !u.worktree.branch || seen.has(path) || !existsSync(path)) continue;
+      if (!u.archived || u.worktree.handMade || u.worktree.keep || !u.worktree.branch || seen.has(path) || !existsSync(path)) continue;
       const w = (await gitWorktrees(u.worktree.repo, this.git)).find((x) => x.path === path);
       if (!w || w.branch !== u.worktree.branch) continue;
       // Seen once a record decided for it (one that isn't the session's own folder any more doesn't): the others' checks are the same.
