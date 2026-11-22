@@ -1645,7 +1645,9 @@ export class LiveControl {
     const { autoKey, canText, lastKey, fallbackKeys, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
     // A side chat's successor is one too, read-only (SPEC §16a): failing closed.
     // The worktree goes on with the conversation: cleanup counts the successor as its user (the old id, moved on, no more).
-    return { ...(autoKey ? { autoKey } : {}), ...(canText ? { canText } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree } : {}) };
+    // Not a Keep: that was the person's answer on archiving the old id.
+    const withoutKeep = ({ keep: _keep, ...rec }: NonNullable<typeof worktree>) => rec;
+    return { ...(autoKey ? { autoKey } : {}), ...(canText ? { canText } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree: withoutKeep(worktree) } : {}) };
   }
 
   /**

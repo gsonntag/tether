@@ -88,8 +88,8 @@ export function Sidebar() {
   // Pinned sessions sit above Recent; a search or a folder lists everything as one list.
   const { pinned, rest } = useMemo(() => (q || filter ? { pinned: [], rest: rows } : splitPinned(rows)), [rows, q, filter]);
 
-  // A worktree folder a session is in shows under its main checkout, as Recent groups it.
-  const projects = useMemo(() => foldWorktrees(aggregateProjects(projectsBy, activeRunner), rows), [projectsBy, activeRunner, rows]);
+  // A worktree folder a session is in shows under its main checkout, as Recent groups it: by every session known (a search doesn't undo it).
+  const projects = useMemo(() => foldWorktrees(aggregateProjects(projectsBy, activeRunner), Object.values(summaries).flatMap((x) => Object.values(x.sessions))), [projectsBy, activeRunner, summaries]);
 
   const selected = route.page === "session" ? route : undefined;
   // An open subagent shows under its parent, so the parent's row is the one expanded.

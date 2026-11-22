@@ -1117,7 +1117,9 @@ event (with the message's text) and the queued message's id from `SessionActions
   session in a worktree (`worktreeOf`, §4) is grouped, listed and counted under the repo's main
   checkout, not its worktree folder, and its row shows "⑂ <branch>" (the worktree folder's name from a
   runner that doesn't send `worktreeBranch`); Projects folds a worktree folder a session is known to be
-  in into its main checkout. Search results and a project's list stay flat. New session (pick a project,
+  in (any the browser knows, whatever the search) into its main checkout; `listSessions` for a main
+  checkout also lists the sessions in each worktree runner.json records with it as `repo`, of any age.
+  Search results and a project's list stay flat. New session (pick a project,
   harness, model). Archive and pin (Archiving, Pinning below).
 - **Session view:** the transcript (markdown, thinking folded, tool cards rendered by `kind` with
   diffs and shell output), the requests dock, the queue, the composer, and a header with model, effort,

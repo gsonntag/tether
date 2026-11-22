@@ -782,6 +782,10 @@ describe("Existing worktree", () => {
     const made = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/moving" });
     const old = await t.runner.core.open(made.sessionId);
     expect(t.runner.live.keptPrefs(old).worktree).toEqual(t.runner.look.sessions.worktree!(made.sessionId));
+    // A Keep was the answer on archiving the old id: the successor doesn't inherit it.
+    t.runner.core.o.prefs.set(made.sessionId, { worktree: { ...t.runner.look.sessions.worktree!(made.sessionId)!, keep: true } });
+    expect((t.runner.live.keptPrefs(old).worktree as { keep?: boolean } | undefined)?.keep).toBeUndefined();
+    t.runner.core.o.prefs.set(made.sessionId, { worktree: { ...t.runner.look.sessions.worktree!(made.sessionId)!, keep: undefined } });
     // As replaceWith and renew leave it: the old id moved on, the successor with what it kept.
     const next = await t.runner.look.sessions.create({ harness: "claude", projectPath: made.path, source: "subscription" });
     t.runner.core.o.prefs.set(next, { ...t.runner.live.keptPrefs(old) });
@@ -1277,6 +1281,20 @@ describe("Cleanup on archive", () => {
     expect(t.runner.look.sessions.worktree!(keep.sessionId)?.keep).toBeUndefined();
     await t.runner.ops.call("setSessionArchived", { sessionId: keep.sessionId, archived: true });
     await until(() => !existsSync(keep.path));
+  });
+
+  test("a main checkout's list has the sessions in its recorded worktrees, stored ones of any age too", async () => {
+    const t = runnerFor();
+    const r = repo();
+    const made = await t.w.create({ harness: "claude", projectPath: r.dir, branch: "tether/listed" });
+    t.adapter.addStored("older", [], { projectPath: made.path });
+    t.adapter.addStored("main", [], { projectPath: r.dir });
+    t.adapter.addStored("elsewhere", [], { projectPath: r.root });
+    const ids = (await t.runner.ops.call("listSessions", { projectPath: r.dir })).sessions.map((s) => s.id);
+    expect(ids).toEqual(expect.arrayContaining([made.sessionId, "claude:older", "claude:main"]));
+    expect(ids).not.toContain("claude:elsewhere");
+    // The worktree's own list is just its own.
+    expect((await t.runner.ops.call("listSessions", { projectPath: made.path })).sessions.map((s) => s.id)).not.toContain("claude:main");
   });
 
   test("a worktree another session's archive kept stays when its other user is archived", async () => {

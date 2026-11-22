@@ -10,6 +10,8 @@ const { cleanupText } = await import("./ArchiveWorktreeDialog");
 test("after Delete: nothing to say once it's gone, else why it stays (or that it's still being checked)", () => {
   expect(cleanupText({ removed: true })).toBeUndefined();
   expect(cleanupText(undefined)).toBeUndefined();
+  // nothing to clean up
+  expect(cleanupText({})).toBeUndefined();
   expect(cleanupText({ removed: false, why: "it has uncommitted changes" })).toBe("Archived, but its worktree stays: it has uncommitted changes.");
   expect(cleanupText({ slow: true })).toContain("still checking");
 });

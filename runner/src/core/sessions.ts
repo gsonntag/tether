@@ -277,15 +277,24 @@ export class SessionCore {
       return { sessions: [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit) };
     }
     if (args.projectPath === undefined && !args.query?.trim() && !args.archived && !args.all) return this.book.all();
-    const all = (await Promise.all(this.o.adapters.map((a) => a.listSessions(args.projectPath ? { projectPath: expandPath(args.projectPath) } : {}).catch(() => [] as SessionSummary[])))).flat();
+    // A main checkout's list has its worktrees' sessions too (SPEC §4: the web lists them under it): each worktree recorded with it as its repo.
+    const folders: (string | undefined)[] = args.projectPath ? this.withWorktrees(expandPath(args.projectPath)) : [undefined];
+    const all = (await Promise.all(folders.flatMap((f) => this.o.adapters.map((a) => a.listSessions(f ? { projectPath: f } : {}).catch(() => [] as SessionSummary[]))))).flat();
     // Live sessions not yet in any store (a new session before its first message).
     const byId = new Map(this.overlay(all).map((s) => [s.id, s]));
     for (const s of this.sessions.values())
-      if (s.live && !s.summary.parentSessionId && (!args.projectPath || s.summary.projectPath === expandPath(args.projectPath))) byId.set(s.id, s.summary);
+      if (s.live && !s.summary.parentSessionId && (!args.projectPath || folders.includes(s.summary.projectPath))) byId.set(s.id, s.summary);
     const q = args.query?.trim().toLowerCase();
     // Side chats (SPEC §16a) are listed under their session only.
     const rows = [...byId.values()].filter((s) => this.shown(s) && !s.sideOf && (args.all ? !s.parentSessionId : args.archived ? !!s.archived && !s.parentSessionId : !s.archived || !!q) && (!q || s.title.toLowerCase().includes(q)));
     return { sessions: rows.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, q ? Math.min(limit, 100) : limit) };
+  }
+
+  /** `folder` and the worktrees runner.json records with it as their main checkout. */
+  private withWorktrees(folder: string): string[] {
+    const main = resolve(folder);
+    const trees = this.o.prefs.ids((p) => !!p.worktree?.repo && resolve(p.worktree.repo) === main).map((id) => this.o.prefs.get(id).worktree!.path);
+    return [...new Set([folder, ...trees.filter((t) => resolve(t) !== main)])];
   }
 
   // ---------------- sessions ----------------

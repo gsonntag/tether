@@ -7,8 +7,9 @@ import { setArchived, useStore } from "../store";
 
 /** What to tell the person after "Delete": nothing once it's gone, else why it stays (or that it's still being checked). */
 export function cleanupText(r: WorktreeCleanup | undefined): string | undefined {
-  if (!r || r.removed) return undefined;
-  if (r.slow) return "Archived. Tether is still checking whether its worktree can go; the session's notice will say what it decided.";
+  if (r?.slow) return "Archived. Tether is still checking whether its worktree can go; the session's notice will say what it decided.";
+  // Neither removed nor kept ({}): there was nothing to remove.
+  if (r?.removed !== false) return undefined;
   return `Archived, but its worktree stays: ${r.why ?? "Tether couldn't confirm it's safe to remove"}.`;
 }
 
