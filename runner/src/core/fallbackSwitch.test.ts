@@ -39,7 +39,7 @@ const settled = async (t: ReturnType<typeof setup>, want: (s: any) => boolean) =
   throw new Error("never settled");
 };
 
-function setup({ ticked = true, key = true } = {}) {
+function setup({ ticked = true, key = true, now = Date.now } = {}) {
   const base = "/tmp/claude-1001/auto/unit";
   mkdirSync(base, { recursive: true });
   const dir = mkdtempSync(join(base, "core-")), file = join(dir, "runner.json");
@@ -48,7 +48,7 @@ function setup({ ticked = true, key = true } = {}) {
   adapter.capabilities = { ...adapter.capabilities, sourceSwitch: true };
   adapter.addStored("one", []);
   const prefs = new Prefs(file, 0);
-  const core = new SessionCore({ adapters: [adapter], bus: new EventBus<CoreEvents>(), send: () => true, prefs, epoch: "auto", log: () => {} });
+  const core = new SessionCore({ adapters: [adapter], now, bus: new EventBus<CoreEvents>(), send: () => true, prefs, epoch: "auto", log: () => {} });
   const live = new LiveControl(core, new RequestBroker(), { credentials, idleMs: 60_000 });
   cleanups.push(() => core.stop());
   if (key) credentials.set("anthropic", `fake-auto-${crypto.randomUUID()}`);
@@ -284,6 +284,59 @@ describe("the fallback chain", () => {
     expect(s.id).toBe("claude:one");
     expect(t.adapter.drivers.map((d) => d.opts.model)).toEqual(["sonnet", "haiku"]);
     expect(sentOn(t)).toEqual([["anthropic", ["go"]], ["anthropic", ["go"]]]);
+  });
+
+  test("saves a plan reset and returns to it before sending the next message", async () => {
+    let now = Date.now();
+    const t = setup({ now: () => now });
+    const resetsAt = now + 60_000;
+    const plan = { harness: "claude", source: "subscription", model: "haiku" } as const;
+    t.prefs.set("claude:one", { model: "haiku" });
+    await t.live.setFallbackChain("claude:one", true, [plan, ...steps]);
+    t.adapter.script = (text) => text === "hit" && t.adapter.drivers.at(-1)?.opts.credential?.source === "subscription"
+      ? [(s) => at(s), limit({ resetsAt })]
+      : [reply];
+    await t.live.send("claude:one", "hit");
+    await settled(t, (s) => s.state.fallbackChain?.active === 1);
+    expect(new Prefs(t.file).get("claude:one").fallbackProgress?.steps[0]?.retryAt).toBe(resetsAt);
+    await t.live.send("claude:one", "before reset");
+    now = resetsAt + 1;
+    await t.live.send("claude:one", "after reset");
+    const active = await settled(t, (s) => s.state.fallbackChain?.active === 0);
+    expect(active.id).toBe("claude:one");
+    expect(sentOn(t)).toEqual([
+      ["subscription", ["hit"]], ["anthropic", ["hit", "before reset"]], ["subscription", ["after reset"]],
+    ]);
+  });
+
+  test("returns to a carried chain's original session with a handoff file", async () => {
+    let now = Date.now();
+    const t = setup({ now: () => now });
+    const reset = now + 60_000;
+    t.adapter.capabilities = { ...t.adapter.capabilities, sourceCarry: true };
+    t.prefs.set("claude:one", { model: "haiku" });
+    await t.live.setFallbackChain("claude:one", true, [{ harness: "claude", source: "subscription", model: "haiku" }, ...steps]);
+    t.live.carrier = async (_from, source) => {
+      t.adapter.addStored("paid", []);
+      t.prefs.set("claude:paid", { carrying: true, projectPath: t.dir, source });
+      return "claude:paid";
+    };
+    t.live.fallbackArchive = async (from) => {
+      expect(from).toBe("claude:paid");
+      return "/private/fallback/history.md";
+    };
+    t.adapter.script = (text) => text === "hit" && t.adapter.drivers.at(-1)?.opts.credential?.source === "subscription"
+      ? [(s) => at(s), limit({ resetsAt: reset })]
+      : [reply];
+    await t.live.send("claude:one", "hit");
+    for (let i = 0; i < 200 && !t.prefs.get("claude:one").movedTo; i++) await Bun.sleep(5);
+    expect(t.prefs.get("claude:one").movedTo).toBe("claude:paid");
+    now = reset + 1;
+    await t.live.send("claude:paid", "keep working");
+    expect(t.prefs.get("claude:paid").movedTo).toBe("claude:one");
+    expect(t.prefs.get("claude:one").movedTo).toBeUndefined();
+    expect(t.adapter.drivers.at(-1)?.nativeId).toBe("one");
+    expect(t.adapter.drivers.at(-1)?.sent[0]).toContain("/private/fallback/history.md");
   });
 
   test("stops at a cross-harness hop instead of skipping ahead", async () => {

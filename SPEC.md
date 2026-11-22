@@ -1180,7 +1180,12 @@ chain with the runner's most recently saved order and shows why saved steps are 
 A plan-exhausted signal or exhausted rate-limit recovery advances to the next usable step on the
 same harness. The switch uses the same source checks as the billing chip and applies the step's
 model, effort and permission mode. The notice includes the plan reset when available. The chain
-stops at a step on a different harness until cross-harness switching is supported.
+stops at a step on a different harness until cross-harness switching is supported. The runner
+records the exhausted step and its reset time, or backs off for ten minutes if no reset was
+reported. It prefers an available higher-priority step at the next turn boundary. If it previously
+left that step's thread, it tries to resume that thread and points it to a private archive of the
+work since the handoff. If the thread is unavailable, the source switch can carry the conversation
+into a fresh thread.
 
 | Harness | Exhausted | Not exhausted, whatever it says |
 |---|---|---|

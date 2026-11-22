@@ -291,6 +291,14 @@ export class Mover {
     return made.sessionId;
   }
 
+  async fallbackArchive(id: string, after?: string) {
+    const { look, adapter } = await this.source(id);
+    const history = await exportSession(adapter, look);
+    const index = after ? history.messages.findIndex((msg) => msg.id === after) : -1;
+    history.messages = history.messages.slice(index + 1);
+    return writeArchive(history, join(movedDir(id, this.ctx.dataDir), `fallback-${crypto.randomUUID()}`), this.ctx.attachmentsDir).file;
+  }
+
   /** The history file of the move that made this session, when one did. */
   private earlier(s: PortableSession) {
     return join(movedDir(s.from.sessionId, this.ctx.dataDir), "history.md");
@@ -341,6 +349,7 @@ export const moveModule: Module = {
   name: "move",
   start(ctx) {
     const mover = new Mover(ctx);
+    ctx.sessions.fallbackArchiver?.((from, after) => mover.fallbackArchive(from, after));
     ctx.sessions.carrier((id, source, model, settings) => mover.carry(id, source, model, settings));
     ctx.ops.register("moveOptions", (a) => mover.options(String(a.sessionId ?? "")));
     ctx.ops.register("moveSession", (a) => mover.move(String(a.sessionId ?? ""), String(a.harness ?? ""), { ...(typeof a.model === "string" && a.model ? { model: a.model } : {}), ...(typeof a.effort === "string" && a.effort ? { effort: a.effort } : {}), source: a.source }));

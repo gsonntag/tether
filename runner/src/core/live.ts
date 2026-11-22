@@ -7,7 +7,7 @@
 // permission requests go to the request desk (core/requests.ts), and subagents become child
 // sessions (SPEC §6a).
 
-import { fallbackStepProblem, type FallbackChain, type FallbackHarness, type FallbackPresetEdit, type FallbackSetup, type FallbackStep } from "../../../shared/fallbackChain";
+import { FALLBACK_BACKOFF_MS, fallbackOrder, fallbackStepProblem, type FallbackProgress, type FallbackChain, type FallbackHarness, type FallbackPresetEdit, type FallbackSetup, type FallbackStep } from "../../../shared/fallbackChain";
 import { LEVELS, mapMode } from "../../../shared/move";
 import { levelOf } from "./permissionLevel";
 import { Commands } from "./commands";
@@ -39,7 +39,7 @@ import { RetryControl } from "./retryControl";
 import { lockWorktree } from "./worktreeLock";
 
 /** How a message is sent (LiveControl.send). */
-type SendOpts = { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string; fallback?: symbol; clientId?: string };
+type SendOpts = { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string; fallback?: symbol; continuedFallback?: boolean; clientId?: string };
 
 /** Idle this long, a live session's process closes. */
 export const IDLE_CLOSE_MS = 5 * 60_000;
@@ -362,6 +362,13 @@ export class LiveControl {
         s.sending = undefined;
       }
     }
+    if (!o.fallback && !o.continuedFallback && !o.retryId && s.state.status === "idle" && !s.sending && !s.starting &&
+      !s.retrySuppressed && s.state.fallbackChain?.active !== undefined && !this.core.o.prefs.get(id).nextSource) {
+      const { active, steps } = s.state.fallbackChain;
+      const progress = this.core.o.prefs.get(id).fallbackProgress;
+      if (progress && fallbackOrder(steps.length, active, progress, this.core.now(), true).length &&
+        await this.advanceFallback(s, undefined, { text, attachments, tether: o.tether }, false, true)) return;
+    }
     if (o.fallback) {
       if (this.fallingBack.get(s) !== o.fallback || s.retrySuppressed) throw new SendCancelled();
       this.fallingBack.delete(s);
@@ -543,9 +550,10 @@ export class LiveControl {
     const { title, pinned, pinnedRow } = prefs.get(s.id);
     const kept = this.keptPrefs(s);
     // The pin goes with the conversation: the new thread takes the old one's place in Pinned.
-    prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
-    const { forkedFrom, worktree: _, ...state } = kept;
-    n.setState(state);
+    prefs.set(n.id, { movedTo: undefined, carried: undefined, carrying: undefined, ...(title ? { title } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
+    const { forkedFrom, worktree: _, fallbackProgress: __, ...state } = kept;
+    n.setState({ ...state, continuedIn: undefined, carried: undefined });
+    n.movedTo = undefined;
     prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextFallbackSettings: undefined, nextModel: undefined, nextBilling: undefined, nextDeployment: undefined, sourceSwitchFailed: undefined });
     this.core.moveSides(s.id, n.id);
     prefs.flush();
@@ -593,7 +601,7 @@ export class LiveControl {
       const kept = this.keptPrefs(s);
       const { pinned, pinnedRow } = this.core.o.prefs.get(s.id);
       this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
-      const { forkedFrom, worktree: _, ...state } = kept;
+      const { forkedFrom, worktree: _, fallbackProgress: __, ...state } = kept;
       n.setState(state);
       this.core.touch(n, forkedFrom ? { forkedFrom } : {});
       try {
@@ -1496,6 +1504,7 @@ export class LiveControl {
 
   /** Makes the thread a source change goes to, on the move module's export and import. */
   carrier?: (id: string, source: BillingSource, model?: string, settings?: StartOpts) => Promise<string>;
+  fallbackArchive?: (from: string, after?: string) => Promise<string>;
   private fallingBack = new WeakMap<Session, symbol>();
 
   /** A queued source remains pending after its first start fails, across views and runner restarts. */
@@ -1687,6 +1696,7 @@ export class LiveControl {
       this.core.o.prefs.set(id, { ...cleared, nextSource: undefined, nextFallbackSettings: undefined });
       s.setState(cleared);
     }
+    if (!enabled || JSON.stringify(old?.steps) !== JSON.stringify(order)) this.core.o.prefs.set(id, { fallbackProgress: undefined });
     this.core.o.prefs.setFallbackOrder(id, chain);
     s.setState({ fallbackChain: chain });
     return chain;
@@ -1735,10 +1745,10 @@ export class LiveControl {
 
   /** What a session's successor on another id keeps (a fork's link back too, SPEC §16; its worktree record, SPEC §4). */
   keptPrefs(s: Session) {
-    const { canText, lastKey, fallbackChain, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
+    const { canText, lastKey, fallbackChain, fallbackProgress, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
     // A side chat's successor is one too, read-only (SPEC §16a): failing closed.
     // The worktree goes on with the conversation: cleanup counts the successor as its user (the old id, moved on, no more).
-    return { ...(canText ? { canText } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackChain ? { fallbackChain } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree } : {}) };
+    return { ...(canText ? { canText } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackChain ? { fallbackChain } : {}), ...(fallbackProgress ? { fallbackProgress } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree } : {}) };
   }
 
   private fallbackModeAllowed(s: Session, mode: string): boolean {
@@ -1748,20 +1758,55 @@ export class LiveControl {
     return target !== undefined && target <= (levelOf(adapter, current) ?? LEVELS.readOnly);
   }
 
+  private async returnToFallback(s: Session, chain: FallbackChain, index: number, step: FallbackStep, settings: StartOpts, progress: FallbackProgress) {
+    const previous = progress.steps[index];
+    if (!previous?.sessionId || previous.sessionId === s.id || !this.fallbackArchive) return;
+    const prefs = this.core.o.prefs;
+    const old = await this.core.open(previous.sessionId).catch(() => undefined);
+    if (!old || old.summary.harness !== step.harness || this.sourceOf(old) !== step.source ||
+      old.state.status !== "idle" || old.state.terminal || old.driver?.busy() || !old.movedTo) return;
+    const saved = prefs.get(old.id);
+    if (await this.core.adapter(old.summary.harness).noStore?.(old.summary.nativeId)) return;
+    const file = await this.fallbackArchive(s.id, previous.after);
+    if (s.retrySuppressed || this.stopping || s.state.fallbackChain !== chain) throw new SendCancelled();
+    const was = { model: old.state.model, effort: old.state.effort, permissionMode: old.state.permissionMode };
+    const wasFresh = old.fresh, wasRebuilt = old.rebuilt, transcript = old.transcript;
+    const deployment = step.source === "azure" ? step.model : undefined;
+    prefs.set(old.id, { ...settings, ...(deployment ? { deployment } : {}) });
+    old.setState(settings);
+    old.fresh = old.rebuilt = false;
+    if (wasRebuilt) old.transcript = null;
+    try {
+      await this.ensureDriver(old);
+    } catch (e) {
+      await this.close(old).catch(() => {});
+      prefs.set(old.id, { model: saved.model, effort: saved.effort, permissionMode: saved.permissionMode, deployment: saved.deployment });
+      old.fresh = wasFresh;
+      old.rebuilt = wasRebuilt;
+      old.transcript = transcript;
+      old.setState(was);
+      return;
+    }
+    delete progress.steps[index]?.retryAt;
+    prefs.set(s.id, { fallbackChain: { ...chain, active: index }, fallbackProgress: progress });
+    await this.replaceWith(s, old);
+    return { session: old, note: `Another agent worked on this; read ${file} and continue.` };
+  }
+
   /** Advance in order after an exhausted plan or the end of rate-limit recovery. */
-  private async advanceFallback(s: Session, hit: { resetsAt?: number } | undefined, sent: Session["lastSend"], acted: boolean) {
+  private async advanceFallback(s: Session, hit: { resetsAt?: number } | undefined, sent: Session["lastSend"], acted: boolean, returning = false): Promise<boolean> {
     const prefs = this.core.o.prefs.get(s.id);
     const chain = s.state.fallbackChain;
     const harness = s.summary.harness;
     if (!chain?.enabled || !s.capabilities.sourceSwitch || prefs.nextSource || s.summary.parentSessionId ||
-      prefs.sideOf || this.fallingBack.has(s)) return;
+      prefs.sideOf || this.fallingBack.has(s)) return false;
     const source = this.sourceOf(s);
-    if (hit && source !== "subscription") return;
+    if (hit && source !== "subscription") return false;
     const matchesCurrent = (step: FallbackStep) => step.harness === harness && step.source === source &&
       step.model === s.state.model && (!step.effort || step.effort === s.state.effort) &&
       (!step.permissionMode || step.permissionMode === s.state.permissionMode);
     const start = chain.active ?? chain.steps.findIndex(matchesCurrent);
-    const cause = hit ? "Plan limit reached." : "Rate limit retries exhausted.";
+    const cause = returning ? "Higher-priority source available." : hit ? "Plan limit reached." : "Rate limit retries exhausted.";
     let resetsAt: number | undefined;
     const say = (text: string, level: Msg["level"] = "info") => s.apply({
       type: "msg", msg: { ...notice(`${cause} ${text}`, level), ...(resetsAt ? { resetsAt } : {}) },
@@ -1769,32 +1814,69 @@ export class LiveControl {
     const reservation = Symbol();
     this.fallingBack.set(s, reservation);
     this.core.pin(s);
+    let switchedSource = false;
     try {
       const until = Date.now() + 5000;
       while ((s.sending || s.starting) && Date.now() < until) await Bun.sleep(20);
       if (hit) resetsAt = await this.planReset(harness, s, hit);
+      if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) return false;
+      const progress: FallbackProgress = { steps: { ...prefs.fallbackProgress?.steps } };
+      if (returning && start >= 0) {
+        progress.steps[start] = { sessionId: s.id, after: s.transcript?.messages.at(-1)?.id };
+      }
+      if (!returning && start >= 0) {
+        progress.steps[start] = { retryAt: resetsAt ?? this.core.now() + FALLBACK_BACKOFF_MS, sessionId: s.id, after: s.transcript?.messages.at(-1)?.id };
+        this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+        this.core.o.prefs.flush();
+      }
+      const indexes = fallbackOrder(chain.steps.length, start, progress, this.core.now(), returning)
+        .filter((index) => index > start || progress.steps[index]?.retryAt !== undefined);
       const catalog = await this.fallbackCatalog(s, harness);
-      if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) return;
-      for (let index = start + 1; index < chain.steps.length; index++) {
+      if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) return false;
+      for (const index of indexes) {
         const step = chain.steps[index]!;
         // A different harness takes the next hop once cross-harness switching is supported.
-        if (step.harness !== harness) return say("The next step needs another harness.", "warning");
+        if (step.harness !== harness) {
+          if (returning) continue;
+          say("The next step needs another harness.", "warning");
+          return true;
+        }
         if (fallbackStepProblem(step, catalog)) continue;
-        if (step.source === source && step.model === s.state.model && (!step.effort || step.effort === s.state.effort)) continue;
-        if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) return;
+        if (step.source === source && step.model === s.state.model && (!step.effort || step.effort === s.state.effort) &&
+          (!step.permissionMode || step.permissionMode === s.state.permissionMode)) continue;
         const settings = { model: step.model, effort: step.effort, permissionMode: step.permissionMode ?? catalog.defaultMode };
+        const returned = index < start ? await this.returnToFallback(s, chain, index, step, settings, progress) : undefined;
+        if (returned) {
+          switchedSource = true;
+          say(`Returned to ${this.labelOf(harness, step.source)}.`);
+          returned.session.apply({ type: "msg", msg: notice(returned.note) });
+          if (sent && !acted) await this.send(returned.session.id, `${returned.note}
+
+${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
+          return true;
+        }
         await this.setSource(s.id, step.source, step.source === "azure" ? step.model : undefined, { chain, index, settings });
+        switchedSource = true;
         const label = this.labelOf(harness, step.source);
         const switched = s.capabilities.sourceCarry && step.source !== source ? `Next source: ${label}.` : `Switched to ${label}.`;
-        if (!sent || acted) return say(`${switched} ${acted ? "The turn already acted. " : ""}Send a message to continue.`);
+        delete progress.steps[index]?.retryAt;
+        this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+        this.core.o.prefs.flush();
+        if (!sent || acted) {
+          say(`${switched} ${acted ? "The turn already acted. " : ""}Send a message to continue.`);
+          return true;
+        }
         say(`${switched} Resending your message.`);
         // The next exhausted turn, including one which ends during send(), owns the next hop.
         await this.send(s.id, sent.text, sent.attachments, { tether: sent.tether, fallback: reservation });
-        return;
+        return true;
       }
+      if (returning) return false;
       say("No available fallback step on this harness.", "warning");
+      return true;
     } catch (e) {
       if (!(e instanceof SendCancelled)) say(redact((e as Error)?.message ?? String(e)), "warning");
+      return !returning || switchedSource;
     } finally {
       if (this.fallingBack.get(s) === reservation) this.fallingBack.delete(s);
       this.core.unpin(s);
