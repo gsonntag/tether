@@ -168,17 +168,18 @@ export async function servePrivateHost(args = process.argv.slice(2)) {
   const config = providerConfig(source, proxyBase);
   // OpenAI's upstream is fixed; the host, not this config, owns the actual remote endpoint.
   config[`model_providers.${provider}.base_url`] = proxyBase;
+  const excluded = ["TETHER_*", "OPENAI_*", "AZURE_*", "CODEX_*", "ANTHROPIC_*", ...(bedrock ? ["AWS_*"] : [])];
   const lines = [
     `model_provider=${JSON.stringify(provider)}`, `model=${JSON.stringify(model ?? "gpt-6-luna")}`, 'model_reasoning_effort="low"', 'check_for_update_on_startup=false',
     '[history]', 'persistence="none"', '[features]', 'shell_snapshot=false',
-    '[shell_environment_policy]', 'inherit="core"', 'exclude=["TETHER_*","OPENAI_*","AZURE_*","CODEX_*","ANTHROPIC_*","AWS_*"]',
+    '[shell_environment_policy]', 'inherit="core"', `exclude=${JSON.stringify(excluded)}`,
     `[model_providers.${provider}]`,
     ...Object.entries(config).filter(([k]) => k.startsWith(`model_providers.${provider}.`)).map(([k,v]) => `${k.split(".").at(-1)}=${typeof v === "string" ? JSON.stringify(v) : String(v)}`),
   ];
   writeFileSync(join(home, "config.toml"), lines.join("\n") + "\n", { mode: 0o600 });
   chmodSync(join(home, "config.toml"), 0o600);
   writeFileSync(join(home, "source.json"), JSON.stringify({ endpoint, proxyBase, ...(pricing ? { pricing } : {}) }), { mode: 0o600 });
-  const env = privateEnvironment(home, bearer);
+  const env = privateEnvironment(home, bearer, source);
   delete env.TETHER_GATEWAY_KEY;
   delete env.TETHER_GATEWAY_PRICING;
   delete env.TETHER_GATEWAY_DEPLOYMENT;

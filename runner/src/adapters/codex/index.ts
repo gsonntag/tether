@@ -158,8 +158,8 @@ export const codexAdapter: Adapter = {
     if (model && model !== "default") argv.push("-m", model);
     if (opts.effort) argv.push("-c", `model_reasoning_effort=${toml(opts.effort)}`);
     // tmux may have inherited provider keys long before this runner started.
-    const remove = new Set(["OPENAI_API_KEY", "CODEX_API_KEY", "AZURE_OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "TETHER_GATEWAY_KEY"]);
-    for (const name of Object.keys(process.env)) if (/^(OPENAI_|AZURE_|ANTHROPIC_|TETHER_GATEWAY_|AWS_)/.test(name)) remove.add(name);
+    const remove = new Set(["OPENAI_API_KEY", "CODEX_API_KEY", "AZURE_OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "TETHER_GATEWAY_KEY", "AWS_BEARER_TOKEN_BEDROCK"]);
+    for (const name of Object.keys(process.env)) if (/^(OPENAI_|AZURE_|ANTHROPIC_|TETHER_GATEWAY_)/.test(name) || (source?.source === "bedrock" && name.startsWith("AWS_"))) remove.add(name);
     if (!source) remove.add("TETHER_CODEX_API_KEY");
     const command = opts.credential ? ["env", ...[...remove].flatMap((name) => ["-u", name]), ...argv] : argv;
     if (!source) return { argv: command, quit: CODEX_QUIT };

@@ -66,9 +66,9 @@ export function providerConfig(source: ApiSource, endpoint?: string): Record<str
 }
 
 /** A restricted inherited environment: no alternate provider key, proxy credential, or trace sink. */
-export function privateEnvironment(home: string, key?: string): Record<string, string | undefined> {
+export function privateEnvironment(home: string, key?: string, source?: ApiSource): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = childEnv();
-  for (const k of Object.keys(env)) if (/^(CODEX_|OPENAI_|AZURE_|ANTHROPIC_|CLAUDE_|RUST_|OTEL_|TETHER_GATEWAY_|AWS_)/.test(k) || k === "TETHER_TOKEN") delete env[k];
+  for (const k of Object.keys(env)) if (/^(CODEX_|OPENAI_|AZURE_|ANTHROPIC_|CLAUDE_|RUST_|OTEL_|TETHER_GATEWAY_)/.test(k) || k === "TETHER_TOKEN" || k === "AWS_BEARER_TOKEN_BEDROCK" || (source === "bedrock" && k.startsWith("AWS_"))) delete env[k];
   env.CODEX_HOME = home;
   if (key) env.TETHER_CODEX_API_KEY = key;
   else delete env.TETHER_CODEX_API_KEY;
@@ -141,7 +141,7 @@ async function ensurePrivate(source: PrivateSource, credential?: CredentialSnaps
   }
   const unit = process.env.INVOCATION_ID && Bun.which("systemd-run") ? `tether-key-${source.id}.scope` : undefined;
   const command = unit ? ["systemd-run", "--user", "--scope", "--quiet", "--collect", `--unit=${unit}`, ...argv] : argv;
-  const p = spawn(command[0]!, command.slice(1), { env: { ...privateEnvironment(home), ...(source.source === "bedrock" ? { AWS_CONFIG_FILE: process.env.AWS_CONFIG_FILE, AWS_SHARED_CREDENTIALS_FILE: process.env.AWS_SHARED_CREDENTIALS_FILE } : { TETHER_GATEWAY_KEY: use.key }), ...(use.pricing ? { TETHER_GATEWAY_PRICING: JSON.stringify(use.pricing) } : {}), ...(use.deployment ? { TETHER_GATEWAY_DEPLOYMENT: use.deployment } : {}) }, detached: true, stdio: "ignore", cwd: source.projectPath });
+  const p = spawn(command[0]!, command.slice(1), { env: { ...privateEnvironment(home, undefined, source.source), ...(source.source === "bedrock" ? { AWS_CONFIG_FILE: process.env.AWS_CONFIG_FILE, AWS_SHARED_CREDENTIALS_FILE: process.env.AWS_SHARED_CREDENTIALS_FILE } : { TETHER_GATEWAY_KEY: use.key }), ...(use.pricing ? { TETHER_GATEWAY_PRICING: JSON.stringify(use.pricing) } : {}), ...(use.deployment ? { TETHER_GATEWAY_DEPLOYMENT: use.deployment } : {}) }, detached: true, stdio: "ignore", cwd: source.projectPath });
   let failed = false;
   p.on("error", () => { failed = true; });
   p.unref();
