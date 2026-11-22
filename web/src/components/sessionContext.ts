@@ -14,7 +14,13 @@ export interface SessionFork {
  * Which session the transcript below belongs to (for fullPart and links to subagents). `fork`: its
  * replies that end a turn offer Fork from here.
  */
-export const SessionCtx = createContext<{ runnerId: string; sessionId: string; projectPath?: string; fork?: SessionFork }>({ runnerId: "", sessionId: "" });
+export const SessionCtx = createContext<{
+  runnerId: string;
+  sessionId: string;
+  projectPath?: string;
+  fork?: SessionFork;
+  streamingAnimation?: boolean;
+}>({ runnerId: "", sessionId: "" });
 export const useSessionCtx = () => useContext(SessionCtx);
 
 const rows = new RowStore();
