@@ -1504,7 +1504,7 @@ export class LiveControl {
 
   /** Makes the thread a source change goes to, on the move module's export and import. */
   carrier?: (id: string, source: BillingSource, model?: string, settings?: StartOpts) => Promise<string>;
-  fallbackArchive?: (from: string, after?: string) => Promise<string>;
+  fallbackArchive?: (from: string, to: string, after?: string) => Promise<string>;
   private fallingBack = new WeakMap<Session, symbol>();
 
   /** A queued source remains pending after its first start fails, across views and runner restarts. */
@@ -1767,7 +1767,8 @@ export class LiveControl {
       old.state.status !== "idle" || old.state.terminal || old.driver?.busy() || !old.movedTo) return;
     const saved = prefs.get(old.id);
     if (await this.core.adapter(old.summary.harness).noStore?.(old.summary.nativeId)) return;
-    const file = await this.fallbackArchive(s.id, previous.after);
+    // In the returning thread's own moved folder: the only one its agent may read without asking.
+    const file = await this.fallbackArchive(s.id, old.id, previous.after);
     if (s.retrySuppressed || this.stopping || s.state.fallbackChain !== chain) throw new SendCancelled();
     const was = { model: old.state.model, effort: old.state.effort, permissionMode: old.state.permissionMode };
     const wasFresh = old.fresh, wasRebuilt = old.rebuilt, transcript = old.transcript;
@@ -1777,6 +1778,8 @@ export class LiveControl {
     old.fresh = old.rebuilt = false;
     if (wasRebuilt) old.transcript = null;
     try {
+      // A process opened before the archive was written doesn't allow reading it.
+      if (old.driver) await this.close(old);
       await this.ensureDriver(old);
     } catch (e) {
       await this.close(old).catch(() => {});

@@ -312,6 +312,21 @@ describe("reasons and carrying", () => {
     expect(ledger.carry("plan", "back")).toEqual({ usd: 1.75, estimated: true, complete: true });
     expect(ledger.carry("never-metered", "other")).toBeUndefined();
   });
+  test("a fallback chain going back and forth counts each spend once", () => {
+    const ledger = new CostLedger();
+    // one (a plan) -> paid -> one -> paid2 -> one -> paid
+    expect(ledger.carry("one", "paid")).toBeUndefined();
+    ledger.begin("paid", true);
+    ledger.report("paid", "r", { usd: 1, estimated: true, complete: true });
+    expect(ledger.carry("paid", "one")?.usd).toBe(1);
+    expect(ledger.carry("one", "paid2")?.usd).toBe(1);
+    ledger.report("paid2", "r", { usd: 0.5, estimated: true, complete: true });
+    expect(ledger.carry("paid2", "one")?.usd).toBe(1.5);
+    expect(ledger.carry("one", "paid")?.usd).toBe(1.5);
+    ledger.report("paid", "r", { usd: 2, estimated: true, complete: true }); // its cumulative report, grown
+    expect(ledger.carry("paid", "one")?.usd).toBe(2.5);
+    expect(ledger.carry("one", "paid3")?.usd).toBe(2.5);
+  });
   test("what was partial stays partial after a takeover, with its reason", () => {
     const ledger = new CostLedger();
     ledger.begin("a", true);
