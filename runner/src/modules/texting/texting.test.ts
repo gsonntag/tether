@@ -83,6 +83,13 @@ function setup(viewers: Record<string, string[]> = {}) {
 const bash = (id = "r1"): Request => ({ id, sessionId: "claude:a", kind: "approval", tool: "Bash", toolKind: "shell", command: "npm test -- --watch=false", openedAt: 1 });
 
 describe("texting", () => {
+  test("a runner notice texts the person as is, about no session", async () => {
+    const { t, texts } = setup();
+    await t.start();
+    expect(await t.notice("Antigravity compatibility check failed")).toBe(true);
+    expect(texts).toEqual(["Antigravity compatibility check failed"]);
+  });
+
   test("a finished turn texts only when the agent asks something, with its words and a link", async () => {
     const { t, texts, say } = setup();
     await t.start();

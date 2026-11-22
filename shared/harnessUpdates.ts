@@ -147,7 +147,8 @@ export function updateStatus(installed: string | undefined, latest: string | und
 }
 
 /** Words for a status, as the table shows them. */
-export function statusLabel(h: Pick<HarnessVersion, "status" | "method">): string {
+export function statusLabel(h: Pick<HarnessVersion, "status" | "method"> & { id?: string }): string {
+  if (h.id === "antigravity" && h.status === "unknown") return "Check failed";
   if (h.status === "available") return h.method === "bundled" ? "Needs a Tether release" : "Update available";
   return h.status === "current" ? "Up to date" : h.status === "missing" ? "Not installed" : "Couldn't check";
 }

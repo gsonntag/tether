@@ -75,7 +75,7 @@ async function prompt(id: number, p: any) {
   update(sid, { sessionUpdate: "session_info_update", title: "Ping" });
   update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "po" } });
   update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ng" } });
-  out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } } });
+  out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: { inputTokens: 11, outputTokens: 2, cachedReadTokens: 7, cachedWriteTokens: 3, thoughtTokens: 5, totalTokens: 28 } } });
 }
 
 let buf = "";
@@ -93,6 +93,9 @@ for await (const chunk of Bun.stdin.stream()) {
     switch (m.method) {
       case "initialize":
         ok({ protocolVersion: 1, agentCapabilities: { loadSession: true }, agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } });
+        break;
+      case "session/new":
+        ok({ sessionId: crypto.randomUUID(), modes: { currentModeId: mode }, configOptions: config(model, effort, mode) });
         break;
       case "session/load":
         loaded = m.params;

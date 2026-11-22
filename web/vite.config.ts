@@ -28,4 +28,10 @@ export default defineConfig({
     fs: { allow: [".."] },
     proxy: { "/api": { target: server, ws: true } },
   },
+  preview: {
+    host: "127.0.0.1",
+    port: Number(process.env.PREVIEW_PORT ?? 5188),
+    strictPort: true,
+    proxy: { "/api": { target: server, ws: true } },
+  },
 });
