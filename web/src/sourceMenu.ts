@@ -31,7 +31,7 @@ export function sourceMenu(harness: HarnessId, state: LiveState, choices: Source
   const gone = !own && shown && shown.kind !== "unknown";
   if (gone) items.unshift({ value: CURRENT_SOURCE, label: shown.label });
   const set = new Set<BillingSource>(choices.options.map((o) => o.source));
-  return { items, value: own?.source ?? (gone ? CURRENT_SOURCE : undefined), addKey: HARNESS_KEYS[harness].some((k) => !set.has(k)) };
+  return { items, value: own?.source ?? (gone ? CURRENT_SOURCE : undefined), addKey: HARNESS_KEYS[harness].some((k) => k !== "bedrock" && !set.has(k)) };
 }
 
 /**

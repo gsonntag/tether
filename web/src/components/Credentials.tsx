@@ -5,6 +5,7 @@ import type { CredentialSlot as Status, CredentialSource, CredentialStatus } fro
 import { rpc } from "../connection";
 import { useStore } from "../store";
 import { AgentSettings } from "./AgentSettings";
+import { BedrockSettingsPage } from "./BedrockSettings";
 import { AzureSettings } from "./AzureSettings";
 import { DeviceNotifications } from "./DeviceNotifications";
 import { DisplaySettings } from "./DisplaySettings";
@@ -18,8 +19,8 @@ import { accessOf } from "../runners";
 /** The Runner menu's "All runners" (Usage only). */
 const ALL = "*all";
 
-type Page = "runners" | "credentials" | "azure" | "texting" | "notifications" | "display" | "agents" | "updates" | "usage";
-const labels: Record<CredentialSource, string> = { anthropic: "Anthropic API key", openai: "OpenAI API key", azure: "API key" };
+type Page = "runners" | "credentials" | "azure" | "bedrock" | "texting" | "notifications" | "display" | "agents" | "updates" | "usage";
+const labels: Record<CredentialSource, string> = { anthropic: "Anthropic API key", openai: "OpenAI API key", azure: "API key", bedrock: "Bedrock API key" };
 
 /** Settings, per runner: Runners (names and sharing), Credentials (Anthropic and OpenAI keys), Azure (its key, resource and deployments) Messaging (iMessage, Discord) and this device's Notifications. */
 export function Settings({ page: asked }: { page: Page }) {
@@ -42,6 +43,7 @@ export function Settings({ page: asked }: { page: Page }) {
         <a href="#/settings/runners" aria-current={page === "runners" ? "page" : undefined}>Runners</a>
         <a href="#/settings/credentials" aria-current={page === "credentials" ? "page" : undefined}>Credentials</a>
         <a href="#/settings/azure" aria-current={page === "azure" ? "page" : undefined}>Azure</a>
+        <a href="#/settings/bedrock" aria-current={page === "bedrock" ? "page" : undefined}>Bedrock</a>
         <a href="#/settings/texting" aria-current={page === "texting" ? "page" : undefined}>Messaging</a>
         <a href="#/settings/notifications" aria-current={page === "notifications" ? "page" : undefined}>Notifications</a>
         <a href="#/settings/display" aria-current={page === "display" ? "page" : undefined}>Display</a>
@@ -65,9 +67,9 @@ export function Settings({ page: asked }: { page: Page }) {
       <Heading level={2}>Runners</Heading>
       <RunnersSettings />
       </> : page === "updates" ? <HarnessUpdates /> : <>
-      <Heading level={2}>{page === "azure" ? "Azure" : page === "texting" ? "Messaging" : page === "agents" ? "Agents" : page === "usage" ? "Usage" : "Credentials"}</Heading>
+      <Heading level={2}>{page === "azure" ? "Azure" : page === "bedrock" ? "Amazon Bedrock" : page === "texting" ? "Messaging" : page === "agents" ? "Agents" : page === "usage" ? "Usage" : "Credentials"}</Heading>
       {runners.length > 1 && <label className="t-field">Runner<select className="t-select" value={allRunners ? ALL : runner?.id ?? ""} onChange={(e) => setChosen(e.target.value)}>{page === "usage" && <option value={ALL}>All runners</option>}{runners.map((r) => <option key={r.id} value={r.id}>{r.name || r.id}{page === "usage" && !r.online ? " (offline)" : ""}</option>)}</select></label>}
-      {allRunners ? <UsageSettings key={ALL} runners={runners.map((r) => ({ id: r.id, name: r.name || r.id, online: r.online }))} /> : !runner ? <div className="t-inline-status">No runner connected.</div> : !runner.online ? <div className="t-inline-status">Runner offline.</div> : page === "azure" ? <AzureSettings key={runner.id} runnerId={runner.id} /> : page === "texting" ? <TextingSettings key={runner.id} runnerId={runner.id} /> : page === "agents" ? <AgentSettings key={runner.id} runnerId={runner.id} /> : page === "usage" ? <UsageSettings key={runner.id} runners={[{ id: runner.id, name: runner.name || runner.id, online: true }]} /> : <RunnerCredentials key={runner.id} runnerId={runner.id} />}
+      {allRunners ? <UsageSettings key={ALL} runners={runners.map((r) => ({ id: r.id, name: r.name || r.id, online: r.online }))} /> : !runner ? <div className="t-inline-status">No runner connected.</div> : !runner.online ? <div className="t-inline-status">Runner offline.</div> : page === "azure" ? <AzureSettings key={runner.id} runnerId={runner.id} /> : page === "bedrock" ? <BedrockSettingsPage key={runner.id} runnerId={runner.id} /> : page === "texting" ? <TextingSettings key={runner.id} runnerId={runner.id} /> : page === "agents" ? <AgentSettings key={runner.id} runnerId={runner.id} /> : page === "usage" ? <UsageSettings key={runner.id} runners={[{ id: runner.id, name: runner.name || runner.id, online: true }]} /> : <RunnerCredentials key={runner.id} runnerId={runner.id} />}
       </>}
       </div>
       </div>

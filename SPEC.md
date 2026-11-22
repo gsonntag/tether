@@ -1156,20 +1156,19 @@ event (with the message's text) and the queued message's id from `SessionActions
 
 ### Credentials and billing safety
 
-Settings belongs to a runner and has two subpages in one nav. **Credentials** (`#/settings/credentials`)
+Billing settings belong to a runner. **Credentials** (`#/settings/credentials`)
 holds keys only: **Anthropic API key** for Claude and **OpenAI API key** for Codex. **Azure**
-(`#/settings/azure`, below) holds Azure's key, its resource and its deployments, for Codex. All can be
-set together. Setting, replacing or
+(`#/settings/azure`, below) holds Azure's key, its resource and its deployments for Codex. **Bedrock**
+(`#/settings/bedrock`) holds the AWS region, credentials and model lists for Claude and Codex. Setting, replacing or
 unsetting a key touches no other slot and changes no session's source. There is no enable toggle,
 fallback chain or automatic source migration, with one exception you tick per session (**When the
-plan runs out**, below). AWS for either harness is backlog only.
+plan runs out**, below).
 
 **Each session has one billing source**, chosen when it's made and saved with it (`SessionPrefs.source`,
 which is a source's name, never a key). New session and the Move dialog show **Source**, listing what
 really exists for that harness: a subscription when the harness reports a login (Codex's `account/read`
 on the shared daemon, Claude's read-only `auth status`), a key when it's set (Azure: its key, its
-resource and at least one deployment), labelled "ChatGPT plan",
-"OpenAI API key", "Azure", "Claude plan", "Anthropic API key". With one source it's shown without a
+resource and at least one deployment), or Bedrock when a credential and a model are configured for the harness. With one source it's shown without a
 picker; a key in the picker has the API colour. It always starts on the subscription when there's
 a login, and on the first key only when there isn't. `newSession` or `moveSession` with no source (an older web) is the subscription,
 never a key by surprise.
@@ -1204,8 +1203,7 @@ keeps its rule: plan % only on a plan session.
 session; it doesn't close the menu), shown on a plan session when a key is set for that harness, or
 when it's already on, so it can be turned off. Its label names its target, "Switch to OpenAI API key
 when plan runs out"; with no allowed key set it reads "No allowed key". No description under it.
-Below it, only where the checkbox shows and only for a harness with more than one key (Codex: OpenAI
-and Azure; not Claude), "Fallback keys…" opens a dialog to rank and exclude the harness's keys for that
+Below it, only where the checkbox shows and only for a harness with more than one credential source, "Fallback keys…" opens a dialog to rank and exclude the harness's keys for that
 session (`SessionPrefs.fallbackKeys`): the switch goes to the first key in that order that's set, never
 an excluded one. An empty list excludes all. With nothing saved, the target is the session's last-used
 key (`SessionPrefs.lastKey`), then the harness's other set keys, and the dialog opens on all the
@@ -1270,8 +1268,8 @@ of a Codex compaction: it's encrypted for its account, so a new source couldn't 
 themselves are carried instead, as far as they fit. Subagents of the old thread stay viewable from
 the transcript, and aren't listed under the new one.
 
-`credentials.json` is version 3: one slot per key, and `azureSettings` (`endpoint`, `deployments`)
-apart from Azure's key, so either can be set first and unsetting the key keeps them. A version 2 file
+`credentials.json` is version 3, with one slot per key and separate settings for Azure and Bedrock.
+Settings survive when a key is unset. A version 2 file
 (Azure's endpoint, one optional deployment and its rates in the key's slot) and a version 1 file (one
 `codex` slot) still read, their revisions kept: the one deployment becomes a list of one with its rates,
 and rates with no deployment are dropped (they priced whatever model was picked). A deployment saved
@@ -1281,7 +1279,7 @@ ahead of its runner gets no `billingSources` answer and hides the picker.
 
 Keys are written only to `credentials.json`, mode 600, under the runner's data directory
 (`TETHER_DATA_DIR`, otherwise its existing config/data directory). The runner sends browsers only
-set/unset status and optional last four characters, plus Azure's endpoint and deployments. The
+set/unset status and optional last four characters, plus non-secret Azure and Bedrock configuration. The
 browser clears the password field when submitting. Keys never belong in session prefs, summaries,
 transcripts, notifications, logs or argv. Subprocesses receive them by private file or environment.
 The relay forwards credential RPCs without recording their arguments. Error paths redact submitted
@@ -1854,6 +1852,12 @@ after the runner stops. The op answers at once with what's read and `scan.runnin
 polls while it runs. Days are calendar days in the browser's IANA zone (`timeZone`), so DST and
 quarter-hour zones bucket correctly. It reveals every project's activity: a drive op, and with
 shared runners it belongs in `MANAGE_OPS` (shared/access.ts), never to view-only access.
+
+### Amazon Bedrock
+
+Settings → Bedrock configures one AWS region and authentication by Bedrock API key or a named AWS profile on the runner. The owner's model list is specific to each harness. Claude uses Bedrock Runtime with model IDs and inference profiles. Codex uses a private Responses provider connected to Bedrock Mantle.
+
+Model choices use the provider's IDs. Manual changes to Bedrock keep a configured ID or match an unambiguous alias, with the first configured entry as the default. The destination's own defaults apply when leaving Bedrock. Requests are priced from AWS usage and configured or dated regional rates. The optional USD guard uses recorded spend across both harnesses for the UTC day. See [Amazon Bedrock setup](docs/amazon-bedrock.md).
 
 ## 11. Phases
 

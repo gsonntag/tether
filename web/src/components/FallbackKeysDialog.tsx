@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
-import { HARNESS_KEYS, type BillingSource, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
+import { BEDROCK_LABEL, HARNESS_KEYS, type BillingSource, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
 import type { HarnessId, LiveState } from "../../../shared/transcript";
 
-const labels: Record<CredentialSource, string> = { anthropic: "Anthropic API key", openai: "OpenAI API key", azure: "Azure" };
+const labels: Record<CredentialSource, string> = { anthropic: "Anthropic API key", openai: "OpenAI API key", azure: "Azure", bedrock: BEDROCK_LABEL };
 
 /**
  * Where an unsaved session goes, as an order: every key of the harness, its last-used first, all

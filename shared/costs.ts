@@ -1,3 +1,4 @@
+import { BEDROCK_RATES_DATE, BEDROCK_RATES_SOURCE } from "./bedrockRates";
 import { AZURE_RATES_DATE, AZURE_RATES_SOURCE, AZURE_SOL_RATES_SOURCE } from "./azureRates";
 /** A session's API usage only. Unknown prior usage or prices must not become a $0 total. */
 export interface SessionCost {
@@ -10,13 +11,13 @@ export interface SessionCost {
   notes?: string[];
 }
 
-const REASON = /^(no-usage|no-cache-ttl|no-write-rate|azure-table|azure-sol-table|tool-fee|long-context|earlier-usage|terminal|no-baseline|unsaved|(tier|model|type):[\w.:-]{1,64})$/;
+const REASON = /^(no-usage|no-cache-ttl|no-write-rate|azure-table|azure-sol-table|bedrock-table|bedrock-rate|no-cache-read-rate|tool-fee|long-context|earlier-usage|terminal|no-baseline|unsaved|(tier|model|type):[\w.:-]{1,64})$/;
 /** A value inside a reason: what doesn't look like a tier or a model id isn't stored. */
 export const reasonValue = (value: unknown) => (typeof value === "string" && /^[\w.:-]{1,64}$/.test(value) ? value : "other");
 export const costReasons = (value: unknown): string[] =>
   Array.isArray(value) ? [...new Set(value.filter((r) => typeof r === "string" && REASON.test(r)))].slice(0, 8) : [];
 
-/** USD per one million tokens; deployment-specific rates may be supplied by the owner. `cacheWrite`: Azure's one write rate, if entered. */
+/** USD per one million tokens; the owner can supply rates for an individual model or deployment. `cacheWrite` is the short cache write rate. */
 export interface TokenRates { input: number; output: number; cached: number; cacheWrite?: number }
 
 const rate = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 1_000_000;
@@ -36,6 +37,8 @@ function missing(reason: string): string {
   if (reason === "tool-fee") return "hosted tool fees aren't included";
   if (reason === "long-context") return "a request over 272K input tokens isn't priced";
   if (reason === "no-write-rate") return "cache writes have no rate for this model";
+  if (reason === "bedrock-rate") return "the Bedrock model or inference profile has no matching rate";
+  if (reason === "no-cache-read-rate") return "the provider reported cached input without a cache read rate";
   if (reason === "type:regional") return "Regional deployments have no rates in Tether's Azure table";
   if (reason === "model:none") return "the Azure deployment's model isn't set";
   if (reason === "earlier-usage") return "API usage from before Tether tracked this session isn't included";
@@ -47,6 +50,7 @@ function missing(reason: string): string {
   return `${reason.slice(6)} has no published price`;
 }
 function assumed(reason: string): string | undefined {
+  if (reason === "bedrock-table") return `Bedrock rates are from ${BEDROCK_RATES_SOURCE} checked ${BEDROCK_RATES_DATE}.`;
   if (reason === "azure-table") return `Azure rates are from Tether's table of ${AZURE_RATES_SOURCE} rates dated ${AZURE_RATES_DATE}; your agreement may differ.`;
   if (reason === "azure-sol-table") return `${AZURE_SOL_RATES_SOURCE}.`;
   if (reason === "no-cache-ttl") return "Cache write lifetimes weren't reported: priced at the default 30-minute rate.";
@@ -61,7 +65,7 @@ export function costChip(cost: SessionCost | undefined): { text: string; detail:
   const codes = costReasons(cost?.notes);
   const notes = codes.flatMap((r) => assumed(r) ?? []);
   // A partial subtotal says where its rates came from, not what a priced part assumed.
-  const table = codes.filter((r) => r === "azure-table" || r === "azure-sol-table").map((r) => ` ${assumed(r)}`).join("");
+  const table = codes.filter((r) => r === "azure-table" || r === "azure-sol-table" || r === "bedrock-table").map((r) => ` ${assumed(r)}`).join("");
   if (!known || !cost?.complete) {
     const why = sentence(reasons.map(missing));
     // What's known is shown as an estimate; the tooltip says it isn't the whole and what's missing.

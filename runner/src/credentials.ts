@@ -4,14 +4,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, closeSync, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { AZURE_MAX_DEPLOYMENTS, AZURE_NAME, azureEndpoint, type AzureDeployment, type BillingSource, type CredentialSource, type CredentialStatus } from "../../shared/credentials";
+import { AZURE_MAX_DEPLOYMENTS, AZURE_NAME, azureEndpoint, type AzureDeployment, type BedrockModel, type BedrockSettings, type BillingSource, type CredentialSource, type CredentialStatus } from "../../shared/credentials";
 import { validRates, type TokenRates } from "../../shared/costs";
 import { AZURE_RATES_DATE, AZURE_SOL_RATES_DATE, azureModelId, isAzureType, type AzurePricing } from "../../shared/azureRates";
+import { modelIdProblem } from "../../shared/labels";
 import { CONFIG_DIR } from "./config";
 
 export const DATA_DIR = process.env.TETHER_DATA_DIR || CONFIG_DIR;
 export interface CredentialSnapshot {
   rates?: TokenRates;
+  bedrock?: BedrockSettings;
   source: BillingSource;
   revision: string;
   key?: string;
@@ -30,7 +32,7 @@ export interface AzureSettings { endpoint?: string; deployments: AzureDeployment
  * rates in the key's slot; version 1 had one `codex` slot. Both still read, and the next change
  * writes version 3.
  */
-interface Saved { version: 3; anthropic?: Secret; openai?: Secret; azure?: Secret; azureSettings?: AzureSettings }
+interface Saved { version: 3; anthropic?: Secret; openai?: Secret; azure?: Secret; azureSettings?: AzureSettings; bedrock?: Secret; bedrockSettings?: BedrockSettings }
 const secrets = new Set<string>();
 /** A secret kept elsewhere (a module's own file): redacted from every op answer and log from now on. */
 export function registerSecret(key: string) {
@@ -74,12 +76,12 @@ export class SecretStream {
     return data.subarray(0, data.length - keep);
   }
 }
-const validSource = (v: unknown): v is CredentialSource => v === "anthropic" || v === "openai" || v === "azure";
+const validSource = (v: unknown): v is CredentialSource => v === "anthropic" || v === "openai" || v === "azure" || v === "bedrock";
 const validSecret = (v: any) => v && typeof v.key === "string" && v.key.length >= 16 && v.key.length <= 8192 && !/\s|[\x00-\x1f\x7f]/.test(v.key) && typeof v.revision === "string" && v.revision.length > 0;
 
 /** The slots of a file in any shape, and Azure's settings as they were. Anything else is refused: sending stays disabled. */
-function readSlots(saved: any): { anthropic?: any; openai?: any; azure?: any; settings?: any } {
-  if (saved?.version === 3) return { anthropic: saved.anthropic, openai: saved.openai, azure: saved.azure, settings: saved.azureSettings };
+function readSlots(saved: any): { anthropic?: any; openai?: any; azure?: any; settings?: any; bedrock?: any; bedrockSettings?: any } {
+  if (saved?.version === 3) return { anthropic: saved.anthropic, openai: saved.openai, azure: saved.azure, settings: saved.azureSettings, bedrock: saved.bedrock, bedrockSettings: saved.bedrockSettings };
   let azure: any;
   let rest: { anthropic?: any; openai?: any };
   if (saved?.version === 2) { azure = saved.azure; rest = { anthropic: saved.anthropic, openai: saved.openai }; }
@@ -143,7 +145,34 @@ function carriesKey(settings: AzureSettings | undefined, keys: Iterable<string>)
   return metadata.some((value) => tokens.some((token) => value.includes(token)));
 }
 /** What makes an Azure process current, besides its key: a change restarts an idle session's process. */
-const azureDigest = (...parts: unknown[]) => createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 16);
+const settingsDigest = (...parts: unknown[]) => createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 16);
+
+function cleanBedrock(input: BedrockSettings, knownKeys: Iterable<string>): BedrockSettings {
+  if (!input || typeof input.region !== "string" || !/^[a-z]{2}(?:-[a-z]+){1,3}-[1-9]$/.test(input.region)) throw new Error("Enter a valid AWS region.");
+  if (input.auth !== "key" && input.auth !== "profile") throw new Error("Choose Bedrock API key or AWS profile authentication.");
+  const profile = input.auth === "profile" ? input.profile : undefined;
+  if (input.auth === "profile" && (typeof profile !== "string" || !/^[A-Za-z0-9_.@+-]{1,128}$/.test(profile))) throw new Error("Enter the name of an AWS profile on the runner.");
+  const dailyLimitUsd = input.dailyLimitUsd;
+  if (dailyLimitUsd !== undefined && (typeof dailyLimitUsd !== "number" || !Number.isFinite(dailyLimitUsd) || dailyLimitUsd <= 0)) throw new Error("Enter a positive daily limit in USD.");
+  if (!Array.isArray(input.models) || input.models.length > 50) throw new Error("Enter up to 50 Bedrock models.");
+  const keys = [...knownKeys].map((key) => key.toLowerCase());
+  const containsKey = (value: string | undefined) => value && keys.some((key) => value.toLowerCase().includes(key));
+  if (containsKey(profile) || containsKey(input.region)) throw new Error("Bedrock settings must not contain a key.");
+  const seen = new Set<string>();
+  const models = input.models.map((model): BedrockModel => {
+    if (!model || (model.harness !== "claude" && model.harness !== "codex") || modelIdProblem(model.id) || model.id === "default" || (model.alias !== undefined && modelIdProblem(model.alias))) throw new Error("Enter a valid Bedrock model ID or inference profile.");
+    if (containsKey(model.id) || containsKey(model.alias)) throw new Error("Bedrock settings must not contain a key.");
+    if (seen.has(`${model.harness}:${model.id}`)) throw new Error("A Bedrock model is listed twice for the same harness.");
+    seen.add(`${model.harness}:${model.id}`);
+    const rates = model.rates;
+    const cacheWriteLong = model.cacheWriteLong;
+    if ((rates !== undefined && !validRates(rates)) || (cacheWriteLong !== undefined && (rates?.cacheWrite === undefined || !Number.isFinite(cacheWriteLong) || cacheWriteLong < 0))) throw new Error("Enter valid USD rates per million tokens.");
+    return { id: model.id, harness: model.harness, ...(model.alias ? { alias: model.alias } : {}),
+      ...(rates ? { rates: { input: rates.input, output: rates.output, cached: rates.cached, ...(rates.cacheWrite !== undefined ? { cacheWrite: rates.cacheWrite } : {}) } } : {}),
+      ...(cacheWriteLong !== undefined ? { cacheWriteLong } : {}) };
+  });
+  return { region: input.region, auth: input.auth, ...(profile ? { profile } : {}), models, ...(dailyLimitUsd !== undefined ? { dailyLimitUsd } : {}) };
+}
 
 export class CredentialStore {
   static current?: CredentialStore;
@@ -156,7 +185,7 @@ export class CredentialStore {
       if (!stat.isFile() || (stat.mode & 0o077) || stat.uid !== process.getuid?.()) throw new Error("private file required");
       const saved = JSON.parse(readFileSync(fd, "utf8"));
       const slots = readSlots(saved);
-      const loaded = [slots.anthropic, slots.openai, slots.azure].filter((s) => s !== undefined);
+      const loaded = [slots.anthropic, slots.openai, slots.azure, slots.bedrock].filter((s) => s !== undefined);
       if (loaded.some((s) => !validSecret(s))) throw new Error("invalid credentials");
       const loadedKeys = loaded.map((s) => s.key as string);
       if (loaded.some((s) => loadedKeys.some((key) => s.revision.toLowerCase().includes(key.toLowerCase())))) throw new Error("invalid revision");
@@ -165,11 +194,14 @@ export class CredentialStore {
       // An older file keeps its revisions, so a private Codex process stays current, and is
       // rewritten by the next change here.
       const settings = slots.settings !== undefined ? azureSettings(slots.settings, loadedKeys) : undefined;
+      const bedrock = slots.bedrockSettings === undefined ? undefined : cleanBedrock(slots.bedrockSettings, loadedKeys);
       this.saved = { version: 3,
         ...(slots.anthropic ? { anthropic: { key: slots.anthropic.key, revision: slots.anthropic.revision } } : {}),
         ...(slots.openai ? { openai: { key: slots.openai.key, revision: slots.openai.revision } } : {}),
         ...(slots.azure ? { azure: { key: slots.azure.key, revision: slots.azure.revision } } : {}),
         ...(settings ? { azureSettings: settings } : {}),
+        ...(slots.bedrock ? { bedrock: { key: slots.bedrock.key, revision: slots.bedrock.revision } } : {}),
+        ...(bedrock ? { bedrockSettings: bedrock } : {}),
       };
       for (const key of loadedKeys) secrets.add(key);
     } catch (e: any) {
@@ -179,7 +211,13 @@ export class CredentialStore {
   status(): CredentialStatus {
     const slot = (s?: Secret) => s ? { set: true, last4: s.key.slice(-4) } : { set: false };
     const settings = this.saved.azureSettings;
-    return { anthropic: slot(this.saved.anthropic), openai: slot(this.saved.openai), azure: { ...slot(this.saved.azure), ...(settings?.endpoint ? { endpoint: settings.endpoint } : {}), deployments: settings?.deployments ?? [] } };
+    return { anthropic: slot(this.saved.anthropic), openai: slot(this.saved.openai), azure: { ...slot(this.saved.azure), ...(settings?.endpoint ? { endpoint: settings.endpoint } : {}), deployments: settings?.deployments ?? [] }, bedrock: { ...slot(this.saved.bedrock), settings: this.saved.bedrockSettings } };
+  }
+  bedrock(): BedrockSettings | undefined { return this.saved.bedrockSettings; }
+  setBedrock(input: BedrockSettings): CredentialStatus {
+    const bedrockSettings = cleanBedrock(input, secrets);
+    this.save({ ...this.saved, bedrockSettings });
+    return this.status();
   }
   /** Azure's settings as saved: the endpoint and deployments, whether or not its key is set. */
   azure(): AzureSettings {
@@ -192,18 +230,25 @@ export class CredentialStore {
    */
   snapshot(source: BillingSource, deployment?: string): CredentialSnapshot | undefined {
     if (source === "subscription") return { source, revision: "subscription", file: this.file };
+    if (source === "bedrock") {
+      const bedrock = this.saved.bedrockSettings;
+      if (!bedrock || (deployment !== undefined && !bedrock.models.some((model) => model.id === deployment))) return undefined;
+      const secret = bedrock.auth === "key" ? this.saved.bedrock : undefined;
+      if (bedrock.auth === "key" && !secret) return undefined;
+      return { source, file: this.file, bedrock, key: secret?.key, deployment, revision: `${secret?.revision ?? "profile"}:${settingsDigest(bedrock, deployment ?? null)}` };
+    }
     const secret = this.saved[source];
     if (!secret) return undefined;
     if (source !== "azure") return { ...secret, source, file: this.file };
     const endpoint = this.saved.azureSettings?.endpoint;
     if (!endpoint) return undefined;
-    if (deployment === undefined) return { key: secret.key, source, file: this.file, endpoint, revision: `${secret.revision}:${azureDigest(endpoint)}` };
+    if (deployment === undefined) return { key: secret.key, source, file: this.file, endpoint, revision: `${secret.revision}:${settingsDigest(endpoint)}` };
     const d = this.saved.azureSettings!.deployments.find((x) => x.name === deployment);
     if (!d) return undefined;
     const pricing: AzurePricing = { ...(d.model ? { model: d.model } : {}), type: d.type ?? "global", ...(d.rates ? { rates: d.rates } : {}) };
     // The table's date too: new rates restart an idle session's private process, as changed ones do.
     const ratesDate = azureModelId(d.model) === "gpt-6.2-sol" ? AZURE_SOL_RATES_DATE : AZURE_RATES_DATE;
-    return { key: secret.key, source, file: this.file, endpoint, deployment: d.name, ...(d.rates ? { rates: d.rates } : {}), pricing, revision: `${secret.revision}:${azureDigest(endpoint, d.name, d.rates ?? null, d.model ?? null, pricing.type, ratesDate)}` };
+    return { key: secret.key, source, file: this.file, endpoint, deployment: d.name, ...(d.rates ? { rates: d.rates } : {}), pricing, revision: `${secret.revision}:${settingsDigest(endpoint, d.name, d.rates ?? null, d.model ?? null, pricing.type, ratesDate)}` };
   }
   /** A key. Azure's settings come separately (`setAzure`); a browser from before sends them along. */
   set(source: CredentialSource, key: string, endpoint?: string, deployment?: string, rates?: TokenRates): CredentialStatus {
@@ -216,6 +261,7 @@ export class CredentialStore {
       settings = azureSettings({ endpoint, deployments: deployment ? [{ name: deployment, ...(rates ? { rates } : {}) }, ...kept] : kept }, [key, ...secrets], true);
     }
     if (carriesKey(settings, [key])) throw new Error("Azure settings must not contain a key.");
+    if (this.saved.bedrockSettings) cleanBedrock(this.saved.bedrockSettings, [key]);
     secrets.add(key);
     this.save({ ...this.saved, [source]: { key, revision: randomUUID() }, ...(settings ? { azureSettings: settings } : {}) });
     return this.status();

@@ -14,7 +14,7 @@ import { markTitle, parseSessionMessage, sessionMessage, TEXTED_VIA } from "../.
 import { LEVELS, mapMode, type Level } from "../../../../shared/move";
 import { waitingNow } from "../../../../shared/schedule";
 import { HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
-import { resolveAzureDeployment, type CredentialSource } from "../../../../shared/credentials";
+import { hasSourceModels, resolveSourceModel, type CredentialSource } from "../../../../shared/credentials";
 import type { SpawnedFamily } from "../../../../shared/protocol";
 import { pickWorktree, type WorktreeJoined, type WorktreeMade } from "../../../../shared/worktree";
 import { LEVEL_WORDS, levelOf } from "../../core/permissionLevel";
@@ -283,7 +283,9 @@ export class Children {
     if (!options.length) lines.push("", "No billing source is available.");
     for (const { source, deployments } of options) {
       lines.push("", `${source}${source === "subscription" ? "" : " (API key: confirm with the person first)"}:`);
-      if (source === "azure") {
+      if (source === "bedrock") {
+        for (const d of deployments ?? []) lines.push(`  - ${d.name}${d.model ? ` (alias: ${d.model})` : ""}`);
+      } else if (source === "azure") {
         if (!deployments?.length) lines.push("  No deployments: add one in Tether's Settings, Azure.");
         else for (const d of deployments) lines.push(`  - ${d.name}${d.model ? ` (runs ${d.model})` : ""}`);
         lines.push("  model: a deployment name, or the model one of them runs.");
@@ -362,10 +364,10 @@ export class Children {
     }
     if (fallbackKeys?.length && !this.ctx.ops) throw new Error("Automatic fallback isn't available on this runner.");
     let model = a.model?.trim() || undefined;
-    if (source === "azure") {
+    if (hasSourceModels(source)) {
       const deployments = choice.deployments ?? [];
-      const deployment = resolveAzureDeployment(deployments, model);
-      if (!deployment) throw new Error(`Choose a configured Azure deployment for ${model}: ${deployments.map(({ name }) => name).join(", ")}.`);
+      const deployment = resolveSourceModel(deployments, model);
+      if (!deployment) throw new Error(`Choose a configured ${source === "azure" ? "Azure deployment" : "Bedrock model"} for ${model}: ${deployments.map(({ name }) => name).join(", ")}.`);
       model = deployment;
     }
     const effort = a.effort?.trim() || undefined;

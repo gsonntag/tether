@@ -130,8 +130,8 @@ test("the switch when the plan runs out: named for its target, on a plan with a 
   expect(autoKeyItem("codex", state({ billing: gpt, lastKey: "azure" }), codex)?.label).toBe("Switch to Azure when plan runs out");
   expect(autoKeyItem("codex", state({ billing: gpt, lastKey: "azure", fallbackKeys: ["openai"] }), codex)?.label).toBe("Switch to OpenAI API key when plan runs out");
   expect(autoKeyItem("codex", state({ billing: gpt, fallbackKeys: [] }), codex)?.label).toBe("No allowed key");
-  // Claude has one key: no ranking.
-  expect(autoKeyItem("claude", state({ billing: plan }), both)).toEqual({ label: "Switch to Anthropic API key when plan runs out", order: false });
+  // Claude can rank Anthropic and Bedrock.
+  expect(autoKeyItem("claude", state({ billing: plan }), both)).toEqual({ label: "Switch to Anthropic API key when plan runs out", order: true });
   // Not on a key session, nor on a plan with no key, unless it's on (so it can be turned off).
   expect(autoKeyItem("codex", state({ billing: openai }), codex)).toBeUndefined();
   const planOnly: SourceChoices = { options: [{ source: "subscription", billing: gpt }] };
@@ -140,8 +140,8 @@ test("the switch when the plan runs out: named for its target, on a plan with a 
 });
 
 test("Fallback keys starts from every key of the harness, its last-used first, all allowed", () => {
-  expect(defaultFallbackOrder("codex")).toEqual(["openai", "azure"]);
-  expect(defaultFallbackOrder("codex", "azure")).toEqual(["azure", "openai"]);
-  expect(defaultFallbackOrder("codex", "subscription")).toEqual(["openai", "azure"]);
-  expect(defaultFallbackOrder("claude", "anthropic")).toEqual(["anthropic"]);
+  expect(defaultFallbackOrder("codex")).toEqual(["openai", "azure", "bedrock"]);
+  expect(defaultFallbackOrder("codex", "azure")).toEqual(["azure", "openai", "bedrock"]);
+  expect(defaultFallbackOrder("codex", "subscription")).toEqual(["openai", "azure", "bedrock"]);
+  expect(defaultFallbackOrder("claude", "anthropic")).toEqual(["anthropic", "bedrock"]);
 });
