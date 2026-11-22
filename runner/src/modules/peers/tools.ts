@@ -47,7 +47,7 @@ export const TOOL_DEFS = [
       properties: {
         harness: { type: "string", enum: ["claude", "codex", "antigravity"], description: "Which agent runs it: claude (Claude Code), codex, or antigravity." },
         prompt: { type: "string", description: "The complete brief: it starts with no other context." },
-        source: { type: "string", enum: ["subscription", "anthropic", "openai", "azure"], description: "Defaults to subscription when available. API-key sources require user confirmation. Azure uses Tether Settings → Azure deployments. tether_models lists what's available." },
+        source: { type: "string", description: "Pass subscription, an account ID from tether_models, or a configured key source. Defaults to the primary subscription. API-key sources require user confirmation. Azure uses Tether Settings → Azure deployments. tether_models lists what's available." },
         fallbackKeys: { type: "array", uniqueItems: true, items: { type: "string", enum: ["anthropic", "openai", "azure"] }, description: "Optional user-confirmed API keys in priority order if a subscription runs out. Omit to disable automatic fallback." },
         model: { type: "string", description: "Its model, when one was asked for (else the agent's default). On azure: a deployment name, or the model one runs. tether_models lists them." },
         effort: { type: "string", description: "Its reasoning effort (low, medium, high, …), when one was asked for." },

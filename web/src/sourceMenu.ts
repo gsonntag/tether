@@ -1,4 +1,4 @@
-import { HARNESS_KEYS, keyTarget, type BillingSource, type SourceChoices } from "../../shared/credentials";
+import { HARNESS_KEYS, isCredentialSource, keyTarget, type BillingSource, type SourceChoices } from "../../shared/credentials";
 import { billingForDisplay, sourceSwitchBlocker, sourceSwitchBlockMessage, visibleNextBilling } from "../../shared/sourceSwitch";
 import type { HarnessId, LiveState } from "../../shared/transcript";
 
@@ -25,7 +25,7 @@ export function switchBlocked(state: LiveState): string | undefined {
 export function sourceMenu(harness: HarnessId, state: LiveState, choices: SourceChoices): { items: SourceMenuItem[]; value?: string; addKey: boolean } {
   // A failed start leaves the target queued, so keep it selected in the menu for cancellation.
   const shown = state.sourceSwitchFailed ? state.nextBilling ?? billingForDisplay(state) : billingForDisplay(state);
-  const own = choices.options.find((o) => o.billing.label === shown?.label);
+  const own = choices.options.find((o) => shown?.source ? o.source === shown.source : o.billing.label === shown?.label);
   const reason = switchBlocked(state);
   const items: SourceMenuItem[] = choices.options.map((o) => ({ value: o.source, label: o.billing.label, ...(o !== own && reason ? { reason } : {}) }));
   const gone = !own && shown && shown.kind !== "unknown";
@@ -41,7 +41,7 @@ export function sourceMenu(harness: HarnessId, state: LiveState, choices: Source
  */
 export function autoKeyItem(harness: HarnessId, state: LiveState, choices: SourceChoices): { label: string; order: boolean } | undefined {
   if (billingForDisplay(state)?.kind !== "plan") return undefined;
-  const keys = choices.options.filter((o) => o.source !== "subscription");
+  const keys = choices.options.filter((o) => isCredentialSource(o.source));
   if (!keys.length && !state.autoKey) return undefined;
   const target = keyTarget(choices.options, state.lastKey, state.fallbackKeys);
   return { label: target ? `Switch to ${target.billing.label} when plan runs out` : "No allowed key", order: HARNESS_KEYS[harness].length > 1 };

@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
-import type { BillingSource, CredentialSource } from "../../shared/credentials";
+import type { AccountSource, BillingSource, CredentialSource } from "../../shared/credentials";
 import type { ForkedFrom } from "../../shared/fork";
 import type { RunnerSettings } from "../../shared/protocol";
 import type { Billing, HarnessId, QueuedMessage } from "../../shared/transcript";
@@ -27,6 +27,8 @@ export interface RunnerConfig {
   name?: string;
   /** runner-wide settings (the Settings page) */
   settings?: RunnerSettings;
+  lastSubscription?: Partial<Record<HarnessId, BillingSource>>;
+  extraAccountNames?: Partial<Record<AccountSource, { accountId: string; displayName: string }>>;
   accountNames?: Partial<Record<HarnessId, { accountId: string; displayName: string }>>;
   /** who else may use this runner and how (shared/access.ts); the relay enforces it */
   sharedWith?: RunnerGrant[];

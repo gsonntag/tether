@@ -14,7 +14,7 @@ import { markTitle, parseSessionMessage, sessionMessage, TEXTED_VIA } from "../.
 import { LEVELS, mapMode, type Level } from "../../../../shared/move";
 import { waitingNow } from "../../../../shared/schedule";
 import { HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
-import { resolveAzureDeployment, type CredentialSource } from "../../../../shared/credentials";
+import { isCredentialSource, isSubscriptionSource, type SourceOption, resolveAzureDeployment, type CredentialSource } from "../../../../shared/credentials";
 import type { SpawnedFamily } from "../../../../shared/protocol";
 import { pickWorktree, type WorktreeJoined, type WorktreeMade } from "../../../../shared/worktree";
 import { LEVEL_WORDS, levelOf } from "../../core/permissionLevel";
@@ -275,14 +275,14 @@ export class Children {
     if (!adapter) return { text: `${HARNESS_LABELS[harness]} isn't available on this runner.`, isError: true };
     const { options } = harness === "antigravity"
       ? { options: [{ source: "subscription" as const, deployments: undefined }] }
-      : await s.sources(harness).catch(() => ({ options: [] as { source: string; deployments?: { name: string; model?: string }[] }[] }));
+      : await s.sources(harness).catch(() => ({ options: [] as SourceOption[] }));
     const list = await adapter.listModels?.().catch(() => undefined);
     const models = (list?.models ?? []).filter((m) => m.id !== "default").map((m) =>
       `  - ${m.id}${m.label && m.label !== m.id ? ` (${m.label})` : ""}${m.efforts?.length ? `; effort: ${m.efforts.join(", ")}` : ""}`);
     const lines = [`${HARNESS_LABELS[harness]} on this runner. Pass source and model to tether_start. Tether sets up each source's provider and key itself (Settings): no config or environment change is needed.`];
     if (!options.length) lines.push("", "No billing source is available.");
     for (const { source, deployments } of options) {
-      lines.push("", `${source}${source === "subscription" ? "" : " (API key: confirm with the person first)"}:`);
+      lines.push("", `${source}${isSubscriptionSource(source) ? "" : " (API key: confirm with the person first)"}:`);
       if (source === "azure") {
         if (!deployments?.length) lines.push("  No deployments: add one in Tether's Settings, Azure.");
         else for (const d of deployments) lines.push(`  - ${d.name}${d.model ? ` (runs ${d.model})` : ""}`);
@@ -356,8 +356,8 @@ export class Children {
     const { source } = choice;
     const fallbackKeys = a.fallbackKeys;
     if (fallbackKeys !== undefined && (!Array.isArray(fallbackKeys) ||
-      fallbackKeys.some((key) => !options.some((option) => option.source === key && option.source !== source)) ||
-      new Set(fallbackKeys).size !== fallbackKeys.length || (fallbackKeys.length && source !== "subscription"))) {
+      fallbackKeys.some((key) => !options.some((option) => option.source === key && isCredentialSource(option.source))) ||
+      new Set(fallbackKeys).size !== fallbackKeys.length || (fallbackKeys.length && !isSubscriptionSource(source)))) {
       throw new Error("Confirm fallback billing with the user. Choose distinct configured API keys in priority order for a subscription session.");
     }
     if (fallbackKeys?.length && !this.ctx.ops) throw new Error("Automatic fallback isn't available on this runner.");

@@ -1,3 +1,4 @@
+import type { HarnessAccount } from "../../../shared/harnessLogin";
 import { HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
 import { HarnessLogin } from "./HarnessLogin";
 import { useEffect, useRef, useState } from "react";
@@ -96,7 +97,28 @@ function RunnerAccounts({ runnerId }: { runnerId: string }) {
   return harnesses.map((harness) => <section key={harness} className="t-credential-harness">
     <Heading level={3}>{HARNESS_LABELS[harness]}</Heading>
     <HarnessLogin runnerId={runnerId} harness={harness} rename />
+    {harness === "claude" && <ExtraAccounts runnerId={runnerId} harness={harness} />}
   </section>);
+}
+
+function ExtraAccounts({ runnerId, harness }: { runnerId: string; harness: HarnessId }) {
+  const link = useStore((s) => s.link);
+  const [accounts, setAccounts] = useState<HarnessAccount[]>();
+  const [revision, setRevision] = useState(0);
+  const refresh = () => setRevision((n) => n + 1);
+  useEffect(() => {
+    if (link !== "open") return;
+    let active = true;
+    void rpc(runnerId, "listHarnessAccounts", { harness }).then((result) => {
+      if (active) setAccounts(result);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [runnerId, harness, link, revision]);
+  if (!accounts) return null;
+  return <>
+    {accounts.map((extra) => <HarnessLogin key={extra.source} runnerId={runnerId} harness={harness} extra={extra} rename onChanged={refresh} />)}
+    <HarnessLogin runnerId={runnerId} harness={harness} add onChanged={refresh} />
+  </>;
 }
 
 function RunnerCredentials({ runnerId, first }: { runnerId: string; first?: HarnessId }) {
@@ -108,6 +130,7 @@ function RunnerCredentials({ runnerId, first }: { runnerId: string; first?: Harn
     {ordered.map((harness) => <section key={harness} className="t-credential-harness">
       <Heading level={3}>{harness === "claude" ? "Claude" : HARNESS_LABELS[harness]}</Heading>
       <HarnessLogin runnerId={runnerId} harness={harness} />
+      {harness === "claude" && <a className="t-link" href="#/settings/accounts">Manage Claude accounts</a>}
       {status && harness === "claude" && slot("anthropic")}
       {status && harness === "codex" && slot("openai")}
     </section>)}

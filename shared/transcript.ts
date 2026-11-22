@@ -341,6 +341,7 @@ export interface PlanUsage {
  * subscription, the only kind plan limits belong to.
  */
 export interface Billing {
+  source?: BillingSource;
   kind: "plan" | "apiKey" | "provider" | "unknown";
   label: string;
 }

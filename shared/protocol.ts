@@ -1,4 +1,4 @@
-import type { HarnessLoginFlow, HarnessLoginStatus } from "./harnessLogin";
+import type { HarnessAccount, HarnessLoginFlow, HarnessLoginStatus } from "./harnessLogin";
 // The wire format between browsers, the relay (server) and runners (SPEC §5).
 //
 //   browser ──rpc {id, runnerId, op, args}──► server ──rpc {id', op, args}──► runner
@@ -33,7 +33,7 @@ import type { GitActionResult, GitDraft, GitStatus, PrLookup } from "./gitAction
 import type { MoveOptions } from "./move";
 import type { WorkspaceInfo, WorktreeJoined, WorktreeList, WorktreeMade } from "./worktree";
 import type { Attachment } from "./attachments";
-import type { AzureDeployment, BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
+import type { AccountSource, AzureDeployment, BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
 import type { TokenRates } from "./costs";
 import type { AutoUpdateStatus, HarnessReport } from "./harnessUpdates";
 import type { PartChunk } from "./limits";
@@ -154,8 +154,10 @@ export interface Ops {
   cancelRetry: { args: { sessionId: string }; result: null };
   credentials: { args: Record<string, never>; result: CredentialStatus };
   harnessLoginStatus: { args: { harness: HarnessId }; result: HarnessLoginStatus };
-  renameHarnessAccount: { args: { harness: HarnessId; accountId: string; displayName: string }; result: HarnessLoginStatus };
-  harnessLoginStart: { args: { harness: HarnessId }; result: { flowId: string } };
+  listHarnessAccounts: { args: { harness: HarnessId }; result: HarnessAccount[] };
+  removeHarnessAccount: { args: { harness: HarnessId; source: AccountSource }; result: null };
+  renameHarnessAccount: { args: { harness: HarnessId; accountId: string; displayName: string; source?: AccountSource }; result: HarnessLoginStatus };
+  harnessLoginStart: { args: { harness: HarnessId; account?: "new" | AccountSource }; result: { flowId: string } };
   harnessLoginPoll: { args: { flowId: string }; result: HarnessLoginFlow };
   harnessLoginCode: { args: { flowId: string; code: string }; result: null };
   harnessLoginCancel: { args: { flowId: string }; result: null };

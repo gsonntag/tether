@@ -4,13 +4,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, closeSync, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { AZURE_MAX_DEPLOYMENTS, AZURE_NAME, azureEndpoint, type AzureDeployment, type BillingSource, type CredentialSource, type CredentialStatus } from "../../shared/credentials";
+import { AZURE_MAX_DEPLOYMENTS, AZURE_NAME, azureEndpoint, isAccountSource, type AzureDeployment, type BillingSource, type CredentialSource, type CredentialStatus } from "../../shared/credentials";
 import { validRates, type TokenRates } from "../../shared/costs";
 import { AZURE_RATES_DATE, AZURE_SOL_RATES_DATE, azureModelId, isAzureType, type AzurePricing } from "../../shared/azureRates";
 import { CONFIG_DIR } from "./config";
 
 export const DATA_DIR = process.env.TETHER_DATA_DIR || CONFIG_DIR;
 export interface CredentialSnapshot {
+  claudeAccount?: { configDir: string; accountId: string; email: string; organization: string };
   rates?: TokenRates;
   source: BillingSource;
   revision: string;
@@ -192,6 +193,7 @@ export class CredentialStore {
    */
   snapshot(source: BillingSource, deployment?: string): CredentialSnapshot | undefined {
     if (source === "subscription") return { source, revision: "subscription", file: this.file };
+    if (isAccountSource(source)) return undefined;
     const secret = this.saved[source];
     if (!secret) return undefined;
     if (source !== "azure") return { ...secret, source, file: this.file };

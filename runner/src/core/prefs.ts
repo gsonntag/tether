@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { CONFIG_FILE, saveConfig, type RunnerConfig, type SessionPrefs } from "../config";
 import { redactValue } from "../credentials";
 import { cleanGrants, type RunnerGrant } from "../../../shared/access";
-import type { BillingSource } from "../../../shared/credentials";
+import { isAccountSource, type AccountSource, type BillingSource } from "../../../shared/credentials";
 import type { RunnerSettings } from "../../../shared/protocol";
 import type { HarnessId } from "../../../shared/transcript";
 import type { ClosedRequest, SavedRequest } from "./broker";
@@ -110,18 +110,36 @@ export class Prefs {
     return this.shared();
   }
 
-  accountName(harness: HarnessId, accountId: string): string | undefined {
-    const entry = read(this.file).accountNames?.[harness];
+  accountName(harness: HarnessId, accountId: string, source?: AccountSource): string | undefined {
+    const config = read(this.file);
+    const entry = source ? config.extraAccountNames?.[source] : config.accountNames?.[harness];
     return entry?.accountId === accountId && typeof entry.displayName === "string" ? entry.displayName : undefined;
   }
 
-  setAccountName(harness: HarnessId, accountId: string, displayName: string) {
+  setAccountName(harness: HarnessId, accountId: string, displayName: string, source?: AccountSource) {
     const cfg = read(this.file);
     if (!cfg.runnerId) throw new Error("Runner configuration is unavailable.");
+    if (source) {
+      const extraAccountNames = { ...cfg.extraAccountNames };
+      if (displayName) extraAccountNames[source] = { accountId, displayName };
+      else delete extraAccountNames[source];
+      saveConfig({ ...cfg, runnerId: cfg.runnerId, extraAccountNames }, this.file);
+      return;
+    }
     const accountNames = { ...cfg.accountNames };
     if (displayName) accountNames[harness] = { accountId, displayName };
     else delete accountNames[harness];
     saveConfig({ ...cfg, runnerId: cfg.runnerId, accountNames }, this.file);
+  }
+
+  lastSubscription(harness: HarnessId): BillingSource | undefined {
+    return read(this.file).lastSubscription?.[harness];
+  }
+
+  setLastSubscription(harness: HarnessId, source: BillingSource) {
+    const cfg = read(this.file);
+    if (!cfg.runnerId || cfg.lastSubscription?.[harness] === source) return;
+    saveConfig({ ...cfg, runnerId: cfg.runnerId, lastSubscription: { ...cfg.lastSubscription, [harness]: source } }, this.file);
   }
 
   /** The runner-wide settings. */
@@ -231,12 +249,15 @@ export class Prefs {
     if (!this.dirty) return;
     this.dirty = false;
     const cutoff = Date.now() - MAX_AGE_MS;
-    const kept = Object.entries(this.map)
+    const entries = Object.entries(this.map);
+    // An account binding must survive pruning, including after its login is removed.
+    const bindings = entries.filter(([, p]) => isAccountSource(p.source));
+    const kept = entries.filter(([, p]) => !isAccountSource(p.source))
       // A replaced thread stays out of the lists for good: this is the only thing that says so.
       .filter(([, p]) => keep(p) || (p.at ?? 0) >= cutoff)
       .sort((a, b) => rank(b[1]) - rank(a[1]) || (b[1].at ?? 0) - (a[1].at ?? 0))
       .slice(0, MAX_ENTRIES);
-    this.map = Object.fromEntries(kept);
+    this.map = Object.fromEntries([...kept, ...bindings]);
     // Reread, so a name edited by hand meanwhile isn't overwritten.
     const cfg = read(this.file);
     if (!cfg.runnerId) return; // not a runner's file: never invent one here

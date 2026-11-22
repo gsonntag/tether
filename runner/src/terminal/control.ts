@@ -1,3 +1,4 @@
+import { isAccountSource } from "../../../shared/credentials";
 // Terminal mode (SPEC §8): the harness's own TUI in tmux, mirrored to browsers, and the project's
 // plain shells beside it.
 //
@@ -734,6 +735,13 @@ export class TerminalControl {
       // The TUI goes on with the model and mode it runs in, on any session it moves to.
       const { model, effort, permissionMode, modelResolved } = old.state;
       // Whatever session the TUI opens, it runs on the source it was started with, and says so.
+      const terminalSource = this.o.live.sourceOf(old);
+      const targetSource = this.o.live.sourceOf(n);
+      if (terminalSource !== targetSource && (isAccountSource(terminalSource) || isAccountSource(targetSource))) {
+        core.o.prefs.set(n.id, { source: terminalSource, nextBilling: undefined, sourceSwitchFailed: undefined });
+        core.o.prefs.flush();
+        n.setState({ plan: core.planFor(n.summary.harness, terminalSource), nextBilling: undefined, sourceSwitchFailed: undefined });
+      }
       n.setState({ model, effort, permissionMode, modelResolved, ...(old.state.billing ? { billing: old.state.billing } : {}) });
       await this.markEntries(n);
       if (this.modeShown.delete(old.id)) this.modeShown.add(n.id);

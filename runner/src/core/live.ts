@@ -11,7 +11,8 @@ import { Commands } from "./commands";
 import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { CredentialStore, redact, redactValue, type CredentialSnapshot } from "../credentials";
-import { isBillingSource, keyTargets, resolveAzureDeployment, type BillingSource, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
+import type { ClaudeAccounts } from "../adapters/claude/accounts";
+import { isAccountSource, isCredentialSource, isSubscriptionSource, type AccountSource, isBillingSource, keyTargets, resolveAzureDeployment, type BillingSource, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
 import { addSideCost, type CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
@@ -106,7 +107,7 @@ export class LiveControl {
   readonly commands: Commands;
   /** shutting down: drivers close, but their open requests stay saved for the next start */
   private stopping = false;
-  private readonly subscriptionRevisions = new Map<HarnessId, string>();
+  private readonly subscriptionRevisions = new Map<string, string>();
   /** how long a cut-off session's store must be quiet before Tether continues it (tests shorten these) */
   quiet = { quietMs: 15_000, pollMs: 3_000, maxMs: 10 * 60_000 };
   /**
@@ -129,7 +130,7 @@ export class LiveControl {
       idleMs?: number;
       /** the most sessions live at once (TETHER_MAX_LIVE_SESSIONS); absent or 0: no limit */
       maxLive?: number;
-      attachmentsDir?: string; credentials?: CredentialStore; costs?: CostLedger } = {},
+      attachmentsDir?: string; credentials?: CredentialStore; claudeAccounts?: ClaudeAccounts; costs?: CostLedger } = {},
   ) {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
     this.retries = new RetryControl(core, {
@@ -174,8 +175,8 @@ export class LiveControl {
   private retryIdentity(s: Session) {
     const source = this.sourceOf(s);
     const deployment = this.deploymentOf(s);
-    const credential = this.opts.credentials?.snapshot(source, deployment);
-    const scope = createHash("sha256").update(JSON.stringify([s.summary.harness, source, credential?.revision, credential?.endpoint, deployment ?? s.state.model])).digest("hex");
+    const credential = isAccountSource(source) ? undefined : this.opts.credentials?.snapshot(source, deployment);
+    const scope = createHash("sha256").update(JSON.stringify([s.summary.harness, source, isAccountSource(source) ? this.revisionOf(s) : credential?.revision, credential?.endpoint, deployment ?? s.state.model])).digest("hex");
     const fingerprint = createHash("sha256").update(JSON.stringify([scope, s.state.model, s.state.effort, s.state.permissionMode])).digest("hex");
     return { scope, fingerprint };
   }
@@ -211,10 +212,22 @@ export class LiveControl {
     }
   }
 
-  harnessLoginChanged(harness: HarnessId) {
-    this.subscriptionRevisions.set(harness, randomUUID());
+  claudeAccountInUse(source: AccountSource) {
+    return [...this.core.sessions.values()].some((s) => s.summary.harness === "claude" && (this.sourceOf(s) === source || s.state.billing?.source === source)
+      && (s.sending || s.starting || s.driver?.busy() || sourceSwitchBlocker(s.state) === "background" ||
+          s.state.mode === "terminal" || !!this.terminal?.blocked(s)));
+  }
+
+  async releaseClaudeAccount(source: AccountSource) {
+    await Promise.all([...this.core.sessions.values()].filter((s) =>
+      s.summary.harness === "claude" && s.driver && (this.sourceOf(s) === source || s.state.billing?.source === source)
+    ).map((s) => this.release(s)));
+  }
+
+  harnessLoginChanged(harness: HarnessId, source: BillingSource = "subscription") {
+    this.subscriptionRevisions.set(this.subscriptionScope(harness, source), randomUUID());
     for (const s of this.core.sessions.values()) {
-      if (s.summary.harness === harness && s.retry && this.sourceOf(s) === "subscription") this.cancelRetrySession(s);
+      if (s.summary.harness === harness && s.retry && this.sourceOf(s) === source) this.cancelRetrySession(s);
     }
   }
 
@@ -1423,10 +1436,22 @@ export class LiveControl {
     return { ...opts, model: deployment };
   }
 
+  private subscriptionScope(harness: HarnessId, source: BillingSource) {
+    return `${harness}:${source}`;
+  }
+
+  private subscriptionRevision(harness: HarnessId, source: BillingSource) {
+    return this.subscriptionRevisions.get(this.subscriptionScope(harness, source)) ?? source;
+  }
+
   /** What a session's process must have been started with to be current. */
   private revisionOf(s: Session): string | undefined {
     const source = this.sourceOf(s);
-    return (source === "subscription" ? this.subscriptionRevisions.get(s.summary.harness) : undefined)
+    if (isAccountSource(source)) {
+      const accounts = this.opts.claudeAccounts;
+      return accounts?.read(source) && !accounts.signingIn.has(source) ? this.subscriptionRevision(s.summary.harness, source) : undefined;
+    }
+    return (source === "subscription" ? this.subscriptionRevisions.get(this.subscriptionScope(s.summary.harness, source)) : undefined)
       ?? this.opts.credentials?.snapshot(source, this.deploymentOf(s))?.revision;
   }
 
@@ -1437,6 +1462,15 @@ export class LiveControl {
   /** The source as it is now: a missing key stops here, naming the source. Nothing stands in for it. */
   credentialFor(harness: HarnessId, source: BillingSource, deployment?: string): CredentialSnapshot | undefined {
     const store = this.opts.credentials;
+    if (isAccountSource(source)) {
+      const accounts = this.opts.claudeAccounts;
+      const identity = harness === "claude" ? accounts?.read(source) : undefined;
+      if (!store || !accounts || !identity || accounts.signingIn.has(source)) {
+        throw new Error("The chosen Claude subscription account is unavailable. Check Accounts or change Source. Nothing was sent.");
+      }
+      const { accountId, email, organization } = identity;
+      return { source, revision: this.subscriptionRevision(harness, source), file: store.file, claudeAccount: { configDir: accounts.configDir(source), accountId, email, organization } };
+    }
     if (!store) return undefined;
     const credential = store.snapshot(source, source === "azure" ? deployment ?? "" : undefined);
     if (credential) return credential;
@@ -1457,21 +1491,31 @@ export class LiveControl {
     const login = await billing.loggedIn().catch(() => false);
     // Azure is there with its key, its resource and a deployment to run on.
     const ready = (k: CredentialSource) => status[k].set && (k !== "azure" || (!!status.azure.endpoint && !!status.azure.deployments?.length));
-    const options = [...(login ? ["subscription" as const] : []), ...billing.keys.filter(ready)].map((source) => {
+    const extras = harness === "claude" ? (this.opts.claudeAccounts?.list() ?? [])
+      .filter(({ source }) => !this.opts.claudeAccounts?.signingIn.has(source)).map(({ source }) => source) : [];
+    const options = [...(login ? ["subscription" as const] : []), ...extras, ...billing.keys.filter(ready)].map((source) => {
       const deployments = source === "azure" ? status.azure.deployments!.map((d) => ({ name: d.name, ...(d.model ? { model: d.model } : {}) })) : undefined;
       return { source, billing: billing.label(source), ...(deployments ? { deployments } : {}) };
     });
-    const fallback = login ? "subscription" : options[0]?.source;
+    const last = this.core.o.prefs.lastSubscription(harness);
+    const fallback = options.find((o) => o.source === last)?.source ?? options[0]?.source;
     return { options, ...(fallback ? { default: fallback } : {}) };
   }
 
   /**
-   * The source a new session gets. None asked for: the subscription, never a key by surprise.
+   * Without an explicit source, use the last selected Claude login or the primary subscription.
    */
   async sourceForNew(harness: HarnessId, asked: unknown): Promise<BillingSource> {
-    if (asked === undefined) return "subscription";
+    if (asked === undefined) {
+      const last = this.core.o.prefs.lastSubscription(harness);
+      return harness === "claude" && isAccountSource(last) && this.opts.claudeAccounts?.read(last) && !this.opts.claudeAccounts.signingIn.has(last) ? last : "subscription";
+    }
+    if (isAccountSource(asked)) {
+      this.credentialFor(harness, asked);
+      return asked;
+    }
     const a = this.core.adapter(harness);
-    if (!isBillingSource(asked) || (asked !== "subscription" && !a.billing?.keys.includes(asked))) throw new Error(`${HARNESS_LABELS[harness]} can't use that source.`);
+    if (!isBillingSource(asked) || (asked !== "subscription" && (!isCredentialSource(asked) || !a.billing?.keys.includes(asked)))) throw new Error(`${HARNESS_LABELS[harness]} can't use that source.`);
     return asked;
   }
 
@@ -1486,7 +1530,13 @@ export class LiveControl {
   async createSession(harness: HarnessId, folder: string, opts: StartOpts, source: BillingSource): Promise<Session> {
     opts = this.forSource(source, opts);
     const s = this.core.create(harness, await this.newNativeId(harness, folder, opts, source), folder, opts);
-    this.core.o.prefs.set(s.id, { source, ...(source === "azure" && opts.model ? { deployment: opts.model } : {}) });
+    const accountBilling = isAccountSource(source) ? this.core.adapter(harness).billing?.label(source) : undefined;
+    if (accountBilling) {
+      s.setState({ nextBilling: accountBilling, plan: this.core.planFor(harness, source) });
+    }
+    this.core.o.prefs.set(s.id, { source, ...(accountBilling ? { nextBilling: accountBilling } : {}), ...(source === "azure" && opts.model ? { deployment: opts.model } : {}) });
+    if (accountBilling) this.core.o.prefs.flush();
+    if (isSubscriptionSource(source) && harness === "claude") this.core.o.prefs.setLastSubscription(harness, source);
     return s;
   }
 
@@ -1501,6 +1551,13 @@ export class LiveControl {
     s.setState({ sourceSwitchFailed: true });
   }
 
+  private assertSourceSwitchIdle(s: Session) {
+    if (s.state.mode === "terminal" || s.state.terminal || this.terminal?.blocked(s)) throw new Error(sourceSwitchBlockMessage("terminal"));
+    const blocker = sourceSwitchBlocker(s.state);
+    if (blocker) throw new Error(sourceSwitchBlockMessage(blocker));
+    if (s.sending || s.starting || s.carrying) throw new Error(sourceSwitchBlockMessage("turn"));
+  }
+
   /** From the next process start, which confirms it (only with capabilities.sourceSwitch). */
   async setSource(id: string, asked: unknown, azureDeployment?: string) {
     const s = await this.core.open(id);
@@ -1510,18 +1567,16 @@ export class LiveControl {
     if (s.summary.sideOf) throw new Error(SIDE_KEEPS.source);
     if (!s.capabilities.sourceSwitch) throw new Error("Use Move to change this session's source.");
     if (!isBillingSource(asked)) throw new Error("That isn't a source.");
-    if (s.state.mode === "terminal" || s.state.terminal || this.terminal?.blocked(s)) throw new Error(sourceSwitchBlockMessage("terminal"));
-    const blocker = sourceSwitchBlocker(s.state);
-    if (blocker) throw new Error(sourceSwitchBlockMessage(blocker));
-    if (s.sending || s.starting || s.carrying) throw new Error(sourceSwitchBlockMessage("turn"));
+    this.assertSourceSwitchIdle(s);
     const choice = (await this.sources(harness)).options.find((o) => o.source === asked);
+    this.assertSourceSwitchIdle(s);
     if (!choice) throw new Error(`${this.labelOf(harness, asked)} isn't available.`);
     if (azureDeployment && !choice.deployments?.some(({ name }) => name === azureDeployment)) {
       throw new Error(`Azure deployment ${azureDeployment} isn't available.`);
     }
     const carries = !!s.capabilities.sourceCarry;
     const own = this.sourceOf(s);
-    const lastKey = asked !== "subscription" ? asked : own !== "subscription" ? own : undefined;
+    const lastKey = isCredentialSource(asked) ? asked : isCredentialSource(own) ? own : undefined;
     if (lastKey) {
       this.core.o.prefs.set(id, { lastKey });
       s.setState({ lastKey });
@@ -1553,14 +1608,15 @@ export class LiveControl {
     const confirmed = s.state.billing?.label === next.label;
     // Where its API cost starts is decided now, while what it was on until now is still what's confirmed.
     let cost: SessionCost | undefined;
-    if (asked !== "subscription") {
+    if (isCredentialSource(asked)) {
       try { cost = this.startCost(s); }
       catch { cost = { estimated: true, complete: false, reasons: ["unsaved"] }; this.core.log("Couldn't save this session's API cost coverage. Its total is unknown."); }
     }
     const azure = azureDeployment ? { deployment: azureDeployment, model: azureDeployment } : {};
     this.core.o.prefs.set(id, { source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...azure });
     this.core.o.prefs.flush();
-    s.setState({ nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...(azure.model ? { model: azure.model } : {}), ...(cost ? { cost } : {}) });
+    if (harness === "claude" && isSubscriptionSource(asked)) this.core.o.prefs.setLastSubscription(harness, asked);
+    s.setState({ ...(isAccountSource(asked) || isAccountSource(own) ? { plan: this.core.planFor(harness, asked) } : {}), nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...(azure.model ? { model: azure.model } : {}), ...(cost ? { cost } : {}) });
     this.core.touch(s);
   }
 
@@ -1668,7 +1724,7 @@ export class LiveControl {
   private async planOut(s: Session, hit: { resetsAt?: number }, sent: Session["lastSend"], acted: boolean) {
     const prefs = this.core.o.prefs.get(s.id);
     const harness = s.summary.harness;
-    if (!prefs.autoKey || prefs.nextSource || s.summary.parentSessionId || prefs.sideOf || s.state.billing?.kind !== "plan" || this.sourceOf(s) !== "subscription") return;
+    if (!prefs.autoKey || prefs.nextSource || s.summary.parentSessionId || prefs.sideOf || s.state.billing?.kind !== "plan" || !isSubscriptionSource(this.sourceOf(s))) return;
     this.core.pin(s);
     try {
       // A turn can end before its send has returned.
@@ -1742,8 +1798,8 @@ export class LiveControl {
     // Live from here: its own events, not the store, update the transcript.
     s.unwatch?.();
     s.unwatch = undefined;
-    const sink = this.sink(s);
-    const subscriptionRevision = this.sourceOf(s) === "subscription" ? this.subscriptionRevisions.get(s.summary.harness) : undefined;
+    const sink = this.sink(s, this.sourceOf(s));
+    const subscriptionRevision = this.sourceOf(s) === "subscription" ? this.subscriptionRevisions.get(this.subscriptionScope(s.summary.harness, "subscription")) : undefined;
     let d: Driver;
     let opts: StartOpts;
     s.setState({ starting: s.fresh ? "start" : "resume" });
@@ -1760,7 +1816,7 @@ export class LiveControl {
       // that was starting it ends its turn as failed (send's catch).
       // (A Back to Tether that failed: modeChanged pauses what waited for the terminal, with Resume.)
       this.setMode(s, "stored", { error, starting: undefined, ...(s.sending ? {} : { status: "idle" as const }) });
-      if (!observe && !s.summary.parentSessionId && this.sourceOf(s) === "subscription" && needsHarnessLogin(error)) {
+      if (!observe && !s.summary.parentSessionId && isSubscriptionSource(this.sourceOf(s)) && needsHarnessLogin(error)) {
         this.read.set(s.id, { failure: error });
       }
       this.core.tail(s);
@@ -1849,7 +1905,7 @@ export class LiveControl {
   // ---------------- sinks ----------------
 
   /** Where a session's driver reports. */
-  private sink(s: Session): Sink {
+  private sink(s: Session, processSource: BillingSource): Sink {
     const core = this.core;
     const bus = core.o.bus;
     return {
@@ -1929,7 +1985,8 @@ export class LiveControl {
       request: (r, signal) => this.desk.ask(s, redactValue(r), signal),
       // The account's, reported by what runs on its login: a key's process says nothing of the plan.
       plan: (p) => {
-        if (this.sourceOf(s) === "subscription") core.notePlan(s.summary.harness, reportedAt(p));
+        const source = processSource;
+        if (isSubscriptionSource(source)) core.notePlan(s.summary.harness, reportedAt(p), source);
       },
       limitReached: (hit) => {
         s.limitHit = hit;
@@ -2054,7 +2111,7 @@ export class LiveControl {
     const at = parent.transcript?.findTool(start.parentToolId);
     if (at) parent.apply({ type: "tool", msgId: at.msg.id, toolId: start.parentToolId, patch: { childSessionId: id } });
     const child = c;
-    const sink = this.sink(child);
+    const sink = this.sink(child, this.sourceOf(parent));
     return {
       ...sink,
       // A subagent's status follows its task, not turns.

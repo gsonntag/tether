@@ -15,8 +15,13 @@ export interface CredentialSlot { set: boolean; last4?: string; endpoint?: strin
 export type CredentialStatus = Record<CredentialSource, CredentialSlot>;
 
 /** What one session draws from. It's chosen when the session is made and kept with it. */
-export type BillingSource = CredentialSource | "subscription";
-export const isBillingSource = (v: unknown): v is BillingSource => v === "subscription" || v === "anthropic" || v === "openai" || v === "azure";
+export type AccountSource = `account:${string}`;
+export const isAccountSource = (v: unknown): v is AccountSource =>
+  typeof v === "string" && /^account:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(v);
+export type BillingSource = CredentialSource | "subscription" | AccountSource;
+export const isCredentialSource = (v: unknown): v is CredentialSource => v === "anthropic" || v === "openai" || v === "azure";
+export const isSubscriptionSource = (v: BillingSource) => v === "subscription" || isAccountSource(v);
+export const isBillingSource = (v: unknown): v is BillingSource => v === "subscription" || isCredentialSource(v) || isAccountSource(v);
 
 /** A source that really exists for a harness now: a login it reports, or a key that's set. */
 export interface SourceOption {
@@ -39,7 +44,7 @@ export function resolveAzureDeployment(deployments: NonNullable<SourceOption["de
 
 /** Available fallback keys, in the user's order. An explicit list excludes every omitted key. */
 export function keyTargets(options: SourceOption[], lastKey?: BillingSource, order?: CredentialSource[]): SourceOption[] {
-  const keys = options.filter((o) => o.source !== "subscription");
+  const keys = options.filter((o) => isCredentialSource(o.source));
   if (order !== undefined) return [...new Set(order)].flatMap((source) => keys.filter((o) => o.source === source));
   const last = keys.find((o) => o.source === lastKey);
   return last ? [last, ...keys.filter((o) => o !== last)] : keys;

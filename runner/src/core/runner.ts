@@ -1,10 +1,12 @@
+import { ClaudeAccounts } from "../adapters/claude/accounts";
+import { isCredentialSource } from "../../../shared/credentials";
 import { registerHarnessLogin } from "./harnessLogin";
 // The runner's core, assembled: its event bus, ops, harness facts and connection to the app.
 // index.ts adds modules and process handling; tests build one against a fake server.
 
 import { defang } from "../../../shared/fromTether";
 import { hostname } from "node:os";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { CredentialStore, redact } from "../credentials";
 import { CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
@@ -154,11 +156,12 @@ export function createRunner(o: RunnerOptions) {
   });
   // Open requests are kept in runner.json, so they survive a restart (SPEC §7).
   const broker = new RequestBroker(o.policy, { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (open, closed) => prefs.setRequests(open, closed), log: o.log });
-  const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, maxLive: o.core?.maxLive, attachmentsDir: o.attachmentsDir, credentials: o.credentials, costs });
-  const stopHarnessLogin = registerHarnessLogin(ops, (harness) => {
-    live.harnessLoginChanged(harness);
-    void core.refreshPlan(harness).catch(() => {});
-  }, prefs);
+  const claudeAccounts = o.credentials?.file ? new ClaudeAccounts(join(dirname(o.credentials.file), "claude-accounts")) : undefined;
+  const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, maxLive: o.core?.maxLive, attachmentsDir: o.attachmentsDir, credentials: o.credentials, claudeAccounts, costs });
+  const stopHarnessLogin = registerHarnessLogin(ops, (harness, source) => {
+    live.harnessLoginChanged(harness, source);
+    if (!source) void core.refreshPlan(harness).catch(() => {});
+  }, prefs, claudeAccounts, (source) => live.claudeAccountInUse(source), (source) => live.releaseClaudeAccount(source));
   if (o.credentials) {
     ops.register("credentials", () => o.credentials!.status());
     ops.register("setCredential", (a) => { const result = o.credentials!.set(a.source, a.key, a.endpoint, a.deployment, a.rates); live.credentialsChanged(); return result; });
@@ -288,7 +291,7 @@ export function createRunner(o: RunnerOptions) {
           // A new session on a key (a Move, or a source change's new thread), metered from its first
           // request: what it brought across was spent elsewhere, and a carry adds that (live.ts
           // carryCost). Resuming the imported history doesn't mean unknown earlier usage here.
-          if (source !== "subscription") {
+          if (isCredentialSource(source)) {
             try { live.beginCost(id, true); } catch { core.log("Couldn't save this session's API cost coverage. Its total is unknown."); }
           }
           const s = await core.open(id);
@@ -350,7 +353,7 @@ export function createRunner(o: RunnerOptions) {
           // The session's own source, as its next start would use it: a missing key stops here.
           const credential = live.credentialFor(s.summary.harness, live.sourceOf(s), live.deploymentOf(s));
           // On a key, what it cost goes in the session's API ledger with its turns'.
-          const onCost = credential && credential.source !== "subscription" ? (c: SessionCost) => void live.sideCost(s.id, c) : undefined;
+          const onCost = credential && isCredentialSource(credential.source) ? (c: SessionCost) => void live.sideCost(s.id, c) : undefined;
           return adapter.ask(s.summary.projectPath, prompt, { ...opts, ...(credential ? { credential } : {}), ...(onCost ? { onCost } : {}) });
         },
         holdFolder: (folder: string, why: string) => live.holdFolder(folder, why),

@@ -1222,6 +1222,16 @@ never comes here: a key that fails stops with the usual error, with no further s
 failed turn held goes on after the resend.
 
 On Claude (`capabilities.sourceSwitch`) the next message's process start takes the new source.
+Settings → Accounts can sign in to additional Claude subscriptions. The primary login stays in
+Claude's usual config directory. Each extra login uses a private `CLAUDE_CONFIG_DIR` on that runner,
+with links to the primary directory's projects, history and user configuration. Claude owns and
+refreshes the login in each directory. Removing an extra account deletes its directory without
+calling Claude logout. Sessions bound to the removed source need a new source before they can send.
+
+The new-session picker defaults to the last selected Claude subscription when available. The source
+chip can switch accounts in place, and the SDK and tmux terminal run under the selected account.
+Claude must confirm the subscription, email and organization before sending. Account names and
+identity details are owner-only, and extra account rate-limit reports stay with their source.
 
 A **Codex** thread can't cross app-servers (`capabilities.sourceCarry`), so a new thread takes the
 session's place, and nothing shows it. This is deliberate, tested on 0.164 and 0.166: a rollout copied

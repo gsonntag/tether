@@ -12,7 +12,7 @@ import type { SessionCost } from "../../../../shared/costs";
 import type { CredentialSnapshot } from "../../credentials";
 import { redact } from "../../credentials";
 import { CLAUDE_BIN } from "./bin";
-import { claudeAuthSettings, claudeEnv, claudeKeyLease, confirmClaudeBilling } from "./credentials";
+import { claudeAuthSettings, claudeEnv, claudeKeyLease, confirmClaudeBilling, expectedClaudeIdentity } from "./credentials";
 
 /** The small model a side query runs on. */
 export const ASK_MODEL = "haiku";
@@ -29,17 +29,19 @@ export interface AskOpts {
 
 /** What the query needs (tests give a fake SDK and lease). */
 export interface AskDeps {
+  expectedAccount?: typeof expectedClaudeIdentity;
   query: typeof sdkQuery;
   lease: typeof claudeKeyLease;
   bin?: string;
 }
 
 export function claudeAsk(projectPath: string, prompt: string, opts: AskOpts): Promise<string> {
-  return askWith({ query: sdkQuery, lease: claudeKeyLease, bin: CLAUDE_BIN }, projectPath, prompt, opts);
+  return askWith({ query: sdkQuery, lease: claudeKeyLease, bin: CLAUDE_BIN, expectedAccount: expectedClaudeIdentity }, projectPath, prompt, opts);
 }
 
 export async function askWith(deps: AskDeps, projectPath: string, prompt: string, opts: AskOpts): Promise<string> {
   if (!deps.bin) throw new Error("Claude Code isn't installed.");
+  const expected = await deps.expectedAccount?.(deps.bin, opts.credential);
   const onKey = opts.credential?.source === "anthropic";
   const lease = deps.lease(opts.credential);
   let go!: (ok: boolean) => void;
@@ -87,7 +89,7 @@ export async function askWith(deps: AskDeps, projectPath: string, prompt: string
     // Nothing is sent until Claude Code says what it draws from, and it's the session's source.
     await q.initializationResult();
     try {
-      confirmClaudeBilling(await q.accountInfo().catch(() => undefined), opts.credential);
+      confirmClaudeBilling(await q.accountInfo().catch(() => undefined), opts.credential, expected);
     } catch (e) {
       go(false);
       throw e;
