@@ -14,7 +14,7 @@ import { markTitle, parseSessionMessage, sessionMessage, TEXTED_VIA } from "../.
 import { LEVELS, mapMode, type Level } from "../../../../shared/move";
 import { waitingNow } from "../../../../shared/schedule";
 import { HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
-import { isCredentialSource, isSubscriptionSource, type SourceOption, resolveAzureDeployment, type CredentialSource } from "../../../../shared/credentials";
+import { hasSourceModels, isSubscriptionSource, resolveSourceModel, type SourceOption } from "../../../../shared/credentials";
 import type { SpawnedFamily } from "../../../../shared/protocol";
 import { pickWorktree, type WorktreeJoined, type WorktreeMade } from "../../../../shared/worktree";
 import { LEVEL_WORDS, levelOf } from "../../core/permissionLevel";
@@ -83,7 +83,6 @@ export interface StartArgs {
   harness?: string;
   prompt?: string;
   source?: string;
-  fallbackKeys?: unknown;
   model?: string;
   effort?: string;
   title?: string;
@@ -283,7 +282,9 @@ export class Children {
     if (!options.length) lines.push("", "No billing source is available.");
     for (const { source, deployments } of options) {
       lines.push("", `${source}${isSubscriptionSource(source) ? "" : " (API key: confirm with the person first)"}:`);
-      if (source === "azure") {
+      if (source === "bedrock") {
+        for (const d of deployments ?? []) lines.push(`  - ${d.name}${d.model ? ` (alias: ${d.model})` : ""}`);
+      } else if (source === "azure") {
         if (!deployments?.length) lines.push("  No deployments: add one in Tether's Settings, Azure.");
         else for (const d of deployments) lines.push(`  - ${d.name}${d.model ? ` (runs ${d.model})` : ""}`);
         lines.push("  model: a deployment name, or the model one of them runs.");
@@ -354,18 +355,11 @@ export class Children {
       throw new Error(`Confirm what to bill to with the user before starting a session, then pass its source. Available for ${HARNESS_LABELS[harness]}: ${available || "none"}.`);
     }
     const { source } = choice;
-    const fallbackKeys = a.fallbackKeys;
-    if (fallbackKeys !== undefined && (!Array.isArray(fallbackKeys) ||
-      fallbackKeys.some((key) => !options.some((option) => option.source === key && isCredentialSource(option.source))) ||
-      new Set(fallbackKeys).size !== fallbackKeys.length || (fallbackKeys.length && !isSubscriptionSource(source)))) {
-      throw new Error("Confirm fallback billing with the user. Choose distinct configured API keys in priority order for a subscription session.");
-    }
-    if (fallbackKeys?.length && !this.ctx.ops) throw new Error("Automatic fallback isn't available on this runner.");
     let model = a.model?.trim() || undefined;
-    if (source === "azure") {
+    if (hasSourceModels(source)) {
       const deployments = choice.deployments ?? [];
-      const deployment = resolveAzureDeployment(deployments, model);
-      if (!deployment) throw new Error(`Choose a configured Azure deployment for ${model}: ${deployments.map(({ name }) => name).join(", ")}.`);
+      const deployment = resolveSourceModel(deployments, model);
+      if (!deployment) throw new Error(`Choose a configured ${source === "azure" ? "Azure deployment" : "Bedrock model"} for ${model}: ${deployments.map(({ name }) => name).join(", ")}.`);
       model = deployment;
     }
     const effort = a.effort?.trim() || undefined;
@@ -378,19 +372,6 @@ export class Children {
       made = await this.ctx.ops.call("newWorktreeSession", { harness, projectPath: folder, source, permissionMode: mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}), name: title || prompt });
     }
     const id = made?.sessionId ?? joined?.sessionId ?? (await s.create({ harness, projectPath: folder, source, permissionMode: mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}) }));
-    if (fallbackKeys?.length) {
-      try {
-        await this.ctx.ops!.call("setAutoKey", { sessionId: id, on: true, fallbackKeys: fallbackKeys as CredentialSource[] });
-      } catch (e) {
-        const detail = (e as Error).message;
-        try {
-          await s.setArchived(id, true);
-          return { text: `Archived session ${id} after fallback setup failed: ${detail}. Its prompt was never sent.`, isError: true };
-        } catch {
-          return { text: `Made session ${id}, but fallback setup failed and archiving could not be confirmed: ${detail}. Its prompt was never sent.`, isError: true };
-        }
-      }
-    }
     this.kids[id] = { parent: starter, depth: (this.kids[starter]?.depth ?? 0) + 1, reports: 0, hops };
     this.save();
     if (title) await s.rename(id, title).catch(() => {});

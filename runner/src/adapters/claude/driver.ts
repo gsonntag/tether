@@ -92,7 +92,7 @@ export class ClaudeDriver implements Driver {
   private async start(opts: StartOpts, resume: boolean) {
     this.credential = opts.credential;
     this.expectedAccount = await expectedClaudeIdentity(CLAUDE_BIN ?? "claude", opts.credential);
-    this.lease = claudeKeyLease(opts.credential);
+    this.lease = claudeKeyLease(opts.credential, (cost) => this.sink.cost?.(cost));
     const canUseTool: CanUseTool = async (tool, input, o) => {
       // A subagent's request goes to its own session (it shows in the parent's too).
       const sink = (o.agentID && this.stream.sinkOfAgent(o.agentID)) || this.sink;
@@ -144,7 +144,7 @@ export class ClaudeDriver implements Driver {
         systemPrompt: { type: "preset", preset: "claude_code", ...(append ? { append } : {}) },
         canUseTool,
         hooks: { PreToolUse: [...ro.preToolUse, { matcher: SUBAGENT_TOOLS, hooks: [background] }], Stop: [{ hooks: [crons] }], SubagentStop: [{ hooks: [crons] }] },
-        env: claudeEnv(opts.credential),
+        env: { ...claudeEnv(opts.credential), ...this.lease.env },
         pathToClaudeCodeExecutable: CLAUDE_BIN,
         stderr: (data: string) => {
           this.stderr.push(redact(data));
@@ -161,7 +161,7 @@ export class ClaudeDriver implements Driver {
       try {
         this.q.close();
       } catch {}
-      this.lease?.close();
+      await this.lease?.close();
       throw new Error(this.why(e?.message ?? String(e)));
     }
     try {
@@ -264,7 +264,7 @@ export class ClaudeDriver implements Driver {
     }
     if (this.closed && !error) return;
     this.closed = true;
-    this.lease?.close();
+    await this.lease?.close();
     this.onExit?.(error);
   }
 
@@ -399,6 +399,6 @@ export class ClaudeDriver implements Driver {
     try {
       this.q.close();
     } catch {}
-    this.lease?.close();
+    await this.lease?.close();
   }
 }

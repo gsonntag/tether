@@ -9,7 +9,7 @@ import type { Adapter, Driver, QuitStep, ScreenRead, StartOpts } from "../../cor
 import { movedDir } from "../../core/moved";
 import { CLAUDE_BIN } from "./bin";
 import { chainContext, keepBilling, keptBilling, keptPlan, keptStart } from "./context";
-import { isAccountSource, HARNESS_KEYS } from "../../../../shared/credentials";
+import { BEDROCK_LABEL, isAccountSource, HARNESS_KEYS } from "../../../../shared/credentials";
 import { claudeAsk } from "./ask";
 import { claudeAccountLabel, claudeAuthSettings, claudeLoggedIn, claudeTerminalScripts, prepareClaudeTerminal } from "./credentials";
 import { claudeNeverStarted, claudeProjects, claudeSessionInfo, claudeSessions, claudeStoredMode, claudeSubagents } from "./discovery";
@@ -158,12 +158,12 @@ export const claudeAdapter: Adapter = {
   fork: claudeFork,
   billing: {
     keys: HARNESS_KEYS.claude,
-    label: (source) => (isAccountSource(source) ? { kind: "plan", label: claudeAccountLabel(source), source } : source === "anthropic" ? { kind: "apiKey", label: "Anthropic API key" } : { kind: "plan", label: "Claude plan" }),
+    label: (source) => (isAccountSource(source) ? { kind: "plan", label: claudeAccountLabel(source), source } : source === "bedrock" ? { kind: "provider", label: BEDROCK_LABEL } : source === "anthropic" ? { kind: "apiKey", label: "Anthropic API key" } : { kind: "plan", label: "Claude plan" }),
     loggedIn: () => claudeLoggedIn(CLAUDE_BIN ?? "claude"),
     // What it last ran on, as Claude Code confirmed. Nothing recorded: not a key by surprise.
     recorded: (nativeId) => {
       const billing = keptBilling(splitNative(nativeId).session);
-      return billing.source ?? (billing.label === "Anthropic API key" ? "anthropic" : "subscription");
+      return billing.source ?? (billing.label === BEDROCK_LABEL ? "bedrock" : billing.label === "Anthropic API key" ? "anthropic" : "subscription");
     },
   },
 
@@ -294,6 +294,13 @@ export const claudeAdapter: Adapter = {
     if (!credential?.file && opts.fresh === undefined) return { argv, quit: CLAUDE_QUIT, quitAtPrompt: CLAUDE_EXIT, screen: claudeScreen };
     if (!credential?.file) throw new Error("The runner's private credentials file is unavailable. The Claude terminal cannot confirm its billing source.");
     const scripts = claudeTerminalScripts(credential.file);
-    return { argv: [process.execPath, scripts.launcher, credential.file, credential.revision, credential.source, ...(credential.claudeAccount ? [credential.claudeAccount.configDir] : []), ...argv], env: { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? "" }, quit: CLAUDE_QUIT, quitAtPrompt: CLAUDE_EXIT, screen: claudeScreen };
+    const profileEnv: Record<string, string> = {};
+    if (credential.bedrock?.auth === "profile") {
+      for (const name of ["AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"]) {
+        const path = process.env[name];
+        if (path) profileEnv[name] = path;
+      }
+    }
+    return { argv: [process.execPath, scripts.launcher, credential.file, credential.revision, credential.source, ...(credential.claudeAccount ? [credential.claudeAccount.configDir] : []), ...argv], env: { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? "", ...profileEnv }, quit: CLAUDE_QUIT, quitAtPrompt: CLAUDE_EXIT, screen: claudeScreen };
   },
 };

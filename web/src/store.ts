@@ -3,9 +3,9 @@
 
 import { create } from "zustand";
 import { checkBuild } from "./build";
-import { PROTOCOL_VERSION, type RunnerBuild, type User } from "../../shared/protocol";
+import { PROTOCOL_VERSION, type ArchiveWorktree, type RunnerBuild, type User, type WorktreeCleanup } from "../../shared/protocol";
 import { applySummary, emptySummary, type SummaryState } from "../../shared/summary";
-import type { HarnessId, ModelList, ProjectInfo } from "../../shared/transcript";
+import type { HarnessId, ModelList, ProjectInfo, SessionSummary } from "../../shared/transcript";
 import { connect, on, onAuth, onLinkState, rpc, type AuthState, type LinkState } from "./connection";
 import { linkCache } from "./linkCache";
 import { startPresence, tellPresence } from "./presence";
@@ -67,6 +67,8 @@ interface State {
   serverBuild?: RunnerBuild;
   /** the last archive change made here: the sidebar patches its listSessions copies with it */
   archiveEdit?: { runnerId: string; sessionId: string; archived: boolean };
+  /** an archive waiting on "Delete its worktree too?" (SPEC §4): ArchiveWorktreeDialog asks */
+  archiveAsk?: { runnerId: string; session: SessionSummary };
 }
 
 // Nothing is shown from this browser's memory until the server says who's signed in (hello).
@@ -353,10 +355,14 @@ export function failedSend(runnerId: string, sessionId: string, text: string) {
   publish(runnerId, sessionId);
 }
 
-/** Archives or unarchives a session (SPEC §10); throws the runner's error. */
-export async function setArchived(runnerId: string, sessionId: string, archived: boolean) {
-  await rpc(runnerId, "setSessionArchived", { sessionId, archived });
+/**
+ * Archives or unarchives a session (SPEC §10); throws the runner's error. `worktree`: the answer to
+ * "Delete its worktree too?" (runners.ts asksWorktree); with "remove", what the cleanup decided.
+ */
+export async function setArchived(runnerId: string, sessionId: string, archived: boolean, worktree?: ArchiveWorktree): Promise<WorktreeCleanup | undefined> {
+  const r = await rpc(runnerId, "setSessionArchived", { sessionId, archived, ...(worktree ? { worktree } : {}) });
   set({ archiveEdit: { runnerId, sessionId, archived } });
+  return r?.worktree;
 }
 
 /** Pins or unpins a session (SPEC §10 Pinning); throws the runner's error. The row's change comes as a summary. */

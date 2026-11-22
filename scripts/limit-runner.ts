@@ -1,4 +1,4 @@
-// A runner for looking at the plan-limit switch (SPEC §10) without an exhausted plan: the real core,
+// A runner for looking at the fallback chain (SPEC §10) without an exhausted plan: the real core,
 // credentials and billing ops behind a scripted harness, whose frames go through the real ClaudeStream
 // and CodexStream, so each limit signal is parsed as the real thing would be. Keys are made up and
 // nothing is called.
@@ -41,6 +41,13 @@ const onKey = (d: FakeDriver) => d.opts.credential?.source !== "subscription" &&
 let n = 0;
 
 const claude = new FakeAdapter();
+const fallbackModels = (id: string) => ({
+  models: [{ id, label: id }],
+  efforts: [{ id: "low", label: "Low" }],
+  permissionModes: [{ id: "plan", label: "Plan" }],
+});
+Object.assign(claude, { move: { modes: [{ mode: "plan", level: 0 }] } });
+claude.listModels = async () => fallbackModels("claude-haiku-5-5");
 claude.capabilities = { ...claude.capabilities, canSteer: true, sourceSwitch: true };
 claude.storedBilling = async (id) => (runner.core.o.prefs.get(`claude:${id}`).source === "anthropic" ? { kind: "apiKey", label: "Anthropic API key" } : { kind: "plan", label: "Claude plan" });
 const claudeStreams = new WeakMap<FakeDriver, ClaudeStream>();
@@ -66,6 +73,8 @@ claude.script = (text) => [
 ];
 
 const codex = new FakeAdapter();
+Object.assign(codex, { move: { modes: [{ mode: "plan", level: 0 }] } });
+codex.listModels = async () => fallbackModels("gpt-6-luna");
 (codex as any).id = "codex";
 codex.capabilities = { ...codex.capabilities, canSteer: true, terminal: "shared", sourceSwitch: true, sourceCarry: true };
 codex.billing = {
@@ -138,10 +147,10 @@ const runner = createRunner({
   log: (l) => console.log(l),
 });
 let carried = 0;
-runner.live.carrier = async (from, source) => {
+runner.live.carrier = async (from, source, model, settings) => {
   const nativeId = `carried-${++carried}`;
   stored(codex, "codex", nativeId, "Carried");
-  return runner.look.sessions.adopt("codex", nativeId, P, {}, source, from);
+  return runner.look.sessions.adopt("codex", nativeId, P, { model: source === "azure" ? runner.core.o.prefs.get(from).nextDeployment : model, ...settings }, source, from);
 };
 runner.ops.register("planReads" as any, () => reads);
 await runner.start();

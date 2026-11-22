@@ -42,6 +42,7 @@ export function claudeAsk(projectPath: string, prompt: string, opts: AskOpts): P
 export async function askWith(deps: AskDeps, projectPath: string, prompt: string, opts: AskOpts): Promise<string> {
   if (!deps.bin) throw new Error("Claude Code isn't installed.");
   const expected = await deps.expectedAccount?.(deps.bin, opts.credential);
+  const onBedrock = opts.credential?.source === "bedrock";
   const onKey = opts.credential?.source === "anthropic";
   const lease = deps.lease(opts.credential);
   let go!: (ok: boolean) => void;
@@ -57,7 +58,7 @@ export async function askWith(deps: AskDeps, projectPath: string, prompt: string
     prompt: input(),
     options: {
       cwd: projectPath,
-      model: ASK_MODEL,
+      model: onBedrock ? opts.credential?.deployment : ASK_MODEL,
       persistSession: false,
       tools: [],
       mcpServers: {},
@@ -67,7 +68,7 @@ export async function askWith(deps: AskDeps, projectPath: string, prompt: string
       settingSources: [],
       settings: claudeAuthSettings(lease.helper),
       systemPrompt: opts.system,
-      env: claudeEnv(opts.credential),
+      env: { ...claudeEnv(opts.credential), ...lease.env },
       pathToClaudeCodeExecutable: deps.bin,
     } as any,
   });
@@ -116,7 +117,8 @@ export async function askWith(deps: AskDeps, projectPath: string, prompt: string
   } finally {
     clearTimeout(timer);
     close();
-    lease.close();
+    if (onBedrock && sent) opts.onCost?.(lease.cost?.() ?? { estimated: true, complete: false, reasons: ["no-usage"] });
+    await lease.close();
     // The prompt went out but no result said what it cost: the session's total can't be whole.
     if (onKey && opts.onCost && sent && !reported) opts.onCost({ estimated: true, complete: false, reasons: ["no-usage"] });
   }

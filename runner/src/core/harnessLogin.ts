@@ -183,6 +183,7 @@ async function logout(harness: HarnessId) {
 export function registerHarnessLogin(ops: OpRegistry, changed: (harness: HarnessId, source?: AccountSource) => void, prefs?: Pick<Prefs, "accountName" | "setAccountName">, accounts?: ClaudeAccounts, accountInUse?: (source: AccountSource) => boolean, releaseAccount?: (source: AccountSource) => Promise<void>) {
   const flows = new Map<string, Flow>();
   const busy = new Set<HarnessId>();
+  const active = new Map<HarnessId, string>();
   const get = (id: string, owner?: string) => {
     const flow = flows.get(id);
     if (!flow || flow.owner !== owner) throw new Error("This sign-in has ended. Start again.");
@@ -266,6 +267,10 @@ export function registerHarnessLogin(ops: OpRegistry, changed: (harness: Harness
     if (!owner) throw new Error("Harness sign-in requires an owner connection.");
     assertHarness(harness);
     if (!Bun.which(HARNESS_BINS[harness])) throw new Error("This harness isn't installed.");
+    // A reloaded or evicted page loses its flowId; give the same owner their running flow back.
+    const current = active.get(harness);
+    const resumable = current ? flows.get(current) : undefined;
+    if (current && resumable?.owner === owner && resumable.view.state === "pending") return { flowId: current };
     if (busy.has(harness)) throw new Error("A sign-in or sign-out is already running.");
     if (target !== undefined && (harness !== "claude" || !accounts || (target !== "new" && !isAccountSource(target)))) throw new Error("Unknown Claude account.");
     const expected = target && target !== "new" ? accounts?.read(target) : undefined;
@@ -275,6 +280,7 @@ export function registerHarnessLogin(ops: OpRegistry, changed: (harness: Harness
     const flowId = randomUUID();
     const flow: Flow = { owner, view: { state: "pending" }, abort: new AbortController() };
     busy.add(harness);
+    active.set(harness, flowId);
     flows.set(flowId, flow);
     const timer = setTimeout(() => stop(flow, "expired"), FLOW_MS);
     timer.unref();
@@ -314,6 +320,7 @@ export function registerHarnessLogin(ops: OpRegistry, changed: (harness: Harness
         clearTimeout(timer);
         flow.sendCode = undefined;
         busy.delete(harness);
+        if (active.get(harness) === flowId) active.delete(harness);
         setTimeout(() => flows.delete(flowId), 60_000).unref();
       }
     })();

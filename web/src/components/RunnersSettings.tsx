@@ -5,6 +5,7 @@ import { cleanEmail, type RunnerGrant } from "../../../shared/access";
 import type { RunnerBuild } from "../../../shared/protocol";
 import { rpc } from "../connection";
 import { accessOf, type KnownRunner } from "../runners";
+import { runnersForPage } from "../settings";
 import { useStore } from "../store";
 
 /**
@@ -13,7 +14,7 @@ import { useStore } from "../store";
  * and whether they can drive them or only view. A viewer share on Foliation only ever views.
  */
 export function RunnersSettings() {
-  const runners = useStore((s) => s.runners).filter((r) => accessOf(r) === "manage");
+  const runners = runnersForPage(useStore((s) => s.runners), "runners");
   const serverBuild = useStore((s) => s.serverBuild);
   if (!runners.length) return <div className="t-inline-status">No runners of yours have connected yet.</div>;
   return (

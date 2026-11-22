@@ -63,8 +63,8 @@ export class Forker {
     }
     const forkedFrom: ForkedFrom = { sessionId: id, ...(upTo ? { messageId: upTo } : {}), title };
     // The original's key preferences go with it; its plan-runs-out switch is ticked per session, so it doesn't.
-    const { lastKey, fallbackKeys } = look.state;
-    const extra: AdoptExtra = { stored: true, forkedFrom, ...(o.sideOf ? { sideOf: o.sideOf } : {}), keys: { ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}) } };
+    const { lastKey } = look.state;
+    const extra: AdoptExtra = { stored: true, forkedFrom, ...(o.sideOf ? { sideOf: o.sideOf } : {}), keys: { ...(lastKey ? { lastKey } : {}) } };
     const name = o.title ?? forkTitle(title);
     const notice: Msg = { id: `n-forked-from-${id}`, role: "notice", level: "info", ts: Date.now(), parts: [{ type: "text", text: [forkedNotice(title), o.messageId ? undefined : leftOutNote(msgs, upTo, running)].filter(Boolean).join(" ") }], link: { sessionId: id, label: "Open it" } };
     /** Where the fork's own conversation begins: under what it took from the original. */

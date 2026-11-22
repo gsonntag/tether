@@ -5,6 +5,7 @@ import { statusLabel, type AutoUpdateStatus, type HarnessReport, type HarnessVer
 import { rpc } from "../connection";
 import { autoLines, canUpdate, checkedAgo, METHOD_LABELS, runLine, updateAllTargets, updating } from "../harnessUpdates";
 import { accessOf } from "../runners";
+import { runnersForPage } from "../settings";
 import { useStore } from "../store";
 import { useNow } from "./useNow";
 
@@ -19,7 +20,7 @@ const POLL_MS = 1500;
 /** Settings → Updates: every runner's harnesses, their versions, and updating them. */
 export function HarnessUpdates() {
   // Updating a runner's harnesses is its owner's (shared/access.ts).
-  const runners = useStore((s) => s.runners).filter((r) => accessOf(r) === "manage");
+  const runners = runnersForPage(useStore((s) => s.runners), "updates");
   const link = useStore((s) => s.link);
   const now = useNow();
   const [state, setState] = useState<Record<string, RunnerState>>({});
@@ -137,7 +138,7 @@ function Row({ h, disabled, onUpdate }: { h: HarnessVersion; disabled: boolean; 
         <td data-label="Latest">{h.latest ?? "—"}</td>
         <td data-label="Status"><span className={`t-updates-status ${tone}`} title={h.error}>{statusLabel(h)}</span></td>
         <td className="t-updates-action">
-          {canUpdate(h) && <Button label="Update" variant="primary" size="sm" isDisabled={disabled} tooltip={h.command} onClick={() => onUpdate(h.id)} />}
+          {canUpdate(h) && <Button label={h.id === "antigravity" ? "Check" : "Update"} variant="primary" size="sm" isDisabled={disabled} tooltip={h.command} onClick={() => onUpdate(h.id)} />}
         </td>
       </tr>
       {(h.error || line) && (

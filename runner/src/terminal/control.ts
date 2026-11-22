@@ -1,4 +1,4 @@
-import { isAccountSource } from "../../../shared/credentials";
+import { isAccountSource, isSubscriptionSource } from "../../../shared/credentials";
 // Terminal mode (SPEC §8): the harness's own TUI in tmux, mirrored to browsers, and the project's
 // plain shells beside it.
 //
@@ -722,7 +722,9 @@ export class TerminalControl {
       n = core.create(old.summary.harness, nativeId, old.summary.projectPath, { model: old.state.model, effort: old.state.effort, permissionMode: old.state.permissionMode });
       n.transcript = new Transcript();
       const kept = this.o.live.keptPrefs(old);
-      core.o.prefs.set(n.id, { source: this.o.live.sourceOf(old), ...kept });
+      const billingSource = this.o.live.sourceOf(old);
+      core.o.prefs.set(n.id, { source: billingSource, ...kept });
+      if (!isSubscriptionSource(billingSource)) n.setState({ retryThrottled: !!kept.retryThrottled });
       // Its "Session can text me" box as saved: texting reads it from the state.
       if (kept.canText) n.setState({ canText: true });
     }

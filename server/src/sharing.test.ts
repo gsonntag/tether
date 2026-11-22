@@ -81,8 +81,11 @@ describe("sharing runners", () => {
     w.rpc(w.editor, "4", "box", "send", { sessionId: "s", text: "hi" });
     w.rpc(w.editor, "5", "box", "setRunnerAccess", { people: [] });
     w.rpc(w.editor, "6", "box", "setCredential", { source: "anthropic", key: "k" });
+    w.rpc(w.editor, "6a", "box", "usage", { days: 30 });
+    w.rpc(w.editor, "6b", "box", "runnerSettings", {});
+    w.rpc(w.editor, "6c", "box", "harnessVersions", {});
     expect(w.r1.take("rpc").map((m) => m.op)).toEqual(["send"]);
-    expect(w.editor.take("result").map((m) => m.id)).toEqual(["5", "6"]);
+    expect(w.editor.take("result").map((m) => m.id)).toEqual(["5", "6", "6a", "6b", "6c"]);
 
     w.rpc(w.stranger, "7", "box", "listSessions");
     w.rpc(w.editor, "8", "other", "listSessions");
@@ -90,7 +93,10 @@ describe("sharing runners", () => {
     expect(w.editor.take("result")[0].error).toBe("That runner is offline.");
 
     w.rpc(w.owner, "9", "box", "setRunnerAccess", { people: [] });
-    expect(w.r1.take("rpc").map((m) => m.op)).toEqual(["setRunnerAccess"]);
+    w.rpc(w.owner, "9a", "box", "usage", { days: 30 });
+    w.rpc(w.owner, "9b", "box", "runnerSettings", {});
+    w.rpc(w.owner, "9c", "box", "harnessVersions", {});
+    expect(w.r1.take("rpc").map((m) => m.op)).toEqual(["setRunnerAccess", "usage", "runnerSettings", "harnessVersions"]);
   });
 
   test("a runner saying hello again doesn't fail a viewer's reads in flight", () => {

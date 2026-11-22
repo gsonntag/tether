@@ -30,11 +30,11 @@ export function SourcePicker({ choices, value, onChange, accountLabels }: { acco
   );
 }
 
-/** Azure's deployments, the models on that source; a runner from before lists has one. */
-export const azureDeployments = (option?: SourceOption): { name: string; model?: string }[] | undefined =>
+/** Configured source models, including a single deployment on older runners. */
+export const sourceModels = (option?: SourceOption): { name: string; model?: string }[] | undefined =>
   option?.deployments?.length ? option.deployments : option?.deployment ? [{ name: option.deployment }] : undefined;
 
-/** On Azure, the Model is one of its deployments, each shown with the model it runs. */
+/** Model choices for Azure and Bedrock. */
 export function DeploymentPicker({ deployments, value, onChange }: { deployments: { name: string; model?: string }[]; value?: string; onChange: (name: string) => void }) {
   return (
     <label>

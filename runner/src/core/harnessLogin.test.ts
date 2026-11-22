@@ -61,7 +61,9 @@ esac
     expect(started.ok).toBe(true);
     if (!started.ok) throw new Error(started.error);
     const flow = started.data as { flowId: string };
-    expect(await remote("harnessLoginStart", harness)).toMatchObject({ ok: false });
+    // The same owner (e.g. after a page reload) gets the running flow back; anyone else is refused.
+    expect(await remote("harnessLoginStart", harness)).toEqual({ ok: true, data: flow });
+    expect(await ops.handle("harnessLoginStart", harness, "other-owner")).toMatchObject({ ok: false });
     expect(await remote("harnessLogout", harness)).toMatchObject({ ok: false });
     const prompt = await waitFor(async () => {
       const response = await remote("harnessLoginPoll", flow);
@@ -98,6 +100,13 @@ esac
     if (!another.ok) throw new Error(another.error);
     expect(await remote("harnessLoginCancel", another.data)).toEqual({ ok: true, data: null });
     expect(await remote("harnessLoginPoll", another.data)).toEqual({ ok: true, data: { state: "cancelled" } });
+    // A cancelled flow is not resumed: once its process exits, Start begins a fresh flow.
+    const fresh = await waitFor(async () => {
+      const response = await remote("harnessLoginStart", harness);
+      if (response.ok) return response.data as { flowId: string };
+    });
+    expect(fresh.flowId).not.toBe((another.data as { flowId: string }).flowId);
+    expect(await remote("harnessLoginCancel", fresh)).toEqual({ ok: true, data: null });
   } finally {
     stop();
     HARNESS_BINS.claude = previous;

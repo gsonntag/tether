@@ -1,10 +1,11 @@
 // The transcript and live state of a session, as every harness is shown (SPEC §5). Adapters
 // translate their harness's own store and stream into these shapes; the UI renders only these.
 
+import type { FallbackChain } from "./fallbackChain";
 import type { Attachment } from "./attachments";
 import type { ForkedFrom } from "./fork";
 import type { SessionCost } from "./costs";
-import type { BillingSource, CredentialSource } from "./credentials";
+import type { BillingSource } from "./credentials";
 import type { ShellRun } from "./shellRun";
 import type { Watcher, WatchingSummary } from "./watchers";
 
@@ -351,6 +352,7 @@ export const UNKNOWN_BILLING: Billing = { kind: "unknown", label: "Unknown" };
 export interface RetryState {
   attempt: number;
   maxAttempts: number;
+  extended?: true;
   nextAt: number;
   deadline: number;
   error: string;
@@ -381,13 +383,14 @@ export interface LiveState {
   /** the last process start for nextBilling failed; the confirmed source is still current */
   sourceSwitchFailed?: boolean;
   /** ticked: when the plan runs out, the session switches to a key and resends (SPEC §10) */
-  autoKey?: boolean;
+  fallbackChain?: FallbackChain;
+  fallbackWaiting?: boolean;
   /** ticked ("Session can text me"): it may text the person, and plain texts can come to it (SPEC §11 Texting). Absent: it never texts */
   canText?: boolean;
+  /** Whether extended throttle retries are enabled. Absent if unavailable for this session. */
+  retryThrottled?: boolean;
   /** the key this session last used or had picked: default when no fallback order is saved */
   lastKey?: BillingSource;
-  /** Allowed automatic fallback keys, in priority order. Empty excludes all keys. */
-  fallbackKeys?: CredentialSource[];
   /** Cumulative API-only session cost. Missing/partial data is never represented as a $0 total. */
   cost?: SessionCost;
   /** the harness account's plan limits (shown only on a `plan` session). Absent: nothing reported */
@@ -470,6 +473,10 @@ export interface SessionSummary {
    * checkout, so a list can group it under its project.
    */
   worktreeOf?: string;
+  /** with worktreeOf: the worktree's branch */
+  worktreeBranch?: string;
+  /** with worktreeOf: made by hand, not by Tether, so never removed by it (archiving asks nothing) */
+  worktreeHandMade?: boolean;
   /** When it was pinned (ms): the Sidebar's Pinned group, in this order, listed however old. */
   pinned?: number;
   /** A pinned session its harness can't find (now): listed as it was last seen, until someone unpins it. */

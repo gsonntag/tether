@@ -5,6 +5,9 @@ import { chmodSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "nod
 import { dirname, join } from "node:path";
 import { type AccountSource, isAccountSource, isSubscriptionSource } from "../../../../shared/credentials";
 import type { Billing } from "../../../../shared/transcript";
+import type { SessionCost } from "../../../../shared/costs";
+import { BEDROCK_LABEL } from "../../../../shared/credentials";
+import { claudeBedrockLease } from "../../bedrock";
 import type { CredentialSnapshot } from "../../credentials";
 import { shq } from "../../terminal/hooks";
 import { claudeBilling } from "./context";
@@ -13,17 +16,18 @@ export const CLAUDE_AUTH_ENV = [
   "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS",
   "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
   "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
-  "CLAUDE_CODE_USE_ANTHROPIC_AWS", "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD", "CLAUDE_CODE_USE_MANTLE",
+  "AWS_BEARER_TOKEN_BEDROCK", "ANTHROPIC_BEDROCK_BASE_URL", "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
+  "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "CLAUDE_CODE_SKIP_BEDROCK_AUTH", "CLAUDE_CODE_USE_ANTHROPIC_AWS", "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD", "CLAUDE_CODE_USE_MANTLE",
 ];
 
 /** No raw key enters the harness environment: shell tools must never inherit it. */
 export function claudeEnv(credential?: CredentialSnapshot, inherited: Record<string, string | undefined> = process.env): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {};
-  for (const [k, v] of Object.entries(inherited)) if (!/^(TETHER_|OPENAI_|AZURE_|CODEX_API_KEY)/.test(k) && !CLAUDE_AUTH_ENV.includes(k)) env[k] = v;
+  for (const [k, v] of Object.entries(inherited)) if (!/^(TETHER_|OPENAI_|AZURE_|CODEX_API_KEY)/.test(k) && !(credential?.source === "bedrock" && k.startsWith("AWS_")) && !CLAUDE_AUTH_ENV.includes(k)) env[k] = v;
   for (const k of CLAUDE_AUTH_ENV) env[k] = undefined;
   env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS = "1";
   if (credential?.claudeAccount) env.CLAUDE_CONFIG_DIR = credential.claudeAccount.configDir;
-  if (credential && !isSubscriptionSource(credential.source) && credential.source !== "anthropic") throw new Error("Claude cannot use that billing source.");
+  if (credential && !isSubscriptionSource(credential.source) && credential.source !== "anthropic" && credential.source !== "bedrock") throw new Error("Claude cannot use that billing source.");
   for (const k of ["DEBUG", "CLAUDE_DEBUG", "CLAUDE_CODE_DEBUG"]) delete env[k];
   return env;
 }
@@ -74,8 +78,9 @@ export function confirmClaudeBilling(account: unknown, credential?: CredentialSn
   const source = credential?.source ?? "subscription";
   const confirmed = source === "anthropic"
     ? billing.kind === "apiKey" && billing.label === "Anthropic API key" && report?.apiProvider === "firstParty" && report.apiKeySource === "apiKeyHelper"
+    : source === "bedrock" ? report?.apiProvider === "bedrock" && billing.label === BEDROCK_LABEL
     : isSubscriptionSource(source) && billing.kind === "plan" && report?.apiProvider === "firstParty" && (!report.apiKeySource || report.apiKeySource === "none" || report.apiKeySource === "oauth") && (!report.tokenSource || report.tokenSource === "claude.ai");
-  if (!confirmed) throw new Error(`Claude could not confirm ${source === "anthropic" ? "the Anthropic API key" : "the Claude subscription"}. Sending is blocked. Check Credentials.`);
+  if (!confirmed) throw new Error(`Claude could not confirm ${source === "anthropic" ? "the Anthropic API key" : source === "bedrock" ? BEDROCK_LABEL : "the Claude subscription"}. Sending is blocked. Check Credentials.`);
   if ((expected && !sameClaudeIdentity(account, expected)) || (isAccountSource(source) && !expected)) {
     throw new Error("Claude could not confirm the Claude subscription account. Check Accounts. Nothing was sent.");
   }
@@ -84,7 +89,10 @@ export function confirmClaudeBilling(account: unknown, credential?: CredentialSn
 }
 
 /** A frozen key lease: helper responses are private, and changing the file cannot rotate a live turn. */
-export function claudeKeyLease(credential?: CredentialSnapshot): { helper: string; close(): void } {
+export function claudeKeyLease(credential?: CredentialSnapshot, onCost?: (cost: SessionCost & { id: string }) => void): {
+  helper: string; env?: Record<string, string>; cost?(): SessionCost; close(): void | Promise<void>;
+} {
+  if (credential?.source === "bedrock") return claudeBedrockLease(credential, onCost);
   if (credential?.source !== "anthropic") return { helper: "", close() {} };
   if (!credential.key || !credential.file) throw new Error("The Anthropic API key is unavailable. Check Credentials.");
   const scripts = claudeTerminalScripts(credential.file);
@@ -100,19 +108,19 @@ export function claudeKeyLease(credential?: CredentialSnapshot): { helper: strin
 }
 
 /** auth status is read-only: no turn and no trust prompt. Async so its helper can reach the lease. */
-export async function confirmClaudeTerminal(binary: string, credential: CredentialSnapshot | undefined, settings: Record<string, unknown>, cwd?: string): Promise<Billing> {
-  const status = await claudeAuthStatus(binary, credential, settings, cwd);
+export async function confirmClaudeTerminal(binary: string, credential: CredentialSnapshot | undefined, settings: Record<string, unknown>, cwd?: string, providerEnv?: Record<string, string>): Promise<Billing> {
+  const status = await claudeAuthStatus(binary, credential, settings, cwd, providerEnv);
   if (credential?.claudeAccount) confirmClaudeStatusIdentity(status, credential.claudeAccount);
   return confirmClaudeBilling(status, credential);
 }
 
-async function claudeAuthStatus(binary: string, credential: CredentialSnapshot | undefined, settings: Record<string, unknown>, cwd?: string, configDir?: string): Promise<any> {
+async function claudeAuthStatus(binary: string, credential: CredentialSnapshot | undefined, settings: Record<string, unknown>, cwd?: string, providerEnv?: Record<string, string>, configDir?: string): Promise<any> {
   let output = "";
   const decoder = new TextDecoder();
   // The native CLI loses auth-status stdout when it is launched with Bun pipe handles.
   // A PTY preserves its output; this is only the read-only auth subcommand, never the TUI.
   const result = Bun.spawn([binary, "--settings", JSON.stringify(settings), "auth", "status", "--json"], {
-    env: { ...claudeEnv(credential), ...(configDir ? { CLAUDE_CONFIG_DIR: configDir } : {}) }, ...(cwd ? { cwd } : {}),
+    env: { ...claudeEnv(credential), ...providerEnv, ...(configDir ? { CLAUDE_CONFIG_DIR: configDir } : {}) }, ...(cwd ? { cwd } : {}),
     terminal: { cols: 200, rows: 80, data: (_terminal, bytes) => { if (output.length < 65536) output += decoder.decode(bytes, { stream: true }); } },
   });
   const timer = setTimeout(() => result.kill("SIGKILL"), 15_000);
@@ -129,7 +137,7 @@ async function claudeAuthStatus(binary: string, credential: CredentialSnapshot |
 
 /** The CLI's OAuth account, independent of a configured Tether key. */
 export async function claudeSubscriptionStatus(binary: string, configDir?: string) {
-  return claudeAuthStatus(binary, undefined, claudeAuthSettings(), undefined, configDir);
+  return claudeAuthStatus(binary, undefined, claudeAuthSettings(), undefined, undefined, configDir);
 }
 
 function confirmClaudeStatusIdentity(status: any, expected: ClaudeIdentity & { accountId: string }) {
@@ -169,8 +177,8 @@ export function claudeLoggedIn(binary: string): Promise<boolean> {
 
 export async function prepareClaudeTerminal(binary: string, credential?: CredentialSnapshot, cwd?: string): Promise<Billing> {
   const lease = claudeKeyLease(credential);
-  try { return await confirmClaudeTerminal(binary, credential, claudeAuthSettings(lease.helper), cwd); }
-  finally { lease.close(); }
+  try { return await confirmClaudeTerminal(binary, credential, claudeAuthSettings(lease.helper), cwd, lease.env); }
+  finally { await lease.close(); }
 }
 
 function privateScript(file: string, source: string) {
@@ -193,9 +201,9 @@ import { dirname, join } from "node:path";
 const ptyText = ${ptyText.toString()};
 const normalizedOrganization = ${normalizedOrganization.toString()};
 const [file, revision, source, ...argv] = process.argv.slice(2);
-let server, socket;
+let server, socket, bedrock;
 try {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TETHER_|OPENAI_|AZURE_|CODEX_API_KEY)/.test(k) && !${JSON.stringify(CLAUDE_AUTH_ENV)}.includes(k)));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TETHER_|OPENAI_|AZURE_|CODEX_API_KEY)/.test(k) && !(source === "bedrock" && k.startsWith("AWS_")) && !${JSON.stringify(CLAUDE_AUTH_ENV)}.includes(k)));
   for (const k of ${JSON.stringify(CLAUDE_AUTH_ENV)}) delete env[k];
   for (const k of ["DEBUG", "CLAUDE_DEBUG", "CLAUDE_CODE_DEBUG"]) delete env[k];
   if (!env.CLAUDE_CONFIG_DIR) delete env.CLAUDE_CONFIG_DIR;
@@ -230,6 +238,14 @@ try {
         normalizedOrganization(account.orgName, account.email) !== normalizedOrganization(expected.organization, expected.email) ||
         account.apiProvider !== "firstParty" || (account.apiKeySource && !["none", "oauth"].includes(account.apiKeySource)) ||
         (account.tokenSource && account.tokenSource !== "claude.ai")) throw new Error();
+  } else if (source === "bedrock") {
+    const { CredentialStore } = await import(${JSON.stringify(join(import.meta.dir, "../../credentials.ts"))});
+    const { claudeBedrockLease } = await import(${JSON.stringify(join(import.meta.dir, "../../bedrock.ts"))});
+    const model = argv.indexOf("--model");
+    const selected = new CredentialStore(file).snapshot("bedrock", model >= 0 ? argv[model + 1] : "");
+    if (!selected || selected.revision !== revision) throw new Error();
+    bedrock = claudeBedrockLease(selected);
+    Object.assign(env, bedrock.env);
   } else if (source !== "subscription") throw new Error();
   const at = argv.indexOf("--settings");
   if (at < 0) throw new Error();
@@ -261,9 +277,11 @@ try {
   process.stdin.setRawMode?.(false);
   p.terminal.close();
   // Never flush a held key prefix at exit.
+  await bedrock?.close();
   server?.stop(true); if (socket) try { unlinkSync(socket); } catch {}
   process.exit(status);
 } catch {
+  await bedrock?.close();
   server?.stop(true); if (socket) try { unlinkSync(socket); } catch {}
   console.error("Claude terminal billing could not be confirmed. Reopen the terminal after checking Credentials.");
   process.exit(1);

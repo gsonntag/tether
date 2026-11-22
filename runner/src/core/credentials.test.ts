@@ -705,3 +705,31 @@ test("a Claude account switch keeps the session ID, isolates plan reports, and f
     rmSync(join(dir, "primary"), { recursive: true, force: true });
   }
 });
+
+test("Bedrock lists models by harness and switches Claude using a configured model alias", async () => {
+  const { live, adapter, credentials, prefs } = setup();
+  adapter.capabilities = { ...adapter.capabilities, sourceSwitch: true };
+  const billing = { kind: "provider", label: "Amazon Bedrock" } as const;
+  const original = adapter.billing!;
+  adapter.billing = { ...original, keys: ["anthropic", "bedrock"], label: (source) => source === "bedrock" ? billing : original.label(source) };
+  const primary = "global.anthropic.claude-sonnet-4-6";
+  const profile = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/fixture";
+  const settings = { region: "us-east-1", auth: "profile", profile: "fixture", models: [
+    { id: primary, harness: "claude", alias: "sonnet" }, { id: profile, harness: "claude" }, { id: "openai.gpt-oss-120b", harness: "codex" },
+  ] } as const;
+  credentials.setBedrock({ ...settings, models: [...settings.models] });
+  const id = "claude:one";
+  const sources = (await live.sources("claude")).options;
+  expect(sources.find((choice) => choice.source === "bedrock")?.deployments).toEqual([{ name: primary, model: "sonnet" }, { name: profile }]);
+  await live.setModel(id, "sonnet");
+  await live.setSource(id, "bedrock");
+  expect(prefs.get(id)).toMatchObject({ source: "bedrock", model: primary, deployment: primary });
+  await live.send(id, "first");
+  expect(adapter.drivers.at(-1)?.opts.credential).toMatchObject({ source: "bedrock", deployment: primary });
+  await live.setModel(id, profile);
+  await live.send(id, "second");
+  expect(adapter.drivers.at(-1)?.opts).toMatchObject({ model: profile, credential: { deployment: profile } });
+  await live.setSource(id, "subscription");
+  expect(prefs.get(id).deployment).toBeUndefined();
+  expect(prefs.get(id).model).not.toBe(profile);
+});
