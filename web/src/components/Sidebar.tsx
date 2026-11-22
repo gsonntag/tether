@@ -8,7 +8,7 @@ import { Cog6ToothIcon, HomeIcon, LinkIcon, PlusIcon, UserCircleIcon } from "@he
 import type { ProjectInfo } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { navigate, useRoute } from "../route";
-import { folderName, isHomeChat, listed, recentGroups, mergeRows, recentSessions, splitPinned, waitingOn, type Row } from "../sessionList";
+import { foldWorktrees, folderName, inProject, isHomeChat, listed, recentGroups, mergeRows, recentSessions, splitPinned, waitingOn, type Row } from "../sessionList";
 import { activeRunnerFilter, aggregateProjects } from "../runnerFilter";
 import { avatarSrc } from "../avatar";
 import { canPin } from "../runners";
@@ -78,7 +78,7 @@ export function Sidebar() {
 
   const rows = useMemo(() => {
     let list = recentSessions(summaries, q, activeRunner);
-    if (filter) list = list.filter((r) => r.projectPath === filter);
+    if (filter) list = list.filter((r) => inProject(r, filter));
     if (extra.for === extraKey) {
       const extraFiltered = extra.rows.filter((r) => (!activeRunner || r.runnerId === activeRunner) && listed(r) && (!r.archived || !!q) && !isHomeChat(r.runnerId, r.projectPath));
       list = mergeRows(extraFiltered, list);
@@ -88,7 +88,8 @@ export function Sidebar() {
   // Pinned sessions sit above Recent; a search or a folder lists everything as one list.
   const { pinned, rest } = useMemo(() => (q || filter ? { pinned: [], rest: rows } : splitPinned(rows)), [rows, q, filter]);
 
-  const projects = useMemo(() => aggregateProjects(projectsBy, activeRunner), [projectsBy, activeRunner]);
+  // A worktree folder a session is in shows under its main checkout, as Recent groups it: by every session known (a search doesn't undo it).
+  const projects = useMemo(() => foldWorktrees(aggregateProjects(projectsBy, activeRunner), Object.values(summaries).flatMap((x) => Object.values(x.sessions))), [projectsBy, activeRunner, summaries]);
 
   const selected = route.page === "session" ? route : undefined;
   // An open subagent shows under its parent, so the parent's row is the one expanded.

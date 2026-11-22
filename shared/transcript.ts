@@ -472,6 +472,10 @@ export interface SessionSummary {
    * checkout, so a list can group it under its project.
    */
   worktreeOf?: string;
+  /** with worktreeOf: the worktree's branch */
+  worktreeBranch?: string;
+  /** with worktreeOf: made by hand, not by Tether, so never removed by it (archiving asks nothing) */
+  worktreeHandMade?: boolean;
   /** When it was pinned (ms): the Sidebar's Pinned group, in this order, listed however old. */
   pinned?: number;
   /** A pinned session its harness can't find (now): listed as it was last seen, until someone unpins it. */

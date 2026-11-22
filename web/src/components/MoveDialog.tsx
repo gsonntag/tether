@@ -9,7 +9,7 @@ import { CLAUDE_UNSET, type HarnessCapabilities, type HarnessId, type LiveState,
 import { rpc } from "../connection";
 import { forkSession, useForking } from "../fork";
 import { openSession } from "../route";
-import { canPin } from "../runners";
+import { asksWorktree, canPin } from "../runners";
 import { pinMenuLabel } from "../sessionList";
 import { failedSend, loadModels, modelListKey, setArchived, setPinned, useStore } from "../store";
 import { focusComposerOf } from "./SessionView";
@@ -35,6 +35,8 @@ export function SessionMenu({ runnerId, session, state, canMove, canFork, onSide
   };
   const archive = async () => {
     if (archiveBusy) return;
+    // In a worktree Tether made: ask what becomes of it first (ArchiveWorktreeDialog).
+    if (asksWorktree(useStore.getState().runners, runnerId, session)) return useStore.setState({ archiveAsk: { runnerId, session } });
     setArchiveBusy(true);
     try {
       await setArchived(runnerId, session.id, !session.archived);
