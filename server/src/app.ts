@@ -2,7 +2,7 @@
 // and runners (an app service token), then hands every parsed frame to the relay.
 
 import type { Server, ServerWebSocket } from "bun";
-import { PROTOCOL_VERSION, type PushKeys } from "../../shared/protocol";
+import { PROTOCOL_VERSION, type PushKeys, type RunnerBuild } from "../../shared/protocol";
 import { malformedId, parseBrowserMessage, parseRunnerMessage } from "../../shared/wire";
 import { browserUser, DEV, isOwner, isRunner, isSharedPerson, viewerFrom, type Viewer } from "./identity";
 import { Relay } from "./relay";
@@ -21,6 +21,8 @@ export interface AppOptions {
   dev?: boolean;
   /** the app's VAPID keys (push.ts); push is off without them */
   push?: PushKeys;
+  /** the server's own build stamp (deploys from main) */
+  build?: RunnerBuild;
   /** who is calling; identity.ts's viewerFrom unless a test stands in for the edge */
   identify?: (req: Request) => Promise<Viewer | null>;
   /** how often browser sockets past their sign-in deadline are closed (relay.sweep) */
@@ -77,7 +79,7 @@ export function startApp(opts: AppOptions): { server: Server<Conn>; relay: Relay
   const dev = opts.dev ?? DEV;
   const identify = opts.identify ?? viewerFrom;
   const owners = opts.owners ?? null;
-  const relay = opts.relay ?? new Relay({ log, push: opts.push, owners });
+  const relay = opts.relay ?? new Relay({ log, push: opts.push, owners, build: opts.build });
   /**
    * Who may open the app: its owners, people it is shared with (editors and viewers, who see only
    * the runners shared with them: shared/access.ts), and with an owner map, anyone it lists

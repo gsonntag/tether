@@ -42,7 +42,7 @@ export interface ReportInput {
   now: number;
   /** what a file's requests drew from (a Codex file's own record decides per request: codexSource) */
   source: (f: FileState) => Source | SourceSpan;
-  /** a folder TETHER_HIDE_PROJECTS (or the Home agent) hides */
+  /** a folder TETHER_HIDE_PROJECTS (or the removed Home agent's old folder) hides */
   hidden?: (path: string) => boolean;
   /** Tether's API cost ledger: whole-session totals by Tether session id */
   ledger?: (sessionId: string) => { usd?: number; complete: boolean } | undefined;
@@ -104,7 +104,10 @@ export function buildReport(o: ReportInput): Omit<UsageReport, "plans" | "scan">
       const got = o.source(f);
       spans.set(f, (span = typeof got === "string" ? { kind: got } : got));
     }
-    const source: Source = f.harness === "codex" ? codexSource(f, r) : r[1] * 1000 >= (span.since ?? 0) ? span.kind : "unknown";
+    let source: Source = "unknown";
+    if (f.harness === "codex") source = codexSource(f, r);
+    else if (f.harness === "antigravity") source = r[8] & PLAN ? "plan" : "unknown";
+    else if (r[1] * 1000 >= (span.since ?? 0)) source = span.kind;
     const price = source === "provider" ? undefined : priceRec(f.harness, r, f.harness === "codex" ? f.provider : undefined);
     add(total, r, price, source);
     add(day, r, price, source);

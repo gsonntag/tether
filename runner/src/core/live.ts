@@ -11,7 +11,7 @@ import { Commands } from "./commands";
 import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { CredentialStore, redact, redactValue, type CredentialSnapshot } from "../credentials";
-import { isBillingSource, keyTarget, type BillingSource, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
+import { isBillingSource, keyTargets, resolveAzureDeployment, type BillingSource, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
 import { addSideCost, type CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
@@ -21,7 +21,7 @@ import { modelIdProblem, reportedAt } from "../../../shared/labels";
 import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
 import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
 import { PLAN_MODE } from "../../../shared/plan";
-import { MODEL_AFTER_SOURCE, sourceSwitchBlockMessage, sourceSwitchBlocker } from "../../../shared/sourceSwitch";
+import { sourceSwitchBlockMessage, sourceSwitchBlocker } from "../../../shared/sourceSwitch";
 import { AGENT_NAMES, HARNESS_LABELS, type Billing, type HarnessId, type LiveState, type ModelList, type Msg, type RequestAnswer } from "../../../shared/transcript";
 import { SendCancelled, type Driver, type Sink, type StartOpts, type SubagentStart } from "./adapter";
 import { AttachmentStore } from "./attachments";
@@ -33,12 +33,16 @@ import { Session } from "./session";
 import { chosenOf, type SessionCore } from "./sessions";
 import { Transcript } from "./transcript";
 import { RetryControl } from "./retryControl";
+import { lockWorktree } from "./worktreeLock";
+
+/** How a message is sent (LiveControl.send). */
+type SendOpts = { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string; clientId?: string };
 
 /** Idle this long, a live session's process closes. */
 export const IDLE_CLOSE_MS = 5 * 60_000;
 
 /** What the quiet wait after a restart shows (SPEC §4). */
-const WAITING_TEXT = "Waiting for Claude Code from before the restart to finish…";
+export const waitingText = (harness: HarnessId): string => `Waiting for ${AGENT_NAMES[harness]} from before the restart to finish…`;
 const SETUP_TEXT = "The worktree's setup is still running.";
 const SETUP_FAILED_TEXT = "The worktree's setup failed.";
 const notice = (text: string, level: Msg["level"] = "info"): Msg => ({ id: `n-${randomUUID()}`, role: "notice", level, ts: Date.now(), parts: [{ type: "text", text }] });
@@ -123,13 +127,12 @@ export class LiveControl {
       idleMs?: number;
       /** the most sessions live at once (TETHER_MAX_LIVE_SESSIONS); absent or 0: no limit */
       maxLive?: number;
-      /** the Home agent's folder: its chats are never refused by maxLive, so Home always answers */
-      homeFolder?: string;
       attachmentsDir?: string; credentials?: CredentialStore; costs?: CostLedger } = {},
   ) {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
     this.retries = new RetryControl(core, {
       identity: (s) => this.retryIdentity(s),
+      extended: (s) => s.state.retryThrottled === true && this.sourceOf(s) !== "subscription",
       revision: (s) => core.adapter(s.summary.harness).storeRevision?.(s.summary.nativeId, s.summary.projectPath),
       blocked: (s) => s.state.mode === "terminal" || !!s.state.terminal || !!s.state.requests.length || !!this.terminal?.blocked(s) || !!core.o.prefs.get(s.id).nextSource || this.restartWaits.has(s.id),
       held: (s) => !!this.heldWhy(s.id),
@@ -178,7 +181,7 @@ export class LiveControl {
 
   /**
    * Ends a retry chain before it recovers. A waiting chain's turn already ended as "recovering",
-   * which listeners (peers, Home agent, texting) skipped: its real end is now, as a stop. A Tether
+   * which listeners (peers, texting) skipped: its real end is now, as a stop. A Tether
    * send that replaces the chain neither holds the queue nor ends the turn: its own turn's end does.
    */
   private cancelRetrySession(s: Session, o: { tether?: boolean; due?: "stopped" } = {}) {
@@ -271,7 +274,24 @@ export class LiveControl {
    * `tether`: sent on your behalf, which releases nothing; `continued`: the continue after a restart,
    * the one send that ends the quiet wait). During the wait everything else queues.
    */
-  async send(id: string, text: string, attachments: Attachment[] = [], o: { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string; clientId?: string } = {}) {
+  async send(id: string, text: string, attachments: Attachment[] = [], o: SendOpts = {}) {
+    const prefs = this.core.o.prefs.get(id);
+    // A message you send to an archived session brings it back into the lists once it's taken (SPEC
+    // §10 Archiving): it's in use again. Not a closed side chat (it stays closed), nor the queue's own
+    // sends. Under its worktree's lock (core/worktreeLock.ts): never while cleanup on archive removes
+    // that worktree, and cleanup sees it unarchived after. A session that went on under another id
+    // sends to that one, whose own send does this.
+    if (o.queued || o.retryId || o.continued || !prefs.archived || prefs.sideOf) return this.sendNow(id, text, attachments, o);
+    const s = await this.core.open(id);
+    if (s.summary.parentSessionId || s.rebuilt || s.movedTo) return this.sendNow(id, text, attachments, o);
+    const go = async () => {
+      await this.sendNow(id, text, attachments, o);
+      if (this.core.o.prefs.get(id).archived) await this.core.setArchived(s, false);
+    };
+    return prefs.worktree?.path ? lockWorktree(prefs.worktree.path, go) : go();
+  }
+
+  private async sendNow(id: string, text: string, attachments: Attachment[] = [], o: SendOpts = {}) {
     if (!text?.trim() && !attachments.length) throw new Error("Type a message first.");
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     this.sideCommand(id, text);
@@ -305,7 +325,7 @@ export class LiveControl {
     // Claude Code from before the restart may be running: nothing starts beside it. Held, whatever
     // the queue held before; it goes on once the wait ends.
     if (!o.continued && this.restartWaits.has(id)) {
-      if (o.queued) throw new Error(WAITING_TEXT);
+      if (o.queued) throw new Error(waitingText(s.summary.harness));
       return void (await this.queue.add(id, text, attachments));
     }
     // Held by a module (a checkpoint restore changing the files): it waits in the queue till the release.
@@ -444,7 +464,7 @@ export class LiveControl {
     this.core.pin(s);
     try {
       if (!o.queued && !o.tether && s.state.queueHeldBy !== "terminal") this.queue.release(s);
-      const id = await this.carrier(s.id, source);
+      const id = await this.carrier(s.id, source, this.core.o.prefs.get(s.id).nextModel);
       const n = await this.core.open(id);
       this.core.pin(n);
       try {
@@ -511,9 +531,9 @@ export class LiveControl {
     const kept = this.keptPrefs(s);
     // The pin goes with the conversation: the new thread takes the old one's place in Pinned.
     prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
-    const { forkedFrom, ...state } = kept;
-    n.setState(state);
-    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
+    const { forkedFrom, worktree: _, ...state } = kept;
+    n.setState({ ...state, retryThrottled: this.sourceOf(n) === "subscription" ? undefined : !!kept.retryThrottled });
+    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextModel: undefined, nextBilling: undefined, nextDeployment: undefined, sourceSwitchFailed: undefined });
     this.core.moveSides(s.id, n.id);
     prefs.flush();
     s.movedTo = n.id;
@@ -560,8 +580,8 @@ export class LiveControl {
       const kept = this.keptPrefs(s);
       const { pinned, pinnedRow } = this.core.o.prefs.get(s.id);
       this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
-      const { forkedFrom, ...state } = kept;
-      n.setState(state);
+      const { forkedFrom, worktree: _, ...state } = kept;
+      n.setState({ ...state, retryThrottled: source === "subscription" ? undefined : !!kept.retryThrottled });
       this.core.touch(n, forkedFrom ? { forkedFrom } : {});
       try {
         await this.ensureDriver(n);
@@ -807,9 +827,9 @@ export class LiveControl {
 
   /**
    * A model from the menu or typed (SPEC §10 "Other model or deployment…"). Refused: the chat says
-   * why and the model stays as it was. While a source change waits for the next message, the model
-   * can't change: it would go to the source being left (a deployment name to the ChatGPT daemon, or a
-   * model id to an Azure process). Pick it once the session is on the new source.
+   * why and the model stays as it was. While a source change waits for the next message, the pick is
+   * for the new source: held (`nextModel`) for the thread the change starts, never sent to the source
+   * being left (a deployment name to the ChatGPT daemon, or a model id to an Azure process).
    */
   async setModel(id: string, model: string) {
     const parsed = parseSessionId(id);
@@ -818,7 +838,8 @@ export class LiveControl {
     try {
       const problem = modelIdProblem(model);
       if (problem) throw new Error(`That model name won't do. ${problem}`);
-      if (this.core.o.prefs.get(id).nextSource) throw new Error(MODEL_AFTER_SOURCE);
+      const next = this.core.o.prefs.get(id).nextSource;
+      if (next) return await this.holdNextModel(id, next, model);
       await this.setting(id, { model }, (d) => d.setModel(model));
     } catch (e) {
       const s = await this.core.open(id).catch(() => undefined);
@@ -828,6 +849,19 @@ export class LiveControl {
       }
       throw e;
     }
+  }
+
+  /** A model for the source a pending change goes to: its new thread starts on it. */
+  private async holdNextModel(id: string, source: BillingSource, model: string) {
+    const s = await this.core.open(id);
+    if (s.summary.parentSessionId) throw new Error("Change settings on the main session. A subagent keeps the settings it started with.");
+    if (source === "azure" && model !== "default" && !this.opts.credentials?.azure().deployments.some((d) => d.name === model)) throw new Error(`${model} isn't a deployment in Settings, Azure. The model is unchanged.`);
+    // Onto Azure the pick is the deployment the change takes (as the chip's own pick); elsewhere a model id.
+    const picked = model === "default" ? undefined : model;
+    const patch = source === "azure" ? { nextDeployment: picked } : { nextModel: picked };
+    this.core.o.prefs.set(id, patch);
+    this.core.o.prefs.flush();
+    s.setState(patch);
   }
 
   async setEffort(id: string, effort: string) {
@@ -919,7 +953,7 @@ export class LiveControl {
       // Still being written: the rest happens in the background once it's quiet (rejoin, and the
       // queues it restores, don't wait for this session). The same notice after another restart.
       if (this.restartWaits.has(id)) {
-        s.apply({ type: "msg", msg: { ...notice(WAITING_TEXT), id: `n-wait-${id}-${this.core.o.prefs.get(id).restartWait}` } });
+        s.apply({ type: "msg", msg: { ...notice(waitingText(s.summary.harness)), id: `n-wait-${id}-${this.core.o.prefs.get(id).restartWait}` } });
         s.setState({ restartWait: true });
         this.queue.hold(s, "restart");
       }
@@ -945,8 +979,8 @@ export class LiveControl {
       // Stopping: `running` stays saved, and the next start waits on.
       if (this.stopping || !on()) return;
       if (!quiet) {
-        this.read.set(id, { failure: "Couldn't tell whether Claude Code from before the restart was still working." });
-        s.apply({ type: "msg", msg: notice("Couldn't tell whether Claude Code from before the restart was still working. Send a message to carry on.", "warning") });
+        this.read.set(id, { failure: `Couldn't tell whether ${AGENT_NAMES[s.summary.harness]} from before the restart was still working.` });
+        s.apply({ type: "msg", msg: notice(`Couldn't tell whether ${AGENT_NAMES[s.summary.harness]} from before the restart was still working. Send a message to carry on.`, "warning") });
         this.queue.hold(s, "restart", { due: "restart" });
         return this.endWait(s);
       }
@@ -1286,7 +1320,7 @@ export class LiveControl {
 
   /**
    * Why this session may not go live now (the runner's live-session limit is reached), or
-   * undefined. Subagents and the Home agent's chats don't count and are never refused.
+   * undefined. Subagents don't count and are never refused.
    */
   private overLiveLimit(s: Session): string | undefined {
     const max = this.opts.maxLive ?? 0;
@@ -1298,9 +1332,7 @@ export class LiveControl {
   }
 
   private exemptFromLimit(s: Session): boolean {
-    const home = this.opts.homeFolder;
-    const path = s.summary.projectPath;
-    return !!s.summary.parentSessionId || (!!home && (path === home || path.startsWith(`${home}/`)));
+    return !!s.summary.parentSessionId;
   }
 
   /** The session's driver, starting or resuming the harness when it isn't live. */
@@ -1379,7 +1411,7 @@ export class LiveControl {
   /** On Azure, the model is a deployment: the one asked for if it's there, else the first. */
   forSource(source: BillingSource, opts: StartOpts): StartOpts {
     if (source !== "azure" || !this.opts.credentials) return opts;
-    const deployment = this.pickDeployment(opts.model);
+    const deployment = opts.azureDeployment ?? this.pickDeployment(opts.model);
     return { ...opts, model: deployment };
   }
 
@@ -1445,11 +1477,12 @@ export class LiveControl {
     opts = this.forSource(source, opts);
     const s = this.core.create(harness, await this.newNativeId(harness, folder, opts, source), folder, opts);
     this.core.o.prefs.set(s.id, { source, ...(source === "azure" && opts.model ? { deployment: opts.model } : {}) });
+    if (source !== "subscription") s.setState({ retryThrottled: false });
     return s;
   }
 
   /** Makes the thread a source change goes to, on the move module's export and import. */
-  carrier?: (id: string, source: BillingSource) => Promise<string>;
+  carrier?: (id: string, source: BillingSource, model?: string) => Promise<string>;
 
   /** A queued source remains pending after its first start fails, across views and runner restarts. */
   private markSourceSwitchFailed(s: Session) {
@@ -1460,7 +1493,7 @@ export class LiveControl {
   }
 
   /** From the next process start, which confirms it (only with capabilities.sourceSwitch). */
-  async setSource(id: string, asked: unknown) {
+  async setSource(id: string, asked: unknown, azureDeployment?: string) {
     const s = await this.core.open(id);
     if (s.retry) this.cancelRetrySession(s);
     const harness = s.summary.harness;
@@ -1472,7 +1505,11 @@ export class LiveControl {
     const blocker = sourceSwitchBlocker(s.state);
     if (blocker) throw new Error(sourceSwitchBlockMessage(blocker));
     if (s.sending || s.starting || s.carrying) throw new Error(sourceSwitchBlockMessage("turn"));
-    if (!(await this.sources(harness)).options.some((o) => o.source === asked)) throw new Error(`${this.labelOf(harness, asked)} isn't available.`);
+    const choice = (await this.sources(harness)).options.find((o) => o.source === asked);
+    if (!choice) throw new Error(`${this.labelOf(harness, asked)} isn't available.`);
+    if (azureDeployment && !choice.deployments?.some(({ name }) => name === azureDeployment)) {
+      throw new Error(`Azure deployment ${azureDeployment} isn't available.`);
+    }
     const carries = !!s.capabilities.sourceCarry;
     const own = this.sourceOf(s);
     const lastKey = asked !== "subscription" ? asked : own !== "subscription" ? own : undefined;
@@ -1483,9 +1520,10 @@ export class LiveControl {
     if (asked === own) {
       // Thought better of it: the thread never left.
       if (carries) {
-        this.core.o.prefs.set(id, { nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined });
+        const pendingDeployment = this.core.o.prefs.get(id).nextSource ? { nextDeployment: undefined } : {};
+        this.core.o.prefs.set(id, { nextSource: undefined, nextModel: undefined, nextBilling: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
         this.core.o.prefs.flush();
-        s.setState({ nextBilling: undefined, sourceSwitchFailed: undefined });
+        s.setState({ nextBilling: undefined, nextModel: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
       }
       return;
     }
@@ -1496,9 +1534,11 @@ export class LiveControl {
     }
     const next = this.core.adapter(harness).billing!.label(asked);
     if (carries) {
-      this.core.o.prefs.set(id, { nextSource: asked, nextBilling: next, sourceSwitchFailed: undefined });
+      // A model picked for another pending source doesn't go with this one.
+      const nextModel = this.core.o.prefs.get(id).nextSource === asked ? this.core.o.prefs.get(id).nextModel : undefined;
+      this.core.o.prefs.set(id, { nextSource: asked, nextModel, nextBilling: next, nextDeployment: azureDeployment, sourceSwitchFailed: undefined });
       this.core.o.prefs.flush();
-      s.setState({ nextBilling: next, sourceSwitchFailed: undefined });
+      s.setState({ nextBilling: next, nextModel, nextDeployment: azureDeployment, sourceSwitchFailed: undefined });
       return this.core.touch(s);
     }
     const confirmed = s.state.billing?.label === next.label;
@@ -1508,9 +1548,10 @@ export class LiveControl {
       try { cost = this.startCost(s); }
       catch { cost = { estimated: true, complete: false, reasons: ["unsaved"] }; this.core.log("Couldn't save this session's API cost coverage. Its total is unknown."); }
     }
-    this.core.o.prefs.set(id, { source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined });
+    const azure = azureDeployment ? { deployment: azureDeployment, model: azureDeployment } : {};
+    this.core.o.prefs.set(id, { source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...azure });
     this.core.o.prefs.flush();
-    s.setState({ nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...(cost ? { cost } : {}) });
+    s.setState({ nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, retryThrottled: asked === "subscription" ? undefined : this.core.o.prefs.get(id).retryThrottled === true, ...(azure.model ? { model: azure.model } : {}), ...(cost ? { cost } : {}) });
     this.core.touch(s);
   }
 
@@ -1588,11 +1629,36 @@ export class LiveControl {
     s.setState(patch);
   }
 
-  /** What a session's successor on another id keeps (a fork's link back too, SPEC §16). */
+  /**
+   * The "Session can text me" box (SPEC §11 Texting): only a ticked session texts the person.
+   * Texting hears of it (canTextChanged): unticked, its number is dropped.
+   */
+  async setCanText(id: string, on: boolean) {
+    const s = await this.core.open(id);
+    if (s.summary.parentSessionId) throw new Error("A subagent texts as its main session.");
+    this.core.o.prefs.set(id, { canText: on || undefined });
+    this.core.o.prefs.flush();
+    s.setState({ canText: on || undefined });
+    this.core.o.bus.emit("canTextChanged", { sessionId: id, canText: on });
+  }
+
+  async setRetryThrottled(id: string, on: boolean) {
+    const s = await this.core.open(id);
+    if (s.summary.parentSessionId || s.summary.sideOf || this.sourceOf(s) === "subscription") {
+      throw new Error("Extended throttle retries require a main session using an API key.");
+    }
+    this.core.o.prefs.set(id, { retryThrottled: on || undefined });
+    this.core.o.prefs.flush();
+    s.setState({ retryThrottled: on });
+    if (!on && s.retry?.extended && s.retry.phase === "waiting") this.cancelRetrySession(s);
+  }
+
+  /** What a session's successor on another id keeps (a fork's link back too, SPEC §16; its worktree record, SPEC §4). */
   keptPrefs(s: Session) {
-    const { autoKey, lastKey, fallbackKeys, forkedFrom, sideOf } = this.core.o.prefs.get(s.id);
+    const { autoKey, canText, retryThrottled, lastKey, fallbackKeys, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
     // A side chat's successor is one too, read-only (SPEC §16a): failing closed.
-    return { ...(autoKey ? { autoKey } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}) };
+    // The worktree goes on with the conversation: cleanup counts the successor as its user (the old id, moved on, no more).
+    return { ...(autoKey ? { autoKey } : {}), ...(canText ? { canText } : {}), ...(retryThrottled === true ? { retryThrottled } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree } : {}) };
   }
 
   /**
@@ -1612,14 +1678,26 @@ export class LiveControl {
       while ((s.sending || s.starting) && this.core.now() < until) await Bun.sleep(20);
       const resetsAt = await this.planReset(harness, s, hit);
       const say = (text: string, level: Msg["level"] = "info") => s.apply({ type: "msg", msg: { ...notice(text, level), ...(resetsAt ? { resetsAt } : {}) } });
-      const target = keyTarget((await this.sources(harness)).options, prefs.lastKey, prefs.fallbackKeys);
-      if (!target) return void say(prefs.fallbackKeys !== undefined ? "Plan limit reached. No allowed fallback key is available, so nothing switched." : "Plan limit reached. No API key is set, so nothing switched.", "warning");
+      const selectedModel = this.core.o.prefs.get(s.id).model ?? s.state.model;
+      const model = selectedModel === "default" ? undefined : selectedModel;
+      const candidates = keyTargets((await this.sources(harness)).options, prefs.lastKey, prefs.fallbackKeys);
+      const ranked = candidates.map((option) => {
+        const compatible = option.deployments?.filter((d) => !model || !d.model || d.model === model) ?? [];
+        return { option, deployment: resolveAzureDeployment(compatible, model) };
+      });
+      const fallback = ranked.find(({ option, deployment }) => option.source !== "azure" || deployment);
+      if (!fallback) {
+        const reason = candidates.some(({ source }) => source === "azure") ? `No Azure deployment matches ${model ?? "the current model"}`
+          : prefs.fallbackKeys !== undefined ? "No allowed fallback key is available" : "No API key is set";
+        return void say(`Plan limit reached. ${reason}, so nothing switched.`, "warning");
+      }
+      const { option: target, deployment } = fallback;
       try {
-        await this.setSource(s.id, target.source);
+        await this.setSource(s.id, target.source, deployment);
       } catch (e) {
         return void say(`Plan limit reached. Not switched: ${redact((e as Error)?.message ?? String(e))}`, "warning");
       }
-      const switched = `Plan limit reached. Switched to ${target.billing.label}.`;
+      const switched = `Plan limit reached. Switched to ${target.billing.label}${deployment ? ` (${deployment})` : ""}.`;
       if (!sent) return void say(`${switched} Send your message again.`);
       if (acted) return void say(`${switched} Tools had already run in that turn, so it wasn't resent: replaying could repeat edits. Send a message to continue.`);
       if (s.driver?.busy()) return void say(`${switched} Background work still runs, so nothing was resent. Send your message again once it's done.`);

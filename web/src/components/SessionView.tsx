@@ -26,14 +26,13 @@ import { btwQuestion, BTW_NO_FILES, canSideChat, withBtw } from "../sideChat";
 import { SideChatChips, SideChatPanel, useSideChats, type SideState } from "./SideChatPanel";
 import { SessionHeader } from "./SessionHeader";
 import { Transcript } from "./Transcript";
-import { useChildren } from "./useChildren";
+import { useFamily } from "./useChildren";
 import { useFitViewport } from "./useFitViewport";
 import { useTermCover } from "./useTermCover";
 import { PanelHandle } from "./WidthHandle";
 import { ChangesPane } from "./ChangesPane";
 import { PrChip, usePr } from "./PrChip";
 import { reviewSent } from "../reviewStore";
-import { billingForDisplay } from "../sourceMenu";
 import { RateLimitRetry } from "./RateLimitRetry";
 
 /** A session to focus the composer of once it opens (a new session just created). */
@@ -61,7 +60,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   const runnerFiles = useStore((s) => !!s.runners.find((r) => r.id === runnerId)?.files);
   // Shared with you to view only (shared/access.ts): the transcript, with no way to change it.
   const viewOnly = useStore((s) => accessOf(s.runners.find((r) => r.id === runnerId)) === "view");
-  const children = useChildren(runnerId, sessionId);
+  const { children, parent: startedBy } = useFamily(runnerId, sessionId);
   const pending = usePending(runnerId, sessionId);
   const composer = useRef<ComposerHandle>(null);
   const root = useRef<HTMLDivElement>(null);
@@ -157,7 +156,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
 
   // Fork from here on the replies that end a finished turn (SPEC §16): a main session whose harness forks.
   const forks = !!view?.state && !!summary && canFork(summary, view.capabilities, view.state);
-  const sides = !!view?.state && !!summary && canSideChat(runnerId, summary, view.capabilities, view.state);
+  const sides = !!view?.state && !!summary && canSideChat(summary, view.capabilities, view.state);
   const sideChats = useSideChats(runnerId, sessionId, sides || !!side);
   const forkBusy = view?.state ? forkRunning(view.state, view.capabilities) : false;
   const forkingHere = useForking(sessionId);
@@ -217,7 +216,6 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     setSide(null);
     if (id) void rpc(runnerId, "closeSideChat", { sessionId: id }).catch((e) => failedSend(runnerId, sessionId, `Closing the side chat failed: ${(e as Error).message}`));
   };
-  const billing = billingForDisplay(state);
   const inTerminal = state.mode === "terminal";
   const agent = AGENT_NAMES[summary.harness];
   // "waiting" (Claude waits on a request, in the dock above the composer) is busy too: Stop, not Send.
@@ -360,7 +358,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     <SessionCtx.Provider value={ctx}>
       <div className={`t-session-split${panel || changes ? " with-terminal" : side ? " with-side" : ""}${cover || (side && noRoom) ? " t-term-cover" : ""}`} ref={rootRef}>
       <div className="t-session">
-        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move && !summary.sideOf} canFork={canFork(summary, view.capabilities, state)} onSideChat={sides ? () => void openSide("") : undefined} />}<PrChip lookup={prs.pr} />{changesChip}{terminalChip}</>} sideChats={<SideChatChips chats={sideChats} onOpen={reopenSide} />} capabilities={view.capabilities} />
+        <SessionHeader runnerId={runnerId} session={summary} state={state} models={models} children={children} startedBy={startedBy} extra={<>{!isChild && <SessionMenu runnerId={runnerId} session={summary} state={state} canMove={!!view.capabilities?.move && !summary.sideOf} canFork={canFork(summary, view.capabilities, state)} onSideChat={sides ? () => void openSide("") : undefined} />}<PrChip lookup={prs.pr} />{changesChip}{terminalChip}</>} sideChats={<SideChatChips chats={sideChats} onOpen={reopenSide} />} capabilities={view.capabilities} />
         {ask && !panelShown && (
           <div className="t-term-ask" role="group" aria-label="Open the terminal">
             <span>{ask.text}</span>
@@ -399,7 +397,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
             retry={retry}
             offline={offline}
             onRetryNow={() => rpc(runnerId, "retryNow", { sessionId })}
-            onCancel={() => rpc(runnerId, "cancelRetry", { sessionId })}
+            onCancel={() => rpc(runnerId, retry.extended ? "interrupt" : "cancelRetry", { sessionId })}
             onFailed={(message) => failedSend(runnerId, sessionId, message)}
           />
         )}
@@ -409,7 +407,6 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           <Composer
             ref={composer}
             draftKey={k}
-            billing={billing}
             running
             steerOnly
             agent="The subagent"
@@ -431,7 +428,6 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
           <Composer
             ref={composer}
             draftKey={k}
-            billing={billing}
             running={running}
             mainFree={beside > 0}
             waiting={waiting && state.status !== "running"}

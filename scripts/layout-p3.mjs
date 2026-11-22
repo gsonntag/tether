@@ -2,6 +2,9 @@
 //   PLAYWRIGHT=/path/to/playwright/index.mjs node scripts/layout-p3.mjs [step…]
 // Opens a real Claude TUI in a new session and sends nothing to the model. Same stack and environment
 // as e2e-p3.mjs: BASE, RUNNER, SCRATCH (a folder Claude already trusts), TMUX_SOCKET, SHOTS.
+// The agent's own tab always covers the chat (fullscreen, any size); a shell tab sits beside the
+// chat when there is room. So the steps about the panel beside the chat (beside sidebar panel
+// stored hidden) put a project shell in front, and close the shells they opened at the end.
 // Steps: g5 rotate beside sidebar panel stored hidden ask placeholder (all by default).
 // Exits 1 on any problem found.
 
@@ -55,7 +58,9 @@ const measure = (p) =>
     const q = (s) => r(document.querySelector(s));
     const panel = document.querySelector(".t-term-panel");
     const button = (name) => r([...(panel?.querySelectorAll("button") ?? [])].find((x) => x.textContent.trim() === name || x.getAttribute("aria-label") === name));
-    const term = [...(globalThis.__tetherTerms?.entries() ?? [])].find(([k]) => k.startsWith("claude:"))?.[1];
+    // The terminal in front: the agent's, or a project shell's (keyed sh-…).
+    const shell = /^Shell \d+/.test(document.querySelector(".t-term-tab[aria-selected=true]")?.textContent ?? "");
+    const term = [...(globalThis.__tetherTerms?.entries() ?? [])].filter(([k]) => k.startsWith(shell ? "sh-" : "claude:")).at(-1)?.[1];
     const stored = (k) => localStorage.getItem(`tether.width.${k}`);
     return {
       vw: innerWidth,
@@ -94,7 +99,7 @@ const newTui = async () => {
   await sleep(4000);
   return sessionId;
 };
-const open = async (o, init) => {
+const open = async (o, init, { shell = false } = {}) => {
   const ctx = await browser.newContext(o);
   if (init) await ctx.addInitScript(init);
   const p = await ctx.newPage();
@@ -102,9 +107,15 @@ const open = async (o, init) => {
   await p.goto(url(current));
   await p.locator(".t-term-banner").getByRole("button", { name: "Open Claude Code" }).click({ timeout: 30_000 });
   await p.locator(".t-term-panel").waitFor();
+  if (shell) {
+    // A shell in front: the panel that may sit beside the chat (the agent's tab never does).
+    await p.locator(".t-term-panel").getByRole("button", { name: "New shell", exact: true }).click();
+    await p.locator(".t-term-tab[aria-selected=true]", { hasText: /^Shell \d+/ }).waitFor({ timeout: 15_000 });
+  }
   await sleep(2000);
   return { ctx, p };
 };
+const shellOpts = { shell: true };
 const win = () => tmux("display", "-p", "-t", `=${tui}:`, "#{window_width}x#{window_height}").trim();
 const phone = (width, height) => ({ viewport: { width, height }, hasTouch: true, isMobile: true });
 const panelButton = (p, name) => p.locator(".t-term-panel").getByRole("button", { name, exact: true });
@@ -155,21 +166,26 @@ const STEPS = {
   /** Beside the transcript the panel has 60 columns and the transcript 300 px, at any scale. */
   async beside() {
     for (const dpr of [1, 1.25, 1.5, 2]) {
-      const { ctx, p } = await open({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: dpr });
+      const { ctx, p } = await open({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: dpr }, undefined, shellOpts);
+      let beside = 0;
       for (let w = 1260; w >= 1150; w -= 10) {
         await p.setViewportSize({ width: w, height: 800 });
         await sleep(300);
         const m = await measure(p);
         if (m.cover) continue;
+        beside++;
         check(m.cols >= 60, `dpr ${dpr}, ${w} px: ${m.cols} columns beside`);
         check(m.session.r - m.session.l >= 300, `dpr ${dpr}, ${w} px: transcript ${m.session.r - m.session.l}`);
       }
+      // Not a pass by default: some of these widths have the room.
+      check(beside > 0, `dpr ${dpr}: never beside the chat from 1260 to 1150 px`);
       await ctx.close();
     }
   },
   /** The sidebar dragged wide takes the room: the panel goes over the chat, and back. */
   async sidebar() {
-    const { ctx, p } = await open({ viewport: { width: 1280, height: 800 } });
+    const { ctx, p } = await open({ viewport: { width: 1280, height: 800 } }, undefined, shellOpts);
+    check(!(await measure(p)).cover, "a shell at 1280 px isn't beside the chat");
     const handle = p.locator('[aria-label="Resize sidebar"]');
     const bx = await handle.boundingBox();
     const [x, y] = [bx.x + bx.width / 2, bx.y + bx.height / 2];
@@ -186,7 +202,7 @@ const STEPS = {
   },
   /** The panel's handle stops at 60 columns and at a 300 px transcript. */
   async panel() {
-    const { ctx, p } = await open({ viewport: { width: 1440, height: 900 } });
+    const { ctx, p } = await open({ viewport: { width: 1440, height: 900 } }, undefined, shellOpts);
     const bx = await p.locator(".t-term-handle").first().boundingBox();
     const [x, y] = [bx.x + bx.width / 2, bx.y + 200];
     await p.mouse.move(x, y);
@@ -212,7 +228,7 @@ const STEPS = {
   /** Widths stored earlier can't break it. */
   async stored() {
     for (const [k, v, w] of [["panel", "3000", 1280], ["panel", "100", 1280], ["panel", "abc", 1280], ["sidebar", "900", 1280], ["sidebar", "480", 1215], ["sidebar", "100", 1280]]) {
-      const { ctx, p } = await open({ viewport: { width: w, height: 800 } }, `localStorage.setItem("tether.width.${k}", ${JSON.stringify(v)})`);
+      const { ctx, p } = await open({ viewport: { width: w, height: 800 } }, `localStorage.setItem("tether.width.${k}", ${JSON.stringify(v)})`, shellOpts);
       const m = await measure(p);
       const at = `${k} ${v} at ${w}`;
       check(m.scroll <= m.vw, `${at}: scrolls sideways`);
@@ -226,7 +242,7 @@ const STEPS = {
   },
   /** Tucked behind the chat, then room comes: beside again, unhidden. */
   async hidden() {
-    const { ctx, p } = await open({ viewport: { width: 1000, height: 800 } });
+    const { ctx, p } = await open({ viewport: { width: 1000, height: 800 } }, undefined, shellOpts);
     await panelButton(p, "Chat").click();
     await sleep(400);
     await p.setViewportSize({ width: 1280, height: 800 });
@@ -285,6 +301,9 @@ try {
   console.log("FAILED", e?.stack ?? e);
 }
 for (const id of sessions) await rpc("endTerminal", { sessionId: id }).catch(() => {});
+// The project shells the steps opened (shells belong to the folder, not to a session).
+const { shells = [] } = await rpc("listShells", { projectPath: SCRATCH }).catch(() => ({}));
+for (const sh of shells) await rpc("closeShell", { shellId: sh.id }).catch(() => {});
 console.log(`layout problems: ${bad}`);
 await browser.close();
 process.exit(bad ? 1 : 0);

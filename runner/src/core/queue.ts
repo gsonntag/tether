@@ -25,7 +25,7 @@ import { jsonBytes, MESSAGE_TEXT_MAX, QUEUE_BYTES_MAX, QUEUE_MAX, queuedBytes, s
 
 /** Bytes a queue takes in a frame (JSON escapes included; a `!` command's command too). */
 export const queueBytes = (q: QueuedMessage[]) => q.reduce((n, m) => n + queuedBytes(m), 0);
-import type { LiveState, Msg, QueuedMessage } from "../../../shared/transcript";
+import { AGENT_NAMES, type LiveState, type Msg, type QueuedMessage } from "../../../shared/transcript";
 import { badScheduleTime, isScheduled, nextScheduled, SCHEDULE_LATE_MAX_MS, SCHEDULE_LATE_NOTE_MS, scheduled, unscheduled } from "../../../shared/schedule";
 import { Scheduler, Uptime } from "./scheduler";
 import type { Session } from "./session";
@@ -230,7 +230,7 @@ export class MessageQueue {
   async resume(id: string) {
     const s = await this.root(id);
     if (s.state.mode === "terminal") throw new Error("The terminal is driving. Go back to Tether to send what waits.");
-    if (this.host.waiting(s.id)) throw new Error("Claude Code from before the restart may still be working. What waits goes on once it's finished.");
+    if (this.host.waiting(s.id)) throw new Error(`${AGENT_NAMES[s.summary.harness]} from before the restart may still be working. What waits goes on once it's finished.`);
     if (s.retry) throw new Error("A rate limit retry is waiting. Cancel it or wait for it to finish.");
     if (this.host.settingUp?.(s.id)) throw new Error("The worktree's setup is still running. What waits goes once it's done.");
     // After a failed setup this is Send anyway: from now on sends go as usual.

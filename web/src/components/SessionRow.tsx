@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@astryxdesign/core/Icon";
 import { ArchiveBoxIcon, ArrowUturnLeftIcon } from "@heroicons/react/24/outline";
-import { isApiBilling } from "../../../shared/labels";
 import { HARNESS_LABELS, type Billing, type HarnessId, type RunStatus } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { openSession } from "../route";
@@ -37,8 +36,7 @@ export function StatusDot({ status, requests }: { status: RunStatus; requests?: 
   return <span className={`t-dot ${s}`} role="img" aria-label={STATUS_LABEL[s]} title={STATUS_LABEL[s]} />;
 }
 
-export function BillingMarker({ billing }: { billing?: Billing }) {
-  if (isApiBilling(billing)) return <span className="t-api-marker" role="img" aria-label={billing!.label} title={billing!.label}>$</span>;
+export function UnknownBillingMarker({ billing }: { billing?: Billing }) {
   if (!billing || billing.kind === "unknown") return <span className="t-billing-unknown" title="Billing unknown" aria-label="Billing unknown">?</span>;
   return null;
 }
@@ -158,7 +156,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hid
       />
       <div className="t-row-content">
         <span className="t-row-title t-row-title-editor">
-          <BillingMarker billing={row.billing} />
+          <UnknownBillingMarker billing={row.billing} />
           {editingTitle ? (
             <input
               ref={titleInput}
@@ -181,7 +179,13 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hid
           )}
         </span>
         <span className="t-row-meta">
-          {child ? <span>{row.agentType ?? "subagent"}</span> : <HarnessGlyph harness={row.harness} />}
+          {child && row.spawned ? (
+            // A session another session's agent started (SPEC §6a): its harness, and who made it.
+            <>
+              <HarnessGlyph harness={row.harness} />
+              <span className="t-spawned">started by agent</span>
+            </>
+          ) : child ? <span>{row.agentType ?? "subagent"}</span> : <HarnessGlyph harness={row.harness} />}
           {!child && !hideProject && <span className="t-proj">{folderName(row.projectPath)}</span>}
           {runnerLabel && <span className="t-proj">{hideProject ? "" : "· "}{runnerLabel}</span>}
           <span>· {shortAgo(row.updatedAt, now)}</span>

@@ -2,23 +2,26 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { NavIcon } from "@astryxdesign/core/NavIcon";
+import { Selector } from "@astryxdesign/core/Selector";
 import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav";
 import { Cog6ToothIcon, HomeIcon, LinkIcon, PlusIcon, UserCircleIcon } from "@heroicons/react/24/outline";
 import type { ProjectInfo } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { navigate, useRoute } from "../route";
 import { folderName, isHomeChat, listed, recentGroups, mergeRows, recentSessions, splitPinned, waitingOn, type Row } from "../sessionList";
+import { activeRunnerFilter, aggregateProjects } from "../runnerFilter";
 import { avatarSrc } from "../avatar";
 import { canPin } from "../runners";
-import { useStore } from "../store";
+import { setRunnerFilter, useStore } from "../store";
 import { RunnerDot } from "./RunnerStatus";
-import { SessionRow } from "./SessionRow";
+import { SessionRow, StatusDot } from "./SessionRow";
 import { useChildren } from "./useChildren";
-import { bySubagentOrder, SubagentsPopover } from "./SubagentChips";
+import { SubagentsPopover } from "./SubagentChips";
+import { childrenOpen, childrenToggle, fewChildren, loadChildrenOpen, moreLabel, saveChildrenOpen } from "../subagents";
+import { useNow } from "./useNow";
 
 /** Subagent rows shown under a session before "N more". */
 const CHILD_ROWS = 5;
-import { useNow } from "./useNow";
 import { SidebarHandle } from "./WidthHandle";
 
 const PAGE = 40;
@@ -29,6 +32,7 @@ export function Sidebar() {
   const summaries = useStore((s) => s.summaries);
   const projectsBy = useStore((s) => s.projects);
   const filter = useStore((s) => s.projectFilter);
+  const runnerFilter = useStore((s) => s.runnerFilter);
   const linkOpen = useStore((s) => s.link === "open");
   const route = useRoute();
   const now = useNow();
@@ -37,19 +41,21 @@ export function Sidebar() {
   const close = () => useStore.setState({ sidebarOpen: false });
   const online = runners.filter((r) => r.online);
   const onlineKey = online.map((r) => r.id).join(",");
-  const many = online.length > 1;
+  const activeRunner = activeRunnerFilter(runnerFilter, online);
+  const many = online.length > 1 && !activeRunner;
   const runnerName = (id: string) => runners.find((r) => r.id === id)?.name ?? id;
 
   // Older sessions the summary list doesn't carry: the runner searches all titles, or a whole folder.
   const [extra, setExtra] = useState<{ for: string; rows: Row[] }>({ for: "", rows: [] });
   const q = query.trim();
-  const extraKey = `${filter ?? ""}\u0000${q}`;
+  const targetRunners = activeRunner ? online.filter((r) => r.id === activeRunner) : online;
+  const extraKey = `${activeRunner ?? ""}\u0000${filter ?? ""}\u0000${q}`;
   useEffect(() => {
     if (!linkOpen || (!filter && !q)) return;
     let gone = false;
     const t = setTimeout(async () => {
       const lists = await Promise.all(
-        online.map((r) =>
+        targetRunners.map((r) =>
           rpc(r.id, "listSessions", filter ? { projectPath: filter, ...(q ? { query: q } : {}) } : { query: q })
             .then((x) => x.sessions.map((s) => ({ ...s, runnerId: r.id })))
             .catch(() => [] as Row[]),
@@ -71,23 +77,18 @@ export function Sidebar() {
   }, [archiveEdit]);
 
   const rows = useMemo(() => {
-    let list = recentSessions(summaries, q);
+    let list = recentSessions(summaries, q, activeRunner);
     if (filter) list = list.filter((r) => r.projectPath === filter);
-    if (extra.for === extraKey) list = mergeRows(extra.rows.filter((r) => listed(r) && (!r.archived || !!q) && !isHomeChat(r.runnerId, r.projectPath)), list);
+    if (extra.for === extraKey) {
+      const extraFiltered = extra.rows.filter((r) => (!activeRunner || r.runnerId === activeRunner) && listed(r) && (!r.archived || !!q) && !isHomeChat(r.runnerId, r.projectPath));
+      list = mergeRows(extraFiltered, list);
+    }
     return list;
-  }, [summaries, q, filter, extra, extraKey]);
+  }, [summaries, q, filter, extra, extraKey, activeRunner]);
   // Pinned sessions sit above Recent; a search or a folder lists everything as one list.
   const { pinned, rest } = useMemo(() => (q || filter ? { pinned: [], rest: rows } : splitPinned(rows)), [rows, q, filter]);
 
-  const projects = useMemo(() => {
-    const by = new Map<string, ProjectInfo & { runnerIds: string[] }>();
-    for (const [runnerId, list] of Object.entries(projectsBy))
-      for (const p of list) {
-        const had = by.get(p.path);
-        by.set(p.path, had ? { ...had, sessions: had.sessions + p.sessions, updatedAt: Math.max(had.updatedAt, p.updatedAt), runnerIds: [...had.runnerIds, runnerId] } : { ...p, runnerIds: [runnerId] });
-      }
-    return [...by.values()].sort((a, b) => b.updatedAt - a.updatedAt);
-  }, [projectsBy]);
+  const projects = useMemo(() => aggregateProjects(projectsBy, activeRunner), [projectsBy, activeRunner]);
 
   const selected = route.page === "session" ? route : undefined;
   // An open subagent shows under its parent, so the parent's row is the one expanded.
@@ -96,25 +97,55 @@ export function Sidebar() {
   const children = useChildren(expanded?.runnerId, expanded?.sessionId);
   const selectedRow = expanded && [...pinned, ...rest.slice(0, shown)].find((r) => r.runnerId === expanded.runnerId && r.id === expanded.sessionId);
   const childRow = (c: Row) => <SessionRow key={c.id} row={c} now={now} selected={!!selected && c.id === selected.sessionId} child />;
+  // Subagents (and sessions its agent started) sit behind one toggle row, open or closed as this
+  // device keeps it; open while one of them is the open session, until toggled.
+  const [savedOpen, setSavedOpen] = useState(loadChildrenOpen);
+  const [toggled, setToggled] = useState<{ for: string; open: boolean }>();
+  const selKey = selected ? `${selected.runnerId}\u0000${selected.sessionId}` : "";
+  const sectionOpen = childrenOpen(savedOpen, children, selected?.sessionId, toggled?.for === selKey ? toggled.open : undefined);
   // A session can have a hundred subagents: a few rows (running first, the open one always), the
   // rest behind "N more", which opens the whole list.
   const childRows = () => {
-    const sorted = bySubagentOrder(children);
-    const few = sorted.slice(0, CHILD_ROWS);
-    const open = selected && sorted.find((c) => c.id === selected.sessionId);
-    if (open && !few.includes(open)) few.push(open);
-    const rest = children.length - few.length;
+    if (!children.length) return null;
+    const { label, running, said } = childrenToggle(children);
+    const toggle = (
+      <button
+        type="button"
+        className="t-child-toggle"
+        aria-expanded={sectionOpen}
+        aria-label={said}
+        title={said}
+        onClick={() => {
+          const open = !sectionOpen;
+          saveChildrenOpen(open);
+          setSavedOpen(open);
+          setToggled({ for: selKey, open });
+        }}
+      >
+        <span className="t-child-chev" aria-hidden="true">{sectionOpen ? "▾" : "▸"}</span>
+        <span className="t-child-label">{label}</span>
+        {running > 0 && (
+          <span className="t-child-running" aria-hidden="true">
+            <StatusDot status="running" />
+            {running}
+          </span>
+        )}
+      </button>
+    );
+    if (!sectionOpen) return toggle;
+    const { few, rest } = fewChildren(children, selected?.sessionId, CHILD_ROWS);
     return (
       <>
+        {toggle}
         {few.map(childRow)}
-        {rest > 0 && expanded && (
+        {rest.length > 0 && expanded && (
           <SubagentsPopover
             runnerId={expanded.runnerId}
             children={children}
             onPick={() => useStore.setState({ sidebarOpen: false })}
             trigger={
               <button type="button" className="t-more t-child-more">
-                {rest} more subagent{rest === 1 ? "" : "s"}
+                {moreLabel(rest)}
               </button>
             }
           />
@@ -172,6 +203,22 @@ export function Sidebar() {
             useStore.setState({ newSessionOpen: true });
           }}
         />
+        {online.length > 1 && (
+          <Selector
+            label="Filter by runner"
+            isLabelHidden
+            size="sm"
+            options={[
+              { value: "", label: "All runners" },
+              ...online.map((r) => ({ value: r.id, label: r.name || r.id })),
+            ]}
+            value={activeRunner ?? ""}
+            onChange={(val) => {
+              setRunnerFilter(val || undefined);
+              setShown(PAGE);
+            }}
+          />
+        )}
         <input className="t-search" type="search" placeholder="Search sessions" aria-label="Search sessions" value={query} onChange={(e) => setQuery(e.target.value)} />
       </div>
       <SideNavSection title="Menu" isHeaderHidden>

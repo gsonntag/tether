@@ -36,7 +36,8 @@ subagents, plan review, forks, and libraries for writing hooks, commands or suba
 Each may come back later as a module (§3). None of them may require editing the session core. A
 harness's own commands and skills, `/goal` `/loop` `/schedule` `/review` among them, aren't Tether
 features: the message box offers and passes on what the harness has (§9 Commands). Cross-harness handoff came back this way, as an explicit move a
-person starts (§15); an automatic one stays a non-goal.
+person starts (§15); an automatic one stays a non-goal. Cross-harness subagents came back the same
+way, as ordinary sessions an agent starts (`tether_start`, §9a).
 
 ## 2. Principles
 
@@ -79,11 +80,16 @@ tether/
 **Sharing runners.** The app's owners see and manage every runner. Anyone else the app is shared
 with on Foliation (editor or viewer) may sign in but sees only the runners an owner shared with
 them in Settings → Runners, each "Can drive" or "Can view" (read sessions only); a Foliation viewer
-share only ever views. The list lives on the runner (runner.json `sharedWith`, op
+share only ever views. Settings → Runners shows each runner's version (short git commit, commit date,
+"local changes" if dirty; package.json version fallback), with a quiet note when behind its upstream branch
+("Behind <branch> by N commits: pull and restart the runner to update"); in production the server has no `.git/`,
+so the runner's own `behind` count drives the note, with a server build comparison as fallback in dev mode. The list lives on the runner (runner.json `sharedWith`, op
 `setRunnerAccess`) and the relay enforces it on every frame (shared/access.ts: `VIEW_OPS`, and
-`MANAGE_OPS` that stay the owner's: sharing, name, keys, texting, updates, runner settings, the
-Home agent's settings). View never includes the git or files modules' ops (they read the folder,
-secrets too) or making short links. A
+`MANAGE_OPS` that stay the owner's: sharing, name, keys, texting, updates, runner settings). View never includes the git or files modules' ops (they read the folder,
+secrets too) or making short links. A runner not shared with you leaves no trace: the server never
+lists it, and the browser remembers only runners you own (to show one that went offline), keyed by
+who is signed in, so a runner shared with you that leaves the list (unshared, or offline) is just
+gone, and a browser one person used shows another nothing. A
 change applies at once; a Foliation role change at the next renew ticket, which carries the role.
 Public-link visitors and app calls never get in. A person's app user token (`fol app-token
 tether`, Foliation contracts/app-user-tokens.md: the identity carries `tok: true` with their current
@@ -111,13 +117,15 @@ claim any id not starting with `runner-` (`CLOSE_RUNNER_ID` otherwise; server/sr
   against the whole folder path, `*` matching anything including `/` (`/tmp/*,*/scratch`). The core
   leaves matching projects and sessions out of project lists, session lists and Home, for every
   harness, after the adapters' discovery. Nothing is deleted. A session that is open, live or has
-  queued messages stays listed, and a hidden session opens by id as usual. Unset, nothing is hidden.
+  queued messages stays listed, and a hidden session opens by id as usual. Unset, nothing is hidden
+  but the removed Home agent's old folder (`<config>/modules/homeAgent/workspace`), always hidden, so
+  its old chats stay out of the lists as they always were.
   New session can make a folder: the dialog asks the runner (`checkFolder`), warns when it doesn't
   exist yet, and only a confirmed `createFolder` on `newSession` makes it, parents too. Only a path
   starting with `/` or `~/` is made.
 - **A worktree per session** (`modules/worktrees`). For a folder in git with a commit
-  (`workspaceInfo`), New session offers **Workspace**: *This folder* (default) or *New worktree*,
-  with a branch (shown, and sent, as `tether/<slug>`: a slug of the Home agent's title or brief, a
+  (`workspaceInfo`), New session offers **Workspace**: *This folder* (default), *New worktree*,
+  or *Existing worktree* (below), with a branch (shown, and sent, as `tether/<slug>`: a slug of the session's title or brief, a
   hash of text with no usable words, else `wt-<random>`). Creates in one repo run one at a time.
   `newWorktreeSession` resolves the base, `origin/HEAD`, else `origin/main|master`, else local
   `main|master`, else `HEAD`; for `origin/<x>` it first runs `git fetch origin <x>` (best effort: 15 s,
@@ -141,18 +149,30 @@ claim any id not starting with `runner-` (`CLOSE_RUNNER_ID` otherwise; server/sr
   own (the base's, which the dialog reads from git and shows, marked when cut short; the dialog
 sends back its `setupId`: the script's blob id, or a hash of the whole command; a create whose
 fetched base has another setup is refused with the new one named, nothing made. It's a "what you
-saw is what runs" check, not a trust boundary: the repo's code runs either way. The Home agent's
+saw is what runs" check, not a trust boundary: the repo's code runs either way. `tether_start`'s
 runs whatever the base has) before the main checkout's, runs in
   the worktree with `TETHER_WORKTREE`, `TETHER_REPO` and `TETHER_BRANCH` as a `!` card (§9) marked
   `setup`, whose output never goes to the agent (state `done`), for at most 30 minutes (then
   stopped, failed). A terminal start in a repo with a setup is refused (its TUI wouldn't wait).
-  While it runs (`LiveState.setup: "running"`, also in runner.json) every send, the Home agent's
+  While it runs (`LiveState.setup: "running"`, also in runner.json) every send, an agent's
   too, queues held (`queueHeldBy: "setup"`, not shown as needing you), Resume and `!` commands
   refuse; success
   releases the queue. After a failure (`setup: "failed"`), or a restart that cut it off, what waits
   and what you send next stay held, even with nothing queued; Home shows the session failed, and
   the card offers **Re-run setup** (`rerunSetup`) and **Send anyway** (Resume, which ends the gate).
-  The Home agent's `start_session` takes `worktree: true`. Archive done (§10) removes it.
+  Archiving the session removes it once that's safe (§10 Archiving).
+  **Existing worktree** (runners with `existingWorktrees`): `listWorktrees` lists the repo's
+  worktrees from `git worktree list --porcelain` (not the main checkout, bare or prunable ones):
+  path, branch, and the sessions working in each (not archived: listed ones whose folder is in it,
+  and any of any age whose runner.json `worktree` names it). The picker shows path · branch · used
+  by N. `existingWorktreeSession {…, worktree}` (a path or branch) runs `newSession` there: nothing
+  made, no setup rerun. It records `worktree` with `joined`, as a live (not archived) user's record
+  on the worktree's current branch has it, else `handMade` (a person's `git worktree add`, or a
+  record that can't be trusted: never removed by Tether). Joining and the removal on archive of one
+  worktree share a lock; a join re-checks the worktree is there inside it. A session's successor on
+  another id (source change, renewal) keeps the record (the old id stops counting); a Move's new
+  session and a fork (not a side chat) get one too. Agents: `tether_start` takes
+  `worktree: "<path or branch>"` too (a path, else a branch, else a folder name only one has).
 - **Session:** `harness` + `nativeId` (the harness's own id) + `projectPath`. Tether's id is
   `${harness}:${nativeId}`. A session is in exactly one **mode** at a time:
 
@@ -173,8 +193,8 @@ with the session's settings, as any send; the transcript shows it as Tether's, a
 Tether runner restarted mid-turn; continuing."). Waiting messages follow that turn as usual.
 - **Never two processes on one session.** A runner killed without closing its harness (kill -9, a
   crash, outside systemd) can leave Claude Code running the turn. Before continuing, Tether waits for
-  the session's store (its .jsonl) to be unchanged for 15 s ("Waiting for Claude Code from before the
-  restart to finish…", the queue held); it never inspects or signals processes. Then, if the store
+  the session's store (its .jsonl) to be unchanged for 15 s ("Waiting for Claude from before the
+  restart to finish…", naming the harness, the queue held); it never inspects or signals processes. Then, if the store
   shows the turn finished (the agent's answer after the last prompt), nothing is continued and the
   queue goes on; otherwise it continues once. After 10 minutes of writes it gives up: Failed on Home,
   the queue held, "Send a message to carry on." During the wait nothing starts Claude: a message you
@@ -207,6 +227,9 @@ harness's store lacks (`codex-threads.json`, `claude-windows.json`).
 
 Browser → server → runner: `{ t: "rpc", id, runnerId, op, args }`, which gets `{ t: "result", id, ok, data?, error? }`.
 Runner → server → browsers: `{ t: "event", runnerId, sessionId, seq, event }`.
+On connect, the runner sends `{ t: "hello", runner: RunnerInfo }` with its installed harnesses and
+optional `build` (`commit`, `date`, `branch`, `dirty`, `behind`) read from git at startup and hourly; the server sends
+`{ t: "hello", user, protocol, push?, build? }` to browsers.
 
 **Subscriptions.** A browser subscribes to the sessions it has open (`subscribe` / `unsubscribe`
 ops). The server forwards session events only to subscribers, and forwards a small `summary` stream
@@ -283,7 +306,7 @@ is dropped, so `plan` is always the plan's.
 `setPermissionMode`, `listModels`, `listCommands`, `deleteSession`, `setSessionArchived`, `pinSession`, `openTerminal`, `closeTerminal`,
 `terminalInput`, `terminalResize`, `runShell`, `stopShell` (P5b, §9 Shell commands). The move module
 adds `moveOptions` and `moveSession` (§15), the usage module `usage` (§10 Usage), the worktrees
-module `workspaceInfo` and `newWorktreeSession` and `rerunSetup` (§4), the fork module `forkSession` (§16),
+module `workspaceInfo`, `newWorktreeSession`, `listWorktrees`, `existingWorktreeSession` and `rerunSetup` (§4), the fork module `forkSession` (§16),
 the git module `gitDiff` (§10 Changes), `checkpoints` and `restoreCheckpoint` (§10 Checkpoints), the
 files module `listDir`, `readFile` and `findFiles` (§10 Files).
 
@@ -487,6 +510,25 @@ You can open any subagent and see its exact turns (every message, thought, tool 
 order), live while it runs and afterwards. The parent's tool card links to it, and the session shows
 its subagents as children in the sidebar and in the session header.
 
+**In the sidebar**: under the open session's row, one toggle row "▸ 2 subagents · 3 started" (each
+kind counted; a dot and "· k running" if any run), closed by default. Open, it shows a few rows (running first, the open one
+always) and "N more" for the rest (a searchable list). Open or closed is kept per device
+(`tether.subagentsOpen`); when the open session is one of the rows, the section shows open so its
+row is in view, until toggled.
+
+**Sessions an agent started** (`tether_start`, §9a) count as its children too, beside its
+subagents, but they're ordinary sessions: no `parentSessionId`, in the lists as well, full header
+controls. The peers module's read-only op `spawnedFamily {sessionId} → {parent?: {id, title},
+children}` (from `children.json`; released children too, never archived ones or ones in a hidden
+folder; one that went on under a new id is its successor; at most 8 opened at once; runners say
+`RunnerInfo.spawnedFamily`) is asked for the open session only, one answer shared by the sidebar
+and header, again when the session's or its family's status or archived mark changes or a main
+session appears. A Move or source change (the core's `continued` event) re-keys who started whom,
+as child and as starter, so reports and the links follow the new id. A side chat's starts are its
+session's. Their rows read "<harness glyph>
+started by agent". The header: "← Started by “<title>”" on one, and a **Started** chip on its
+starter listing them (harness, status).
+
 | | Claude Code | Codex |
 |---|---|---|
 | Live turns | SDK frames with `parent_tool_use_id` / `agent_id`; set `forwardSubagentText: true` so text and thinking come through, not only tool calls | each subagent is its own thread (`parentThreadId`); its `item/*` events stream like any thread |
@@ -680,8 +722,9 @@ isn't held, the composer keeps messaging the agent, and no "Driving in the termi
   tries again, up to every 15 s.
 - **Scrolled back.** Scrolling puts tmux in copy mode. What's meant for the program leaves it first
   and is delivered, never swallowed: the phone's line and key bar, and on desktop text, Enter,
-  control keys and a paste, in the same write, so nothing comes between. Scrolling keys stay in
-  copy mode; Esc only leaves.
+  control keys and a paste, in the same write, so nothing comes between. Esc too: it leaves and is
+  delivered, so it stops a Claude turn while scrolled back. Scrolling keys stay in copy mode, and
+  scrolling back to the bottom leaves it without a key.
 - With room the panel sits beside the transcript, and the sidebar's and the panel's inner edges
   drag to change their width (arrow keys too; a double click goes back to the default). The widths
   are kept per device; the transcript never gets narrower than 300 px, the panel 60 columns, and
@@ -784,12 +827,8 @@ Later, a Claude `PreToolUse` hook can route terminal approvals through the same 
   - *Elsewhere:* Home lists a session with one scheduled last, as Scheduled with its time (not
     archived ones: a scheduled message firing into an archived session doesn't unarchive it, as no
     send does; it shows on Home as working). A held one is a paused queue (Needs you). A
-    message for later doesn't block a source change, a move, an automatic update or a Home agent
-    check-in, and doesn't count as queued for the Home agent; a source change or a move takes the
-    queue with it to the new session. The Home agent can't archive a session with one scheduled
-    and is told why it can't message a session whose scheduled message waits for the person. A
-    scheduled message is the person's: one firing in a session the agent follows makes it the
-    person's, as any message they send does (no report of that turn to the agent).
+    message for later doesn't block a source change, a move or an automatic update; a source
+    change or a move takes the queue with it to the new session.
 - **Shell commands** (P5b): text starting with `!` is a shell command (below).
 - **Attachments** (images and files, by paste, drop, picker or camera) are in the core because phone
   screenshots are a main use. Chunks go over RPC and are stored under
@@ -809,11 +848,17 @@ with no background work, shell command or agent terminal running. The session, s
 revision, model, effort, permission mode and attachments stay the same. After tools or steering,
 a notice explains why the message wasn't resent and asks the person to continue.
 
-There are at most five additional attempts, delayed about 15, 30, 60, 120 and 120 seconds with
+By default there are at most five additional attempts, delayed about 15, 30, 60, 120 and 120 seconds with
 20% jitter. A valid provider retry time is a minimum. No new retry starts after ten minutes from
 the first terminal throttle; restarting the runner preserves this deadline and attempt count.
 Sessions sharing a known source, credential revision and model/deployment share a runner-local
 cooldown, with a gap between dispatches. This does not coordinate different runners.
+
+For a session using an Azure, OpenAI or Anthropic key, the Source menu's **Keep retrying when
+throttled** setting opts into a six-hour deadline and up to 60 additional attempts. The backoff
+starts around one minute and doubles with jitter up to ten minutes. A provider's retry time
+can require a longer wait. Extended recovery keeps using the same key and displays the local
+time of the next retry and a **Stop** button. Turning the setting off stops a waiting extended retry.
 
 The chat shows the next attempt's countdown, **Retry now** and **Cancel**. Retry now skips Tether's
 backoff but honors provider timing and concurrent-session cooldowns. Stop, a direct message, a
@@ -939,22 +984,26 @@ Only the owner can run one (the same auth as sending).
 ## 9a. Sessions talking to each other
 
 An agent can message or ask another session on its runner, Claude Code, Codex or Antigravity, and send a note
-to all. Agents can't start sessions. Nothing asks the person; loops are capped. A module
+to all, and start a new session on any harness that reports back to it (`tether_start`, below).
+Nothing asks the person; loops are capped. A module
 (`runner/src/modules/peers/`, off with `TETHER_PEERS=0`); the core only gained the `queueGone`
 event (with the message's text) and the queued message's id from `SessionActions.queue`.
 
 - **Reach.** `tether_sessions`, titles and broadcasts cover what the lists show (`SessionActions.list`:
   the last 3 days and every live session); an explicit id reaches an older session too (opened
-  through `SessionActions.open`). Never archived sessions, subagents or the Home agent's chat.
+  through `SessionActions.open`). Never archived sessions or subagents.
 
-- **Tools.** Every live session (except the Home agent's folder) gets a stdio MCP server named
+- **Tools.** Every live session gets a stdio MCP server named
   `tether` (`mcp.ts`, run with the runner's `bun`) with `tether_sessions` (id, title, folder,
   agent, idle / working / waiting, last activity; filter by project or text), `tether_send {to,
   text}` (returns at once), `tether_ask {to, text, timeout_minutes}` (waits for the answer: 15
   minutes by default, 60 at most) and `tether_broadcast {text, project?, scope?, status?}`
   (fire-and-forget, at most 20 sessions, never the sender; the sender's own project unless it
-  passes `project`, or `scope: "all"` for every project). `to` is an id or a title only one
-  session has. The tools run without a prompt: Claude allows `mcp__tether__*`; Codex gets
+  passes `project`, or `scope: "all"` for every project), plus `tether_start`, `tether_models` and `tether_archive`
+  (below). `tether_models {harness}` lists the billing sources `tether_start` can pass for that
+  agent and each one's models with their efforts (Azure's: its deployments and the model each runs);
+  it says Tether sets up each source's provider and key from its Settings, so an agent never edits
+  its own config or sets key variables. `to` is an id or a title only one session has. The tools run without a prompt: Claude allows `mcp__tether__*`; Codex gets
   `default_tools_approval_mode = "approve"`; Antigravity asks for each MCP call, and its driver
   approves those of `mcp_tether_*` itself.
 - **Transport.** The MCP server posts each call to the runner's Unix socket
@@ -1006,20 +1055,76 @@ event (with the message's text) and the queued message's id from `SessionActions
   A message is counted (and an ask opened) right after the check, before anything waits, so calls
   side by side can't all pass; one that doesn't go is given back.
   A refusal is the tool's error and a warning notice in the sender's transcript.
+- **Starting sessions** (`children.ts`). `tether_start {harness, prompt, source?, fallbackKeys?, model?, effort?, title?,
+  project?, worktree?}` starts an ordinary session on any harness (claude, codex, antigravity),
+  from any harness, and returns at once with `"<title>" (<id>)`. Folder: the caller's; `project`
+  only names a known project, and only from a caller nothing confines (judged or full), as another
+  folder would widen a sandboxed one. `worktree: true` makes a new worktree through
+  `newWorktreeSession` (§4), only from a caller that may run commands itself (sandboxed or looser),
+  as git and the repo's setup run. `worktree: "<path or branch>"` starts in one of the folder's
+  repo's existing worktrees (`existingWorktreeSession`): nothing runs, so it's just another folder,
+  as `project`: unless it's the caller's own, only from a judged or full caller. The source defaults
+  to the subscription when available. The agent must confirm API-key billing with the user before
+  starting any session, including a replacement or fallback session. For Azure, `model` can name a
+  configured deployment or its unambiguous model. The start reply names the deployment. For a
+  subscription, `fallbackKeys` enables automatic key fallback in the order the user confirmed.
+  Azure is eligible for fallback when a deployment matches the current model, or the model is unset.
+  Mode: the loosest mode the target offers whose level is at or under the caller's
+  (Claude's auto counts as judged), so a child is never looser. The prompt goes in as a peer
+  message from the caller (carrying its hops) whose hint says its final reply goes back. Who
+  started whom is kept in `<config>/modules/peers/children.json`.
+  Each time the child really finishes a turn (nothing queued, no background work, no open request;
+  not a rate-limit retry; not a turn whose answer went to an ask), its last reply (cut at 20 KB) is
+  queued into the caller as a message from the child, with "Report N of 20" and to follow up with
+  `tether_send`. A turn another session's message started isn't reported (that would let a
+  stricter session reach a looser caller through the child). A request it (or its subagent) waits
+  on, still open after 0.8 s, or a terminal prompt, is passed on once a turn and counts as a
+  report. Reports carry the hops the start carried, so they neither grow nor reset the caller's
+  chain. It stops reporting when the person types into it, runs a `!` command, texts it or presses
+  Stop, after 20 reports, or when the caller is archived; the child itself goes on as a normal
+  session either way. Caps: at most 5 children still at work per caller (one idle after its turn
+  doesn't count; starts side by side reserve their slot at once); a child may start children, a
+  grandchild can't; starts count toward the 10-per-10-minutes rate and the hop cap. A start that
+  fails gives the rate slot back; one whose prompt couldn't be sent names the idle session it
+  made. Children show under their starter in the sidebar and header (§6a), taken over or not.
+  The tool's description, its answer, each report's footer and Tether's instructions tell the
+  starter to archive a child once done with it.
+- **Archiving children.** The person's sidebar keeps the sessions they started, and agent-started
+  ones while those work. When unsure, a child isn't archived. `tether_archive {to}` (its id,
+  followed to its successor if it moved, or the exact title, any case, of only one of the caller's
+  children) archives a child of the caller's (a side chat's: its session's) through the core's
+  archive, marks it released (`done`: no more reports), archives its children that may go as a
+  cascade (below), and answers with what the worktree cleanup decided (the worktrees module's
+  `worktreeCleaned` event: removed, or kept and why; waited for 30 s at most). Refused for anything
+  the caller didn't start, while the child has work going (the worktree cleanup's busy checks: a
+  turn or request, a rate-limit retry, its setup, any queued message, scheduled or held, background
+  work: "wait for its report, or tether_send it to stop"), once the person took it over, and when
+  it's pinned. The person takes a child over (released `person`, for good) when they type into it,
+  run a `!` command, text it, press Stop, take it to its terminal, or unarchive it (Unarchive, or a
+  message they send it); whatever it was released for before.
+  **Cascade:** a child whose starter is archived (by the person: the core's `archived` event; done
+  with it: `tether_archive`; at its next report, for one that worked then; and the peers sweep,
+  a minute after start and hourly, for what a restart missed) is archived and marked `cascade`
+  only if it may go: not the person's, not pinned, not in its terminal, no work going, and its own
+  worktree Tether made holds nothing archiving would leave behind (uncommitted changes, commits not
+  in main, ignored files that aren't regenerable: `worktreeKeeps`; a failed check keeps it). One
+  that may not go stays, released `gone`. When the person unarchives a starter, the children its
+  archive took along come back (and theirs), released as they were before. A report rechecks the
+  child after its waits, so one taken over meanwhile isn't reported.
 - Tool cards read "Asked “<title>”" ("Ask failed" once asked, "Not asked" when it never went),
-  "Sent to “<title>”", "Sent to all", with the message, an Open link and the answer. The link goes
+  "Sent to “<title>”", "Sent to all", "Started “<title>”", "Archived “<title>”" ("Didn't archive"), with the message, an Open link and the answer. The link goes
   to the session the runner reached: its answer names it as `"<title>" (<id>)` on its first line. Terminal mode: a TUI-driven session can receive (it queues until Back
   to Tether) but has no tools.
-- **Tether's instructions** (`peers/instructions.ts`): every session that gets the server (not the
-  Home agent, which has its own rules) gets Tether's instructions too, appended to Claude Code's
+- **Tether's instructions** (`peers/instructions.ts`): every session that gets the server gets Tether's instructions too, appended to Claude Code's
   system prompt or as a Codex thread's developer instructions (on resume as well), read at each
   process start: with **Concise replies** on (a runner setting, Settings → Agents, default on),
   "end each turn with a short reply: 1–3 sentences, outcome first, then a link; details (≤ ~5
   bullets) only for a decision or a failure; no test counts, file lists or recaps unless asked";
-  always, "to text the person, use `text_person`" (and, in a session the Home agent drives, to put
-  news in the final reply instead).
+  always, "to text the person, use `text_person`" and "archive a session you started with
+  `tether_archive` once you're done with it".
 - **`text_person(message)`** on the same server texts the person through the texting module (§11
-  Texting, "Agents texting the person").
+  Texting, "Agents texting the person"), only when the session's **Session can text me** box is
+  ticked; otherwise it returns an error saying so (put it in the reply instead), and the rule says so.
 
 ## 10. UI
 
@@ -1190,8 +1295,8 @@ A Codex thread whose record disagrees with its session's source stops, naming bo
 
 The session label changes only after harness confirmation. API billing has one accessible colour
 token in light and dark themes: a loud source badge first in the session's chip row, visible at
-phone width without sideways scrolling; matching composer colour; and markers on Sidebar and Home
-rows. Subscription sessions remain quiet. Unknown billing is plainly neutral. Plan usage appears
+phone width without sideways scrolling and matching title text on Home rows. Session rows in the
+sidebar use plain white text with no payment-source differentiator. The composer keeps its regular styling. Subscription sessions remain quiet. Unknown billing is plainly neutral. Plan usage appears
 early in the chip row on phones and never appears on an API session's chip. Terminal mode must use the same
 confirmed source, or refuse to open. No terminal launch may edit the user's harness configuration.
 Codex's remote TUI joins the thread's confirmed permissions and approval reviewer; its launch
@@ -1265,14 +1370,18 @@ deployment is refused before anything is sent, and mid-turn it is held as above.
 only: the source, the billing labels and the plan % are unaffected.
 
 **The model while a source change waits.** On a harness that carries a source change to a new thread
-(Codex), the current thread starts on its confirmed source until the next message carries it over, so
-the Model menu lists that source's models (deployments only when the confirmed source is Azure), and the
-runner decides by the same source. While a change is pending (`nextBilling` with `sourceCarry`) the
-Model chip is disabled, "Pick the model after the source change.", and `setModel` refuses: a pick then
-would go to the source being left, a deployment name to the shared ChatGPT daemon or a model id to an
-Azure process. The carry itself drops an Azure deployment name leaving Azure and takes the deployment
-matching the model (else the first) arriving there; the model can be changed once it's done. On Claude a
-source change switches in place, so there is nothing to wait for.
+(Codex), the current thread starts on its confirmed source until the next message carries it over. While
+a change is pending (`nextBilling` with `sourceCarry`) the Model menu picks for the new source: it lists
+that source's models (deployments when the change goes onto Azure), shows "<model> on <source>" (or
+"Model on <source>" with no pick), and `setModel` holds the pick for the new thread instead of sending
+it anywhere: onto Azure as `nextDeployment` (a name that isn't a configured deployment is refused, as
+the chip's own deployment pick), elsewhere as `SessionPrefs.nextModel`. Nothing reaches the source being
+left (a deployment name to the shared ChatGPT daemon, or a model id to an Azure process). "Default"
+clears the pick; cancelling the change, or picking another source, drops it. The carry starts the new
+thread on the pick; without one it drops an Azure deployment name leaving Azure (the new source's default,
+which is Codex's config: a model ChatGPT accounts don't serve is refused there, so pick one) and takes
+the deployment matching the model (else the first) arriving there. On Claude a source change switches in
+place, so there is nothing to wait for.
 
 ### Changes
 
@@ -1542,6 +1651,42 @@ The flag is saved in the runner's prefs (`setSessionArchived`), so it survives r
 90-day pruning, and shows on every connected device. A failure shows once: in the chat from ⋯, under
 the row from the Sidebar until the next click or key or a few seconds.
 
+**Sending unarchives.** A message you send to an archived session (`send`, not the queue's own
+sends: a scheduled message firing stays as it is) unarchives it once the send is taken (a refused one
+leaves it archived), under its worktree's lock (§4), so never while cleanup removes that worktree. A
+session that went on under another id sends to that one, which is what comes back; a closed side
+chat stays closed.
+
+**Worktree cleanup.** Archiving a session, any way (`setSessionArchived`), removes the worktree Tether
+made for it (§4, runner.json's `worktree`) and its branch, once that's safe (`modules/worktrees`
+cleanUp, on the `archived` event). Never one made by hand (`handMade`); never while another session
+that isn't archived works there (any stored session of any age with its folder there, or one recorded
+as using it: Existing worktree, a fork, a Move; the last one archived removes it); never while any session that uses it, archived or not
+(each recorded user, every session in memory whose folder is in it, and each one's side chats), has
+work going (a turn or a request, queued or held messages, a rate-limit retry waiting, a setup
+running, background work or watchers, a terminal) or an open side chat; never while a process
+outside the runner (a tmux session, a dev server) has its folder there, or Tether can't tell (no
+`/proc`, as on macOS, or one of the runner user's processes that started after the worktree was made
+hides its folder; other users' processes aren't seen). Before that count, the harness processes of
+the sessions checked (idle, all archived) are closed, so any process left in the folder, the runner's
+own children too, keeps it; a session whose worktree went starts again at its next send. The
+session's own work is checked first, then the base branch is fetched (best effort, as New worktree
+does), and everything is checked again under the worktree's lock, and once more right before `git
+worktree remove`. Its HEAD must be in main (by ancestry or as
+equal patches: a rebase merge counts, a squash of several commits may not). Ignored files it would
+delete, file by file, must be in regenerable folders (`node_modules`, `dist`, `build`, `target`,
+`.venv`, `venv`, `__pycache__`, `.next`, `.turbo`, `coverage`, `.cache`) or `known` and unchanged (same
+size, time and hash); anything else (a `.env`, a local database, a file added or edited since, more
+than 20,000 to check) keeps it, named in the reason. Then `git worktree remove` without `--force` (a
+clean worktree only), and its branch by `update-ref -d` at the commit checked to be in main, so it
+can't have moved in between; a branch with work not in main stays. A worktree folder already gone
+is said so, and git's record pruned. Sessions of one worktree are judged one at a time (and never
+while one joins it). A notice in the session says it was removed, or why it was kept (none while
+another session still works there: the last one's archive decides); unsure, it stays. A minute
+after the runner starts, and hourly, a sweep tries again for every archived session whose Tether-made
+worktree git still lists on its branch (a restart cut it short, or it was busy when archived): the
+same checks, and only a removal is said in the session. Unarchiving doesn't bring it back.
+
 ### Pinning
 
 Each main session row in the Sidebar has a pin button beside archive (filled while pinned; on touch
@@ -1549,76 +1694,14 @@ screens only a pinned row shows it, to unpin), and the session's ⋯ menu has Pi
 sit in a Pinned group above Recent, oldest pin first, across runners (each runner's clock), on every
 device; a search or a folder lists them as usual. The runner keeps when it was pinned in its prefs
 (`pinSession`, carried on the row as `pinned`), past the 90-day pruning, and says so in its hello
-(`RunnerInfo.pinning`: no pin buttons for a runner from before it). A pinned session is listed however
+(`RunnerInfo.pinning`: no pin buttons for a runner from before it; `RunnerInfo.build`: git commit and date). A pinned session is listed however
 old: discovery looks up the old ones in parallel with a short timeout and keeps them (read again when
 the store changes or after a minute); a failed lookup keeps the row. The pin keeps the row as last
 seen (`pinnedRow`): a session the harness can't find is listed from it, dimmed, "Not found on this
 computer" (`missing`), and stays pinned until the person unpins it. The pin follows a conversation to
 its new thread (a source change, a renewed id). Modules see the lists without old sessions listed only
-because they're pinned, or missing ones; a recent pinned session is still asked at a check-in and may
-be archived (which unpins it). Archiving unpins; an archived session, a subagent, a side chat (§16a), a Home agent chat or
+because they're pinned, or missing ones. Archiving unpins; an archived session, a subagent, a side chat (§16a) or
 a session in a hidden folder can't be pinned. No reordering.
-
-### The Home agent's model and source
-
-The Home agent (`runner/src/modules/homeAgent`) is a long-lived chat, so unlike a session its
-harness, source and model are remembered: `homeAgentSet` keeps them in the module's `state.json`
-(`settings`), and every new chat starts on them. A chip above the chat ("Claude Code · Haiku 5.5 ·
-Claude plan", the source in the API colour on a key) opens a small form with the same lists as New
-session: the harnesses that can run it, the sources set up for that harness (`billingSources`), and
-that harness's models (Azure: its deployments). With nothing chosen it's Claude Code on the source a
-new session gets, with no model (the harness's default).
-
-**Modes.** Its own chats run in the mode chosen in that form, auto unless another is picked (on a
-Claude Code or model without auto, the nearest mode below). The sessions it starts (`start_session`)
-run in auto too, never full bypass: Claude Code's `auto`, and on Codex `auto@codex-reviews` (the
-auto preset, with Codex's own reviewer answering what it would ask). A session the person starts from
-New session keeps the mode they pick.
-
-The current chat takes a change at once, keeping its conversation: a model by `setModel`; a Claude
-source from its next start (`setSessionSource`, the same session); another harness, or another Codex
-source (a thread can't cross app-servers), by a Move (§15), whose new chat becomes current and gets
-the reports of the sessions the old one started. A move needs the chat idle; a refused change saves
-nothing. A source change Codex later carries into a new thread (`continuedIn`) is followed the same way.
-
-On Codex its tools are app-server dynamic tools (`dynamicTools` on `thread/start`, answered from
-`item/tool/call`; experimental), and its instructions the thread's developer instructions; both are
-written to the rollout, so they survive a resume (checked on 0.164). Codex's shell, patch, web, apps
-and subagent tools are switched off by config, passed again on each resume, and the chat runs read-only.
-
-### The Home agent's check-in
-
-"Ask all agents if they're done": the Home agent's `check_in_sessions` tool
-(`modules/homeAgent/checkIn.ts`) asks every session the lists show that isn't archived, a
-subagent or one of its own chats (optionally one project's, or named ones) whether its task is
-done and all its work is merged or applied. Only idle sessions are asked: one that's running, waiting
-for the person, has messages queued or work running, or is open in a terminal is skipped and named
-in the report, never interrupted. At most 40 sessions are asked at a time; each answer is a turn.
-
-The message asks for one line, `TETHER-CHECK-IN: {"done", "merged", "cleaned_up", "branch",
-"worktree", "note"}`. A session that is done and merged first removes the worktrees it made (`git
-worktree remove` without `--force`, `git branch -d`), never the main checkout, its own folder, or
-any other recent session's folder in the same repo (the message lists those). Tether checks the
-answer against git: a named branch, or the session's own separate worktree, must be clean and in
-main (by ancestry or as equal patches, after one `git fetch origin` per repo), and no worktree it
-used may be left. The main checkout's uncommitted changes count as applied. Only a session that is
-done, merged and cleaned up is archived, as the archive button does it (`SessionCore.setArchived`).
-A worktree Tether made for the session (§4, runner.json's `worktree`) the session is told to leave;
-once the answer passes, Tether removes it itself and then archives. Its HEAD must be in main (by
-ancestry or as equal patches: a rebase merge counts, a squash of several commits may not). Ignored
-files it would delete, file by file, must be in regenerable folders (`node_modules`, `dist`, `build`,
-`target`, `.venv`, `venv`, `__pycache__`, `.next`, `.turbo`, `coverage`, `.cache`) or `known` and
-unchanged (same size, time and hash); anything else (a `.env`, a local database, a file added or edited
-since, more than 20,000 to check) keeps it, named in the reason. Then `git worktree remove` without
-`--force` (a clean worktree only), and its branch by `update-ref -d` at the commit checked to be in
-main, so it can't have moved in between; a branch with work not in main stays. A worktree folder
-already gone (moved or deleted) is said so, and git's record pruned. One git won't remove keeps the
-session, with why; one another listed session works in stays, and the session is archived.
-
-The answer isn't one of a started session's reports. When all have answered, or after 10 minutes,
-the chat gets one report of what was archived, what wasn't and why, and what wasn't asked. A
-check-in in progress survives a runner restart. `archive_session` archives one session, only when
-the person asks.
 
 ### API session dollars and retry times
 
@@ -1696,8 +1779,7 @@ keys**, the ledger's (`costs.json`) whole-session totals for the sessions with u
 it can include earlier days; cache savings, cache reads at the full input price less what they cost.
 Then a bar chart by day (tokens stacked by input, output, cache write and cache read, or API price),
 its numbers behind a visible **Show the numbers** button, and tables by harness and model and by
-project (the top 8, the rest as one row, and TETHER_HIDE_PROJECTS folders and the Home agent's as one
-unnamed row). A table's first column stays put while a phone scrolls it sideways.
+project (the top 8, the rest as one row, and TETHER_HIDE_PROJECTS folders as one unnamed row). A table's first column stays put while a phone scrolls it sideways.
 
 With more than one runner, the Runner menu's first choice is **All runners**, where Usage starts:
 the browser asks every online runner for its report and adds them up (`combineUsage`,
@@ -1726,9 +1808,13 @@ a key, any other provider is a provider, OpenAI's own whose token count after it
 source from then on; before it unknown, since it may have been another. A Codex token count of rate
 limits only (no usage) marks only the record just before it.
 
-The `usage` module reads the harness stores, not Tether's records: each adapter's
+The `usage` module scans each adapter's
 `usageStores()` (Claude's `projects/`, subagents included; Codex's `sessions/`, `archived_sessions/`
-and the private homes of Tether's key threads, `codex-keys/`). The ledger and the hidden folders come
+and the private homes of Tether's key threads, `codex-keys/`; Antigravity's runner-local
+`antigravity-usage/`). Antigravity records one aggregate entry per live Tether prompt with usage in
+its ACP result. It uses the selected model at prompt submission, includes thought tokens in output,
+and leaves the entry unpriced. The page labels this scope. Older turns, standalone CLI or terminal
+turns, and work without a prompt result are outside the recording scope. The ledger and the hidden folders come
 through `ModuleContext` (`apiCost`, `hiddenFolder`). A request is one record. Claude: one per message
 id and request id, at the largest counts its streamed entries carry; a compaction's own request isn't
 in the store. Codex: `token_usage_record` by response id; before a file's first one, each
@@ -1811,7 +1897,15 @@ finished, failed), and the Home inbox. After P5, v2 replaces v1 in production.
 **Texting (a module, `runner/src/modules/texting`).** iMessages through Photon Spectrum for a
 request, "needs you", a failed turn, a turn whose last message asks the person something, and the
 agent's answer after the person texted it (a turn that just finishes doesn't text), each with a link
-to the session; skipped while the session is viewed. A request's text is
+to the session; skipped while the session is viewed. Only from a session whose **Session can text
+me** box is ticked (a per-session checkbox, off by default for new sessions, in the header's phone
+chip for its owner: `setCanText`, a manage op; `SessionPrefs.canText` → `LiveState.canText`, kept
+however old, carried to a successor, a TUI's `/clear` too; a subagent goes by its main session's; an
+archived session doesn't text): an unticked session texts nothing, not its requests, not its turns'
+ends, not its `text_person`, and the person's texts reach only ticked sessions. The
+first start with the box ticks, once, every session that held a number, was among Tether's
+remembered texts or was written by text (`texting.json` `canTextMigrated`), keeping its number. A
+runner without it says nothing (`RunnerInfo.canText`) and shows no box. A request's text is
 one plain question in the agent's voice, under ~100 characters, with the session's link on its own
 line below: "[2] Can I clean up the hide-checkin worktree? y/n", "[3] Can I run the jungle test
 suite? y/n". The words come from the tool call's own `description` (Claude Code's Bash) or a
@@ -1819,9 +1913,16 @@ deterministic reading of the command (`texting/summary.ts`: its programs, the ri
 command text, no harness warning, no explanation: those stay in Tether behind the link. A question
 carries its options; a plan asks "Can I go ahead with the plan to …?". Known secrets are redacted. Replies route by number: each text
 starts with its session's number (1-9, kept while the session is open, 30 minutes after its last
-text); `n text`, a threaded reply, or plain text when one session is open go straight there; plain
-text with several open is held and answered with a numbered picker listing only the sessions still
-waiting (one answered by text or in Tether since its last text drops out; its number still works).
+text); `n text` or a threaded reply goes straight there; plain text goes to the open session last
+texted or answered. A threaded reply to a text whose session isn't open any more (or to a message
+Tether doesn't know) never goes by plain routing (a "y" mustn't approve another session's
+request): it's held and the picker asks. With none open, plain text is held and answered with a numbered picker of the
+ticked sessions (numbers offered for them, newest activity first, open 30 minutes; plain text never
+goes to an offered number unpicked); with none ticked, "No session can text you". A number that
+isn't open is held the same way, its picker listing only the open sessions still waiting (one
+answered by text or in Tether since its last text drops out; its number still works). Unticking a
+session drops its number: `n text` or a threaded reply to it gets "[n] can't text you anymore" for
+30 minutes (until the number is taken again).
 Tether owns every reply on the thread: the text-me skill (`textme`), which used to text from the
 same number and split replies with Tether through `~/.local/state/imessage-thread/`, is gone, and
 agents text only through Tether (`text_person`, below). On an open request, `y` allows
@@ -1845,7 +1946,12 @@ last channel is the hub's (`hubChannel.ts`), used when no connector of their own
   router (the session kept as `\u0001<runner>\u0001<session>`), so every computer's sessions share
   one set of numbers and one picker, sends it on its connector, and notes it for threaded replies.
   An image after a text, a request's text and `text_person` go the same way. Answered on the
-  spoke (in Tether, a new turn, a closed request), its slot changes on the hub too.
+  spoke (in Tether, a new turn, a closed request), its slot changes on the hub too. The spoke
+  gates its own sessions' texts by their box, and turns away a reply the hub hands one that's
+  unticked ("[n] can't text you anymore"). It tells the hub the whole set of its ticked sessions,
+  with names (at start, whenever its hub (re)connects, and when a box changes): the hub's picker
+  offers them (`texting.json` `remoteTexters`, 7 days after last heard), and the numbers of the
+  spoke's other sessions go.
 - In: a reply the hub's router gives to a spoke's session goes there (`deliver`), with the ✅
   handed back and the files the person sent (fetched and checked on the hub: HEIC made JPEG). The
   spoke takes it as its own connector's message: a request's y/n, or words and files to the agent.
@@ -1854,8 +1960,6 @@ last channel is the hub's (`hubChannel.ts`), used when no connector of their own
 - Files travel in 256 KB pieces before the call that carries them, paced so the socket's buffer
   stays under 2 MB (the relay closes one past 12 MB): up to 25 MB a file, 64 MB half-sent from one
   runner, dropped 2 minutes after their last piece.
-- The Home agent is the hub's: a spoke's own Home agent doesn't text through it (`text_person`
-  tells it so).
 - The hub down (offline, or no connector connected): no texts go, and the app shows a yellow
   "Texting is unavailable" banner while it knows of one of your runners as the hub.
 
@@ -1865,17 +1969,17 @@ WebSocket and REST API with no library: identify with GUILD_MESSAGES, DIRECT_MES
 MESSAGE_CONTENT, heartbeats, resume after a drop, reconnect with backoff; a refused token or intent
 stops it with why). A connector is only a transport: its settings (secrets write-only), a link that
 hears the person and sends text (and images, where it takes them), and its status. Everything above
-(numbers, the picker, y/n, the Home agent, threaded replies, rate caps) is one router for all of them.
+(numbers, the picker, y/n, threaded replies, rate caps) is one router for all of them.
 Tether's texts go to the connector chosen under **Send to**, else the one the person last wrote on,
 else the first connected (one that's on and really connected). Whatever follows the person's
-message about a session (or the Home agent) goes back on the connector it came by, saved per session
+message about a session goes back on the connector it came by, saved per session
 (`replyVia`, with the DM it came from). A shared place (a Discord channel others read) gets Tether's
 direct reply to that message (the picker, a problem with it) and the answer of the one turn it
-started, under one rule: the channel message counts only if the session (or Home's Texts chat) was
+started, under one rule: the channel message counts only if the session was
 idle with nothing queued when it came; any other input (a DM, Tether's web, a report, a request
 answer, a held text picked from elsewhere, another turn) ends that claim; only the turn it started
-may answer there, once. In doubt, the DM. Reports, failures, requests and text_person go privately. Files the person sends are stored with the session (or
-the Home agent's Texts chat) like composer uploads and go with their words; held with the picker's
+may answer there, once. In doubt, the DM. Reports, failures, requests and text_person go privately. Files the person sends are stored with the session like
+composer uploads and go with their words; held with the picker's
 text, they go where it goes, and any that go nowhere (the hold moves on or expires, a reply that
 isn't delivered) are reported. Discord: only the owner user ids set may drive it, in a DM or the one
 channel set, where only a message that starts by mentioning the bot or replies to one of its
@@ -1889,81 +1993,21 @@ discord.gg is never used. Its settings live in `texting.json` under `connectors.
 keys) aren't passed to agents' environments: every process the runner starts gets `childEnv()`
 (`runner/src/childEnv.ts`). Agents run as the same user, so files the runner can read they can too. A token set in `runner.env` also stays in
 `/proc/<runner pid>/environ`, readable to same-user processes: the settings page (`texting.json`) is
-the recommended place for it. The Home agent sees Discord's words marked
+the recommended place for it. A session sees Discord's words marked
 `[From Discord] ` (shown "via Discord"). Ops: `messagingStatus`, `setConnector`,
 `setMessagingPrefer`, `testConnector` (the iMessage-only `textingStatus`/`setTexting`/`textingTest`
 stay for an older web).
 
-*Texting the Home agent* (`modules/homeLine.ts` joins the texting and Home agent modules; an
-in-process line, not an op). The person can text the Home agent as well as sessions. Its texts start
-with `[h]`, like a session's `[n]`. Who a reply belongs to, in order:
-1. A threaded reply belongs to the sender of the message it answers: a session's text goes to that
-   session (a request's text answers only that request, #66), and a `[h]` text goes to the Home
-   agent.
-2. While the Home agent runs (without it these are ordinary words for a session), a first word in
-   any case followed by a space, `:`, `,` or nothing (`texting/router.ts` parseHome):
-   - `h`/`home` (`home …`, `Home, …`, `H: …`, `@h`, `[h]`, `[home]`): the primary home (the first
-     tab; made if there are none); `h1`/`home1`, `h2`, …: that home, as the tabs are numbered now. The prefix and separator are taken off. Just `h1` sends a held text there,
-     or aims the next one. A home that isn't open gets "There's no h5, your homes are h, h1, h3."
-   - `hn`/`homenew`/`home-new`: a new home; the rest of the text (and its images) is its first
-     message. With nothing after it: "Started h2, text h2 to reach it." At most 9 homes besides `h`
-     (`h1`–`h9`; Home's New Home button stops there too, and two made at once can't both take the last): past that, a short text listing the homes
-     says to delete one with `hd` and its number. Not `home new …`: "Home new build is broken" is
-     words to `h`.
-   - `hd1`/`hd 1`/`hd h1`/`homedelete 1`/`home-delete 1`, as the whole text only: deletes home 1
-     (archives its chat, as closing its tab does) and answers with the homes left, renumbered.
-     `hd h`/`hd0` deletes `h` itself (the next tab becomes `h`). No y/n:
-     the syntax isn't something typed by accident, a longer text never deletes, and an archived chat
-     comes back from the archive. (`home delete 1` is words to `h`.)
-   Never a word that only starts with them (`hey`, `how`, `Homer`, `homework`, `hnn`, `hn's`,
-   `h1n1`, `homeless`, `home-newbie`, `hello1`). Just `h1` (or `h`) aims the next text at that home's
-chat: if the home is deleted meanwhile (and the tabs renumbered), the person is told it's gone instead.
-3. `n text` (and just `n`) goes to session n, as before.
-4. Plain text goes to the home (by its chat) that sent Tether's last text when that was a home's
-   (the primary one when no session is open).
-   Otherwise it goes to the one open session, or gets the numbered picker, which ends with a
-   `home:` row.
-
-*Homes.* (The router is shared, so all of this, the Home/H prefixes and reply threading work the
-same on every connector, Discord included. The way back for private answers, `replyVia`, is kept
-for the Home agent as a whole; a shared channel's claim is each home's own (`home:<chat>`): a
-channel message to one home may be answered in that channel only by that home's turn, armed only
-when that home's own chat is idle, so another home's private answer never goes there.) Each of Home's tabs is a home the person can text, named by its place among the tabs:
-the first is `h`, the primary one, the next `h1`, `h2`, …. Closing any tab, `h` included, renumbers
-the ones after it (close `h` of `h, h1, h2` and they're `h, h1`; a single tab left is `h`); a new tab
-(Home's **New Home**, or `hn`) goes after the last and takes the next number. With no tabs, the
-first text to `h` makes a fresh one (titled **Texts**), and so does a message on Home. What goes to a
-home goes by its chat, not its number: texting notes each home text's chat (`sent[].home`,
-`homeChat`, `about.home`, `aimed.chat`), so a threaded reply, or plain text after a home's text,
-reaches the chat that sent it under whatever name it has now. A reply to a closed home (threaded
-to its text, or plain text when it texted last) never reaches another: it goes to `h`, and the
-person is told ("That home was deleted, so I sent it to h."). (A text noted before chats were noted
-for `h` counts as `h`'s, whichever that is.) The order is the Home agent's state.json `tabs` (it
-survives a restart; a state from before keeps its names: the Texts tab first, then by the kept
-numbers, gaps closed) and the numbers go to browsers with the tabs (`HomeChatUpdate.labels`, each
-tab's place). A tab answers by text when the person has texted it (or made it with `hn`), whatever
-its number; the mark goes when it closes. When a Home chat moves to a new
-thread (a harness or source change), its number, and texting's record of its texts (threads, the
-last text, what it was about), go with it. A home's texts start
-`[h]` (primary) or `[h1]`, …, by its number when it texts. Home shows each tab's name (h, h1, …), a
-**New Home** button, on every tab a delete that asks first ("Delete h1? Its chat is archived, and
-the tabs after it are renumbered") before closing the tab through the usual close (stopped if
-running, archived, its sessions let go), and, with two tabs or more, **Close all**, which asks
-first too ("Close all 3 Home chats? …") and closes every tab at once (`homeAgentCloseAll`: each
-closed as one is, one change told to browsers), leaving no tabs: the next message on Home, or text
-to `h`, starts a fresh `h`.
-
-*Replies about what was just texted.* A home's text can say which session it's about: the session
-its turn acted on, when it acted on exactly one (started it, messaged it, archived it, or answered
-its report),
-never what the person's text was about (they may have turned to something new); or
-`text_person`'s `session_id`, which must be a session that exists. A text to that same home within
-30 minutes (`router.ts` REPLY_MS), or a threaded reply to it at any age, arrives with a line naming
-that session first: `[From iMessage] (replying to your text about session <id>, "<title>" in
-<project>) merge it` (id, title and folder cleaned to one line), and the Home agent takes it as
-being about that session (relays it there) unless the words name another. A number, another home,
-or a session's own text since, turns away from it. The router's state (texting.json) keeps it
-across restarts.
+*Who a text belongs to*, in order (`texting/router.ts`):
+1. A threaded reply belongs to the session that sent the message it answers (a request's text
+   answers only that request, #66).
+2. `n text` (and just `n`) goes to session n.
+3. Plain text goes to the open session last texted or answered (but with two or more open requests
+   it's held and the picker asks, so a plain "y" can't approve the wrong one), or gets the numbered
+   picker of ticked sessions; with none ticked, "No session can text you".
+There is no Home agent to text: its old chats are ordinary sessions in a hidden folder (§2 Project),
+reached by a text only when their box is ticked; agents can't message them or start sessions in that
+folder (`tether_send`, `tether_start` refuse any hidden folder's).
 
 *Files and images.* Files the person sends on any connector (iMessage attachments through Photon,
 Discord's from its CDN) go as the *Connectors* paragraph says, stored by the runner as an upload is
@@ -1983,10 +2027,10 @@ files in a `tether-magick-*` folder of its own that's removed after (ones older 
 swept when texting starts), at most 2 at once (a finished one hands its slot straight on), waiting
 and running within 30 s, output capped. Without it (or when it fails, or no slot frees in time) a big
 image goes as it came, and a HEIC by path, named `.heic` whatever the sender called it, with a note
-saying so in the message (`homeLine.ts` heicNote). Files alone are "(sent a file)"; while a request
+saying so in the message (`phoneLine.ts` heicNote). Files alone are "(sent a file)"; while a request
 waits they go to the agent and the request still waits on the person; with an answer to a request
 they follow it (queued after its turn). Files held with a text the picker holds go where it goes,
-or with whatever text takes the held one over (`2 what's wrong here`, `h1 …`, `hn …`), and a
+or with whatever text takes the held one over (`2 what's wrong here`), and a
 caption sent after its photo takes the photo along. Held files are kept in memory only: after a
 runner restart they're gone, and the person is told so when the held text goes (a hold of only
 files isn't passed on as words). Held files the person never sends on (no pick within 10 minutes)
@@ -2007,59 +2051,24 @@ FIFO, checked on that handle (a regular file of at most 10 MB whose first bytes 
 bytes checked (`Outbound.files`; a path handed to a connector, `Outbound.images`, is checked the
 same way). The file is read once, where it's sent. Every refusal says the same thing (no telling
 which paths exist), a refused image doesn't use up the agent's text cap, and a session past 5
-refusals in 10 minutes has every image refused before anything goes; nothing goes. A relayed session's image path goes to the Home agent inside its report's fence,
-on an `image path:` line that can't open or close a fence (`unfence`).
+refusals in 10 minutes has every image refused before anything goes; nothing goes.
 
 On iMessage only texts from the person's own number are heard (`link.ts` fromOwner): the sender's
 Apple address must be a phone number (no `@`; an Apple ID email is never taken, whatever digits it
 has) that is exactly the configured phone once both are in E.164 (`+1 555-123-4567` is
 `+15551234567`); another country's number ending in the same digits isn't. (Discord: the owner user
 ids.) A link sent with its preview (`richlink`) is its URL as words.
-A text heard twice (same message id) is taken once. A text for the Home agent gets the ✅ and goes
-to `h`, its first tab (with no tabs, a new one titled **Texts**, made when the text comes), unless it
-names another home (*Homes* below). It
-arrives as the person's message marked `[From iMessage] ` (`shared/fromTether.ts`; the chat shows it
-as theirs, labelled "via iMessage") and becomes the current tab.
-
-With **Reply by text** on (a Home agent setting next to Watch all sessions, default on), a texted
-tab's (one the person texted) last words go back as a `[h]` (or `[h1]`, …) text, at most 600 characters, after:
-- a turn started by a text: mostly an acknowledgement ("ok, on it", "started X in web-coder") or
-  the one question it needs answered;
-- a finished-turn report from a session that tab started or messaged: the outcome ("done: <PR
-  link>", or what it needs). The report carries a line telling the agent its reply is texted. A
-  report turn where it only kept the session going (send_to_session) isn't texted.
-
-A failed text turn is texted as "Couldn't do that: <kind>." Not texted: tool calls, watch reports,
-check-ins not from the Texts tab, "waiting for the person" reports (Tether already texts the
-session's request itself), and anything typed in Tether. The Texts tab's own turn ends aren't
-texted as a session's.
+A text heard twice (same message id) is taken once.
 
 *Agents texting the person.* Texts go through Tether (the text-me skill is removed): every
-session Tether runs has `text_person(message)` (§9a), and so does the Home agent. The Home agent is the
-main texter, the person's PM: when they're away or prefer texts (they texted it, asked "text me
-when done", or Reply by text is on) it texts short updates (what needs them, what shipped with a
-link, decisions), batching sessions into one text, never routine progress; replies to `[h]`
-texts come back to it and it relays instructions with send_to_session. A session the Home agent
-drives (started or messaged it, the person hasn't stepped in) doesn't text: its `text_person`
-goes to the Home agent as a report (`homeLine.ts` relay) and the tool tells it to report back
-instead. A session the person runs themselves (or stepped into) texts directly. Requests' own
-texts are unchanged. A session's text
-is stamped with its number like any other (`[n] …`, status "texted you", the link as usual) and
-goes out even while the session is open in Tether; the Home agent's is a `[h]` text. Either is
-cut at 300 characters, and capped at 3 per sender and 10 in all per 10 minutes (a refused or
-failed one is the tool's error, and says to put it in the reply instead). A reply routes like a
-reply to any of Tether's texts (threaded, `n text`, the one open session; ✅, taken once), so it
-reaches that session as the person's message, and its answer comes back by text. A Texts-tab
-turn that used `text_person` isn't texted again by Reply by text.
-
-*What reaches the Home agent.* A report carries at most 2000 characters of the session's last
-reply (session_status shows more), a watch report 280 per session; transcripts keep everything.
-
-*The Home agent's end goal.* Before it starts a session that changes code, the Home agent knows
-what "done" is: a PR, merge and deploy, or only local changes. If the person hasn't said, and
-neither the context nor a standing instruction earlier in the chat says it ("when any PR comes
-back, merge it and restart"), it asks one short question first. It never asks a list. Research and
-read-only tasks skip this.
+session Tether runs has `text_person(message)` (§9a). A session texts when its **Session can text
+me** box is ticked; unticked, the tool refuses and nothing goes. Requests' own texts follow the same
+box. A session's text is stamped with its number like any other (`[n] …`, status "texted you", the
+link as usual) and goes out even while the session is open in Tether, cut at 300 characters, and
+capped at 3 per sender and 10 in all per 10 minutes (a refused or failed one is the tool's error,
+and says to put it in the reply instead). A reply routes like a reply to any of Tether's texts
+(threaded, `n text`, the open session last texted; ✅, taken once), so it reaches that session as
+the person's message, and its answer comes back by text.
 
 **P5b: Shell from the main UI.** `!` commands in the composer (§9 Shell commands): run at once on the
 runner, a card with live output, Stop, and the output sent to the agent through the queue (waiting
@@ -2290,15 +2299,14 @@ undisturbed: a running turn is allowed and never forked. It is a module
 `bringBack { sessionId } → { text }`, `closeSideChat { sessionId }`).
 
 - **`/btw` is Tether's.** It's first in the `/` menu of a session that can have side chats
-  (`canSideChat`: it forks, its harness has `capabilities.readOnlyMode`, it isn't a side chat, a
-  subagent or one of the Home agent's chats; the runner refuses the same). The page intercepts it
+  (`canSideChat`: it forks, its harness has `capabilities.readOnlyMode`, it isn't a side chat or a
+  subagent; the runner refuses the same). The page intercepts it
   whatever the session is doing (send, steer, queue); it never reaches the harness. With files
   attached it's refused with a note under the box, which keeps them. Where side chats aren't
   offered it goes as typed.
 - **A side chat** is a session with `SessionSummary.sideOf` (`SessionPrefs.sideOf`, indexed in
   prefs), titled "Side chat: <question>". It's left out of every list: Recent, projects, search,
-  archived, Home's inbox and waiting line, and what modules list or reach (peers, the Home agent's
-  lists, watch, check-in and send). Nothing of it is pushed. The session's header shows **Side chats
+  archived, Home's inbox, and what modules list or reach (peers). Nothing of it is pushed. The session's header shows **Side chats
   N**, closed ones too (`listSessions { sideOf }`, from the prefs index); picking one opens it in the
   panel (a closed one is unarchived). When the session goes on under a new id (a source change's new
   thread, a renewed id, a Move) its side chats follow (`moveSides`); a side chat's own successor stays one.

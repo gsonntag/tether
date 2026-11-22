@@ -410,7 +410,7 @@ export function TerminalPanel({
         </div>
       </div>
       {showKeys && (
-        <div className={`t-term-phone${metered ? " t-api-composer" : ""}`}>
+        <div className="t-term-phone">
           <div className="t-keybar" role="toolbar" aria-label="Keys">
             {KEYS.map((k) => (
               <button
@@ -422,8 +422,8 @@ export function TerminalPanel({
                 // cancelled (iOS Safari would drop the click).
                 onMouseDown={(e) => e.preventDefault()}
                 disabled={!!copy}
-                // Scrolled back, a key is still for the program; Esc is how you leave without one.
-                onClick={() => view.current?.input(k.data, k.data !== "\x1b")}
+                // Scrolled back, a key is still for the program, Esc included (it stops a turn).
+                onClick={() => view.current?.input(k.data, true)}
               >
                 {k.label}
               </button>

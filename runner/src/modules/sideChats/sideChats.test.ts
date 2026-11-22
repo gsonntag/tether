@@ -40,14 +40,14 @@ const convo = [user("u1", "remember 7"), reply("a1", "ok"), user("u2", "and 9"),
 const stops: (() => void)[] = [];
 afterEach(() => stops.splice(0).forEach((f) => f()));
 
-async function setup(o: { homeFolder?: string } = {}) {
+async function setup() {
   const a = new Forking();
   const dir = mkdtempSync(join(tmpdir(), "tether-side-"));
   const prefsFile = join(dir, "runner.json");
   saveConfig({ runnerId: "t" }, prefsFile);
   const runner = createRunner({ url: "http://x", token: "t", runnerId: "t", name: "t", version: "0", detectHarnesses: async () => [], adapters: [a], prefsFile, core: { evictMs: 60_000 } });
   stops.push(() => runner.core.stop());
-  const ctx = { ...runner.look, bus: runner.bus, ops: runner.ops, dataDir: join(dir, "mod"), log: () => {}, runnerId: "t", appUrl: "x", ...o } as any;
+  const ctx = { ...runner.look, bus: runner.bus, ops: runner.ops, dataDir: join(dir, "mod"), log: () => {}, runnerId: "t", appUrl: "x" } as any;
   await forkModule.start(ctx);
   await sideChatsModule.start(ctx);
   a.addStored("s1", convo, { title: "Numbers", projectPath: "/p" });
@@ -86,7 +86,7 @@ describe("side chats", () => {
     await runner.core.discover();
     // Rows carry sideOf: the page leaves them out of its lists and shows them under the session.
     expect(runner.core.book.list().find((r) => r.id === sessionId)?.sideOf).toBe("claude:s1");
-    // What modules list (peers, the Home agent): not there.
+    // What modules list (peers, tether_sessions): not there.
     expect(runner.look.sessions.list().map((r) => r.id)).not.toContain(sessionId);
     expect((await runner.core.listSessions({ projectPath: "/p" })).sessions.map((r) => r.id)).not.toContain(sessionId);
     expect((await runner.core.listSessions({ query: "Side" })).sessions).toHaveLength(0);
@@ -169,7 +169,11 @@ describe("side chats", () => {
   test("its session going on under a new id takes its side chats along", async () => {
     const { runner, call } = await setup();
     const { sessionId } = await call("openSideChat", { sessionId: "claude:s1" });
+    const continued: unknown[] = [];
+    runner.bus.on("continued", (e) => void continued.push(e));
     runner.core.moveSides("claude:s1", "claude:s2");
+    // Modules hear it too (the peers module's who-started-whom follows it).
+    expect(continued).toEqual([{ from: "claude:s1", to: "claude:s2" }]);
     expect(runner.core.o.prefs.get(sessionId).sideOf).toBe("claude:s2");
     expect((await runner.core.open(sessionId)).summary.sideOf).toBe("claude:s2");
     expect((await runner.core.listSessions({ sideOf: "claude:s2" })).sessions.map((r) => r.id)).toEqual([sessionId]);
@@ -194,12 +198,6 @@ describe("side chats", () => {
     expect(a.drivers.find((d) => d.nativeId === "f1")?.sent ?? []).toEqual([]);
     // A path isn't a command.
     await runner.live.send(sessionId, "/tmp/x is what?");
-  });
-
-  test("not in the Home agent's folder", async () => {
-    const { a, call } = await setup({ homeFolder: "/home-agent" });
-    a.addStored("h1", convo, { projectPath: "/home-agent" });
-    await expect(call("openSideChat", { sessionId: "claude:h1" })).rejects.toThrow("Home agent");
   });
 
   test("refused: a side chat of a side chat, a subagent, a harness without a read-only mode", async () => {

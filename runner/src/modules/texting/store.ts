@@ -34,7 +34,7 @@ export function normalPhone(v: string): string | undefined {
 }
 
 /** The top-level keys this version writes; any other is kept as it was. */
-const KNOWN = new Set(["settings", "router", "connectors", "prefer", "lastVia", "replyVia", "hub"]);
+const KNOWN = new Set(["settings", "router", "connectors", "prefer", "lastVia", "replyVia", "hub", "remoteTexters", "canTextMigrated"]);
 
 export class TextingStore {
   settings: TextingSettings = {};
@@ -47,8 +47,12 @@ export class TextingStore {
   lastVia?: string;
   /** this runner is the texting hub: it texts for its owner's other runners too (hubChannel.ts) */
   hub = false;
-  /** for each session (and the Home agent) the person wrote, the connector and place it came by: answers go back there */
+  /** for each session the person wrote, the connector and place it came by: answers go back there */
   replyVia: Record<string, { via: string; place?: string }> = {};
+  /** on a hub: other runners' sessions that may text (their "Session can text me" box), by router key, with a name and when it was last heard of: the picker offers them */
+  remoteTexters: Record<string, { label: string; at: number }> = {};
+  /** the first start with the "Session can text me" box ticked the sessions that texted before it (Texter.migrate) */
+  canTextMigrated = false;
   /** what else the file held (a newer or older Tether's): written back as it was */
   private other: Record<string, unknown> = {};
 
@@ -69,6 +73,10 @@ export class TextingStore {
         if (v?.replyVia && typeof v.replyVia === "object" && !Array.isArray(v.replyVia))
           for (const [k, b] of Object.entries(v.replyVia as Record<string, any>))
             if (b && typeof b.via === "string") this.replyVia[k] = { via: b.via, ...(typeof b.place === "string" ? { place: b.place } : {}) };
+        if (v?.canTextMigrated === true) this.canTextMigrated = true;
+        if (v?.remoteTexters && typeof v.remoteTexters === "object" && !Array.isArray(v.remoteTexters))
+          for (const [k, r] of Object.entries(v.remoteTexters as Record<string, any>))
+            if (r && typeof r.label === "string" && typeof r.at === "number") this.remoteTexters[k] = { label: r.label, at: r.at };
       } catch {}
     }
     for (const k of [this.settings.projectSecret, this.env.TETHER_PHOTON_PROJECT_SECRET]) if (k) registerSecret(k);
@@ -140,7 +148,7 @@ export class TextingStore {
     try {
       mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
       const tmp = `${this.file}.${process.pid}.tmp`;
-      const extra = { ...(Object.keys(this.connectors).length ? { connectors: this.connectors } : {}), ...(this.prefer ? { prefer: this.prefer } : {}), ...(this.lastVia ? { lastVia: this.lastVia } : {}), ...(Object.keys(this.replyVia).length ? { replyVia: this.replyVia } : {}), ...(this.hub ? { hub: true } : {}) };
+      const extra = { ...(Object.keys(this.connectors).length ? { connectors: this.connectors } : {}), ...(this.prefer ? { prefer: this.prefer } : {}), ...(this.lastVia ? { lastVia: this.lastVia } : {}), ...(Object.keys(this.replyVia).length ? { replyVia: this.replyVia } : {}), ...(this.hub ? { hub: true } : {}), ...(Object.keys(this.remoteTexters).length ? { remoteTexters: this.remoteTexters } : {}), ...(this.canTextMigrated ? { canTextMigrated: true } : {}) };
       writeFileSync(tmp, JSON.stringify({ ...this.other, settings: this.settings, router: this.router, ...extra }), { mode: 0o600 });
       chmodSync(tmp, 0o600);
       renameSync(tmp, this.file);

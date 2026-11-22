@@ -3,14 +3,14 @@
 // a restart, the shared path (Codex, P4), and project shells.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TERMINAL_BUSY, type RunnerToServer } from "../../../shared/protocol";
 import { applySummary, emptySummary } from "../../../shared/summary";
 import type { HarnessCapabilities, LiveState } from "../../../shared/transcript";
 import { saveConfig } from "../config";
-import type { QuitStep, ScreenRead, StartOpts, TerminalOpts } from "../core/adapter";
+import type { Adapter, QuitStep, ScreenRead, StartOpts, TerminalOpts } from "../core/adapter";
 import { RequestBroker } from "../core/broker";
 import { EventBus } from "../core/bus";
 import type { CoreEvents } from "../core/events";
@@ -20,6 +20,7 @@ import { Prefs } from "../core/prefs";
 import { SessionCore } from "../core/sessions";
 import { FakePty } from "./attach.test";
 import { TerminalControl } from "./control";
+import { agyScreen } from "../adapters/antigravity/screen";
 import { encodeChunk } from "../../../shared/wire";
 import { Tmux, type TmuxSession } from "./tmux";
 
@@ -99,6 +100,7 @@ const PROJ = mkdtempSync(join(tmpdir(), "tether-p-"));
 
 class TermAdapter extends FakeAdapter {
   launches: { nativeId: string; opts: TerminalOpts }[] = [];
+  screen: (screen: string) => ScreenRead = fakeScreen;
   override addStored(nativeId: string, msgs: Parameters<FakeAdapter["addStored"]>[1], over: Parameters<FakeAdapter["addStored"]>[2] = {}) {
     return super.addStored(nativeId, msgs, { projectPath: PROJ, ...over });
   }
@@ -111,15 +113,15 @@ class TermAdapter extends FakeAdapter {
   storedMode?: (nativeId: string, projectPath: string) => Promise<{ mode?: string; entries: number }>;
   override terminalCommand(nativeId: string, _p: string, opts: TerminalOpts) {
     this.launches.push({ nativeId, opts });
-    return { argv: ["tui", opts.fresh ? "--session-id" : "--resume", nativeId], quit: QUIT, quitAtPrompt: this.quitAtPrompt, screen: fakeScreen };
+    return { argv: ["tui", opts.fresh ? "--session-id" : "--resume", nativeId], quit: QUIT, quitAtPrompt: this.quitAtPrompt, screen: this.screen };
   }
 }
 
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((f) => f()));
 
-function setup(o: { adapter?: TermAdapter; tmux?: FakeTmux; prefsFile?: string; hookSocket?: string; screenRetryMs?: number; clearAfterMs?: number } = {}) {
-  const adapter = o.adapter ?? new TermAdapter();
+function setup(o: { adapter?: TermAdapter; adapters?: Adapter[]; tmux?: FakeTmux; prefsFile?: string; hookSocket?: string; pollMs?: number; screenRetryMs?: number; clearAfterMs?: number } = {}) {
+  const adapters = o.adapters ?? [o.adapter ?? new TermAdapter()];
   const tmux = o.tmux ?? new FakeTmux();
   const bus = new EventBus<CoreEvents>();
   const frames: RunnerToServer[] = [];
@@ -127,10 +129,10 @@ function setup(o: { adapter?: TermAdapter; tmux?: FakeTmux; prefsFile?: string; 
   if (!o.prefsFile) saveConfig({ runnerId: "test" }, prefsFile);
   const prefs = new Prefs(prefsFile);
   const send = (m: RunnerToServer) => (frames.push(m), true);
-  const core = new SessionCore({ adapters: [adapter], bus, send, epoch: crypto.randomUUID(), prefs, evictMs: 20, log: () => {} });
+  const core = new SessionCore({ adapters, bus, send, epoch: crypto.randomUUID(), prefs, evictMs: 20, log: () => {} });
   const broker = new RequestBroker([], { saved: prefs.requests(), persist: (l) => prefs.setRequests(l) });
   const live = new LiveControl(core, broker, { idleMs: 60_000 });
-  const term = new TerminalControl({ core, live, tmux, send, buffered: () => 0, hookSocket: o.hookSocket ?? null, spawn: (argv, opts) => new FakePty(argv, opts), pollMs: 10, quitTimeoutMs: 200, shell: "sh", screenRetryMs: o.screenRetryMs ?? 1, clearAfterMs: o.clearAfterMs ?? 30, log: () => {} });
+  const term = new TerminalControl({ core, live, tmux, send, buffered: () => 0, hookSocket: o.hookSocket ?? null, spawn: (argv, opts) => new FakePty(argv, opts), pollMs: o.pollMs ?? 10, quitTimeoutMs: 200, shell: "sh", screenRetryMs: o.screenRetryMs ?? 1, clearAfterMs: o.clearAfterMs ?? 30, log: () => {} });
   cleanups.push(() => (term.stop(), core.stop()));
   const modes: string[] = [];
   bus.on("modeChanged", (e) => modes.push(`${e.from}->${e.to}`));
@@ -143,7 +145,7 @@ function setup(o: { adapter?: TermAdapter; tmux?: FakeTmux; prefsFile?: string; 
     for (const f of frames) if (f.t === "summary") st = applySummary(st, f.summary).state;
     return st.sessions;
   };
-  return { adapter, tmux, core, live, term, frames, modes, ev, rows, prefsFile, bus };
+  return { adapter: adapters[0] as TermAdapter, adapters, tmux, core, live, term, frames, modes, ev, rows, prefsFile, bus };
 }
 
 const until = async (f: () => boolean, ms = 2000) => {
@@ -437,6 +439,8 @@ describe("review round 1", () => {
     const { adapter, core, live, term, tmux, frames } = setup();
     adapter.addStored("s1", [{ id: "m1", role: "user", ts: 1, parts: [{ type: "text", text: "hi" }] }]);
     await core.subscribe("claude:s1");
+    // Its "Session can text me" box goes with it, in memory as on disk.
+    await live.setCanText("claude:s1", true);
     await term.open({ sessionId: "claude:s1", attachId: "a1", cols: 80, rows: 24 });
     // Something that isn't a session id never moves it.
     term.report({ sessionId: "claude:s1", event: "SessionStart", nativeId: "../../etc", source: "clear" });
@@ -445,6 +449,8 @@ describe("review round 1", () => {
     // The hook URL still names claude:s1; the payload names the new session.
     term.report({ sessionId: "claude:s1", event: "SessionStart", nativeId: "00000002-0000-4000-8000-000000000000", source: "clear" });
     await until(() => core.sessions.get("claude:00000002-0000-4000-8000-000000000000")?.state.mode === "terminal");
+    expect(state(core, "claude:00000002-0000-4000-8000-000000000000").canText).toBe(true);
+    expect(core.o.prefs.get("claude:00000002-0000-4000-8000-000000000000").canText).toBe(true);
     expect(tmux.sessions.get("t-claude-s1")!.sessionId).toBe("claude:00000002-0000-4000-8000-000000000000");
     const old = state(core, "claude:s1");
     expect(old).toMatchObject({ mode: "stored", continuedIn: "claude:00000002-0000-4000-8000-000000000000" });
@@ -523,7 +529,9 @@ describe("review round 3", () => {
     await until(() => state(core, "claude:s1").mode === "stored");
     // A's terminal again: a TUI of its own, under another tmux name.
     await term.open({ sessionId: "claude:s1", attachId: "a2", cols: 80, rows: 24 });
-    const own = (adapter.launches.at(-1)!.opts.report as any).tui as string;
+    // The last real launch: a screen read also asks terminalCommand (for its reader, no report),
+    // and the poll's first read can land after this open.
+    const own = (adapter.launches.filter((l) => l.opts.report).at(-1)!.opts.report as any).tui as string;
     expect(own).toStartWith("t-claude-s1-");
     expect(state(core, "claude:s1").mode).toBe("terminal");
     // A's TUI reports (its hooks name the launch session A): A needs you, B doesn't.
@@ -634,6 +642,122 @@ describe("review round 7: while the TUI drives, only Needs you is tracked", () =
     await second.term.readopt();
     expect(state(second.core, "claude:s1")).toMatchObject({ mode: "terminal", status: "idle" });
     expect(state(second.core, "claude:s2")).toMatchObject({ status: "waiting", terminal: { attention: "Claude needs you in the terminal." } });
+    expect(second.ev.filter((e) => e.startsWith("attention:"))).toEqual([]);
+  });
+});
+
+describe("handoff without attention hooks (Antigravity)", () => {
+  const agyFixture = (name: string) => readFileSync(join(import.meta.dir, "../adapters/antigravity/fixtures", name), "utf8");
+
+  test("trust prompt sets attention after the debounce, clears when the screen changes; Claude sessions unaffected", async () => {
+    const agy = new TermAdapter({ canSteer: false, terminal: "handoff", terminalHooks: false });
+    agy.id = "antigravity";
+    agy.screen = agyScreen;
+    const claude = new TermAdapter();
+
+    const { core, term, tmux, ev } = setup({ adapters: [claude, agy], clearAfterMs: 30 });
+    agy.addStored("s1", []);
+    claude.addStored("c1", []);
+
+    await term.open({ sessionId: "antigravity:s1", attachId: "a1", cols: 80, rows: 24 });
+    expect(state(core, "antigravity:s1")).toMatchObject({ mode: "terminal", status: "idle" });
+
+    // Trust prompt appears on screen
+    tmux.screens.set("t-antigravity-s1", agyFixture("screen-trust.txt"));
+
+    // Debounce: waiting for two consecutive checks
+    await until(() => state(core, "antigravity:s1").terminal?.attention !== undefined);
+
+    expect(state(core, "antigravity:s1")).toMatchObject({
+      status: "waiting",
+      terminal: { attention: "Antigravity needs you in the terminal." },
+    });
+    expect(ev.filter((e) => e.startsWith("attention:"))).toEqual(["attention:Antigravity needs you in the terminal."]);
+
+    // Sustained asking screen emits attention only once per prompt
+    await Bun.sleep(40);
+    expect(ev.filter((e) => e.startsWith("attention:"))).toEqual(["attention:Antigravity needs you in the terminal."]);
+
+    // Clears when screen changes to idle (prompt answered in terminal)
+    tmux.screens.set("t-antigravity-s1", agyFixture("screen-idle.txt"));
+    await until(() => state(core, "antigravity:s1").terminal?.attention === undefined);
+    expect(state(core, "antigravity:s1").status).toBe("idle");
+
+    // Claude session unaffected: screen showing trust prompt does not set attention
+    await term.open({ sessionId: "claude:c1", attachId: "a2", cols: 80, rows: 24 });
+    tmux.screens.set("t-claude-c1", agyFixture("screen-trust.txt"));
+    await Bun.sleep(50);
+    expect(state(core, "claude:c1").terminal?.attention).toBeUndefined();
+    expect(state(core, "claude:c1").status).toBe("idle");
+    expect(ev.filter((e) => e.startsWith("attention:"))).toEqual(["attention:Antigravity needs you in the terminal."]);
+  });
+
+  test("a single-check flicker of an asking screen does not set attention", async () => {
+    const agy = new TermAdapter({ canSteer: false, terminal: "handoff", terminalHooks: false });
+    agy.id = "antigravity";
+    agy.screen = agyScreen;
+
+    const { core, term, tmux, ev } = setup({ adapter: agy, pollMs: 30 });
+    agy.addStored("s1", []);
+    await term.open({ sessionId: "antigravity:s1", attachId: "a1", cols: 80, rows: 24 });
+
+    // Set asking screen, let 1 check happen, then change back to idle
+    tmux.screens.set("t-antigravity-s1", agyFixture("screen-trust.txt"));
+    await Bun.sleep(35);
+    tmux.screens.set("t-antigravity-s1", agyFixture("screen-idle.txt"));
+    await Bun.sleep(50);
+
+    expect(state(core, "antigravity:s1").terminal?.attention).toBeUndefined();
+    expect(state(core, "antigravity:s1").status).toBe("idle");
+    expect(ev.filter((e) => e.startsWith("attention:"))).toEqual([]);
+  });
+
+  test("permission prompt fixture sets attention after debounce and clears on busy (running command)", async () => {
+    const agy = new TermAdapter({ canSteer: false, terminal: "handoff", terminalHooks: false });
+    agy.id = "antigravity";
+    agy.screen = agyScreen;
+
+    const { core, term, tmux, ev } = setup({ adapter: agy, clearAfterMs: 30 });
+    agy.addStored("s1", []);
+    await term.open({ sessionId: "antigravity:s1", attachId: "a1", cols: 80, rows: 24 });
+
+    tmux.screens.set("t-antigravity-s1", agyFixture("screen-permission.txt"));
+    await until(() => state(core, "antigravity:s1").terminal?.attention !== undefined);
+    expect(state(core, "antigravity:s1")).toMatchObject({
+      status: "waiting",
+      terminal: { attention: "Antigravity needs you in the terminal." },
+    });
+    expect(ev.filter((e) => e.startsWith("attention:"))).toEqual(["attention:Antigravity needs you in the terminal."]);
+
+    // Answering permission runs the command -> screen becomes busy
+    tmux.screens.set("t-antigravity-s1", agyFixture("screen-busy.txt"));
+    await until(() => state(core, "antigravity:s1").terminal?.attention === undefined);
+    expect(state(core, "antigravity:s1").status).toBe("idle");
+  });
+
+  test("after a restart: Antigravity session on trust prompt gets Needs you from screen (no new push)", async () => {
+    const tmux = new FakeTmux();
+    const agy1 = new TermAdapter({ canSteer: false, terminal: "handoff", terminalHooks: false });
+    agy1.id = "antigravity";
+    agy1.screen = agyScreen;
+    const first = setup({ tmux, adapter: agy1 });
+    agy1.addStored("s1", []);
+    await first.term.open({ sessionId: "antigravity:s1", attachId: "a-s1", cols: 80, rows: 24 });
+    first.term.stop();
+    first.core.stop();
+
+    tmux.screens.set("t-antigravity-s1", agyFixture("screen-trust.txt"));
+
+    const agy2 = new TermAdapter({ canSteer: false, terminal: "handoff", terminalHooks: false });
+    agy2.id = "antigravity";
+    agy2.screen = agyScreen;
+    agy2.addStored("s1", []);
+    const second = setup({ tmux, adapter: agy2, prefsFile: first.prefsFile, clearAfterMs: 60_000 });
+    await second.term.readopt();
+    expect(state(second.core, "antigravity:s1")).toMatchObject({
+      status: "waiting",
+      terminal: { attention: "Antigravity needs you in the terminal." },
+    });
     expect(second.ev.filter((e) => e.startsWith("attention:"))).toEqual([]);
   });
 });
@@ -1092,17 +1216,19 @@ describe("keys reach the program from copy mode", () => {
     const { term, pty } = await shell();
     term.input("a1", keys("x"));
     term.input("a1", keys("\r"));
-    expect(pty.written).toEqual([`${LEAVE}x`, `${LEAVE}\r`]);
+    // Esc too: it reaches the program, so it stops a Claude turn while scrolled back.
+    term.input("a1", keys("\x1b"));
+    expect(pty.written).toEqual([`${LEAVE}x`, `${LEAVE}\r`, `${LEAVE}\x1b`]);
     pty.written.length = 0;
-    for (const k of ["\x1b", "\x1b[A", "\x1b[5~", "\x1b[I", "\x1b[<64;1;1M"]) term.input("a1", keys(k));
-    expect(pty.written).toEqual(["\x1b", "\x1b[A", "\x1b[5~", "\x1b[I", "\x1b[<64;1;1M"]);
+    for (const k of ["\x1b[A", "\x1b[5~", "\x1b[I", "\x1b[<64;1;1M"]) term.input("a1", keys(k));
+    expect(pty.written).toEqual(["\x1b[A", "\x1b[5~", "\x1b[I", "\x1b[<64;1;1M"]);
   });
 
-  test("the key bar says so itself: its arrows leave too, its Esc doesn't need to", async () => {
+  test("the key bar says so itself: its arrows leave too, and so does its Esc", async () => {
     const { term, pty } = await shell();
     term.input("a1", keys("\x1b[A"), { leave: true });
-    term.input("a1", keys("\x1b"), { leave: false });
-    expect(pty.written).toEqual([`${LEAVE}\x1b[A`, "\x1b"]);
+    term.input("a1", keys("\x1b"), { leave: true });
+    expect(pty.written).toEqual([`${LEAVE}\x1b[A`, `${LEAVE}\x1b`]);
   });
 
   test("a swipe's notches go as one-line keys", async () => {

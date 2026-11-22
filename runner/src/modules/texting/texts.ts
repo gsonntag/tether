@@ -47,15 +47,14 @@ export const TEXTS = {
   nothingOpen: "Nothing's waiting on a reply, message a session from Tether.",
   /** a picker's question, the rows go under it */
   which: "Which session, by number?",
+  /** a number (or a threaded reply) for a session whose "Session can text me" box was unticked */
+  cantText: (n: number) => `[${n}] can't text you anymore, tick "Session can text me" on it in Tether first.`,
+  /** plain text, nothing open, and no session may text */
+  noTexters: "No session can text you, tick \"Session can text me\" on one in Tether.",
+  /** a threaded reply to a text whose session isn't waiting any more (or to a message Tether doesn't know) */
+  threadNotWaiting: "That one isn't waiting on a reply, which session did you mean?",
   notWaiting: (n: number) => `[${n}] isn't waiting on a reply, which one did you mean?`,
   whatToSend: (n: number) => `What should I send to [${n}]?`,
-  whatToSendHome: "What should I send to the Home agent?",
-  /** a picker's last row: plain words can go to the Home agent */
-  homeRow: "h: the Home agent",
-  /** "home: ..." on a runner without a Home agent */
-  noHome: "The Home agent isn't running on this runner.",
-  /** the Home agent's chat failed on something the person texted */
-  homeFailed: (kind: string) => `Home agent stopped: ${kind}.`,
   /** a file the person sent that didn't come along (too big, a host Tether doesn't take, or it didn't download) */
   fileSkipped: (name: string) => `Couldn't take ${name}, it's too big or it didn't download.`,
   /** files sent with a message that went nowhere (a reply asking which session, the picker's hold expiring, a restart) */
@@ -66,20 +65,6 @@ export const TEXTS = {
   onlyTextAndFiles: "Only text and files get through, so I left the rest out.",
   /** sending failed, and the files with it didn't go either */
   couldNotSendWithFile: (tag: string, error: string) => `Couldn't send to ${tag} (nor your file): ${bare(error.split("\n")[0]!.split(/(?<=[.!?])\s/)[0]!)}.`,
-  /** "h1 …" for a home that isn't open */
-  noSuchHome: (label: string, list: string) => `There's no ${label}, your homes are ${list}.`,
-  /** just "h1" aimed at a home that was deleted since */
-  homeGone: (list: string) => `That home was deleted, your homes are ${list}.`,
-  /** a text to a home that was deleted since: sent to h instead */
-  homeGoneSentToH: "That home was deleted, so I sent it to h.",
-  /** just "h1": what to send there */
-  whatToSendTo: (label: string) => `What should I send to ${label}?`,
-  /** "hn" with nothing to send: the new home's name */
-  homeStarted: (label: string) => `Started ${label}, text ${label} to reach it.`,
-  /** "hd1": done, and what's left */
-  homeDeleted: (label: string, list: string) => `Deleted ${label}, your homes are ${list}.`,
-  /** "hn" with MAX_EXTRA_HOMES open already */
-  homesFull: (list: string) => `You have ${list} already, delete one with hd and its number first.`,
   /** a reply to a request text after the request closed: it isn't sent anywhere (text again to message the session) */
   alreadyAnswered: (n: number) => `[${n}] That was already answered, so I didn't send your reply anywhere.`,
 };

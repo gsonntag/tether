@@ -77,7 +77,7 @@ const noOverflow = async (p, where) => {
  * list ("Claude Code", "Codex") is what drives the agent from its terminal.
  */
 const pickTerminal = async (p, tap = false) => {
-  const chip = p.locator(".t-chip-term");
+  const chip = p.locator(".t-chip-term:not(.t-chip-changes)");
   if ((await chip.getAttribute("aria-pressed")) !== "true") await (tap ? chip.tap() : chip.click());
   // The panel opens on a project shell; once it's there (a click on the agent's entry while the
   // shell is still opening is taken back when it opens).
@@ -546,10 +546,10 @@ const steps = {
     execFileSync("sh", ["-c", CRASH], { stdio: "inherit" });
     const b = await page(desktop, url);
     // Claude Code wrote the session moments ago: Tether must wait, whatever that process does next.
-    await b.getByText("Waiting for Claude Code from before the restart to finish…").waitFor({ timeout: 60_000 });
+    await b.getByText(/Waiting for (?:Claude|Codex|Antigravity) from before the restart to finish…/).waitFor({ timeout: 60_000 });
     await shot(b, "restart-crash-waiting");
     // What's queued says what it waits for, and nothing can release it meanwhile.
-    await b.locator(".t-queue-head", { hasText: "Waiting for Claude Code from before the restart." }).waitFor({ timeout: 10_000 });
+    await b.locator(".t-queue-head", { hasText: /Waiting for (?:Claude|Codex|Antigravity) from before the restart\./ }).waitFor({ timeout: 10_000 });
     if (await button(b, "Resume").count()) fail("Resume is offered during the wait");
     // Either Tether waits for the left-behind process, then (its turn finished) doesn't continue, or
     // (it stopped mid-turn) continues once the store is quiet.
@@ -662,7 +662,7 @@ const steps = {
         // The terminal on one that has to move: the view and the panel go with it.
         const term = await newSession(p, harness);
         await waitState(p, (s) => s.mode === "stored", "codex: the process closed", WAIT);
-        await p.locator(".t-chip-term").click();
+        await p.locator(".t-chip-term:not(.t-chip-changes)").click();
         await p.waitForFunction(() => [...(globalThis.__tetherTerms?.keys() ?? [])].some((k) => k.startsWith("sh-")), null, { timeout: 30_000 }).catch(() => {});
         await p.locator(".t-term-agent").click();
         await p.waitForURL((u) => idOf(u.href) !== idOf(term), { timeout: 60_000 });

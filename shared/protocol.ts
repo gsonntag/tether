@@ -30,7 +30,7 @@ import type { DiffScope, GitDiff } from "./gitDiff";
 import type { CheckpointList, RestoreResult } from "./checkpoints";
 import type { GitActionResult, GitDraft, GitStatus, PrLookup } from "./gitActions";
 import type { MoveOptions } from "./move";
-import type { WorkspaceInfo, WorktreeMade } from "./worktree";
+import type { WorkspaceInfo, WorktreeJoined, WorktreeList, WorktreeMade } from "./worktree";
 import type { Attachment } from "./attachments";
 import type { AzureDeployment, BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
 import type { TokenRates } from "./costs";
@@ -66,6 +66,19 @@ export interface HarnessInfo {
   version: string;
 }
 
+export interface RunnerBuild {
+  /** short commit hash, e.g. "30944f6" */
+  commit: string;
+  /** commit date, e.g. "2026-11-21" */
+  date: string;
+  /** branch name, or "detached" */
+  branch?: string;
+  /** whether the checkout has local uncommitted changes */
+  dirty: boolean;
+  /** commits HEAD is behind its upstream; absent when no upstream or check failed */
+  behind?: number;
+}
+
 export interface RunnerInfo {
   /** stable and unique: generated once and kept in runner.json */
   id: string;
@@ -74,12 +87,14 @@ export interface RunnerInfo {
   hostname: string;
   /** the runner's own version */
   version: string;
+  /** the build stamp read from git at startup; absent outside a git checkout or on older runners */
+  build?: RunnerBuild;
   protocol: number;
   /** installed harnesses */
   harnesses: HarnessInfo[];
   /** set by the server: when this connection said hello */
   connectedAt?: number;
-  /** the Home agent's folder: its chats show on Home, never in the lists. Absent: no Home agent */
+  /** a runner from before the Home agent was removed: its Home agent's folder, whose chats browsers leave out of the lists. Remove once no runner sends it */
   homeFolder?: string;
   /** it has the git module (gitDiff, the Changes pane). Absent: an older runner */
   git?: boolean;
@@ -89,6 +104,12 @@ export interface RunnerInfo {
   files?: boolean;
   /** it takes `pinSession` (SPEC §10 Pinning). Absent: a runner from before it, and no pin buttons */
   pinning?: boolean;
+  /** it takes `spawnedFamily` (SPEC §6a: sessions an agent started show as its children). Absent: an older runner, or peers off */
+  spawnedFamily?: boolean;
+  /** it takes `listWorktrees` and `existingWorktreeSession` (SPEC §4 Existing worktree). Absent: an older runner, and no such choice */
+  existingWorktrees?: boolean;
+  /** it takes `setCanText` (SPEC §11 Texting: the "Session can text me" box). Absent: an older runner, and no box */
+  canText?: boolean;
   /** the people its owner shared it with (shared/access.ts); only sent to its owners */
   shared?: RunnerGrant[];
   /** it's the texting hub (SPEC §11 Texting): it texts for its owner's other runners too, and whether texts can go now */
@@ -97,26 +118,23 @@ export interface RunnerInfo {
   access?: "drive" | "view";
 }
 
+/**
+ * A session's place among sessions agents started (tether_start): the session that started it,
+ * and the ones it started (newest first; released ones too, never archived ones). Ordinary
+ * sessions, not subagents: no parentSessionId.
+ */
+export interface SpawnedFamily {
+  parent?: { id: string; title: string };
+  children: SessionSummary[];
+}
+
 /** Runner-wide settings (the Settings page), kept in runner.json. */
 export interface RunnerSettings {
   /** Claude: every subagent the agent starts runs in the background (its Agent call is made with run_in_background) */
   backgroundSubagents?: boolean;
-  /** sessions Tether runs are told to end each turn with a short reply (SPEC §9a); absent: on, `false`: off. Never the Home agent */
+  /** sessions Tether runs are told to end each turn with a short reply (SPEC §9a); absent: on, `false`: off. */
   conciseReplies?: boolean;
 }
-
-/** What the Home agent runs on (runner/src/modules/homeAgent). No model: the harness's default. */
-export interface HomeAgentSettings {
-  harness: HarnessId;
-  source: BillingSource;
-  /** on Azure, a deployment's name */
-  model?: string;
-  /** the permission mode its own chat runs in, one of the harness's (ModelList.permissionModes). None: auto (HOME_AGENT_MODE) */
-  mode?: string;
-}
-
-/** The Home agent's mode when none is chosen: auto, or the harness's nearest below it. */
-export const HOME_AGENT_MODE = "auto";
 
 export interface User {
   name: string;
@@ -146,6 +164,9 @@ export interface Ops {
   setSessionSource: { args: { sessionId: string; source: BillingSource }; result: null };
   /** the box in the billing chip's menu (`on`) and/or the session's fallback key order; each alone leaves the other */
   setAutoKey: { args: { sessionId: string; on?: boolean; fallbackKeys?: CredentialSource[] }; result: null };
+  /** the "Session can text me" box: only a ticked session texts the person, or gets plain texts and a place in the picker (SPEC §11 Texting) */
+  setRetryThrottled: { args: { sessionId: string; on: boolean }; result: null };
+  setCanText: { args: { sessionId: string; canText: boolean }; result: null };
   /** asks the harness for its plan limits if it has a cheap read; the answer comes as session state */
   refreshPlan: { args: { harness: HarnessId }; result: null };
   renameSession: { args: { sessionId: string; title: string }; result: null };
@@ -153,36 +174,6 @@ export interface Ops {
   setSessionArchived: { args: { sessionId: string; archived: boolean }; result: null };
   /** Puts a main session in the Sidebar's Pinned group (the last of it), or takes it out. Archiving unpins. */
   pinSession: { args: { sessionId: string; pinned: boolean }; result: null };
-  /** the Home agent's chats (Home's tabs, oldest first; absent from a runner from before tabs) and its current one (where watch reports go), the folder its chats run in, and what it runs on. `rev`: as in HomeChatUpdate */
-  homeAgent: { args: Record<string, never>; result: { sessionId?: string; chats?: string[]; labels?: Record<string, number>; folder: string; rev: number; settings?: HomeAgentSettings; harnesses?: HarnessId[] } };
-  /**
-   * What the Home agent runs on, kept on the runner for every chat to come. The chat in view
-   * (`sessionId`, an open tab; else the current one) takes it too: a model and a mode now, Claude's
-   * source from its next start, and a harness or a Codex source by a move (a new chat with the
-   * conversation, in the same tab). Answers with that chat as it is now
-   */
-  homeAgentSet: { args: HomeAgentSettings & { sessionId?: string }; result: { sessionId?: string; settings: HomeAgentSettings; rev: number } };
-  /** a new Home agent chat, a new tab (the last) and current from now; its first send starts it */
-  homeAgentNew: { args: Record<string, never>; result: { sessionId: string; rev: number } };
-  /** `/new` or `/clear` on Home: no current chat, so the next message starts a fresh one. The old chat stops (if it runs) and stops following its sessions */
-  homeAgentClear: { args: Record<string, never>; result: { rev: number } };
-  /** closes a Home tab: that chat is archived (its history kept), stopped if it runs, and stops following its sessions */
-  homeAgentClose: { args: { sessionId: string }; result: { rev: number } };
-  /** closes every Home tab (each archived, as homeAgentClose); none are left, and the next message or text to h starts a fresh one */
-  homeAgentCloseAll: { args: Record<string, never>; result: { rev: number } };
-  /** "Watch all sessions": whether the Home agent hears when sessions it doesn't follow finish, fail or wait for the person (default on). No `on`: just answers. `following`: the sessions its chats follow (absent from a runner from before it was sent) */
-  homeAgentWatch: { args: { on?: boolean }; result: { watchAll: boolean; following?: string[] } };
-  /**
-   * "Reply by text": whether the Home agent's Texts tab answers the person's texts (and reports on work they texted for) by text (default on). No `on`: just answers.
-   * `paused`: the person told it to stop texting, so only answers to their own texts go until they text again; `on: true` resumes (absent from older runners)
-   */
-  homeAgentReplyByText: { args: { on?: boolean }; result: { replyByText: boolean; paused?: boolean } };
-  /**
-   * "Archive done sessions" on Home: the Home agent's check-in (check_in_sessions) without a chat.
-   * `start` begins one unless one is running; `dismiss` forgets the last result. Always answers with
-   * where things stand: the check-in running now, and the last one's result
-   */
-  homeAgentCheckIn: { args: { start?: boolean; dismiss?: boolean }; result: CheckInStatus };
   runnerSettings: { args: Record<string, never>; result: RunnerSettings };
   /** changes the given settings; live sessions follow at once */
   setRunnerSettings: { args: RunnerSettings; result: RunnerSettings };
@@ -311,6 +302,17 @@ export interface Ops {
     args: { harness: HarnessId; projectPath: string; model?: string; effort?: string; permissionMode?: string; terminal?: boolean; source?: BillingSource; branch?: string; name?: string; expectSetup?: string };
     result: WorktreeMade;
   };
+  /** The worktrees of a folder's repo other than its main checkout, and who works in each (SPEC §4). Read-only. */
+  listWorktrees: { args: { projectPath: string }; result: WorktreeList };
+  /**
+   * newSession in an existing worktree of the folder's repo (SPEC §4): `worktree` is its path or
+   * branch. Nothing is made and no setup runs; the session is recorded as one of its users, so it
+   * isn't removed while it works there. Refused for the main checkout (that's newSession).
+   */
+  existingWorktreeSession: {
+    args: { harness: HarnessId; projectPath: string; worktree: string; model?: string; effort?: string; permissionMode?: string; terminal?: boolean; source?: BillingSource };
+    result: WorktreeJoined;
+  };
   /** Runs a worktree session's setup again, after it failed or a restart cut it off (SPEC §4). */
   rerunSetup: { args: { sessionId: string }; result: null };
   /** The folders inside a folder on the runner (Add project's folder browser). Read-only. */
@@ -383,6 +385,8 @@ export interface Ops {
   setTexting: { args: { enabled?: boolean; phone?: string; projectId?: string; projectSecret?: string }; result: TextingStatus };
   /** Sends a test text to the phone. */
   textingTest: { args: {}; result: null };
+  /** Who started a session with tether_start and whom it started (SPEC §6a, §9a): read only. */
+  spawnedFamily: { args: { sessionId: string }; result: SpawnedFamily };
   /** What a short link's code (`#/l/<code>`, runner modules/links) opens on this runner (the browser takes the runner to be the one it asked); null: not one of its codes, or expired. */
   resolveLink: { args: { code: string }; result: { sessionId: string } | null };
   /** The session's short-link code on this runner (made, or its own renewed), for the address bar; null when none can be kept. */
@@ -574,41 +578,6 @@ export type SummaryUpdate =
   | { kind: "upsert"; epoch: string; seq: number; sessions: SessionSummary[] }
   | { kind: "remove"; epoch: string; seq: number; ids: string[] };
 
-/**
- * The Home agent's tabs or current chat changed (a new one, a closed one, the person wrote in another): broadcast to every
- * browser, so each device's Home shows the same tabs. `rev` grows with each change (it's kept across
- * restarts), so an answer to the `homeAgent` rpc and a broadcast can be put in order.
- */
-export interface HomeChatUpdate {
-  /** the current chat, where watch reports go; absent: no tab, the next message starts one */
-  sessionId?: string;
-  /** the open chats, Home's tabs (absent from a runner from before tabs) */
-  chats?: string[];
-  /**
-   * each tab's home number, as the person texts it (homeLabel: 0 is `h`, 1 is `h1`, …): its place
-   * among the tabs (the first is `h`), so closing one renumbers the rest; absent from a runner from
-   * before homes (and, from one before renumbering, kept while the tab was open, h being the Texts tab)
-   */
-  labels?: Record<string, number>;
-  rev: number;
-}
-
-/** One session in a check-in's result, with why it was or wasn't archived (or asked). */
-export interface CheckInRow {
-  id: string;
-  title: string;
-  project: string;
-  reason?: string;
-}
-
-/** Where the Home agent's check-ins stand (the homeAgentCheckIn op). */
-export interface CheckInStatus {
-  /** one running now: how many were asked and how many have been settled */
-  running?: { id: string; at: number; deadline: number; asked: number; answered: number };
-  /** the last one that finished (kept until dismissed or replaced) */
-  last?: { id: string; at: number; archived: CheckInRow[]; kept: CheckInRow[]; skipped: CheckInRow[] };
-}
-
 // ---------- messages ----------
 
 export interface ResultMsg {
@@ -637,13 +606,12 @@ export type BrowserToServer =
 
 export type ServerToBrowser =
   /** `push`: the public key to subscribe with; absent when the server has no push keys */
-  | { t: "hello"; user: User; protocol: number; push?: { publicKey: string } }
+  | { t: "hello"; user: User; protocol: number; push?: { publicKey: string }; build?: RunnerBuild }
   /** every connected runner, sent on connect and whenever the set changes */
   | { t: "runners"; runners: RunnerInfo[] }
   | ResultMsg
   | { t: "event"; runnerId: string; sessionId: string; seq: number; event: SessionEvent }
   | { t: "summary"; runnerId: string; summary: SummaryUpdate }
-  | ({ t: "homeChat"; runnerId: string } & HomeChatUpdate)
   /** base64 terminal output, only to the browser that owns the attach */
   | { t: "term"; attachId: string; data: string }
   /** the attach is gone (the terminal exited, or its runner went away) */
@@ -675,7 +643,6 @@ export type RunnerToServer =
   | ResultMsg
   | { t: "event"; sessionId: string; seq: number; event: SessionEvent }
   | { t: "summary"; summary: SummaryUpdate }
-  | ({ t: "homeChat" } & HomeChatUpdate)
   | { t: "term"; attachId: string; data: string }
   | { t: "termEnd"; attachId: string; reason?: string }
   /** keepalive; the server answers pong, so a dead connection shows up as silence */

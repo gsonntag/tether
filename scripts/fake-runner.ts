@@ -3,7 +3,8 @@
 // scripted streamed reply to every `send`. Dials a dev server like the real runner does.
 //   TETHER_URL=http://127.0.0.1:8791 bun scripts/fake-runner.ts [runnerId]
 // ASK=1 adds a session that needs you; NO_ARCHIVE=1 answers setSessionArchived as a runner from before it;
-// NO_PIN=1 is a runner from before pinSession (no pin buttons).
+// NO_PIN=1 is a runner from before pinSession (no pin buttons); NO_CANTEXT=1 one from before setCanText (no phone chip);
+// NO_SPAWNED=1 one from before spawnedFamily (sessions an agent started don't show under it).
 
 import { Connection } from "../runner/src/core/connection";
 import { newestPage, partChunk } from "../shared/limits";
@@ -12,6 +13,7 @@ import type { HarnessCapabilities, LiveState, ModelList, Msg, Part, SessionEvent
 
 const url = process.env.TETHER_URL ?? "http://127.0.0.1:8791";
 const runnerId = process.argv[2] ?? "fake";
+const runnerName = process.env.RUNNER_NAME ?? runnerId;
 const epoch = crypto.randomUUID();
 let summarySeq = 0;
 const now = Date.now();
@@ -29,8 +31,9 @@ let n = 0;
 const id = (p: string) => `${p}${++n}`;
 
 function add(summary: Partial<SessionSummary> & { id: string; title: string; projectPath: string }, messages: Msg[], state: Partial<LiveState> = {}) {
+  const prefix = process.env.TITLE_PREFIX ? `${process.env.TITLE_PREFIX} ` : "";
   const s: Sess = {
-    summary: { harness: "claude", nativeId: summary.id.slice(7), mode: "stored", status: "idle", updatedAt: now, ...summary },
+    summary: { harness: "claude", nativeId: summary.id.slice(7), mode: "stored", status: "idle", updatedAt: now, ...summary, title: `${prefix}${summary.title}` },
     messages,
     state: { mode: "stored", status: "idle", model: "haiku", modelResolved: "claude-haiku-5-5", effort: "high", permissionMode: "acceptEdits", requests: [], queue: [], ...state },
     seq: 0,
@@ -87,6 +90,26 @@ add({ id: childId, title: "Count lines in the repo", projectPath: P, parentSessi
   asst([{ type: "thinking", text: "" }, tool("Bash", "shell", { command: "wc -l src/*.ts | tail -1" }, "  1284 total")]),
   asst([{ type: "text", text: "There are **1,284** lines across 23 files." }]),
 ]);
+
+// A lead session with subagents (one running) and sessions its agent started with tether_start
+// (SPEC §6a): ordinary sessions in the lists, under the lead too (spawnedFamily).
+const leadId = "claude:lead-1";
+const spawnedBy: Record<string, string> = {};
+add({ id: leadId, title: "Lead: split the refactor across agents", projectPath: P, updatedAt: now - 5_000 }, [
+  user("Split the refactor: port the API client on Codex, write migration tests on Antigravity, and look around with subagents."),
+  asst([{ type: "text", text: "Started three sessions and a few subagents. I'll report back as they finish." }]),
+]);
+["Find every caller of fetchJson", "Map the auth module", "List flaky tests", "Read the migration docs", "Check bundle size", "Scan for dead code", "Summarize open TODOs"].forEach((title, i) =>
+  add({ id: `${leadId}/sub-${i}`, title, projectPath: P, parentSessionId: leadId, parentToolId: `t${i}`, agentType: i % 2 ? "Explore" : "general-purpose", updatedAt: now - 10_000 - i * 60_000, ...(i === 2 ? { status: "running" as const } : {}) }, [user(title)], i === 2 ? { status: "running", mode: "live" } : {}),
+);
+for (const [sid, title, harness, status] of [
+  ["codex:spawn-1", "Port the API client to the new fetch wrapper", "codex", "running"],
+  ["antigravity:spawn-2", "Write migration tests", "antigravity", "idle"],
+  ["claude:spawn-3", "Update the docs for the new client", "claude", "idle"],
+] as const) {
+  add({ id: sid, title, projectPath: P, harness, updatedAt: now - 8_000, status }, [user(`From "Lead": ${title}.`), asst([{ type: "text", text: "On it." }])], { status, ...(status === "running" ? { mode: "live" as const } : {}) });
+  spawnedBy[sid] = leadId;
+}
 
 const long: Msg[] = [];
 for (let i = 0; i < 150; i++) {
@@ -168,7 +191,7 @@ add({ id: "claude:empty-1", title: "A session with a very long title that must b
 const conn = new Connection({
   url,
   token: "dev",
-  hello: async () => ({ id: runnerId, name: runnerId, hostname: "fakehost", version: "0.0.0", protocol: PROTOCOL_VERSION, harnesses: [{ id: "claude", version: "2.1.312" }], ...(process.env.NO_PIN ? {} : { pinning: true }) }),
+  hello: async () => ({ id: runnerId, name: runnerName, hostname: "fakehost", version: "0.0.0", protocol: PROTOCOL_VERSION, harnesses: [{ id: "claude", version: "2.1.312" }], ...(process.env.NO_PIN ? {} : { pinning: true }), ...(process.env.NO_CANTEXT ? {} : { canText: true }), ...(process.env.NO_SPAWNED ? {} : { spawnedFamily: true }) }),
   onRpc: async (op, args) => {
     try {
       return { ok: true, data: await handle(op, args as any) };
@@ -271,6 +294,11 @@ async function handle(op: string, a: any): Promise<unknown> {
       if (!part) throw new Error("No such part.");
       return partChunk(part, a.offset);
     }
+    case "spawnedFamily": {
+      const up = spawnedBy[a.sessionId] ? sessions.get(spawnedBy[a.sessionId]!)?.summary : undefined;
+      const kids = Object.entries(spawnedBy).flatMap(([k, p]) => (p === a.sessionId && sessions.get(k) && !sessions.get(k)!.summary.archived ? [sessions.get(k)!.summary] : []));
+      return { ...(up ? { parent: { id: up.id, title: up.title } } : {}), children: kids.sort((x, y) => y.updatedAt - x.updatedAt) };
+    }
     case "listCommands":
       return { commands: [] };
     case "listModels":
@@ -311,6 +339,15 @@ async function handle(op: string, a: any): Promise<unknown> {
       if (a.pinned && s.summary.archived) throw new Error("Unarchive the session to pin it.");
       s.summary = { ...s.summary, pinned: a.pinned ? Date.now() : undefined };
       summary({ kind: "upsert", epoch, seq: ++summarySeq, sessions: [s.summary] });
+      return null;
+    }
+    case "setCanText": {
+      if (typeof a.canText !== "boolean") throw new Error("canText must be true or false.");
+      const s = get(a.sessionId);
+      if (s.summary.parentSessionId) throw new Error("A subagent texts as its main session.");
+      // A cleared field travels as null, as the real runner's setState sends it.
+      emit(s, { type: "state", state: { canText: a.canText ? true : (null as any) } });
+      if (!a.canText) delete s.state.canText;
       return null;
     }
     case "setModel":

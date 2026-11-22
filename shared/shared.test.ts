@@ -52,9 +52,8 @@ describe("wire", () => {
     const runner = { id: "u1", name: "box", hostname: "box.local", version: "0.2.0", protocol: 1, harnesses: [{ id: "claude", version: "2.1" }, { id: "pi", version: "1" }, { id: "toString", version: "1" }] };
     expect(parseRunnerMessage(JSON.stringify({ t: "hello", runner }))).toEqual({ t: "hello", runner: { ...runner, harnesses: [{ id: "claude", version: "2.1" }] } });
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, name: undefined } })) as any).runner.name).toBe("box.local");
-    // The Home agent's folder passes when it's an absolute path, and is dropped otherwise.
+    // An older runner's Home agent folder passes when it's an absolute path (browsers hide its chats), and is dropped otherwise.
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, homeFolder: "/home/me/.config/tether/home" } })) as any).runner.homeFolder).toBe("/home/me/.config/tether/home");
-    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, homeFolder: 3 } })) as any).runner.homeFolder).toBeUndefined();
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, homeFolder: "rel" } })) as any).runner.homeFolder).toBeUndefined();
     // The git module's flag is kept; anything but true is dropped.
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, git: true } })) as any).runner.git).toBe(true);
@@ -65,6 +64,17 @@ describe("wire", () => {
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, files: "yes" } })) as any).runner.files).toBeUndefined();
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, pinning: true } })) as any).runner.pinning).toBe(true);
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, pinning: "yes" } })) as any).runner.pinning).toBeUndefined();
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, spawnedFamily: true } })) as any).runner.spawnedFamily).toBe(true);
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, spawnedFamily: 1 } })) as any).runner.spawnedFamily).toBeUndefined();
+    // The build stamp from git: commit, date, branch and dirty.
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, build: { commit: "abc1234", date: "2026-11-21", branch: "main", dirty: false, behind: 3 } } })) as any).runner.build).toEqual({ commit: "abc1234", date: "2026-11-21", branch: "main", dirty: false, behind: 3 });
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, build: { commit: "abc1234", date: "2026-11-21", dirty: true } } })) as any).runner.build).toEqual({ commit: "abc1234", date: "2026-11-21", dirty: true });
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, build: "bogus" } })) as any).runner.build).toBeUndefined();
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, build: { commit: "" } } })) as any).runner.build).toBeUndefined();
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, existingWorktrees: true } })) as any).runner.existingWorktrees).toBe(true);
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, existingWorktrees: 1 } })) as any).runner.existingWorktrees).toBeUndefined();
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, canText: true } })) as any).runner.canText).toBe(true);
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, canText: 1 } })) as any).runner.canText).toBeUndefined();
     for (const bad of [{ id: "x" }, { ...runner, harnesses: "no" }, { ...runner, protocol: "1" }, { ...runner, hostname: 3 }, { ...runner, id: "" }, null])
       expect(parseRunnerMessage(JSON.stringify({ t: "hello", runner: bad }))).toBeNull();
   });
@@ -72,10 +82,8 @@ describe("wire", () => {
     expect(parseRunnerMessage('{"t":"result","id":"s1","ok":true}')?.t).toBe("result");
     expect(parseRunnerMessage('{"t":"event","sessionId":"claude:x","seq":3,"event":{"type":"reset","messages":[]}}')?.t).toBe("event");
     expect(parseRunnerMessage('{"t":"summary","summary":{"kind":"remove","epoch":"e","seq":1,"ids":[]}}')?.t).toBe("summary");
-    // The Home agent's current chat: a session, or none (cleared by /new), with its rev.
-    expect(parseRunnerMessage('{"t":"homeChat","sessionId":"claude:x","rev":5,"extra":1}')).toEqual({ t: "homeChat", sessionId: "claude:x", rev: 5 });
-    expect(parseRunnerMessage('{"t":"homeChat","rev":6}')).toEqual({ t: "homeChat", rev: 6 });
-    for (const bad of ['{"t":"homeChat"}', '{"t":"homeChat","rev":"1"}', '{"t":"homeChat","rev":1,"sessionId":3}']) expect(parseRunnerMessage(bad)).toBeNull();
+    // An older runner's Home agent frame isn't understood any more: dropped.
+    expect(parseRunnerMessage('{"t":"homeChat","sessionId":"claude:x","rev":5}')).toBeNull();
     expect(parseRunnerMessage('{"t":"result","id":"s1","ok":false,"error":"x","junk":1}')).toEqual({ t: "result", id: "s1", ok: false, data: undefined, error: "x" });
     expect(parseRunnerMessage('{"t":"term","attachId":"a1","data":""}')?.t).toBe("term");
     for (const bad of ['{"t":"hello"}', '{"t":"result","id":"s1"}', '{"t":"event","sessionId":"x","seq":1,"event":{}}', '{"t":"summary","summary":{"kind":"bogus","seq":1}}', '{"t":"summary","summary":{"kind":"all","sessions":[]}}', '{"t":"summary","summary":{"kind":"all","seq":1,"sessions":[]}}', '{"t":"term","attachId":"a"}', '{"t":"event","sessionId":"x","seq":1.5,"event":{}}', '{"t":"rpc"}', "{"])

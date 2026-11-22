@@ -2,7 +2,7 @@
 // replies. One long-lived listener; history Photon replays on connect is skipped. The iMessage
 // connector (imessage.ts) runs it.
 
-import type { TextedFile } from "../homeLine";
+import type { TextedFile } from "../phoneLine";
 import { ATTACH_FILE_MAX } from "../../../../shared/limits";
 import { withTimeout, type Inbound, type InboundFile } from "./connector";
 import { download } from "./images";

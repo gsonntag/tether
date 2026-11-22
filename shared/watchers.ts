@@ -42,7 +42,7 @@ export function soonest(list: Watcher[]): number | undefined {
   return at;
 }
 
-/** One watcher in words, for the Home agent and tooltips: "monitor “replication progress.log” (subagent Step 1)". */
+/** One watcher in words, for tooltips: "monitor “replication progress.log” (subagent Step 1)". */
 export function watcherText(w: Watcher): string {
   const label = w.label ? ` “${oneLine(w.label, 160)}”` : "";
   const by = w.by ? ` (started by subagent “${oneLine(w.by, 60)}”)` : "";

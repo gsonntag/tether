@@ -1,7 +1,10 @@
 import { useMemo, useState } from "react";
+import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu";
 import { Popover } from "@astryxdesign/core/Popover";
+import { HARNESS_LABELS } from "../../../shared/transcript";
 import { openSession } from "../route";
 import type { Row } from "../sessionList";
+import { byChildOrder, kindCount } from "../subagents";
 import { StatusDot } from "./SessionRow";
 import "./SubagentChips.css";
 
@@ -11,9 +14,11 @@ const RUNNING_CHIPS = 3;
 const SEARCH_FROM = 8;
 
 const label = (c: Row) => c.title || c.agentType || "Untitled";
+/** What kind of child: a subagent's type, or a started session's harness (SPEC §6a). */
+export const childKind = (c: Row) => (c.spawned ? `${HARNESS_LABELS[c.harness] ?? c.harness} · started by agent` : c.agentType);
 
 /** Running first, then the most recent. */
-export const bySubagentOrder = (children: Row[]) => [...children].sort((a, b) => Number(b.status !== "idle") - Number(a.status !== "idle") || b.updatedAt - a.updatedAt);
+export const bySubagentOrder = byChildOrder;
 
 /**
  * Every subagent of a session in a popover (searchable when long), opened by `trigger`: a button.
@@ -24,11 +29,13 @@ export function SubagentsPopover({ runnerId, children, trigger, onPick }: { runn
   const [query, setQuery] = useState("");
   const sorted = useMemo(() => bySubagentOrder(children), [children]);
   const q = query.trim().toLowerCase();
-  const shown = q ? sorted.filter((c) => `${label(c)} ${c.agentType ?? ""}`.toLowerCase().includes(q)) : sorted;
+  const started = children.some((c) => c.spawned);
+  const shown = q ? sorted.filter((c) => `${label(c)} ${childKind(c) ?? ""}`.toLowerCase().includes(q)) : sorted;
   const list = (
     <div className="t-sub-pop">
+      <div className="t-sub-head">{kindCount(children)}</div>
       {children.length > SEARCH_FROM && (
-        <input className="t-search t-sub-search" type="search" placeholder="Search subagents" aria-label="Search subagents" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <input className="t-search t-sub-search" type="search" placeholder={started ? "Search" : "Search subagents"} aria-label={started ? "Search subagents and started sessions" : "Search subagents"} value={query} onChange={(e) => setQuery(e.target.value)} />
       )}
       <div className="t-sub-list" role="list">
         {shown.map((c) => (
@@ -48,15 +55,15 @@ export function SubagentsPopover({ runnerId, children, trigger, onPick }: { runn
               <StatusDot status={c.status} />
             </span>
             <span className="t-sub-item-title">{label(c)}</span>
-            {c.agentType && <span className="t-sub-item-type">{c.agentType}</span>}
+            {childKind(c) && <span className="t-sub-item-type">{childKind(c)}</span>}
           </button>
         ))}
-        {!shown.length && <div className="t-sub-empty">No subagent matches.</div>}
+        {!shown.length && <div className="t-sub-empty">Nothing matches.</div>}
       </div>
     </div>
   );
   return (
-    <Popover content={list} isOpen={open} onOpenChange={(o) => (setOpen(o), o || setQuery(""))} width={380} padding={0} label="Subagents" placement="below" alignment="start">
+    <Popover content={list} isOpen={open} onOpenChange={(o) => (setOpen(o), o || setQuery(""))} width={380} padding={0} label={kindCount(children)} placement="below" alignment="start">
       {trigger}
     </Popover>
   );
@@ -93,5 +100,30 @@ export function SubagentChips({ runnerId, children }: { runnerId: string; childr
       />
       {running.slice(0, RUNNING_CHIPS).map((c) => chip(c, " t-sub-running"))}
     </>
+  );
+}
+
+/**
+ * The sessions this one's agent started (tether_start, SPEC §6a) in its header: one chip, its
+ * menu lists them (running first). Ordinary sessions: picking one opens it.
+ */
+export function StartedChips({ runnerId, started }: { runnerId: string; started: Row[] }) {
+  const sorted = useMemo(() => byChildOrder(started), [started]);
+  if (!started.length) return null;
+  const running = started.filter((c) => c.status !== "idle").length;
+  return (
+    <DropdownMenu
+      renderTrigger={(p) => (
+        <button type="button" className="t-chip t-started-chip" {...p} aria-label={`Sessions this one started: ${started.length}${running ? `, ${running} running` : ""}`}>
+          {running > 0 && <StatusDot status="running" />}
+          <span className="t-chip-key">Started</span>
+          <span>{running ? `${running} running · ${started.length}` : started.length}</span>
+        </button>
+      )}
+    >
+      {sorted.map((c) => (
+        <DropdownMenuItem key={c.id} label={c.title || "Untitled"} description={`${HARNESS_LABELS[c.harness] ?? c.harness} · ${c.status === "running" ? "Working" : c.status === "waiting" ? "Needs you" : "Idle"}`} onClick={() => openSession(runnerId, c.id)} />
+      ))}
+    </DropdownMenu>
   );
 }

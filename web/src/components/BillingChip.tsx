@@ -31,13 +31,12 @@ export function useSources(runnerId: string, harness: HarnessId, wanted: boolean
 }
 
 /**
- * What the session draws from, loud on a key, and the way to change it. `standalone`: for a choice
- * kept outside a session (the Home agent's): always changeable, and no plan-runs-out switch.
+ * What the session draws from, loud on a key, and the way to change it.
  */
-export function BillingChip({ runnerId, session, state, capabilities, onSwitch, onAutoKey, standalone }: { runnerId: string; session: SessionSummary; state: LiveState; capabilities?: HarnessCapabilities; onSwitch: (source: BillingSource) => void; onAutoKey?: (on: boolean) => void; standalone?: boolean }) {
+export function BillingChip({ runnerId, session, state, capabilities, onSwitch, onAutoKey, onRetryThrottled }: { runnerId: string; session: SessionSummary; state: LiveState; capabilities?: HarnessCapabilities; onSwitch: (source: BillingSource) => void; onAutoKey?: (on: boolean) => void; onRetryThrottled?: (on: boolean) => void }) {
   const [editingFallback, setEditingFallback] = useState(false);
   // A side chat keeps its session's source (SPEC §16a).
-  const changeable = standalone || (!session.parentSessionId && !session.sideOf && !!capabilities?.sourceSwitch);
+  const changeable = !session.parentSessionId && !session.sideOf && !!capabilities?.sourceSwitch;
   const { choices, refresh } = useSources(runnerId, session.harness, changeable);
   const billing = billingForDisplay(state) ?? UNKNOWN_BILLING;
   const usage = usageChip(billing, state.plan);
@@ -50,11 +49,12 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
 
   const planName = choices?.options.find((o) => o.source === "subscription")?.billing.label ?? (billing.kind === "plan" ? billing.label : "Plan limits");
   const plan = planLines(state.plan);
-  const hasMenu = !!choices || plan.length > 0 || showSessionCost;
+  const showRetryThrottled = onRetryThrottled && !session.parentSessionId && !session.sideOf && state.retryThrottled !== undefined;
+  const hasMenu = !!choices || plan.length > 0 || showSessionCost || showRetryThrottled;
   if (!hasMenu) return <span {...chip}>{body}</span>;
 
   const menu = choices ? sourceMenu(session.harness, state, choices) : undefined;
-  const autoKey = choices && (standalone || !onAutoKey || session.sideOf ? undefined : autoKeyItem(session.harness, state, choices));
+  const autoKey = choices && (!onAutoKey || session.sideOf ? undefined : autoKeyItem(session.harness, state, choices));
   const hasMoreBelowPlan = showSessionCost || (!!menu && (menu.items.length > 0 || menu.addKey));
   return (
     <>
@@ -90,6 +90,10 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
         {autoKey && <DropdownMenuDivider />}
         {autoKey && <DropdownMenuCheckboxItem label={autoKey.label} value={!!state.autoKey} onChange={(on) => onAutoKey?.(on)} />}
         {autoKey?.order && <DropdownMenuItem label="Fallback keys…" onClick={() => setEditingFallback(true)} />}
+        {showRetryThrottled && <>
+          <DropdownMenuDivider />
+          <DropdownMenuCheckboxItem label="Keep retrying when throttled" description="Wait up to six hours for this API key to recover." value={!!state.retryThrottled} onChange={onRetryThrottled} />
+        </>}
         {menu?.addKey && menu.items.length > 0 && <DropdownMenuDivider />}
         {menu?.addKey && <DropdownMenuItem label="Add API key…" onClick={() => navigate({ page: "credentials" })} />}
       </DropdownMenu>

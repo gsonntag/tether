@@ -282,19 +282,6 @@ describe("subscriptions", () => {
     fromRunner(r, { t: "summary", summary: { kind: "remove", epoch: "e", seq: 1, ids: ["claude:x"] } });
     for (const s of [a, b]) expect(s.take("summary")).toEqual([{ t: "summary", runnerId: "box", summary: { kind: "remove", epoch: "e", seq: 1, ids: ["claude:x"] } }]);
   });
-
-  test("the Home agent's current chat goes to every browser, stamped with the runner", () => {
-    const { browser, runner, fromRunner } = setup();
-    const a = browser("a");
-    const b = browser("b");
-    const r = runner("box");
-    fromRunner(r, { t: "homeChat", sessionId: "claude:x", rev: 1 });
-    fromRunner(r, { t: "homeChat", rev: 2 });
-    for (const s of [a, b]) expect(s.take("homeChat")).toEqual([{ t: "homeChat", runnerId: "box", sessionId: "claude:x", rev: 1 }, { t: "homeChat", runnerId: "box", rev: 2 }]);
-    // The tabs' home names go along.
-    fromRunner(r, { t: "homeChat", sessionId: "claude:x", chats: ["claude:x", "claude:y"], labels: { "claude:x": 0, "claude:y": 1 }, rev: 3 });
-    for (const s of [a, b]) expect(s.take("homeChat")).toEqual([{ t: "homeChat", runnerId: "box", sessionId: "claude:x", chats: ["claude:x", "claude:y"], labels: { "claude:x": 0, "claude:y": 1 }, rev: 3 }]);
-  });
 });
 
 describe("terminal routing", () => {
@@ -740,6 +727,14 @@ describe("presence and push keys", () => {
     const r = new FakeSocket("r");
     hi(relay, r, runnerInfo("one"));
     expect(r.take("welcome")[0].push).toEqual(push);
+  });
+
+  test("hello carries the server's build stamp when configured", () => {
+    const build = { commit: "abc1234", date: "2026-11-21", dirty: false };
+    const relay = new Relay({ build });
+    const b = new FakeSocket("b");
+    relay.addBrowser(b, { name: "b", email: "b@x" }, 1);
+    expect(b.take("hello")[0].build).toEqual(build);
   });
 });
 

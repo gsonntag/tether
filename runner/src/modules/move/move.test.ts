@@ -65,11 +65,11 @@ const tmp = mkdtempSync(join(tmpdir(), "tether-move-"));
 const stops: (() => void)[] = [];
 afterEach(() => stops.splice(0).forEach((f) => f()));
 
-function setup(adapters: Adapter[]) {
+function setup(adapters: Adapter[], credentials?: CredentialStore) {
   const dir = mkdtempSync(join(tmpdir(), "tether-move-run-"));
   const prefsFile = join(dir, "runner.json");
   saveConfig({ runnerId: "t" }, prefsFile);
-  const runner = createRunner({ url: "http://x", token: "t", runnerId: "t", name: "t", version: "0", detectHarnesses: async () => [], adapters, prefsFile, core: { evictMs: 60_000 } });
+  const runner = createRunner({ url: "http://x", token: "t", runnerId: "t", name: "t", version: "0", detectHarnesses: async () => [], adapters, prefsFile, credentials, core: { evictMs: 60_000 } });
   stops.push(() => runner.core.stop());
   const logs: string[] = [];
   const mover = new Mover({ sessions: runner.look.sessions as any, dataDir: join(dir, "modules/move"), log: (l) => logs.push(l) });
@@ -96,6 +96,42 @@ describe("a source change (Mover.carry)", () => {
     expect(carried).toEqual([[id.slice(3), "s1"]]);
     expect(pi.drivers.at(-1)!.opts).toMatchObject({ model: "m1", effort: "low", permissionMode: "ro" });
     expect(runner.core.book.all().sessions.map((r) => r.id)).not.toContain(id);
+  });
+
+  test("leaving Azure: the model picked for the new source, else the default (never the deployment name)", async () => {
+    const codex = new Neutral("codex", true);
+    codex.billing = { ...codex.billing, keys: ["azure"] };
+    const store = new CredentialStore(join(mkdtempSync(join(tmpdir(), "tether-carry-off-azure-")), "credentials.json"));
+    store.set("azure", "fake-azure-key-0123456789abcdef");
+    store.setAzure({ endpoint: "my-res", deployments: [{ name: "luna", model: "gpt-6-luna" }] });
+    const { mover, runner } = setup([codex], store);
+    codex.stored_("s1", convo);
+    runner.core.o.prefs.set("codex:s1", { source: "azure", deployment: "luna", model: "luna", nextSource: "subscription" });
+    await mover.carry("codex:s1", "subscription", "gpt-6.2-sol");
+    expect(codex.drivers.at(-1)!.opts.model).toBe("gpt-6.2-sol");
+    codex.stored_("s2", convo);
+    runner.core.o.prefs.set("codex:s2", { source: "azure", deployment: "luna", model: "luna", nextSource: "subscription" });
+    await mover.carry("codex:s2", "subscription");
+    expect(codex.drivers.at(-1)!.opts.model).toBeUndefined();
+  });
+
+  test("an Azure carry uses the pending deployment and refuses a removed one", async () => {
+    const codex = new Neutral("codex", true);
+    codex.billing = { ...codex.billing, keys: ["azure"] };
+    const store = new CredentialStore(join(mkdtempSync(join(tmpdir(), "tether-carry-azure-")), "credentials.json"));
+    store.set("azure", "fake-azure-key-0123456789abcdef");
+    const luna = { name: "luna", model: "gpt-6-luna" };
+    store.setAzure({ endpoint: "my-res", deployments: [luna, { name: "sol", model: "gpt-6.2-sol" }] });
+    const { mover, runner } = setup([codex], store);
+    codex.stored_("s1", convo);
+    runner.core.o.prefs.set("codex:s1", { source: "subscription", nextSource: "azure", nextDeployment: "sol", model: "gpt-6.2-sol" });
+    const id = await mover.carry("codex:s1", "azure");
+    expect(runner.core.o.prefs.get(id).deployment).toBe("sol");
+    expect(codex.drivers.at(-1)!.opts.credential?.deployment).toBe("sol");
+
+    store.setAzure({ endpoint: "my-res", deployments: [luna] });
+    await expect(mover.carry("codex:s1", "azure")).rejects.toThrow("deployment sol was removed");
+    expect(codex.imports).toHaveLength(1);
   });
 
   test("a failed import leaves no thread and uses no file route, where a move would", async () => {

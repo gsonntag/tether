@@ -19,11 +19,19 @@ export interface CoreEvents {
   /** `source`: who decided ("person", or a policy step's source such as "judge" or "rule") */
   requestClosed: { sessionId: string; requestId: string; outcome: RequestOutcome; source?: string; reason?: string };
   modeChanged: { sessionId: string; from: SessionMode; to: SessionMode };
+  /** a session went on under a new id (a Move, a source change's new thread, a renewed id): what follows it moves to `to` */
+  continued: { from: string; to: string };
   /**
    * The harness waits on the person outside Tether's requests (in terminal mode, Claude's TUI
    * asks for permission or a choice, SPEC §8): "needs you", for notifications and Home.
    */
   attention: { sessionId: string; message?: string };
+  /** a session was archived or unarchived (the worktrees module removes a merged worktree Tether made) */
+  archived: { sessionId: string; archived: boolean };
+  /** archiving's worktree cleanup decided (worktrees module): removed, or kept and why; neither: it had none to clean up */
+  worktreeCleaned: { sessionId: string; removed?: boolean; why?: string };
+  /** the "Session can text me" box changed (texting drops an unticked session's number) */
+  canTextChanged: { sessionId: string; canText: boolean };
   error: { sessionId?: string; message: string };
   /** the last browser watching these sessions went away */
   unwatched: { sessionIds: string[] };

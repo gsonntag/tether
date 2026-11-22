@@ -101,7 +101,7 @@ checks.push([`header ${headH} px tall (≤ 56)`, headH <= 56]);
 for (const w of [375, 393]) {
   await p.setViewportSize({ width: w, height: 812 });
   await p.waitForTimeout(300);
-  const t = await p.locator(".t-chip-term").boundingBox();
+  const t = await p.locator(".t-chip-term:not(.t-chip-changes)").boundingBox();
   const inside = !!t && t.x >= 0 && t.x + t.width <= w && t.y >= 0 && t.width >= 44 && t.height >= 44;
   checks.push([`the terminal button wholly on screen at ${w} px (x ${Math.round(t?.x ?? -1)}–${Math.round((t?.x ?? 0) + (t?.width ?? 0))}, ${Math.round(t?.width ?? 0)} × ${Math.round(t?.height ?? 0)})`, inside]);
 }

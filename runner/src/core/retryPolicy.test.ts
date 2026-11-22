@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ATTACH_FILE_MAX, ATTACH_MAX, MESSAGE_TEXT_MAX } from "../../../shared/limits";
 import type { Attachment } from "../../../shared/attachments";
-import { isSavedRetry, RETRY_DEADLINE_MS, RETRY_DELAYS_MS, RETRY_MAX_ATTEMPTS, retryTime, type SavedRetry } from "./retryPolicy";
+import { EXTENDED_RETRY_DEADLINE_MS, EXTENDED_RETRY_MAX_ATTEMPTS, isSavedRetry, RETRY_DEADLINE_MS, RETRY_DELAYS_MS, RETRY_MAX_ATTEMPTS, retryTime, type SavedRetry } from "./retryPolicy";
 
 describe("retry policy", () => {
   test("uses the configured exponential delays with bounded ±20% jitter", () => {
@@ -14,6 +14,16 @@ describe("retry policy", () => {
       expect(retryTime(attempt, 10_000, 600_000, undefined, () => 0.5)).toBe(10_000 + base);
       expect(retryTime(attempt, 10_000, 600_000, undefined, () => 1)).toBe(10_000 + base * 1.2);
     }
+  });
+
+  test("extended backoff grows past five attempts and caps at ten minutes", () => {
+    const deadline = EXTENDED_RETRY_DEADLINE_MS;
+    expect(retryTime(1, 0, deadline, undefined, () => 0.5, true)).toBe(60_000);
+    expect(retryTime(4, 0, deadline, undefined, () => 0.5, true)).toBe(480_000);
+    expect(retryTime(6, 0, deadline, undefined, () => 1, true)).toBe(600_000);
+    expect(retryTime(6, 0, deadline, 900_000, () => 1, true)).toBe(900_000);
+    expect(retryTime(6, 0, deadline, deadline, () => 1, true)).toBeUndefined();
+    expect(retryTime(EXTENDED_RETRY_MAX_ATTEMPTS + 1, 0, deadline, undefined, () => 0.5, true)).toBeUndefined();
   });
 
   test("keeps provider retry-after as a lower bound and rejects a retry at the deadline", () => {

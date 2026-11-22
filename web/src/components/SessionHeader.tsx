@@ -11,10 +11,11 @@ import { loadModels, useStore } from "../store";
 import { forkedFromTitle } from "../fork";
 import { BillingChip, useSources } from "./BillingChip";
 import { ChoiceMenu } from "./ChoiceMenu";
+import { TextMeChip } from "./TextMeChip";
+import { accessOf, offersCanText } from "../runners";
 import { shownStatus } from "../sessionList";
 import { StatusDot } from "./SessionRow";
-import { SubagentChips } from "./SubagentChips";
-import { MODEL_AFTER_SOURCE } from "../../../shared/sourceSwitch";
+import { StartedChips, SubagentChips } from "./SubagentChips";
 import { billingForDisplay, visibleNextBilling } from "../sourceMenu";
 
 export function SessionHeader({
@@ -23,6 +24,7 @@ export function SessionHeader({
   state,
   models,
   children,
+  startedBy,
   extra,
   sideChats,
   capabilities,
@@ -31,7 +33,10 @@ export function SessionHeader({
   session: SessionSummary;
   state: LiveState;
   models?: ModelList;
+  /** subagents, and the sessions its agent started (`spawned`) */
   children: Row[];
+  /** the session whose agent started this one (tether_start, SPEC §6a) */
+  startedBy?: { id: string; title: string };
   extra?: React.ReactNode;
   /** its side chats' chip (SPEC §16a), beside its subagents' */
   sideChats?: React.ReactNode;
@@ -39,6 +44,11 @@ export function SessionHeader({
 }) {
   const [error, setError] = useState<string>();
   const isChild = !!session.parentSessionId;
+  const subagents = children.filter((c) => !c.spawned);
+  const started = children.filter((c) => c.spawned);
+  // Only where the runner takes it, for its owner, on a main session (runners.ts offersCanText).
+  const textMe = useStore((s) => offersCanText(s.runners.find((r) => r.id === runnerId), session));
+  const canSetRetryThrottled = useStore((s) => accessOf(s.runners.find((r) => r.id === runnerId)) !== "view");
   const paid = isApiBilling(billingForDisplay(state));
   const nextBilling = visibleNextBilling(state);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -70,11 +80,14 @@ export function SessionHeader({
     if (state.model === "default" && !state.modelResolved) ensureModels();
   }, [state.model, state.modelResolved, !!models]);
   // The source the next start uses, as the runner decides it: a harness that carries a source change
-  // to a new thread (Codex) starts this thread on its confirmed source, and its model can't change
-  // until the change is done (the runner refuses too); one that switches in place starts on the new one.
+  // to a new thread (Codex) starts this thread on its confirmed source; one that switches in place
+  // starts on the new one. While a carried change waits, the Model menu picks for the new source:
+  // its models (deployments onto Azure), held for the new thread, never sent to the source being left.
   const sourcePending = !!capabilities?.sourceCarry && !!state.nextBilling;
   const onAzure = (capabilities?.sourceCarry ? state.billing : billingForDisplay(state))?.label === "Azure";
-  const { choices: sources, refresh: refreshSources } = useSources(runnerId, session.harness, onAzure);
+  const menuAzure = sourcePending ? state.nextBilling?.label === "Azure" : onAzure;
+  const pendingPick = sourcePending ? (menuAzure ? state.nextDeployment : state.nextModel) : undefined;
+  const { choices: sources, refresh: refreshSources } = useSources(runnerId, session.harness, onAzure || menuAzure);
   const azureModels = sources?.options.find((o) => o.source === "azure")?.deployments?.map((d) => ({ id: d.name, label: d.model ? `${d.name} · ${d.model}` : d.name, description: undefined }));
   const current = findModel(models?.models ?? [], state.model);
   // A handoff TUI drives (SPEC §8): it takes no settings from Tether.
@@ -115,8 +128,23 @@ export function SessionHeader({
         {isChild ? `Subagent${session.agentType ? ` · ${session.agentType}` : ""} · ${session.projectPath}` : session.projectPath}
       </div>
       {session.sideOf ? <SideOf runnerId={runnerId} parentId={session.sideOf} /> : session.forkedFrom && <ForkedFrom runnerId={runnerId} from={session.forkedFrom} />}
+      {startedBy && !session.sideOf && (
+        <div className="t-header-fork">
+          <button type="button" className="t-link" title="Open the session whose agent started this one" onClick={() => openSession(runnerId, startedBy.id)}>
+            ← Started by {startedBy.title ? `“${startedBy.title}”` : "another session"}
+          </button>
+        </div>
+      )}
       <div className={`t-chips${paid ? " t-paid-chips" : ""}`}>
-        <BillingChip runnerId={runnerId} session={session} state={state} capabilities={capabilities} onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))} onAutoKey={(on) => void call(rpc(runnerId, "setAutoKey", { sessionId: session.id, on }))} />
+        <BillingChip
+          runnerId={runnerId}
+          session={session}
+          state={state}
+          capabilities={capabilities}
+          onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))}
+          onAutoKey={(on) => void call(rpc(runnerId, "setAutoKey", { sessionId: session.id, on }))}
+          onRetryThrottled={canSetRetryThrottled ? (on) => void call(rpc(runnerId, "setRetryThrottled", { sessionId: session.id, on })) : undefined}
+        />
         {nextBilling && <span className={`t-chip t-chip-info t-next-source${isApiBilling(nextBilling) ? " t-next-api" : ""}`} title={`${nextBilling.label} from the next start`}>Next: {nextBilling.label}</span>}
         <div className="t-chip-options">
         {isChild ? (
@@ -128,16 +156,16 @@ export function SessionHeader({
             <ChoiceMenu
               name="Model"
               customLabel={session.harness === "codex" ? "Other model or deployment…" : undefined}
-              value={current?.id ?? state.model}
+              value={sourcePending ? pendingPick ?? "" : current?.id ?? state.model}
               // While the TUI drives, its /model is what runs: Tether shows the last it knew.
-              label={locked ? `Set in the terminal (last seen: ${modelLabel(state.model, models?.models, state.modelResolved)})` : nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model, state.model)}
-              disabled={locked ?? (sourcePending ? MODEL_AFTER_SOURCE : undefined)}
-              choices={(onAzure ? azureModels ?? [] : models?.models ?? []).map((m) => ({ id: m.id, label: m.label, description: m.description }))}
-              onOpen={() => { ensureModels(); if (onAzure) refreshSources(); }}
+              label={locked ? `Set in the terminal (last seen: ${modelLabel(state.model, models?.models, state.modelResolved)})` : sourcePending ? (pendingPick ? `${menuAzure ? pendingPick : modelLabel(pendingPick, models?.models)} on ${state.nextBilling!.label}` : `Model on ${state.nextBilling!.label}`) : nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model, state.model)}
+              disabled={locked}
+              choices={(menuAzure ? azureModels ?? [] : models?.models ?? []).map((m) => ({ id: m.id, label: m.label, description: m.description }))}
+              onOpen={() => { ensureModels(); if (menuAzure) refreshSources(); }}
               // A refusal shows in the chat, from the runner.
               onPick={(model) => void rpc(runnerId, "setModel", { sessionId: session.id, model }).catch(() => {})}
             />
-            {state.nextDeployment && <span className="t-chip t-chip-info t-next-deployment" title={`${state.nextDeployment} from the next message`}>Next: {state.nextDeployment}</span>}
+            {state.nextDeployment && !sourcePending && <span className="t-chip t-chip-info t-next-deployment" title={`${state.nextDeployment} from the next message`}>Next: {state.nextDeployment}</span>}
             {(efforts.length > 0 || state.effort) && (
               <ChoiceMenu name="Effort" value={state.effort} label={locked ? `Set in the terminal (last seen: ${effortLabel(state.effort)})` : nextTurn(effortLabel(state.effort), turn?.effort, state.effort)} disabled={locked} choices={efforts} onOpen={ensureModels} onPick={(effort) => void call(rpc(runnerId, "setEffort", { sessionId: session.id, effort }))} />
             )}
@@ -155,7 +183,9 @@ export function SessionHeader({
             />}
           </>
         )}
-        <SubagentChips runnerId={runnerId} children={children} />
+        {textMe && <TextMeChip on={!!state.canText} onChange={(canText) => void call(rpc(runnerId, "setCanText", { sessionId: session.id, canText }))} />}
+        <SubagentChips runnerId={runnerId} children={subagents} />
+        <StartedChips runnerId={runnerId} started={started} />
         {sideChats}
         {/* Last in the row: where chips scroll sideways, these go out of view first. */}
         {!isChild && state.context && (

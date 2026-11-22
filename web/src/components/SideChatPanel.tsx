@@ -14,7 +14,6 @@ import { AGENT_NAMES } from "../../../shared/transcript";
 import { sideCommandRefusal } from "../../../shared/sideChat";
 import { rpc } from "../connection";
 import { mergeRows, shownStatus, sideChatsOf, type Row } from "../sessionList";
-import { billingForDisplay } from "../sourceMenu";
 import { failedSend, loadOlder, openView, sendPending, useStore, viewKey } from "../store";
 import { Composer } from "./Composer";
 import { PendingSends, usePending } from "./PendingSends";
@@ -227,7 +226,6 @@ function SideChat({ runnerId, sessionId, onBringBack, onClose }: { runnerId: str
           <RequestDock runnerId={runnerId} sessionId={sessionId} requests={state.requests} root={summary?.projectPath} />
           <Composer
             draftKey={k}
-            billing={billingForDisplay(state)}
             running={running}
             waiting={waiting && state.status !== "running"}
             canSteer={!!view.capabilities?.canSteer}

@@ -41,6 +41,11 @@ export interface HarnessCapabilities {
   canSteer: boolean;
   /** "handoff": the TUI takes over the session; "shared": the TUI joins the live thread */
   terminal: "handoff" | "shared";
+  /**
+   * The harness's TUI reports "needs you" through hooks (Claude Code).
+   * Without this (Antigravity), terminal attention is read from the screen.
+   */
+  terminalHooks?: boolean;
   subagents: {
     /** subagents show as child sessions with their own transcript */
     view: boolean;
@@ -154,7 +159,7 @@ export interface Msg {
    * user: a turn the harness added that you didn't type (another session's message, a channel,
    * a subagent's report): who it's from. The UI shows it apart from your own messages.
    */
-  origin?: { kind: string; name?: string; sessionId?: string; all?: boolean; purpose?: "checkIn" };
+  origin?: { kind: string; name?: string; sessionId?: string; all?: boolean };
   /** user: a slash command as the harness stored it, not a prompt (which may start with "/" too) */
   localCommand?: boolean;
   /** user: the browser's id for the send that made it (protocol send `clientId`); only while the runner holds it in memory */
@@ -345,6 +350,7 @@ export const UNKNOWN_BILLING: Billing = { kind: "unknown", label: "Unknown" };
 export interface RetryState {
   attempt: number;
   maxAttempts: number;
+  extended?: true;
   nextAt: number;
   deadline: number;
   error: string;
@@ -370,10 +376,16 @@ export interface LiveState {
   nextBilling?: Billing;
   /** on Azure: a deployment picked while a turn ran, the model from the next send ("Next: <deployment>") */
   nextDeployment?: string;
+  /** with a pending carried source change: the model picked for the new source ("Next model") */
+  nextModel?: string;
   /** the last process start for nextBilling failed; the confirmed source is still current */
   sourceSwitchFailed?: boolean;
   /** ticked: when the plan runs out, the session switches to a key and resends (SPEC §10) */
   autoKey?: boolean;
+  /** ticked ("Session can text me"): it may text the person, and plain texts can come to it (SPEC §11 Texting). Absent: it never texts */
+  canText?: boolean;
+  /** Whether extended throttle retries are enabled. Absent if unavailable for this session. */
+  retryThrottled?: boolean;
   /** the key this session last used or had picked: default when no fallback order is saved */
   lastKey?: BillingSource;
   /** Allowed automatic fallback keys, in priority order. Empty excludes all keys. */
@@ -408,7 +420,7 @@ export interface LiveState {
    */
   setup?: "running" | "failed";
   /**
-   * Waiting for Claude Code from before a restart (SPEC §4): messages sent now queue, held, and
+   * Waiting for the agent from before a restart (SPEC §4): messages sent now queue, held, and
    * Resume can't release them until this clears.
    */
   restartWait?: boolean;

@@ -6,7 +6,7 @@
 // capped instead (caps.ts).
 //
 // The same server carries text_person (the texting module texts the person for the session, through
-// homeLine.ts), and with it Tether's instructions for every session it runs (instructions.ts: concise
+// phoneLine.ts, only when its "Session can text me" box is ticked), and with it Tether's instructions for every session it runs (instructions.ts: concise
 // replies, texting only through text_person).
 
 import { join } from "node:path";
@@ -17,12 +17,15 @@ import { runnerSettings } from "../../core/runnerSettings";
 import { sessionInstructions } from "./instructions";
 import { AGENT_NAMES, HARNESS_LABELS, type HarnessId, type Msg, type SessionSummary } from "../../../../shared/transcript";
 import { LEVELS, type Level } from "../../../../shared/move";
+import { worktreeArg } from "../../../../shared/worktree";
 import { LEVEL_WORDS, levelOf } from "../../core/permissionLevel";
 import type { Module, ModuleContext, SessionLook } from "..";
 import { BROADCAST_MAX, PeerCaps } from "./caps";
 import { peerSecret, peerToken, PeerSocket, type PeerAnswer, type PeerCall } from "./server";
 import { ASK_DEFAULT_MIN, ASK_MAX_MIN } from "./tools";
+import { Children } from "./children";
 import { IMAGE_REFUSED, ImageFailures } from "../texting/images";
+import { CANT_TEXT } from "../phoneLine";
 
 /** How much of an answer an ask returns. */
 export const ANSWER_MAX = 20_000;
@@ -64,13 +67,16 @@ interface Ask {
 
 export class Peers {
   readonly caps: PeerCaps;
+  /** sessions agents started (tether_start) */
+  readonly children: Children;
   private asks: Ask[] = [];
 
   constructor(
-    private ctx: Pick<ModuleContext, "sessions" | "session" | "log" | "homeFolder" | "homeLine">,
+    private ctx: Pick<ModuleContext, "sessions" | "session" | "log" | "phoneLine" | "hiddenFolder"> & { ops?: Pick<ModuleContext["ops"], "call">; dataDir?: string } & Pick<ConstructorParameters<typeof Children>[0], "worktreeCleaned" | "worktreeKeeps">,
     now: () => number = Date.now,
   ) {
     this.caps = new PeerCaps(now);
+    this.children = new Children(ctx);
     this.imageFails = new ImageFailures(now);
     this.now = now;
   }
@@ -85,6 +91,7 @@ export class Peers {
    * hops its hint carries (so a message queued before a restart keeps them).
    */
   queueGone(sessionId: string, msgId: string, how: "sent" | "cancelled", text = "") {
+    if (how === "sent") this.children.queueGone(sessionId, text);
     const peer = parseSessionMessage(text);
     if (peer && how === "sent") this.caps.turnFrom(sessionId, { hops: peerHops(text) ?? 1, ...(peer.all ? { broadcast: true } : {}) });
     const ask = this.asks.find((a) => a.msgId === msgId);
@@ -95,6 +102,7 @@ export class Peers {
 
   /** A message in a transcript: one the person (or Tether) sent starts a fresh chain. */
   message(sessionId: string, msg: Msg) {
+    this.children.message(sessionId, msg);
     if (msg.role !== "user" || msg.origin?.kind === "session") return;
     if (msg.origin && msg.origin.kind !== "tether" && msg.origin.kind !== "shell") return;
     this.caps.turnFrom(sessionId);
@@ -105,6 +113,8 @@ export class Peers {
     // Whatever starts its next turn says where that one comes from.
     this.caps.turnFrom(sessionId);
     const ask = this.asks.find((a) => a.to === sessionId && a.delivered);
+    // A session an agent started reports its turn to it, unless an ask took this turn's answer.
+    await this.children.turnEnded(sessionId, error, stopped, !!ask);
     if (!ask) return;
     if (stopped) return this.finish(ask, { text: `The person stopped ${this.who(sessionId)}'s turn before it answered.`, isError: true });
     if (error) return this.finish(ask, { text: `${this.who(sessionId)}'s turn failed: ${error}`, isError: true });
@@ -131,18 +141,23 @@ export class Peers {
         return this.send(from, str(a.to), str(a.text));
       case PEER_TOOLS.ask:
         return this.ask(from, str(a.to), str(a.text), Number(a.timeout_minutes) || ASK_DEFAULT_MIN, c.signal);
+      case PEER_TOOLS.start:
+        return this.start(from, a);
+      case PEER_TOOLS.models:
+        return this.children.models(str(a.harness));
+      case PEER_TOOLS.archive:
+        return this.children.archive(from, str(a.to));
       case PEER_TOOLS.broadcast:
         return this.broadcastFrom(from, str(a.text), { project: str(a.project), status: str(a.status), scope: str(a.scope) });
       case TEXT_PERSON: {
-        // The image is read and checked once, where it's sent (texting's personText, or the Home
-        // agent's text_person for a relayed one). Refusals count here: past a few, every image is
-        // refused (no probing the machine's paths).
+        // The image is read and checked once, where it's sent (texting's personText). Refusals
+        // count here: past a few, every image is refused (no probing the machine's paths).
         const image = str(a.image).trim();
         if (image && !this.imageFails.allowed(from)) return { text: `${IMAGE_REFUSED} Nothing was sent.`, isError: true };
-        // A session the Home agent drives reports to it instead: it texts the person (their PM).
-        const relayed = await this.ctx.homeLine?.home?.relay?.(from, str(a.message), image || undefined);
-        if (relayed) return { text: relayed };
-        const phone = this.ctx.homeLine?.phone;
+        // Only a session whose "Session can text me" box is ticked texts.
+        const look = this.ctx.session(from);
+        if (look && (!look.state?.canText || look.summary.archived)) return { text: CANT_TEXT, isError: true };
+        const phone = this.ctx.phoneLine?.phone;
         if (!phone) return { text: "Texting is off in Tether, so nothing was sent. Say it in your reply instead.", isError: true };
         const r = await phone.text(from, str(a.message), image ? { image } : {});
         if (image && r.isError && r.text.startsWith(IMAGE_REFUSED)) this.imageFails.failed(from);
@@ -154,6 +169,10 @@ export class Peers {
   }
 
   /** A subagent speaks for its main session. */
+  rootOf(id: string): string {
+    return this.root(id);
+  }
+
   private root(id: string): string {
     let s = this.ctx.session(id);
     for (let i = 0; i < 5 && s?.summary.parentSessionId; i++) {
@@ -176,10 +195,11 @@ export class Peers {
     return `"${markTitle(title)}" (${id})`;
   }
 
-  /** Whether a message can reach `s`: listed, not archived, not a subagent, not the Home agent's chat. */
+  /** Whether a message can reach `s`: listed, not archived, not a subagent, not in a hidden folder. */
   private reaches(s: SessionSummary) {
-    // A side chat (SPEC §16a) is reached through its session's panel only.
-    return reachable(s) && !s.sideOf && !(this.ctx.homeFolder && s.projectPath === this.ctx.homeFolder);
+    // A side chat (SPEC §16a) is reached through its session's panel only. A hidden folder's
+    // (TETHER_HIDE_PROJECTS, the removed Home agent's old chats) is out of the lists, so out of reach.
+    return reachable(s) && !s.sideOf && !this.ctx.hiddenFolder?.(s.projectPath);
   }
 
   /** The sessions the lists show (recent ones and every live one) that `from` can message. */
@@ -215,7 +235,7 @@ export class Peers {
     if (/^[a-z]+:[\w.-]+$/.test(t)) {
       const s = (await this.ctx.sessions.open(t).catch(() => undefined))?.summary;
       if (s && this.reaches(s)) return s;
-      if (s) throw new Error(`Session ${t} can't be messaged (archived sessions, subagents and the Home agent can't be).`);
+      if (s) throw new Error(`Session ${t} can't be messaged (archived sessions, subagents and sessions in hidden folders can't be).`);
     }
     const lower = t.toLowerCase();
     for (const pick of [(s: SessionSummary) => s.title.toLowerCase() === lower, (s: SessionSummary) => s.title.toLowerCase().includes(lower)]) {
@@ -223,7 +243,7 @@ export class Peers {
       if (found.length === 1) return found[0]!;
       if (found.length > 1) throw new Error(`${found.length} sessions match "${t}": ${found.slice(0, 8).map((s) => `${s.id} ("${markTitle(s.title)}")`).join(", ")}. Use its id.`);
     }
-    throw new Error(`There's no session "${markTitle(t)}" to message (archived sessions and subagents can't be). tether_sessions lists them.`);
+    throw new Error(`There's no session "${markTitle(t)}" to message (archived sessions, subagents and sessions in hidden folders can't be). tether_sessions lists them.`);
   }
 
   /** Who sends: its title, and its permission level (unknown: the strictest). */
@@ -244,9 +264,9 @@ export class Peers {
   }
 
   /** A cap hit: the tool says why, and the sender's transcript shows it. */
-  private refused(from: string, why: string): PeerAnswer {
+  private refused(from: string, why: string, what = "a message to another session"): PeerAnswer {
     void this.ctx.sessions
-      .notice(from, { id: `n-peers-${this.now()}-${Math.random().toString(36).slice(2, 6)}`, role: "notice", level: "warning", ts: this.now(), parts: [{ type: "text", text: `Tether held back a message to another session: ${why}` }] })
+      .notice(from, { id: `n-peers-${this.now()}-${Math.random().toString(36).slice(2, 6)}`, role: "notice", level: "warning", ts: this.now(), parts: [{ type: "text", text: `Tether held back ${what}: ${why}` }] })
       .catch(() => {});
     return { text: why, isError: true };
   }
@@ -357,6 +377,17 @@ export class Peers {
     });
   }
 
+  /** tether_start: a new session on any harness that reports each turn back to `from` (children.ts). */
+  async start(from: string, a: Record<string, unknown>): Promise<PeerAnswer> {
+    const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+    // The caps first: refusal() reserves a child slot when it passes.
+    const why = this.caps.check(from, "", "send") ?? this.children.refusal(from);
+    if (why) return this.refused(from, why, "a new session");
+    const hops = this.caps.hopsFrom(from);
+    const undo = this.caps.count(from);
+    return this.children.start(from, { harness: str(a.harness), prompt: str(a.prompt), source: str(a.source), fallbackKeys: a.fallbackKeys, model: str(a.model), effort: str(a.effort), title: str(a.title), project: str(a.project), worktree: worktreeArg(a.worktree) }, hops, undo);
+  }
+
   /**
    * An agent's note to all: its own project's sessions unless it names a `project` or asks for
    * `scope: "all"`.
@@ -399,6 +430,39 @@ export class Peers {
   }
 }
 
+/** How long tether_archive waits for the worktree cleanup's word before answering without it. */
+export const CLEANUP_WAIT_MS = 30_000;
+
+type Cleaned = { removed?: boolean; why?: string };
+
+/** Waits for the worktrees module's worktreeCleaned word on a session archived, "slow" past `ms`. */
+export class CleanupWaits {
+  private waits = new Map<string, ((r: Cleaned) => void)[]>();
+  constructor(private ms = CLEANUP_WAIT_MS) {}
+
+  wait(id: string): Promise<Cleaned | "slow"> {
+    return new Promise((done) => {
+      const got = (r: Cleaned) => {
+        clearTimeout(timer);
+        done(r);
+      };
+      const timer = setTimeout(() => {
+        const left = (this.waits.get(id) ?? []).filter((f) => f !== got);
+        if (left.length) this.waits.set(id, left);
+        else this.waits.delete(id);
+        done("slow");
+      }, this.ms);
+      this.waits.set(id, [...(this.waits.get(id) ?? []), got]);
+    });
+  }
+
+  got(id: string, r: Cleaned) {
+    const waiting = this.waits.get(id);
+    this.waits.delete(id);
+    waiting?.forEach((f) => f(r));
+  }
+}
+
 /** How long an MCP call may run: an ask's longest wait, and a little. */
 const CALL_MS = (ASK_MAX_MIN + 5) * 60_000;
 
@@ -406,11 +470,12 @@ export const peersModule: Module = {
   name: "peers",
   start(ctx) {
     if (process.env.TETHER_PEERS === "0") return;
-    const peers = new Peers(ctx);
+    // tether_archive waits a little for what the worktree cleanup decided, to tell the starter.
+    const cleaned = new CleanupWaits();
+    const peers = new Peers({ ...ctx, worktreeCleaned: (id) => cleaned.wait(id) });
     const secret = peerSecret(ctx.dataDir);
     const socket = new PeerSocket(join(ctx.dataDir, "peers.sock"), secret, (c) => peers.call(c), ctx.log);
     socket.start();
-    const home = ctx.homeFolder;
     const unset = ctx.sessions.adapters().map((a) =>
       a.toolServer?.({
         name: PEER_SERVER,
@@ -418,19 +483,37 @@ export const peersModule: Module = {
         args: [join(import.meta.dir, "mcp.ts")],
         env: (id) => ({ TETHER_PEERS_SOCKET: socket.socketPath, TETHER_PEERS_ID: id, TETHER_PEERS_TOKEN: peerToken(secret, id) }),
         timeoutMs: CALL_MS,
-        // The Home agent has tools (and instructions) of its own.
-        skip: (p) => !!home && p === home,
         instructions: () => sessionInstructions(runnerSettings()),
       }),
     );
+    // Read only (shared/access.ts VIEW_OPS): the web shows these as the session's children (SPEC §6a).
+    ctx.ops.register("spawnedFamily", ({ sessionId }) => peers.children.family(String(sessionId ?? "")));
     const offs = [
+      // A Move or a source change: who started whom follows the session to its new id.
+      ctx.bus.on("continued", ({ from, to }) => peers.children.continued(from, to)),
+      // An archived starter's idle children go too; a child brought back is the person's.
+      ctx.bus.on("archived", ({ sessionId, archived }) => void peers.children.archived(sessionId, archived).catch((e) => ctx.log(`peers: ${sessionId}: ${(e as Error).message}`))),
+      ctx.bus.on("worktreeCleaned", ({ sessionId, ...r }) => cleaned.got(sessionId, r)),
+      // Taken to its terminal: the person drives it.
+      ctx.bus.on("modeChanged", ({ sessionId, to }) => peers.children.modeChanged(sessionId, to)),
       ctx.bus.on("queueGone", ({ sessionId, msgId, how, text }) => peers.queueGone(sessionId, msgId, how, text)),
       ctx.bus.on("message", ({ sessionId, msg }) => peers.message(sessionId, msg)),
+      // A subagent's request is its main session's.
+      ctx.bus.on("requestOpened", ({ request: r }) => void peers.children.waiting(peers.rootOf(r.sessionId), r.question ?? r.title ?? (r.tool ? `approval for ${r.tool}` : "a request"), { sessionId: r.sessionId, id: r.id })),
+      ctx.bus.on("attention", ({ sessionId, message }) => void peers.children.waiting(sessionId, message ?? "its terminal asks something")),
       // A rate-limit retry is still that turn: its ask stays open for the turn that recovers.
       ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => void (!recovering && peers.turnEnded(sessionId, error, stopped))),
     ];
+    // Children whose starter was archived while they worked, or across a restart: soon after start and hourly.
+    const sweep = () => void peers.children.sweep().catch((e) => ctx.log(`peers: children sweep failed: ${(e as Error).message}`));
+    const first = setTimeout(sweep, 60_000);
+    const every = setInterval(sweep, 60 * 60_000);
+    first.unref?.();
+    every.unref?.();
     ctx.log(`peers: tools for every session, calls on ${socket.socketPath}`);
     return () => {
+      clearTimeout(first);
+      clearInterval(every);
       offs.forEach((off) => off());
       unset.forEach((u) => u?.());
       socket.stop();

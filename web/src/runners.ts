@@ -1,7 +1,10 @@
-// Runners as the browser shows them. The server lists only connected runners; the browser
-// remembers the ones it has seen so a runner that drops off shows as disconnected, not gone.
+// Runners as the browser shows them. The server lists only connected runners, and only those the
+// signed-in person may see. The browser remembers the ones they own, so one that drops off shows as
+// disconnected, not gone. A runner shared with them isn't remembered: the server can't say whether
+// one that left the list went offline or was unshared, so it just goes (it can't be used offline).
 
 import type { RunnerInfo } from "../../shared/protocol";
+import type { SessionSummary } from "../../shared/transcript";
 
 export interface KnownRunner extends RunnerInfo {
   online: boolean;
@@ -9,15 +12,28 @@ export interface KnownRunner extends RunnerInfo {
   lastSeen: number;
 }
 
-/** Folds the server's current list into what we knew: listed runners are online, the rest offline. */
+/** Folds the server's current list into what we knew: listed runners are online, owned ones that aren't offline, shared ones that aren't gone. */
 export function mergeRunners(known: KnownRunner[], online: RunnerInfo[], now: number): KnownRunner[] {
-  const byId = new Map(known.map((r) => [r.id, { ...r, online: false }]));
+  const byId = new Map(known.filter((r) => accessOf(r) === "manage").map((r) => [r.id, { ...r, online: false }]));
   for (const r of online) byId.set(r.id, { ...r, online: true, lastSeen: now });
   return sortRunners([...byId.values()]);
 }
 
 /** Whether the runner takes `pinSession` (RunnerInfo.pinning): pin buttons show only then. */
 export const canPin = (runners: RunnerInfo[], runnerId: string) => !!runners.find((r) => r.id === runnerId)?.pinning;
+
+/** Whether the runner takes `listWorktrees` and `existingWorktreeSession` (RunnerInfo.existingWorktrees): New session's "Existing worktree" shows only then. */
+export const canJoinWorktree = (runners: RunnerInfo[], runnerId: string) => !!runners.find((r) => r.id === runnerId)?.existingWorktrees;
+
+/**
+ * Whether a session's header offers the "Session can text me" box: its runner takes `setCanText`
+ * (RunnerInfo.canText), you own it (only its owners pick what texts their phone, shared/access.ts),
+ * and it's a main session: not a subagent (it texts as its main session) nor a side chat. On an
+ * older runner, not one of its Home agent's chats either (remove once no runner sends homeFolder).
+ */
+export function offersCanText(runner: RunnerInfo | undefined, s: Pick<SessionSummary, "parentSessionId" | "sideOf" | "projectPath">): boolean {
+  return !!runner?.canText && accessOf(runner) === "manage" && !s.parentSessionId && !s.sideOf && runner.homeFolder !== s.projectPath;
+}
 
 /** Connected first, then by name. */
 export function sortRunners(list: KnownRunner[]): KnownRunner[] {
@@ -47,20 +63,30 @@ export function textingDown(runners: KnownRunner[]): string | undefined {
 /** What you may do on a runner (shared/access.ts): absent from the server means you own it. */
 export const accessOf = (r: Pick<RunnerInfo, "access"> | undefined): "manage" | "drive" | "view" => r?.access ?? "manage";
 
-const STORE_KEY = "tether.runners";
+/** This browser's runners, kept with whose they are (SPEC §3, Sharing runners). The old unkeyed list goes. */
+const STORE_KEY = "tether.runners.v2";
+const OLD_KEY = "tether.runners";
 
-export function loadKnown(): KnownRunner[] {
+/**
+ * The runners remembered for `email`, offline until the server lists them; none for anyone else, so
+ * a browser one person used shows another nothing of theirs.
+ */
+export function loadKnown(email: string | undefined): KnownRunner[] {
   try {
-    const list = JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]");
-    return Array.isArray(list) ? sortRunners(list.map((r: KnownRunner) => ({ ...r, online: false }))) : [];
+    localStorage.removeItem(OLD_KEY);
+    const saved = JSON.parse(localStorage.getItem(STORE_KEY) ?? "null");
+    if (!email || !saved || saved.email !== email || !Array.isArray(saved.runners)) return [];
+    return sortRunners(saved.runners.filter((r: KnownRunner) => accessOf(r) === "manage").map((r: KnownRunner) => ({ ...r, online: false })));
   } catch {
     return [];
   }
 }
 
-export function saveKnown(list: KnownRunner[]) {
+/** Keeps the owned runners for `email`; shared ones aren't kept. */
+export function saveKnown(list: KnownRunner[], email: string | undefined) {
+  if (!email) return;
   try {
-    localStorage.setItem(STORE_KEY, JSON.stringify(list));
+    localStorage.setItem(STORE_KEY, JSON.stringify({ email, runners: list.filter((r) => accessOf(r) === "manage") }));
   } catch {
     // private mode or full storage: we just won't remember offline runners across reloads
   }

@@ -2,9 +2,8 @@
 // session lists and projects, and the sessions this page has open.
 
 import { create } from "zustand";
-import { mergeHomeChat } from "./homeTabs";
 import { checkBuild } from "./build";
-import { PROTOCOL_VERSION, type HomeChatUpdate, type User } from "../../shared/protocol";
+import { PROTOCOL_VERSION, type RunnerBuild, type User } from "../../shared/protocol";
 import { applySummary, emptySummary, type SummaryState } from "../../shared/summary";
 import type { HarnessId, ModelList, ProjectInfo } from "../../shared/transcript";
 import { connect, on, onAuth, onLinkState, rpc, type AuthState, type LinkState } from "./connection";
@@ -13,10 +12,11 @@ import { startPresence, tellPresence } from "./presence";
 import { openSession, parseRoute, shortenHash, startShortUrls } from "./route";
 import { registerWorker, syncPush } from "./push";
 import { loadKnown, mergeRunners, reconnected, saveKnown, sortRunners, type KnownRunner } from "./runners";
-import { setHomeFolders, type Watching } from "./sessionList";
+import { setHomeFolders } from "./sessionList";
 import { SessionModel, type SessionView, type Verdict } from "./sessionModel";
 import { resubscriber, Subscriptions } from "./subscriptions";
 import { pendingSender, reconcile, type PendingSend } from "./pendingSends";
+import { loadRunnerFilter, saveRunnerFilter } from "./runnerFilter";
 
 /** Messages per `history` page closing a gap (the runner's most). */
 const GAP_PAGE = 200;
@@ -59,25 +59,24 @@ interface State {
   newSessionOpen: boolean;
   /** the sidebar shows only this folder's sessions */
   projectFilter?: string;
+  /** the sidebar shows only this runner's sessions */
+  runnerFilter?: string;
   /** the app's VAPID public key (hello); absent: the server has no push keys */
   pushKey?: string;
+  /** the server's git build stamp (hello); absent when outside git or on older servers */
+  serverBuild?: RunnerBuild;
   /** the last archive change made here: the sidebar patches its listSessions copies with it */
   archiveEdit?: { runnerId: string; sessionId: string; archived: boolean };
-  /** each runner's Home agent tabs and current chat (none: the next message starts one), newest `rev` wins */
-  homeChats: Record<string, HomeChatUpdate>;
-  /** each runner's "Watch all sessions" and the sessions its Home agent follows (homeAgentWatch) */
-  homeWatch: Record<string, Watching>;
 }
 
-const known = loadKnown();
-setHomeFolders(known);
+// Nothing is shown from this browser's memory until the server says who's signed in (hello).
 
 export const useStore = create<State>(() => ({
   link: "connecting",
   everOpen: false,
   auth: "ok",
   stale: false,
-  runners: known,
+  runners: [],
   sidebarOpen: false,
   summaries: {},
   projects: {},
@@ -85,9 +84,19 @@ export const useStore = create<State>(() => ({
   views: {},
   pending: {},
   newSessionOpen: false,
-  homeChats: {},
-  homeWatch: {},
+  runnerFilter: loadRunnerFilter(),
 }));
+
+useStore.subscribe((state, prev) => {
+  if (state.runnerFilter !== prev.runnerFilter) {
+    saveRunnerFilter(state.runnerFilter);
+  }
+});
+
+export function setRunnerFilter(runnerFilter?: string) {
+  saveRunnerFilter(runnerFilter);
+  useStore.setState({ runnerFilter });
+}
 
 const set = useStore.setState;
 const get = useStore.getState;
@@ -116,7 +125,12 @@ export function start() {
     else location.hash = url.slice(at);
   });
   on("hello", (m) => {
-    set((s) => ({ user: m.user, stale: s.stale || m.protocol !== PROTOCOL_VERSION, pushKey: m.push?.publicKey }));
+    // The runners this person owns that this browser remembers (another person's never show).
+    const before = get().user?.email === m.user.email ? get().runners : [];
+    const remembered = loadKnown(m.user.email).filter((k) => !before.some((r) => r.id === k.id));
+    const runners = sortRunners([...before, ...remembered]);
+    setHomeFolders(runners);
+    set((s) => ({ user: m.user, runners, stale: s.stale || m.protocol !== PROTOCOL_VERSION, pushKey: m.push?.publicKey, serverBuild: m.build }));
     // The server forgot what this device looked at with its old socket.
     tellPresence(true);
     resub.hello();
@@ -130,7 +144,7 @@ export function start() {
     resub.runners(back);
     for (const r of runners) if (r.online && (afterHello || back.includes(r.id))) refreshRunner(r.id);
     afterHello = false;
-    saveKnown(runners);
+    saveKnown(runners, get().user?.email);
     setHomeFolders(runners);
     set({ runners });
     // A runner that came online may give the open session its short link now.
@@ -155,15 +169,6 @@ export function start() {
           publish(m.runnerId, sum.id);
         }
       }
-  });
-  // Another device started a Home chat or cleared it (/new): this one's Home follows.
-  on("homeChat", ({ runnerId, sessionId, chats, labels, rev }) => {
-    noteHomeChat(runnerId, { sessionId, rev, ...(chats ? { chats } : {}), ...(labels ? { labels } : {}) });
-    // A server from before tabs passes no list on: the runner is asked for it.
-    if (!chats)
-      void rpc(runnerId, "homeAgent", {})
-        .then((r) => noteHomeChat(runnerId, { sessionId: r.sessionId, rev: r.rev ?? 0, ...(r.chats ? { chats: r.chats } : {}), ...(r.labels ? { labels: r.labels } : {}) }))
-        .catch(() => {});
   });
   on("event", (m) => {
     const entry = models.get(key(m.runnerId, m.sessionId));
@@ -359,22 +364,10 @@ export async function setPinned(runnerId: string, sessionId: string, pinned: boo
   await rpc(runnerId, "pinSession", { sessionId, pinned });
 }
 
-/** A runner's Home agent tabs and current chat, from an rpc's answer or a broadcast: only a newer one replaces what's here. */
-export function noteHomeChat(runnerId: string, u: HomeChatUpdate) {
-  const next = mergeHomeChat(get().homeChats[runnerId], u);
-  if (next) set((s) => ({ homeChats: { ...s.homeChats, [runnerId]: next } }));
-}
-
-
-/** What a runner's Home agent watches (a homeAgentWatch answer). */
-export function noteHomeWatch(runnerId: string, w: Watching) {
-  set((s) => ({ homeWatch: { ...s.homeWatch, [runnerId]: { watchAll: w.watchAll, ...(w.following ? { following: w.following } : {}) } } }));
-}
-
 /** Drops a disconnected runner from this browser's list. */
 export function forgetRunner(id: string) {
   const runners = sortRunners(get().runners.filter((r) => r.id !== id || r.online));
-  saveKnown(runners);
+  saveKnown(runners, get().user?.email);
   set({ runners });
 }
 

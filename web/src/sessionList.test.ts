@@ -15,6 +15,13 @@ test("recent sessions merge runners, newest first, without subagents; search by 
   expect(childrenOf(summaries, "b", "x")).toEqual([]);
 });
 
+test("recent sessions filtered by runner", () => {
+  expect(recentSessions(summaries, "", "a").map((r) => r.id)).toEqual(["y", "x"]);
+  expect(recentSessions(summaries, "", "b").map((r) => r.id)).toEqual(["z"]);
+  expect(recentSessions(summaries, "fix", "a")).toEqual([]);
+  expect(recentSessions(summaries, "fix", "b").map((r) => r.id)).toEqual(["z"]);
+});
+
 test("merging keeps one row per session; folder names", () => {
   const a = [{ ...s("x", 1), runnerId: "a" }];
   const b = [{ ...s("x", 7), runnerId: "a" }, { ...s("y", 2), runnerId: "a" }];
@@ -69,15 +76,12 @@ test("pinned sessions: their own group in pin order across runners, out of the r
 });
 
 test("the session menu's pin item: only for a main, listed session on a runner that pins", () => {
-  setHomeFolders([{ id: "a", homeFolder: "/home/agent" }]);
-  expect(pinMenuLabel("a", s("x", 1), true)).toBe("Pin");
-  expect(pinMenuLabel("a", s("x", 1, { pinned: 3 }), true)).toBe("Unpin");
-  expect(pinMenuLabel("a", s("x", 1), false)).toBeUndefined();
-  expect(pinMenuLabel("a", s("x", 1, { archived: true }), true)).toBeUndefined();
-  expect(pinMenuLabel("a", s("x", 1, { parentSessionId: "y" }), true)).toBeUndefined();
-  expect(pinMenuLabel("a", s("x", 1, { sideOf: "y" }), true)).toBeUndefined();
-  expect(pinMenuLabel("a", s("x", 1, { projectPath: "/home/agent" }), true)).toBeUndefined();
-  setHomeFolders([]);
+  expect(pinMenuLabel(s("x", 1), true)).toBe("Pin");
+  expect(pinMenuLabel(s("x", 1, { pinned: 3 }), true)).toBe("Unpin");
+  expect(pinMenuLabel(s("x", 1), false)).toBeUndefined();
+  expect(pinMenuLabel(s("x", 1, { archived: true }), true)).toBeUndefined();
+  expect(pinMenuLabel(s("x", 1, { parentSessionId: "y" }), true)).toBeUndefined();
+  expect(pinMenuLabel(s("x", 1, { sideOf: "y" }), true)).toBeUndefined();
 });
 
 test("a pinned session its runner can't find never shows on Home", () => {
@@ -129,4 +133,16 @@ test("a session watching background work reads as watching on Home, not finished
   expect(at({ watching, status: "running" })).toBe("working");
   expect(at({ watching, requests: 1 })).toBe("needs");
   expect(at({ watching, archived: true })).toBeUndefined();
+});
+
+test("an older runner's Home agent chats stay out of the lists (RunnerInfo.homeFolder)", () => {
+  const row = (id: string, projectPath: string) => ({ id, harness: "claude", projectPath, title: id, updatedAt: 1, status: "idle" }) as SessionSummary;
+  const summaries = { a: { sessions: { "claude:x": row("claude:x", "/p"), "claude:h": row("claude:h", "/home/agent") } } } as any;
+  setHomeFolders([{ id: "a", homeFolder: "/home/agent" }]);
+  try {
+    expect(recentSessions(summaries).map((r) => r.id)).toEqual(["claude:x"]);
+  } finally {
+    setHomeFolders([]);
+  }
+  expect(recentSessions(summaries).map((r) => r.id).sort()).toEqual(["claude:h", "claude:x"]);
 });

@@ -289,6 +289,29 @@ describe("allowed fallback keys", () => {
     expect(state.fallbackKeys).toEqual(["azure", "openai"]);
   });
 
+  test("Azure fallback keeps the session's model and persists the matching deployment", async () => {
+    const t = multiKey();
+    t.credentials.setAzure({ endpoint: "https://fake.invalid", deployments: [{ name: "luna", model: "gpt-6-luna" }, { name: "sol", model: "gpt-6.2-sol" }] });
+    t.prefs.set("claude:one", { model: "gpt-6.2-sol" });
+    await t.live.setAutoKey("claude:one", true, ["azure"]);
+    await t.live.send("claude:one", "fix it");
+    const s = await settled(t, (s) => s.state.billing?.label === "Azure");
+    expect(t.adapter.drivers.at(-1)!.opts.credential?.deployment).toBe("sol");
+    expect(t.prefs.get(s.id).deployment).toBe("sol");
+    expect(notices(s)[0]).toContain("Azure (sol)");
+  });
+
+  test("Azure fallback stops when no allowed deployment matches the session's model", async () => {
+    const t = multiKey();
+    t.prefs.set("claude:one", { model: "gpt-6.2-sol" });
+    await t.live.setAutoKey("claude:one", true, ["azure"]);
+    await t.live.send("claude:one", "fix it");
+    const s = await settled(t, (s) => notices(s).length > 0);
+    expect(t.sends()).toBe(1);
+    expect(t.prefs.get(s.id).source).toBe("subscription");
+    expect(notices(s)[0]).toContain("No Azure deployment matches gpt-6.2-sol");
+  });
+
   test("an unset preferred key falls through only to the next allowed key", async () => {
     const t = multiKey();
     await t.live.setAutoKey("claude:one", true, ["azure", "openai"]);

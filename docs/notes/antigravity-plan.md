@@ -125,9 +125,9 @@ Probed on agy 1.5.13 first; each line is what was found, then what Tether does.
   method (`initialize.authMethods`), and `~/.gemini/antigravity-acp/settings.json` can name it. It
   would join Settings → Credentials like the Anthropic and OpenAI keys, with the same billing safety
   (confirmed source, never a key by surprise). Left out on purpose until asked for.
-- **Usage for Antigravity.** Settings → Usage doesn't count Antigravity yet (no `usageStores`).
-  Tokens are reported per turn (`session/prompt`'s `usage`: input, output, cached, thought), and the
-  store keeps per-step generation metadata, but in undocumented protobuf.
+- **Usage outside Tether.** Settings → Usage records live Tether prompts with usage in their ACP
+  response. Standalone turns would need a separate source, such as the store's per-step generation
+  metadata in undocumented protobuf.
 - **Antigravity's own Auto mode.** Its TUI has `--mode auto`; over ACP it's refused on 1.5.13
   ("needs the OS terminal sandbox and may not be rolled out to you yet"). Offer it once
   `session/set_mode` accepts it.

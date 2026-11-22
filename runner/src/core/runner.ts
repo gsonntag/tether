@@ -3,11 +3,12 @@
 
 import { defang } from "../../../shared/fromTether";
 import { hostname } from "node:os";
+import { resolve } from "node:path";
 import { CredentialStore, redact } from "../credentials";
 import { CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { testAzure } from "../adapters/codex/upstream";
-import { PROTOCOL_VERSION, type HarnessInfo, type HomeChatUpdate, type RunnerInfo } from "../../../shared/protocol";
+import { PROTOCOL_VERSION, type HarnessInfo, type RunnerBuild, type RunnerInfo } from "../../../shared/protocol";
 import { parseSessionId, sessionId } from "../../../shared/ids";
 import type { ForkedFrom } from "../../../shared/fork";
 import type { SessionPrefs } from "../config";
@@ -45,6 +46,12 @@ export interface RunnerOptions {
   /** the name a blank rename goes back to (the hostname, or a friendly one); `name` when absent */
   defaultName?: string;
   version: string;
+  /** git build stamp read at startup; absent outside a git checkout or on fallback */
+  build?: RunnerBuild;
+  /** periodically re-reads the git build stamp (commit, behind, dirty) */
+  detectBuild?: () => Promise<RunnerBuild | undefined>;
+  /** how often to check for git build stamp changes; defaults to 1 hour */
+  buildCheckMs?: number;
   detectHarnesses: () => Promise<HarnessInfo[]>;
   /** how often to look for installed or removed harnesses */
   harnessCheckMs?: number;
@@ -67,8 +74,6 @@ export interface RunnerOptions {
    * Terminal mode (SPEC §8): Tether's tmux and where hooks report. index.ts turns it on (tmux on
    * TMUX_SOCKET, when installed); absent or false, the runner has no terminals (tests).
    */
-  /** the Home agent's folder: sent with hello so browsers leave its chats out of their lists */
-  homeFolder?: string;
   terminal?: false | { tmux?: Tmux; hookSocket?: string | null; spawn?: SpawnPty; pollMs?: number; quitTimeoutMs?: number; shell?: string };
 }
 
@@ -84,18 +89,23 @@ export function createRunner(o: RunnerOptions) {
 
   let harnesses = o.detectHarnesses();
   let name = o.name;
+  let currentBuild: RunnerBuild | undefined = o.build;
   const helloInfo = async (): Promise<Omit<RunnerInfo, "connectedAt">> => ({
     id: o.runnerId,
     name,
     hostname: hostname(),
     version: o.version,
+    ...(currentBuild ? { build: currentBuild } : {}),
     protocol: PROTOCOL_VERSION,
     harnesses: await harnesses,
-    ...(o.homeFolder ? { homeFolder: o.homeFolder } : {}),
     git: true,
     gitActions: true,
     files: true,
     pinning: true,
+    // The peers module's op (off with it).
+    ...(process.env.TETHER_PEERS === "0" ? {} : { spawnedFamily: true }),
+    existingWorktrees: true,
+    canText: true,
     // The relay shows the runner to these people (shared/access.ts) and only its owners see the list.
     ...(prefs.shared().length ? { shared: prefs.shared() } : {}),
     ...(hubPort.state ? { textingHub: hubPort.state } : {}),
@@ -139,12 +149,11 @@ export function createRunner(o: RunnerOptions) {
     log: o.log,
     discoverMs: o.core?.discoverMs,
     evictMs: o.core?.evictMs,
-    // The Home agent's chats show on Home, not in the lists.
-    hideProjects: [o.core?.hideProjects, o.homeFolder?.replace(/\*/g, "")].filter(Boolean).join(","),
+    hideProjects: o.core?.hideProjects,
   });
   // Open requests are kept in runner.json, so they survive a restart (SPEC §7).
   const broker = new RequestBroker(o.policy, { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (open, closed) => prefs.setRequests(open, closed), log: o.log });
-  const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, maxLive: o.core?.maxLive, homeFolder: o.homeFolder, attachmentsDir: o.attachmentsDir, credentials: o.credentials, costs });
+  const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, maxLive: o.core?.maxLive, attachmentsDir: o.attachmentsDir, credentials: o.credentials, costs });
   if (o.credentials) {
     ops.register("credentials", () => o.credentials!.status());
     ops.register("setCredential", (a) => { const result = o.credentials!.set(a.source, a.key, a.endpoint, a.deployment, a.rates); live.credentialsChanged(); return result; });
@@ -216,6 +225,22 @@ export function createRunner(o: RunnerOptions) {
   }, o.harnessCheckMs ?? 60_000);
   timer.unref?.();
 
+  if (o.detectBuild) {
+    // Refresh at startup and hourly; re-send hello when build changes.
+    const refreshBuild = async () => {
+      const before = JSON.stringify(currentBuild);
+      // A failed read (git busy, offline) keeps what was known.
+      const next = await o.detectBuild!().catch(() => undefined);
+      if (next && JSON.stringify(next) !== before) {
+        currentBuild = next;
+        conn.send({ t: "hello", runner: await helloInfo() });
+      }
+    };
+    void refreshBuild();
+    const buildTimer = setInterval(refreshBuild, o.buildCheckMs ?? 3_600_000);
+    buildTimer.unref?.();
+  }
+
   return {
     bus,
     ops,
@@ -233,11 +258,19 @@ export function createRunner(o: RunnerOptions) {
         return s ? lookAt(s) : undefined;
       },
       loaded: () => [...core.sessions.values()].map(lookAt),
+      // From runner.json, not the lists (they hold only recent sessions, and none until discovery).
+      texters: () =>
+        prefs
+          .texters()
+          .map((id) => {
+            const row = core.sessions.get(id)?.summary ?? core.book.get(id);
+            return { id, title: prefs.get(id).title ?? row?.title ?? "", at: row?.updatedAt ?? prefs.get(id).at ?? 0 };
+          })
+          .sort((a, b) => b.at - a.at)
+          .map(({ id, title }) => ({ id, title })),
       viewersOf: (id: string) => live.read.viewersOf(id),
-      homeFolder: o.homeFolder,
-      apiCost: (id: string) => (costs.has(id) ? costs.get(id) : undefined),
+      apiCost: (id: string) => (costs.has(id) || prefs.get(id).metered ? costs.get(id) : undefined),
       hiddenFolder: (path: string) => core.hidden(path),
-      announceHomeChat: (u: HomeChatUpdate) => void conn.send({ t: "homeChat", ...u }),
       hub: hubPort,
       sessions: {
         adapters: () => o.adapters ?? [],
@@ -281,10 +314,19 @@ export function createRunner(o: RunnerOptions) {
         tell: (id: string, text: string, attachments: Attachment[] = []) => (live.attachments.markUsed(attachments), live.tell(id, defang(text), attachments)),
         answer: (id: string, requestId: string, a: RequestAnswer) =>
           live.answerRequest(id, requestId, a.allow ? { ...a, ...(a.notes ? { notes: defang(a.notes) } : {}) } : { allow: false, ...(a.reason ? { reason: defang(a.reason) } : {}) }),
-        carrier: (f: (id: string, source: BillingSource) => Promise<string>) => { live.carrier = f; },
+        carrier: (f: (id: string, source: BillingSource, model?: string) => Promise<string>) => { live.carrier = f; },
         fork: (id: string, f: ForkOptions = {}) => (forker ? forker(id, f) : Promise.reject(new Error("This runner can't fork sessions."))),
         forker: (f: (id: string, o: ForkOptions) => Promise<string>) => { forker = f; },
         moveSides: (from: string, to: string) => core.moveSides(from, to),
+        sideChatsOf: (id: string) => core.o.prefs.sideChatsOf(id),
+        closeDriver: async (id: string) => {
+          const s = core.sessions.get(id);
+          if (s) await live.release(s);
+        },
+        kept: (id: string) => {
+          const p = core.o.prefs.get(id);
+          return { ...(p.archived ? { archived: true } : {}), ...(p.movedTo ? { movedTo: p.movedTo } : {}) };
+        },
         projects: () => core.listProjects(),
         // Side chats (SPEC §16a) aren't in the lists: they show under their session.
         list: () => core.listed().filter((r) => !r.sideOf),
@@ -324,6 +366,11 @@ export function createRunner(o: RunnerOptions) {
         setArchived: async (id: string, archived: boolean) => core.setArchived(await core.open(id), archived),
         setWorktree: async (id: string, worktree: WorktreeRecord) => core.setWorktree(await core.open(id), worktree),
         worktree: (id: string) => prefs.get(id).worktree,
+        // A session that went on under another id (a source change, a renewal) isn't one: its successor has the record.
+        worktreeUsers: (path?: string) =>
+          prefs
+            .ids((p) => !p.carried && !p.movedTo && !!p.worktree && (path === undefined || resolve(p.worktree.path) === resolve(path)))
+            .map((id) => ({ id, worktree: prefs.get(id).worktree!, ...(prefs.get(id).archived ? { archived: true } : {}) })),
         setup: async (id: string, command: string, { beforeRelease, ...run }: Omit<SetupRun, "done"> & { beforeRelease?: () => void | Promise<void> } = {}) => {
           const s = await core.open(id);
           live.queue.setupStarted(s);

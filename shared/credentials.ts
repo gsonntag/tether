@@ -28,6 +28,15 @@ export interface SourceOption {
   /** a runner from before deployment lists: its one deployment */
   deployment?: string;
 }
+/** Resolve a deployment name or an unambiguous model alias. With no model, use the first deployment. */
+export function resolveAzureDeployment(deployments: NonNullable<SourceOption["deployments"]>, model?: string): string | undefined {
+  if (!model) return deployments[0]?.name;
+  const named = deployments.find(({ name }) => name === model);
+  if (named) return named.name;
+  const matches = deployments.filter((deployment) => deployment.model === model);
+  return matches.length === 1 ? matches[0]?.name : undefined;
+}
+
 /** Available fallback keys, in the user's order. An explicit list excludes every omitted key. */
 export function keyTargets(options: SourceOption[], lastKey?: BillingSource, order?: CredentialSource[]): SourceOption[] {
   const keys = options.filter((o) => o.source !== "subscription");

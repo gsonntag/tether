@@ -14,7 +14,7 @@ import type { AcpUpdate } from "./client";
 const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 
 /** ACP's tool kinds as Tether's. A file written whole (`edit` with no old text) is a write. */
-const KINDS: Record<string, ToolKind> = { read: "read", edit: "edit", delete: "edit", move: "edit", search: "search", execute: "shell", fetch: "fetch" };
+const KINDS: Record<string, ToolKind> = { read: "read", edit: "edit", delete: "edit", move: "edit", search: "search", execute: "shell", fetch: "fetch", task: "task" };
 
 function statusOf(s: unknown): ToolStatus | undefined {
   if (s === "completed") return "done";
@@ -52,7 +52,13 @@ export function acpTool(u: AcpUpdate, before?: ToolPart): ToolPart {
   const created = diffs.length > 0 && diffs.every((d) => !d.old_string);
   const acpKind = str(u.kind) ?? (before ? undefined : "other");
   // Tether's own tools (`mcp_<server>_tether_send`, …) draw as peer cards.
-  let kind: ToolKind = peerAction(name.toLowerCase()) ? "peer" : acpKind ? (KINDS[acpKind] ?? "other") : (before?.kind ?? "other");
+  let kind: ToolKind = peerAction(name.toLowerCase())
+    ? "peer"
+    : ["invoke_subagent", "task", "agent"].includes(name.toLowerCase())
+    ? "task"
+    : acpKind
+    ? (KINDS[acpKind] ?? "other")
+    : (before?.kind ?? "other");
   if (kind === "edit" && (created || (!diffs.length && typeof (raw.Content ?? raw.content) === "string" && !raw.Target && !raw.old_string))) kind = "write";
   const command = kind === "shell" ? (str(raw.CommandLine) ?? str(raw.command) ?? str(raw.cmd) ?? before?.command ?? str(u.title)) : undefined;
   const path = str(u.locations?.[0]?.path) ?? str(raw.Path) ?? str(raw.path) ?? str(raw.file_path) ?? before?.path;
@@ -65,6 +71,17 @@ export function acpTool(u: AcpUpdate, before?: ToolPart): ToolPart {
   if (kind === "write") {
     const content = diffs.length ? diffs[0]!.new_string : (raw.Content ?? raw.content);
     if (typeof content === "string") input.content = content;
+  }
+  if (kind === "task") {
+    const prompt = str(raw.Prompt) ?? str(raw.prompt);
+    const role = str(raw.Role) ?? str(raw.role);
+    const typeName = str(raw.TypeName) ?? str(raw.typeName) ?? str(raw.subagent_type);
+    const who = role ?? typeName;
+    const head = prompt ? prompt.split("\n")[0]!.trim() : undefined;
+    const desc = str(raw.toolSummary) ?? str(raw.description) ?? [who, head].filter(Boolean).join(" · ");
+    if (desc) input.description = desc;
+    if (prompt) input.prompt = prompt;
+    if (typeName ?? role) input.subagent_type = typeName ?? role;
   }
   let out = rawOutput(u);
   const status = statusOf(u.status) ?? before?.status ?? "running";
@@ -144,12 +161,14 @@ export class AcpTranscript {
   }
 
   /** A prompt Tether sent (live): its message, as a replay would show it. */
-  prompt(parts: Part[]): Msg {
+  prompt(parts: Part[], origin?: Msg["origin"]): Msg {
     this.turn = undefined;
     this.user = undefined;
     this.last = undefined;
     const m = this.newMsg("user");
     m.parts = parts;
+    // Set before it's emitted: modules read who wrote it from the event (a peer's message isn't the person's).
+    if (origin) m.origin = origin;
     this.emit(m);
     return m;
   }

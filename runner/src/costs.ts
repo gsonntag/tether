@@ -168,12 +168,15 @@ function validUsage({ input, output, cached, write30m, write12h }: TokenUsage) {
 /**
  * One Azure request's price. The deployment's own rates (Override) price short requests only: one
  * set of numbers says nothing of long context. Otherwise its model and type find Tether's dated table
- * (`shared/azureRates.ts`): ≤ 272K input tokens short, else long. Azure lists one write rate, so
- * writes are priced by their total, with or without a lifetime breakdown, where a rate exists.
+ * (`shared/azureRates.ts`): ≤ 272K input tokens short, else long. GPT-6.2 Sol has two write rates.
+ * Without a usable lifetime breakdown, its shorter write rate gives a lower bound.
  */
-export function estimateAzureCost(pricing: AzurePricing | undefined, usage: { input: number; output: number; cached: number; writes: number }, tier?: unknown): SessionCost {
-  const { input, output, cached, writes } = usage;
+export function estimateAzureCost(pricing: AzurePricing | undefined, usage: {
+  input: number; output: number; cached: number; writes: number; writes12h?: number;
+}, tier?: unknown): SessionCost {
+  const { input, output, cached, writes, writes12h } = usage;
   if (!validUsage({ input, output, cached, write30m: writes, write12h: 0 })) return unknown("no-usage");
+  if (writes12h !== undefined && (!count(writes12h) || writes12h > writes)) return unknown("no-usage");
   if (!(tier === undefined || tier === null || tier === "" || tier === "default" || tier === "standard" || tier === "auto")) return unknown(`tier:${reasonValue(tier)}`);
   const long = input > AZURE_LONG_CONTEXT;
   let band: AzureBand | undefined;
@@ -189,11 +192,17 @@ export function estimateAzureCost(pricing: AzurePricing | undefined, usage: { in
     if (!table) return unknown(`type:${reasonValue(pricing.type)}`);
     band = long ? table.long : table.short;
     if (!band) return unknown("long-context");
-    notes.push("azure-table");
+    notes.push(table.source ? "azure-sol-table" : "azure-table");
   }
   if (writes > 0 && band.cacheWrite === undefined) return unknown("no-write-rate");
-  const usd = ((input - cached - writes) * band.input + cached * band.cached + writes * (band.cacheWrite ?? 0) + output * band.output) / 1_000_000;
-  return validUsd(usd) ? { usd, estimated: true, complete: true, ...(notes.length ? { notes } : {}) } : unknown("no-usage");
+  const writeCost = writes * (band.cacheWrite ?? 0)
+    + (band.cacheWrite12h === undefined ? 0 : (writes12h ?? 0) * (band.cacheWrite12h - band.cacheWrite!));
+  const usd = ((input - cached - writes) * band.input + cached * band.cached + writeCost + output * band.output) / 1_000_000;
+  const missingLifetime = writes > 0 && band.cacheWrite12h !== undefined && writes12h === undefined;
+  return validUsd(usd) ? {
+    usd, estimated: true, complete: !missingLifetime,
+    ...(missingLifetime ? { reasons: ["no-cache-ttl"] } : {}), ...(notes.length ? { notes } : {}),
+  } : unknown("no-usage");
 }
 
 const FEE_TOOLS = ["web_search_call", "image_generation_call", "file_search_call", "code_interpreter_call"];
@@ -228,12 +237,12 @@ export function priceResponse(source: "openai" | "azure", response: any, opts: {
   const total = details.cache_write_tokens;
   const write30m = details.cache_write_tokens_details?.ttl_30m_tokens;
   const write12h = details.cache_write_tokens_details?.ttl_12h_tokens;
-  const breakdown = Number.isSafeInteger(write30m) && Number.isSafeInteger(write12h) && (total === undefined || write30m + write12h === total);
+  const breakdown = count(write30m) && count(write12h) && (total === undefined || write30m + write12h === total);
 
   if (source === "azure") {
-    // One write rate: the total, else the breakdown's sum; none reported is none written.
+    // The total takes precedence. Use the lifetime counts only when they reconcile with it.
     const writes = total ?? (breakdown ? write30m + write12h : details.cache_write_tokens_details == null ? 0 : undefined);
-    return done(estimateAzureCost(opts.pricing, { input, output, cached, writes }, response?.service_tier));
+    return done(estimateAzureCost(opts.pricing, { input, output, cached, writes, writes12h: breakdown ? write12h : undefined }, response?.service_tier));
   }
 
   const request = parsed(opts.request);

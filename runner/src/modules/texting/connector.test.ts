@@ -2,26 +2,25 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FROM_DISCORD, FROM_IMESSAGE, TEXTED_MARKS, fromTexted, tetherOrigin, titleText } from "../../../../shared/fromTether";
+import { FROM_DISCORD, FROM_IMESSAGE, fromTexted, tetherOrigin, titleText } from "../../../../shared/fromTether";
 import type { Attachment } from "../../../../shared/attachments";
 import { FILES_ONLY, Texter } from ".";
 import { Channel, FatalError, type ChannelLink, type Connector, type Inbound, type Outbound } from "./connector";
 import { connectors } from "./connectors";
 import { imessageConnector } from "./imessage";
-import { HomeLine, type TakeVia } from "../homeLine";
+import { PhoneLine } from "../phoneLine";
 import { TextingStore } from "./store";
 import { casualText, TEXTS } from "./texts";
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
 /** A connector whose link the test holds: what it sent, and a way to be the person. */
-function fake(id: string, mark: string) {
+function fake(id: string) {
   const state = { enabled: true, configured: true, sent: [] as Outbound[], opens: 0, fail: undefined as string | undefined, hear: (_m: Inbound) => {}, links: [] as (ChannelLink & { end: () => void })[] };
   let n = 0;
   const c: Connector = {
     id,
     label: id,
-    mark,
     images: id === "discord",
     about: "",
     notReady: `${id} isn't set`,
@@ -43,25 +42,13 @@ function fake(id: string, mark: string) {
   return { c, state };
 }
 
-function setup(o: { home?: boolean; attachmentsDir?: string } = {}) {
-  const im = fake("imessage", FROM_IMESSAGE);
-  const dc = fake("discord", FROM_DISCORD);
+function setup(o: { attachmentsDir?: string } = {}) {
+  const im = fake("imessage");
+  const dc = fake("discord");
   const told: [string, string, Attachment[]?][] = [];
-  const took: [string, TakeVia | undefined][] = [];
-  const line = new HomeLine();
-  /** the Home agent's Texts chat, and whether it's busy (a turn running or messages waiting) */
-  const home = { busy: false };
-  if (o.home)
-    line.home = {
-      take: async (text, via) => void took.push([text, via]),
-      isTextsChat: (id) => id === "claude:texts",
-      textsBusy: () => home.busy,
-      homes: () => [{ n: 0, chat: "claude:texts" }],
-      newHome: async () => 1,
-      deleteHome: async () => [{ n: 0, chat: "claude:texts" }],
-    };
+  const line = new PhoneLine();
   const sessions: Record<string, any> = {
-    "claude:a": { summary: { id: "claude:a", projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } },
+    "claude:a": { summary: { id: "claude:a", projectPath: "/p" }, status: "idle", requests: [], state: { requests: [], canText: true } },
   };
   const store = new TextingStore(undefined, {});
   const t = new Texter(
@@ -69,7 +56,7 @@ function setup(o: { home?: boolean; attachmentsDir?: string } = {}) {
       log: () => {},
       runnerId: "box",
       appUrl: "https://tether.example/",
-      homeLine: line,
+      phoneLine: line,
       ...(o.attachmentsDir ? { attachmentsDir: o.attachmentsDir } : {}),
       session: (id) => sessions[id],
       viewersOf: () => [],
@@ -80,24 +67,17 @@ function setup(o: { home?: boolean; attachmentsDir?: string } = {}) {
     Date.now,
     { list: [im.c, dc.c] },
   );
-  // As the texting module wires it.
   // As the texting module wires it (index.ts textingModule).
-  line.phone = {
-    send: (text, o) => t.homeText(text, { reply: true, answer: !!o?.answer, ...(o?.about ? { about: o.about } : {}), ...(o?.chat ? { chat: o.chat } : {}) }),
-    text: (from, body, opts) => t.personText(from, body, opts),
-  };
+  line.phone = { text: (from, body, opts) => t.personText(from, body, opts) };
   /** the session's state as the runner sees it (idle unless set) */
   const look = (id: string) => sessions[id];
-  return { t, im: im.state, dc: dc.state, told, took, store, line, home, look };
+  return { t, im: im.state, dc: dc.state, told, store, line, look };
 }
 
 describe("the registry", () => {
-  test("iMessage first, then Discord; each marks the person's words its own way", () => {
+  test("iMessage first, then Discord; older history's texted marks still read as the person's", () => {
     const list = connectors(new TextingStore(undefined, {}));
     expect(list.map((c) => c.id)).toEqual(["imessage", "discord"]);
-    expect(new Set(list.map((c) => c.mark)).size).toBe(list.length);
-    // Every connector's mark is one the app knows (shared/fromTether.ts), so its texts show as the person's.
-    for (const c of list) expect(Object.values(TEXTED_MARKS)).toContain(c.mark as any);
     expect(fromTexted(`${FROM_DISCORD}hi`)).toEqual({ kind: "discord", text: "hi" });
     expect(tetherOrigin(`${FROM_DISCORD}start x`)).toEqual({ origin: { kind: "discord" }, text: "start x" });
     expect(titleText(`${FROM_DISCORD}start x`)).toBe("start x");
@@ -112,7 +92,7 @@ describe("the registry", () => {
 
 describe("a channel", () => {
   test("opens only when on and set; tags what it hears; reconnects after a drop; a fatal end stays down", async () => {
-    const f = fake("x", "[From X] ");
+    const f = fake("x");
     const heard: Inbound[] = [];
     const ch = new Channel(f.c, (m) => heard.push(m), () => {});
     f.state.enabled = false;
@@ -141,7 +121,7 @@ describe("a channel", () => {
   });
 
   test("a failed connect says so", async () => {
-    const f = fake("x", "[From X] ");
+    const f = fake("x");
     f.state.fail = "nope";
     const ch = new Channel({ ...f.c, service: "X Cloud" }, () => {}, () => {});
     await ch.start();
@@ -185,25 +165,24 @@ describe("texting over several connectors", () => {
   });
 
   test("the same message id on two connectors is two messages", async () => {
-    const s = setup({ home: true });
+    const s = setup();
     await s.t.start();
-    s.im.hear({ id: "1", text: "home: a" });
-    s.dc.hear({ id: "1", text: "home: b" });
-    s.dc.hear({ id: "1", text: "home: b" });
+    await s.t.attention("claude:a");
+    s.im.hear({ id: "1", text: "1 a" });
+    s.dc.hear({ id: "1", text: "1 b" });
+    s.dc.hear({ id: "1", text: "1 b" });
     await tick();
-    expect(s.took.map((x) => x[0])).toEqual(["a", "b"]);
+    expect(s.told.map((x) => x[1])).toEqual(["a", "b"]);
   });
 
-  test("the Home agent gets Discord's words marked as Discord's, and answers on Discord", async () => {
-    const s = setup({ home: true });
+  test("with no session open and none ticked, a plain text says no session can text; text_person goes where the person last wrote", async () => {
+    const s = setup();
     await s.t.start();
     s.dc.hear({ text: "start the login fix" });
     await tick();
-    expect(s.took).toEqual([["start the login fix", { mark: FROM_DISCORD }]]);
-    expect(await s.line.phone!.send("ok, on it")).toBe(true);
-    expect(s.dc.sent.at(-1)!.text).toBe("[h] ok, on it");
+    expect(s.told).toEqual([]);
+    expect(s.dc.sent.at(-1)!.text).toBe(TEXTS.noTexters);
     expect(s.im.sent).toEqual([]);
-    // text_person from a session goes there too.
     expect((await s.line.phone!.text("claude:a", "PR is up")).isError).toBeUndefined();
     expect(s.dc.sent.at(-1)!.text).toStartWith("[1] PR is up\nhttps://tether.example/");
   });
@@ -211,7 +190,7 @@ describe("texting over several connectors", () => {
   test("files: stored for the session (read-only), and passed along; a file alone still reaches it", async () => {
     const dir = mkdtempSync(join(tmpdir(), "texting-files-"));
     try {
-      const s = setup({ home: true, attachmentsDir: dir });
+      const s = setup({ attachmentsDir: dir });
       await s.t.start();
       await s.t.attention("claude:a");
       // A real PNG's first bytes: an image is what its bytes say (one that isn't is kept as a plain file, images.test.ts).
@@ -236,13 +215,6 @@ describe("texting over several connectors", () => {
       await tick(5);
       expect(s.told.at(-1)).toEqual(["claude:a", "and this"]);
       expect(s.dc.sent.some((o) => o.text === TEXTS.fileSkipped("huge.png"))).toBe(true);
-      // The Home agent stores them for its chat.
-      s.dc.hear({ text: "home: look", files: [png] });
-      await tick(5);
-      const via = s.took.at(-1)![1]!;
-      expect(via.mark).toBe(FROM_DISCORD);
-      const stored = await via.files!("claude:home");
-      expect(stored[0]!.path).toContain("/claude_home-");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -270,7 +242,7 @@ describe("iMessage as a connector", () => {
     const files: string[] = [];
     let n = 0;
     const c = imessageConnector(store, async () => ({ send: async (t) => (sent.push(t), `m${++n}`), sendFile: async (f) => (files.push(f.name), `m${++n}`), closed: new Promise(() => {}), stop: async () => {} }));
-    expect([c.enabled(), c.configured(), c.mark, c.images ?? false]).toEqual([true, true, FROM_IMESSAGE, true]);
+    expect([c.enabled(), c.configured(), c.images ?? false]).toEqual([true, true, true]);
     expect(JSON.stringify(c.forms())).not.toContain("imessage-secret-123");
     expect(c.forms().map((f) => [f.key, f.status])).toEqual([["phone", "••••1234"], ["project", "Set"]]);
     const link = await c.open(() => {}, () => {});
@@ -289,7 +261,7 @@ describe("iMessage as a connector", () => {
 
 describe("review fixes", () => {
   test("answers go back the way the person wrote; Send to only steers Tether's own texts", async () => {
-    const s = setup({ home: true });
+    const s = setup();
     await s.t.start();
     s.t.prefer("imessage");
     // A request text: Tether's own, to the preferred one.
@@ -306,13 +278,9 @@ describe("review fixes", () => {
     // Its next request is Tether's own again: the preferred one.
     await s.t.attention("claude:a");
     expect(s.im.sent.length).toBe(2);
-    // The Home agent: its reply goes back on Discord, its own text_person on the preferred one.
-    s.dc.hear({ text: "home: what's up" });
-    await tick();
-    expect(await s.line.phone!.send("not much")).toBe(true);
-    expect(s.dc.sent.at(-1)!.text).toBe("[h] not much");
-    expect((await s.line.phone!.text("home", "PR merged")).isError).toBeUndefined();
-    expect(s.im.sent.at(-1)!.text).toBe("[h] PR merged");
+    // Its own text_person: Tether's own text, on the preferred one.
+    expect((await s.line.phone!.text("claude:a", "PR merged")).isError).toBeUndefined();
+    expect(s.im.sent.at(-1)!.text).toStartWith("[1] PR merged");
   });
 
   test("files never drop silently: held with the picker's text, a number with just files, with an answer", async () => {
@@ -322,17 +290,17 @@ describe("review fixes", () => {
       const sessions = (s.t as any).ctx.session;
       await s.t.start();
       const png = (name = "a.png") => ({ name, mimeType: "image/png", size: 1, read: async () => new Uint8Array([7]) });
-      // Nothing open, no Home agent: the reply says nothing's waiting, and that the file didn't go.
+      // Nothing open, no Home agent, no session may text: the reply says so, and that the file didn't go.
       s.dc.hear({ text: "look", files: [png()] });
       await tick(5);
-      expect(s.dc.sent.map((o) => o.text)).toEqual([TEXTS.nothingOpen, TEXTS.filesNotSent]);
-      // Two open: held for the picker with its file, then delivered with it.
+      expect(s.dc.sent.map((o) => o.text)).toEqual([TEXTS.noTexters, TEXTS.filesNotSent]);
+      // Two open, a number that isn't: held for the picker with its file, then delivered with it.
       await s.t.attention("claude:a");
-      (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } };
+      (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [], canText: true } };
       await s.t.attention("codex:b");
-      s.dc.hear({ text: "see this", files: [png("held.png")] });
+      s.dc.hear({ text: "7 see this", files: [png("held.png")] });
       await tick(5);
-      expect(s.dc.sent.at(-1)!.text).toStartWith(TEXTS.which);
+      expect(s.dc.sent.at(-1)!.text).toStartWith("[7] isn't waiting on a reply");
       expect(s.dc.sent.at(-1)!.text).not.toContain(TEXTS.filesNotSent);
       s.dc.hear({ text: "2" });
       await tick(5);
@@ -365,7 +333,7 @@ describe("review fixes", () => {
   });
 
   test("a fatal connect error isn't retried; restart clears it", async () => {
-    const f = fake("x", "[From X] ");
+    const f = fake("x");
     let calls = 0;
     const ch = new Channel({ ...f.c, open: async () => (calls++, Promise.reject(new FatalError("bad token"))) }, () => {}, () => {});
     await ch.start();
@@ -394,7 +362,7 @@ describe("second review round", () => {
   async function twoOpen(o: { attachmentsDir?: string } = {}) {
     const s = setup(o);
     const sessions = (s.t as any).ctx.session;
-    (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } };
+    (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [], canText: true } };
     await s.t.start();
     await s.t.attention("claude:a");
     await s.t.attention("codex:b");
@@ -408,7 +376,7 @@ describe("second review round", () => {
       const notSent = () => s.dc.sent.filter((o) => o.text === TEXTS.filesNotSent).length;
       // Held, then "2 other words": those words go, and the held file goes with them (it was meant for
       // the same place).
-      s.dc.hear({ text: "look", files: [png()] });
+      s.dc.hear({ text: "9 look", files: [png()] });
       await tick(5);
       s.dc.hear({ text: "2 other words" });
       await tick(5);
@@ -417,13 +385,13 @@ describe("second review round", () => {
       expect(notSent()).toBe(0);
       // Held, then a new unclear text replaces it (a photo, then its caption): the file moves to it.
       await s.t.attention("codex:b");
-      s.dc.hear({ text: "look again", files: [png()] });
+      s.dc.hear({ text: "9 look again", files: [png()] });
       await tick(5);
-      s.dc.hear({ text: "something else" });
+      s.dc.hear({ text: "9 something else" });
       await tick(5);
       expect(notSent()).toBe(0);
       // Held, then it expires: the person is told, once.
-      s.dc.hear({ text: "and this", files: [png()] });
+      s.dc.hear({ text: "9 and this", files: [png()] });
       await tick(5);
       (s.t as any).now = () => Date.now() + 11 * 60_000;
       await s.t.checkHeld();
@@ -475,11 +443,10 @@ describe("second review round", () => {
     }
   });
 
-  test("N11: every connector's app is in the shared registry, with its marker and label", async () => {
-    const { MESSAGING_APPS, TEXTED_MARKS, TEXTED_VIA } = await import("../../../../shared/fromTether");
+  test("N11: every connector's app is in the shared registry, with its label", async () => {
+    const { MESSAGING_APPS, TEXTED_VIA } = await import("../../../../shared/fromTether");
     for (const c of connectors(new TextingStore(undefined, {}))) {
       expect(Object.keys(MESSAGING_APPS)).toContain(c.id);
-      expect(c.mark).toBe(TEXTED_MARKS[c.id as keyof typeof TEXTED_MARKS]);
       expect(TEXTED_VIA[c.id as keyof typeof TEXTED_VIA]).toBe(c.label);
     }
   });
@@ -525,7 +492,7 @@ describe("second review round", () => {
   });
 
   test("N12/round 3: a settings change waits for the old link to close, but not long", async () => {
-    const f = fake("x", "[From X] ");
+    const f = fake("x");
     (f.c as { stopWaitMs?: number }).stopWaitMs = 50;
     const ch = new Channel(f.c, () => {}, () => {});
     await ch.start();
@@ -552,22 +519,9 @@ describe("second review round", () => {
 
 describe("round 3", () => {
   test("a channel message: the direct answer goes to the channel; a later report or request goes to the DM", async () => {
-    const s = setup({ home: true });
+    const s = setup();
     await s.t.start();
-    // Home: they write in the channel while it's idle; the turn it starts.
-    s.dc.hear({ text: "home: hi", place: "chan-1", shared: true });
-    await tick();
-    s.t.said("claude:texts", { id: "u-hi", role: "user", ts: 1, parts: [{ type: "text", text: "[From Discord] hi" }] });
-    s.t.turnStarted("claude:texts");
-    // A report's outcome: private.
-    expect(await s.line.phone!.send("done: PR #3")).toBe(true);
-    expect(s.dc.sent.at(-1)).toEqual({ text: "[h] done: PR #3" });
-    // The direct answer to their text: the channel, once.
-    expect(await s.line.phone!.send("ok, on it", { answer: true })).toBe(true);
-    expect(s.dc.sent.at(-1)).toEqual({ text: "[h] ok, on it", place: "chan-1", shared: true });
-    expect(await s.line.phone!.send("one more", { answer: true })).toBe(true);
-    expect(s.dc.sent.at(-1)).toEqual({ text: "[h] one more" });
-    // Sessions: a failure to the DM; the answer of the turn a channel message started there; after it, the DM.
+    // A failure to the DM; the answer of the turn a channel message started there; after it, the DM.
     await s.t.attention("claude:a");
     s.dc.hear({ text: "1 why", place: "chan-1", shared: true });
     await tick();
@@ -598,7 +552,7 @@ describe("round 3", () => {
     await s.t.start();
     await s.t.attention("claude:a");
     const sessions = (s.t as any).ctx.session;
-    (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } };
+    (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [], canText: true } };
     await s.t.attention("codex:b");
     s.t.router.state.held = { text: "\u0000", at: Date.now() };
     s.dc.hear({ text: "2" });
@@ -685,35 +639,6 @@ describe("round 4: only the turn a channel message started answers in the channe
     expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
   });
 
-  test("(d) Home: busy or interrupted, the channel gets nothing; idle and uninterrupted, the answer", async () => {
-    const s = setup({ home: true });
-    await s.t.start();
-    // A DM to Home in flight, then a channel message: the DM turn's answer goes to the DM.
-    s.dc.hear({ text: "home: summarize the doc", place: "dm-1" });
-    await tick();
-    s.t.turnStarted("claude:texts");
-    s.home.busy = true;
-    s.dc.hear({ text: "home: hi", place: "chan-1", shared: true });
-    await tick();
-    expect(await s.line.phone!.send("summary: …", { answer: true })).toBe(true);
-    expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
-    // Idle: the channel message's turn answers in the channel.
-    s.home.busy = false;
-    s.dc.hear({ text: "home: hi", place: "chan-1", shared: true });
-    await tick();
-    s.t.said("claude:texts", user("[From Discord] hi"));
-    s.t.turnStarted("claude:texts");
-    expect(await s.line.phone!.send("hey", { answer: true })).toBe(true);
-    expect(s.dc.sent.at(-1)).toEqual({ text: "[h] hey", place: "chan-1", shared: true });
-    // A web-started (or report) turn after a channel message's turn: the DM.
-    s.dc.hear({ text: "home: and?", place: "chan-1", shared: true });
-    await tick();
-    s.t.turnStarted("claude:texts");
-    s.t.said("claude:texts", user("[From Tether] a report"));
-    expect(await s.line.phone!.send("noted", { answer: true })).toBe(true);
-    expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
-  });
-
   test("a request answered from the channel claims nothing; a held text picked elsewhere neither; dropped-file notices go privately", async () => {
     const dir = mkdtempSync(join(tmpdir(), "texting-r4-"));
     try {
@@ -733,9 +658,9 @@ describe("round 4: only the turn a channel message started answers in the channe
       expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
       // Two open; a text held from the DM, picked from the channel: no channel answer.
       const sessions = (s.t as any).ctx.session;
-      (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } };
+      (s.t as any).ctx.session = (id: string) => sessions(id) ?? { summary: { id, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [], canText: true } };
       await s.t.attention("codex:b");
-      s.dc.hear({ text: "deploy it", place: "dm-1" });
+      s.dc.hear({ text: "9 deploy it", place: "dm-1" });
       await tick();
       s.dc.hear({ text: "1", place: "chan-1", shared: true });
       await tick();
@@ -745,7 +670,7 @@ describe("round 4: only the turn a channel message started answers in the channe
       await s.t.turnEnded("claude:a");
       expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
       // Held files from the channel that go nowhere: the notice goes privately.
-      s.dc.hear({ text: "look", files: [{ name: "a.png", mimeType: "image/png", size: 1, read: async () => new Uint8Array([1]) }], place: "chan-1", shared: true });
+      s.dc.hear({ text: "9 look", files: [{ name: "a.png", mimeType: "image/png", size: 1, read: async () => new Uint8Array([1]) }], place: "chan-1", shared: true });
       await tick();
       (s.t as any).now = () => Date.now() + 11 * 60_000;
       await s.t.checkHeld();
@@ -1105,7 +1030,7 @@ describe("final round", () => {
     const s = setup();
     await s.t.start();
     const sessions = (s.t as any).ctx.session;
-    (s.t as any).ctx.session = (id: string) => (id === "claude:sub" ? { summary: { id, parentSessionId: "claude:a", projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] } } : sessions(id));
+    (s.t as any).ctx.session = (id: string) => (id === "claude:sub" ? { summary: { id, parentSessionId: "claude:a", projectPath: "/p" }, status: "idle", requests: [], state: { requests: [], canText: true } } : sessions(id));
     s.t.turnStarted("claude:sub");
     expect((s.t as any).turns.has("claude:sub")).toBe(false);
     await s.t.turnEnded("claude:sub");
@@ -1114,92 +1039,5 @@ describe("final round", () => {
     s.t.said("claude:a", agent("Quietly done."));
     await s.t.turnEnded("claude:a");
     expect((s.t as any).turns.size).toBe(0);
-  });
-});
-
-describe("round 7: each home has its own channel claim", () => {
-  const user = (id: string, text: string) => ({ id, role: "user" as const, ts: 1, parts: [{ type: "text" as const, text }] });
-  /** h (claude:texts) and h1 (claude:h1), each busy or not on its own. */
-  function twoHomes() {
-    const s = setup({ home: true });
-    const busy: Record<string, boolean> = { "claude:texts": false, "claude:h1": false };
-    const took: [string, unknown][] = [];
-    const homes = [
-      { n: 0, chat: "claude:texts" },
-      { n: 1, chat: "claude:h1" },
-    ];
-    s.line.home = {
-      take: async (text, _via, to) => void took.push([text, to]),
-      isTextsChat: (id) => id in busy,
-      textsBusy: (chat) => busy[chat ?? "claude:texts"]!,
-      chatOf: async (to) => (to && "chat" in to ? to.chat : "claude:texts"),
-      homes: () => homes,
-      newHome: async () => 2,
-      deleteHome: async () => homes,
-    };
-    return { ...s, busy, took };
-  }
-
-  test("h1's DM turn runs while a channel message goes to h: h1's answer stays private, h's goes to the channel", async () => {
-    const s = twoHomes();
-    await s.t.start();
-    s.dc.hear({ text: "h1 my private thing", place: "dm-1" });
-    await tick();
-    expect(s.took.at(-1)).toEqual(["my private thing", { chat: "claude:h1" }]);
-    s.t.said("claude:h1", user("u1", "[From Discord] my private thing"));
-    s.t.turnStarted("claude:h1");
-    s.busy["claude:h1"] = true;
-    s.dc.hear({ text: "h hi", place: "chan-1", shared: true });
-    await tick();
-    s.t.said("claude:texts", user("u2", "[From Discord] hi"));
-    s.t.turnStarted("claude:texts");
-    // h1 answers its DM: never the channel.
-    expect(await s.line.phone!.send("your private answer", { answer: true, chat: "claude:h1" })).toBe(true);
-    expect(s.dc.sent.at(-1)!.text).toBe("[h1] your private answer");
-    expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
-    expect(s.dc.sent.at(-1)!.place).not.toBe("chan-1");
-    // h answers the channel message: the channel.
-    expect(await s.line.phone!.send("hey", { answer: true })).toBe(true);
-    expect(s.dc.sent.at(-1)).toEqual({ text: "[h] hey", place: "chan-1", shared: true });
-  });
-
-  test("the mirror: h's DM turn runs while a channel message goes to h1", async () => {
-    const s = twoHomes();
-    await s.t.start();
-    s.dc.hear({ text: "h my private thing", place: "dm-1" });
-    await tick();
-    s.t.said("claude:texts", user("u1", "[From Discord] my private thing"));
-    s.t.turnStarted("claude:texts");
-    s.busy["claude:texts"] = true;
-    s.dc.hear({ text: "h1 hi", place: "chan-1", shared: true });
-    await tick();
-    s.t.said("claude:h1", user("u2", "[From Discord] hi"));
-    s.t.turnStarted("claude:h1");
-    expect(await s.line.phone!.send("your private answer", { answer: true })).toBe(true);
-    expect(s.dc.sent.at(-1)!.text).toBe("[h] your private answer");
-    expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
-    expect(await s.line.phone!.send("hey", { answer: true, chat: "claude:h1" })).toBe(true);
-    expect(s.dc.sent.at(-1)).toEqual({ text: "[h1] hey", place: "chan-1", shared: true });
-  });
-
-  test("a channel message to h1 while h is busy is armed for h1 (and h's answer doesn't take it)", async () => {
-    const s = twoHomes();
-    await s.t.start();
-    s.busy["claude:texts"] = true;
-    s.dc.hear({ text: "h1 hi", place: "chan-1", shared: true });
-    await tick();
-    expect((s.t as any).channelTurns.get("home:claude:h1")).toMatchObject({ place: "chan-1", phase: "armed" });
-    expect((s.t as any).channelTurns.has("home:claude:texts")).toBe(false);
-    s.t.said("claude:h1", user("u1", "[From Discord] hi"));
-    s.t.turnStarted("claude:h1");
-    expect(await s.line.phone!.send("not this one", { answer: true })).toBe(true);
-    expect(s.dc.sent.at(-1)!.shared).toBeUndefined();
-    expect(await s.line.phone!.send("hey", { answer: true, chat: "claude:h1" })).toBe(true);
-    expect(s.dc.sent.at(-1)).toEqual({ text: "[h1] hey", place: "chan-1", shared: true });
-    // h1 busy: a channel message to it arms nothing.
-    s.busy["claude:h1"] = true;
-    s.dc.hear({ text: "h1 again", place: "chan-1", shared: true });
-    await tick();
-    expect((s.t as any).channelTurns.has("home:claude:h1")).toBe(false);
   });
 });

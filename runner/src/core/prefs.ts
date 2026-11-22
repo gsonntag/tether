@@ -26,8 +26,8 @@ const MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const MAX_ENTRIES = 2000;
 /** A message scheduled far ahead (SPEC §9) keeps its session's entry however old it is. */
 const timed = (p: SessionPrefs) => Array.isArray(p.queue) && p.queue.some((m) => typeof m?.at === "number");
-/** Entries kept whatever their age: a replaced thread (the only thing that says so), a pin, an archive, a scheduled message. */
-const keep = (p: SessionPrefs) => !!(p.carried || p.pinned || p.archived || timed(p));
+/** Entries kept whatever their age: a replaced thread (the only thing that says so), a pin, an archive, a scheduled message, a session that may text. */
+const keep = (p: SessionPrefs) => !!(p.carried || p.pinned || p.archived || p.canText || p.retryThrottled || timed(p));
 /** Carried, scheduled and pinned entries first, so the cap cuts them last. Archived ones sort by age with the rest: they never expire, so ranking them up too would crowd out every new entry. */
 const rank = (p: SessionPrefs) => (p.carried ? 3 : timed(p) ? 2 : p.pinned ? 1 : 0);
 
@@ -188,6 +188,11 @@ export class Prefs {
   /** Pinned sessions (SessionPrefs.pinned), but one that went on under another id. */
   pinned(): string[] {
     return Object.entries(this.map).filter(([, p]) => p.pinned && !p.movedTo && !p.carried && !p.carrying).map(([id]) => id);
+  }
+
+  /** Sessions whose "Session can text me" box is ticked, but one that went on under another id or is archived. */
+  texters(): string[] {
+    return Object.entries(this.map).filter(([, p]) => p.canText && !p.movedTo && !p.carried && !p.carrying && !p.archived).map(([id]) => id);
   }
 
   retrying(): string[] {

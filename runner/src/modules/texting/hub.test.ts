@@ -26,7 +26,6 @@ function fake(id: string, images = false) {
   const c: Connector = {
     id,
     label: id,
-    mark: `[From ${id}] `,
     images,
     about: "",
     notReady: "",
@@ -72,7 +71,7 @@ function app() {
   return { port, ports, delivered };
 }
 
-type Look = { summary: { id: string; projectPath: string; parentSessionId?: string }; status: string; requests: string[]; state: any; busy?: boolean };
+type Look = { summary: { id: string; projectPath: string; parentSessionId?: string; title?: string }; status: string; requests: string[]; state: any; busy?: boolean };
 
 function runner(id: string, port: HubPort, o: { connectors?: Connector[]; hub?: boolean; attachmentsDir?: string } = {}) {
   const told: [string, string, Attachment[]?][] = [];
@@ -88,6 +87,8 @@ function runner(id: string, port: HubPort, o: { connectors?: Connector[]; hub?: 
       hub: port,
       ...(o.attachmentsDir ? { attachmentsDir: o.attachmentsDir } : {}),
       session: (sid) => sessions[sid] as any,
+      // runner.json's ticked sessions, as the box left them
+      texters: () => Object.values(sessions).filter((x) => x.state.canText && !x.summary.parentSessionId).map((x) => ({ id: x.summary.id, title: x.summary.title ?? "" })),
       viewersOf: () => [],
       sessions: { tell: async (sid, text, files) => void told.push(files?.length ? [sid, text, files] : [sid, text]), answer: async (sid, rid, a) => void answered.push([sid, rid, a]) },
     },
@@ -96,7 +97,7 @@ function runner(id: string, port: HubPort, o: { connectors?: Connector[]; hub?: 
     Date.now,
     { list: o.connectors ?? [] },
   );
-  const add = (sid: string, s: Partial<Look> = {}) => (sessions[sid] = { summary: { id: sid, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [] }, ...s });
+  const add = (sid: string, s: Partial<Look> = {}) => (sessions[sid] = { summary: { id: sid, projectPath: "/p" }, status: "idle", requests: [], state: { requests: [], canText: true }, ...s });
   return { t, told, answered, sessions, add, store };
 }
 
@@ -189,8 +190,8 @@ describe("one number for every computer", () => {
     // The spoke's link is its own runner's.
     await spoke.t.tell("claude:there", "asked you something", "Still there?");
     expect(im.sent.at(-1)!.text).toContain("/#/s/aws/claude%3Athere");
-    // Plain text with two open: the picker lists both computers' sessions.
-    im.hear({ text: "hm" });
+    // A number that isn't open: the picker lists both computers' sessions.
+    im.hear({ text: "7 hm" });
     await tick(20);
     expect(im.sent.at(-1)!.text).toContain("[1]");
     expect(im.sent.at(-1)!.text).toContain("[2]");
@@ -205,18 +206,18 @@ describe("one number for every computer", () => {
   test("a spoke's request is answered by y on the hub's phone; once closed there, a late y says so", async () => {
     const { im, spoke } = await pair();
     const r: Request = { id: "r1", sessionId: "claude:there", kind: "approval", tool: "Bash", toolKind: "shell", openedAt: 1 } as Request;
-    spoke.add("claude:there", { requests: ["r1"], state: { requests: [r] } });
+    spoke.add("claude:there", { requests: ["r1"], state: { canText: true, requests: [r] } });
     await spoke.t.request(r);
     expect(im.sent.at(-1)!.text.startsWith("[1] ")).toBe(true);
     im.hear({ text: "y" });
     await tick(20);
     expect(spoke.answered.map(([s, id, a]) => [s, id, a.allow])).toEqual([["claude:there", "r1", true]]);
     // Closed meanwhile (answered in Tether): a threaded y to the request's text is turned away, through the hub.
-    spoke.add("claude:there", { requests: [], state: { requests: [] } });
+    spoke.add("claude:there", { requests: [], state: { canText: true, requests: [] } });
     await spoke.t.request({ ...r, id: "r2" });
-    spoke.add("claude:there", { requests: ["r2"], state: { requests: [{ ...r, id: "r2" }] } });
+    spoke.add("claude:there", { requests: ["r2"], state: { canText: true, requests: [{ ...r, id: "r2" }] } });
     await spoke.t.request({ ...r, id: "r2" });
-    spoke.add("claude:there", { requests: [], state: { requests: [] } });
+    spoke.add("claude:there", { requests: [], state: { canText: true, requests: [] } });
     im.hear({ text: "1 y" });
     await tick(20);
     expect(im.sent.at(-1)!.text).toBe(TEXTS.alreadyAnswered(1));
@@ -293,7 +294,7 @@ describe("one number for every computer", () => {
     await tick(20);
     const slot = hub.t.router.state.slots.find((s) => s.sessionId === remoteKey("aws", "claude:there"))!;
     expect(slot.answered).toBe(true);
-    im.hear({ text: "hm" });
+    im.hear({ text: "7 hm" });
     await tick(20);
     expect(im.sent.at(-1)!.text).not.toContain("[2]");
   });
@@ -311,12 +312,81 @@ describe("one number for every computer", () => {
     expect(im.sent.at(-1)!.text).toBe(TEXTS.couldNotSend("[1]", "That computer is offline."));
   });
 
-  test("a spoke's Home agent doesn't text through the hub", async () => {
-    const { im, spoke } = await pair();
-    expect(await spoke.t.homeText("on it")).toBe(false);
-    const r = await spoke.t.personText("home", "hello");
-    expect([r.isError, r.text.includes("dev")]).toEqual([true, true]);
+  test("the \"Session can text me\" box: the spoke gates its own sessions, and the hub drops and offers them", async () => {
+    const { im, hub, spoke } = await pair();
+    hub.sessions["claude:here"]!.state.canText = undefined;
+    // Unticked on the spoke: nothing reaches the hub.
+    spoke.sessions["claude:there"]!.state.canText = undefined;
+    expect((await spoke.t.tell("claude:there", "asked you something", "B?", { quick: true })).sent).toBe(false);
+    expect((await spoke.t.personText("claude:there", "hi")).isError).toBe(true);
     expect(im.sent).toEqual([]);
+    // Ticked: it texts, numbered by the hub, which offers it later by the name it sent.
+    spoke.sessions["claude:there"]!.state.canText = true;
+    spoke.sessions["claude:there"]!.summary.title = "db migration";
+    spoke.t.canTextChanged("claude:there", true);
+    await tick(20);
+    const key = remoteKey("aws", "claude:there");
+    expect(hub.store.remoteTexters[key]?.label).toBe("db migration");
+    await spoke.t.tell("claude:there", "asked you something", "B?", { quick: true });
+    expect(words(im.sent.at(-1))).toBe("[1] B?");
+    // Unticked: its number goes on the hub too, and a text to it says it can't text.
+    spoke.sessions["claude:there"]!.state.canText = undefined;
+    spoke.t.canTextChanged("claude:there", false);
+    await tick(20);
+    expect(hub.t.router.state.slots.find((x) => x.sessionId === key)).toBeUndefined();
+    expect(hub.store.remoteTexters[key]).toBeUndefined();
+    im.hear({ text: "1 go" });
+    await tick(20);
+    expect(im.sent.at(-1)!.text).toBe(TEXTS.cantText(1));
+    expect(spoke.told).toEqual([]);
+    // Ticked again with nothing open: the hub's picker offers it, and a number reaches it.
+    spoke.sessions["claude:there"]!.state.canText = true;
+    spoke.t.canTextChanged("claude:there", true);
+    await tick(20);
+    im.hear({ text: "status?" });
+    await tick(20);
+    expect(im.sent.at(-1)!.text).toBe("Which session, by number?\n[1] db migration");
+    im.hear({ text: "1" });
+    await tick(20);
+    expect(spoke.told).toEqual([["claude:there", "status?"]]);
+    expect(hub.told).toEqual([]);
+  });
+
+  test("a lost untick: the spoke turns away what the hub hands it, and the hub hears the set again", async () => {
+    const { net, im, hub, spoke, info } = await pair();
+    await spoke.t.tell("claude:there", "asked you something", "B?", { quick: true });
+    const key = remoteKey("aws", "claude:there");
+    expect(hub.store.remoteTexters[key]).toBeDefined();
+    // Unticked (or archived) on the spoke while the hub was away: the hub never heard.
+    net.ports.get("aws")!.gotHub(null);
+    spoke.sessions["claude:there"]!.state.canText = undefined;
+    spoke.t.canTextChanged("claude:there", false);
+    expect(hub.t.router.state.slots.some((x) => x.sessionId === key)).toBe(true);
+    // Back: the hub hears the set again at once.
+    net.ports.get("aws")!.gotHub(info);
+    await tick(20);
+    expect(hub.t.router.state.slots.some((x) => x.sessionId === key)).toBe(false);
+    expect(hub.store.remoteTexters[key]).toBeUndefined();
+    // Even if the hub's router still had it: the spoke says it can't text, and delivers nothing.
+    hub.t.router.stamp(key, "asked you something", ".");
+    im.hear({ text: "1 go" });
+    await tick(30);
+    expect(spoke.told).toEqual([]);
+    expect(im.sent.at(-1)!.text).toBe(TEXTS.cantText(1));
+    expect(hub.t.router.state.slots.some((x) => x.sessionId === key)).toBe(false);
+  });
+
+  test("a spoke that starts tells its hub the sessions that may text", async () => {
+    const { net, hub } = await pair();
+    // Its hub known before its texting starts (no change to hear of): the start itself says.
+    const port = net.port("gcp");
+    port.gotHub({ id: "dev", name: "dev", up: true, images: true });
+    const late = runner("gcp", port);
+    late.add("claude:far", { summary: { id: "claude:far", projectPath: "/p", title: "far away" } });
+    expect(hub.store.remoteTexters[remoteKey("gcp", "claude:far")]).toBeUndefined();
+    await late.t.start();
+    await tick(20);
+    expect(hub.store.remoteTexters[remoteKey("gcp", "claude:far")]?.label).toBe("far away");
   });
 
   test("a runner that isn't the hub refuses a spoke's texts, and only its own hub delivers to a spoke", async () => {

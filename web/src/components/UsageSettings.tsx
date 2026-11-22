@@ -19,7 +19,7 @@ interface Missing { name: string; why: string }
 const loadError = (msg: string) => (/doesn't know/.test(msg) ? "This runner can't show usage. Update and restart it." : msg || "Couldn't load usage.");
 
 /**
- * Settings → Usage: tokens and API-price estimates from the harnesses' own logs, for one runner or,
+ * Settings → Usage: tokens and API-price estimates from harness logs and live Antigravity turn records, for one runner or,
  * given several (All runners), every reachable one together; offline or failing ones are named and left out.
  */
 export function UsageSettings({ runners }: { runners: UsageRunnerRef[] }) {
@@ -113,7 +113,10 @@ function Report({ report, now, all }: { report: UsageReport | CombinedUsage; now
     <Daily report={report} />
     {all && "byRunner" in report && <Table title="By runner" providers={providers} rows={report.byRunner.map((r) => ({ key: r.id, name: r.name, t: r }))} empty="No runner answered." />}
     <Table title="By model" providers={providers} rows={report.byModel.map((m) => ({ key: `${m.harness}:${m.model}`, name: modelName(m.harness, m.model), title: m.model, t: m }))} />
-    <Table title="By project" providers={providers} rows={report.byProject.map((p) => ({ key: p.path ?? p.name, name: p.name, title: p.path ?? (p.hidden ? "Folders TETHER_HIDE_PROJECTS hides, and the Home agent's" : undefined), t: p }))} />
+    <Table title="By project" providers={providers} rows={report.byProject.map((p) => ({ key: p.path ?? p.name, name: p.name, title: p.path ?? (p.hidden ? "Folders TETHER_HIDE_PROJECTS hides" : undefined), t: p }))} />
+    <p className="t-usage-note">
+      Antigravity totals cover prompts sent through Tether that return token counts, starting when recording was enabled on each runner. Standalone CLI and terminal turns are excluded. Thought tokens count as output. Antigravity tokens have no API price estimate here.
+    </p>
     <p className="t-usage-note">
       Read from Claude Code's and Codex's own session logs {all ? "on each runner shown, every session on them" : "on this runner, every session on it"}. Dollars are estimates at published API prices (Anthropic's and OpenAI's standard rates), not invoices; a model with no published price shows its tokens only, and a "+" marks a sum that leaves some out. Hosted tool fees (web search) aren't counted. Claude's source is as of Tether's last start of the session (before it, unknown); Codex's is from its own logs. Days are in {report.timeZone}.
     </p>

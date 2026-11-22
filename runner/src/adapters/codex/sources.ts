@@ -52,7 +52,7 @@ export function providerConfig(source: ApiSource, endpoint?: string): Record<str
     [`model_providers.${provider}.requires_openai_auth`]: false,
     [`model_providers.${provider}.supports_websockets`]: false,
     [`model_providers.${provider}.request_max_retries`]: 0,
-    [`model_providers.${provider}.stream_max_retries`]: 0,
+    [`model_providers.${provider}.stream_max_retries`]: source === "azure" ? 5 : 0,
   };
 }
 
@@ -222,9 +222,20 @@ export async function threadConnection(nativeId: string, credential?: Credential
   assertThreadSource(source, credential);
   return source ? privateConnection(source, credential, nativeId) : connect();
 }
+/** The Azure deployment whose credential snapshot has this revision (a running process's), if any. */
+export function deploymentOfRevision(store: CredentialStore | undefined, revision: string): string | undefined {
+  return store?.azure().deployments.find((d) => store.snapshot("azure", d.name)?.revision === revision)?.name;
+}
+
 export function observedCredential(nativeId: string): CredentialSnapshot {
   const source = remembered(nativeId)?.source;
-  return source ? { source: source.source, revision: sourceCredentialRevision(source) ?? "unknown", endpoint: confirmedProxy(source).endpoint } : { source: "subscription", revision: "subscription" };
+  if (!source) return { source: "subscription", revision: "subscription" };
+  const revision = sourceCredentialRevision(source) ?? "unknown";
+  // An Azure process is started for one deployment, and its revision says which: the observed
+  // credential names it too, or every later send's check (assertCredentialCurrent, which asks for
+  // the snapshot of the credential's deployment) would see a revision of its own and refuse.
+  const deployment = source.source === "azure" ? deploymentOfRevision(CredentialStore.current, revision) : undefined;
+  return { source: source.source, revision, endpoint: confirmedProxy(source).endpoint, ...(deployment ? { deployment } : {}) };
 }
 export async function threadCall<T = any>(nativeId: string, method: string, params: unknown, timeout?: number): Promise<T> {
   const source = remembered(nativeId)?.source;

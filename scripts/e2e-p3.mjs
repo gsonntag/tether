@@ -161,7 +161,7 @@ const sameAsTmux = async (p, key, name, where) => {
  * list ("Claude Code", "Codex") is what drives the agent from its terminal.
  */
 const pickTerminal = async (p, tap = false) => {
-  const chip = p.locator(".t-chip-term");
+  const chip = p.locator(".t-chip-term:not(.t-chip-changes)");
   if ((await chip.getAttribute("aria-pressed")) !== "true") await (tap ? chip.tap() : chip.click());
   // The panel opens on a project shell; once it's there (a click on the agent's entry while the
   // shell is still opening is taken back when it opens).
@@ -170,7 +170,7 @@ const pickTerminal = async (p, tap = false) => {
   await (tap ? entry.tap() : entry.click());
 };
 const openPanel = async (p) => {
-  const chip = p.locator(".t-chip-term");
+  const chip = p.locator(".t-chip-term:not(.t-chip-changes)");
   void chip;
   await pickTerminal(p);
   await p.locator(".t-term-panel").waitFor();

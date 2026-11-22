@@ -46,3 +46,13 @@ test("under a project's subheader the row leaves the project out", () => {
   expect(grouped).not.toContain('<span class="t-proj">web</span>');
   expect(grouped).toContain('<span class="t-proj">box</span>');
 });
+
+test("session rows in the sidebar have plain title text with no payment-source marker or differentiator", () => {
+  const apiRow = render(row({ billing: { kind: "apiKey", label: "Anthropic API key" } }));
+  expect(apiRow).not.toContain("t-api-title");
+  expect(apiRow).not.toContain("Anthropic API key");
+  expect(apiRow).toContain('aria-label="Open session: Fix login"');
+  expect(apiRow).toContain('<span class="t-row-title t-row-title-editor">');
+  expect(apiRow).toContain('title="Fix login"');
+});
+

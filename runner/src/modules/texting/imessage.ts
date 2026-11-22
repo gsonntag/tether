@@ -3,7 +3,6 @@
 // images out (Outbound.files: bytes already checked; each its own message after the words), and
 // every Photon call gives up after PHOTON.ms (link.ts timed).
 
-import { FROM_IMESSAGE } from "../../../../shared/fromTether";
 import type { ConnectorForm } from "../../../../shared/protocol";
 import { PartialSend, type Connector, type Outbound } from "./connector";
 import { readOutgoingImage } from "./images";
@@ -17,7 +16,6 @@ export function imessageConnector(store: TextingStore, open: OpenLink = openSpec
     id: IMESSAGE,
     label: "iMessage",
     service: "Photon",
-    mark: FROM_IMESSAGE,
     images: true,
     // One Photon client at a time: a settings change waits for the old one to stop.
     stopWaitMs: 15_000,
