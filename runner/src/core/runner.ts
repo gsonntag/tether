@@ -166,7 +166,6 @@ export function createRunner(o: RunnerOptions) {
     ops.register("setAzure", (a) => { const result = o.credentials!.setAzure({ endpoint: a.endpoint, deployments: a.deployments }); live.credentialsChanged(); return result; });
     ops.register("testAzure", (a) => testAzure(o.credentials!.snapshot("azure", typeof a.deployment === "string" ? a.deployment : "")));
     ops.register("billingSources", (a) => live.sources(a.harness));
-    ops.register("setAutoKey", async (a) => { await live.setAutoKey(String(a.sessionId ?? ""), typeof a.on === "boolean" ? a.on : undefined, a.fallbackKeys); return null; });
     ops.register("refreshPlan", async (a) => { await core.refreshPlan(a.harness); return null; });
     ops.register("setSessionSource", async (a) => { await live.setSource(String(a.sessionId ?? ""), a.source); return null; });
   }
@@ -280,7 +279,7 @@ export function createRunner(o: RunnerOptions) {
       sessions: {
         adapters: () => o.adapters ?? [],
         open: async (id: string) => lookAt(await core.open(id)),
-        adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string, extra: { stored?: boolean; forkedFrom?: ForkedFrom; keys?: Pick<SessionPrefs, "lastKey" | "fallbackKeys">; sideOf?: string } = {}) => {
+        adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string, extra: { stored?: boolean; forkedFrom?: ForkedFrom; keys?: Pick<SessionPrefs, "lastKey">; sideOf?: string } = {}) => {
           const id = sessionId(harness, nativeId);
           opts = live.forSource(harness, source, opts);
           core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts), source, ...(hasSourceModels(source) && opts.model ? { deployment: opts.model } : {}), ...(from ? { carrying: true } : {}), ...(extra.forkedFrom ? { forkedFrom: extra.forkedFrom } : {}), ...extra.keys, ...(extra.sideOf ? { sideOf: extra.sideOf } : {}) });

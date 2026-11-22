@@ -151,10 +151,12 @@ describe("a session whose source becomes a key", () => {
   });
 });
 
-describe("the plan runs out with the box ticked (planOut)", () => {
+describe("fallback chain costs", () => {
   test("the switch starts whole, and the resent turn is all it costs", async () => {
     const t = setup({ stored: PLAN });
-    t.prefs.set("claude:one", { autoKey: true, source: "subscription" });
+    Object.assign(t.adapter, { move: { modes: [{ mode: "plan", level: 0 }] } });
+    t.adapter.listModels = async () => ({ models: [{ id: "sonnet", label: "Sonnet" }], efforts: [], permissionModes: [{ id: "plan", label: "Plan" }] });
+    await t.live.setFallbackChain("claude:one", true, [{ harness: "claude", source: "anthropic", model: "sonnet" }]);
     t.adapter.script = () => {
       const keyed = t.adapter.drivers.at(-1)!.opts.credential?.source === "anthropic";
       if (keyed) return [(s) => s.state({ billing: KEY }), (s) => s.cost?.({ id: "p", usd: 0.4, estimated: true, complete: true }), (s) => {

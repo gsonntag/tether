@@ -147,7 +147,6 @@ export function SessionHeader({
           state={state}
           capabilities={capabilities}
           onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))}
-          onAutoKey={(on) => void call(rpc(runnerId, "setAutoKey", { sessionId: session.id, on }))}
           onRetryThrottled={canSetRetryThrottled ? (on) => void call(rpc(runnerId, "setRetryThrottled", { sessionId: session.id, on })) : undefined}
         />
         {editingFallback && <FallbackChainDialog runnerId={runnerId} sessionId={session.id} onClose={() => setEditingFallback(false)} />}

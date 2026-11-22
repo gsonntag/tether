@@ -6,7 +6,7 @@ import type { EventBus } from "../core/bus";
 import type { CoreEvents } from "../core/events";
 import type { OpRegistry } from "../core/ops";
 import type { Adapter, StartOpts } from "../core/adapter";
-import type { BillingSource, CredentialSource, SourceChoices } from "../../../shared/credentials";
+import type { BillingSource, SourceChoices } from "../../../shared/credentials";
 import type { ForkedFrom } from "../../../shared/fork";
 import type { Attachment } from "../../../shared/attachments";
 import type { SessionCost } from "../../../shared/costs";
@@ -50,7 +50,7 @@ export interface AdoptExtra {
   /** a side chat (SPEC §16a): the session it's beside */
   sideOf?: string;
   /** a fork's: the original's key preferences (the switch itself is ticked per session, so it isn't carried) */
-  keys?: { lastKey?: BillingSource; fallbackKeys?: CredentialSource[] };
+  keys?: { lastKey?: BillingSource };
 }
 
 /** How to fork: the reply its conversation ends at (shared/fork.ts forkPoints); absent, all of it (the last finished turn while one runs). */
@@ -72,7 +72,7 @@ export interface SessionActions {
   /** a session whose store exists (a harness took a history): its settings, and it starts now, so its source is confirmed and shown before anything is typed. `from`: it's for that session's source change, unlisted, and a failed start throws */
   adopt(harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string, extra?: AdoptExtra): Promise<string>;
   /** what makes the thread a session's source change goes to (Mover.carry) */
-  carrier(make: (id: string, source: BillingSource, model?: string) => Promise<string>): void;
+  carrier(make: (id: string, source: BillingSource, model?: string, settings?: StartOpts) => Promise<string>): void;
   /** a fork of a session (SPEC §16): a new stored session with its conversation, through `messageId` when given. Its id */
   fork(id: string, o?: ForkOptions): Promise<string>;
   /** closes a session's harness process if it has one (it starts again at its next send) */

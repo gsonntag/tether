@@ -7,14 +7,14 @@
 // permission requests go to the request desk (core/requests.ts), and subagents become child
 // sessions (SPEC §6a).
 
-import type { FallbackChain, FallbackHarness, FallbackPresetEdit, FallbackSetup, FallbackStep } from "../../../shared/fallbackChain";
+import { fallbackStepProblem, type FallbackChain, type FallbackHarness, type FallbackPresetEdit, type FallbackSetup, type FallbackStep } from "../../../shared/fallbackChain";
 import { LEVELS, mapMode } from "../../../shared/move";
 import { levelOf } from "./permissionLevel";
 import { Commands } from "./commands";
 import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { CredentialStore, redact, redactValue, type CredentialSnapshot } from "../credentials";
-import { hasSourceModels, isBillingSource, keyTargets, resolveSourceModel, type BillingSource, type CredentialSource, type SourceChoices, type SourceOption } from "../../../shared/credentials";
+import { hasSourceModels, isBillingSource, resolveSourceModel, type BillingSource, type CredentialSource, type SourceChoices, type SourceOption } from "../../../shared/credentials";
 import { addSideCost, type CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
@@ -39,7 +39,7 @@ import { RetryControl } from "./retryControl";
 import { lockWorktree } from "./worktreeLock";
 
 /** How a message is sent (LiveControl.send). */
-type SendOpts = { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string; clientId?: string };
+type SendOpts = { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string; fallback?: symbol; clientId?: string };
 
 /** Idle this long, a live session's process closes. */
 export const IDLE_CLOSE_MS = 5 * 60_000;
@@ -140,6 +140,7 @@ export class LiveControl {
       blocked: (s) => s.state.mode === "terminal" || !!s.state.terminal || !!s.state.requests.length || !!this.terminal?.blocked(s) || !!core.o.prefs.get(s.id).nextSource || this.restartWaits.has(s.id),
       held: (s) => !!this.heldWhy(s.id),
       send: (s, r) => this.send(s.id, r.text, r.attachments, { tether: r.tether, retryId: r.id }),
+      exhausted: (s, r) => void this.advanceFallback(s, undefined, r, false),
     });
     this.desk = new RequestDesk(core, broker, {
       send: (id, text) => this.send(id, text, [], { tether: true }),
@@ -299,6 +300,8 @@ export class LiveControl {
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     this.sideCommand(id, text);
     const s = await this.core.open(id);
+    const fallback = this.fallingBack.get(s);
+    if (fallback && fallback !== o.fallback) throw new Error("The fallback chain is switching this session. Try again shortly.");
     if (o.retryId && (s.retry?.id !== o.retryId || s.retry.phase !== "sending")) throw new SendCancelled();
     if (!o.retryId && (s.retry || this.core.o.prefs.get(id).retry)) {
       if (o.queued) throw new Error("A rate limit retry is waiting.");
@@ -359,6 +362,10 @@ export class LiveControl {
       } finally {
         s.sending = undefined;
       }
+    }
+    if (o.fallback) {
+      if (this.fallingBack.get(s) !== o.fallback || s.retrySuppressed) throw new SendCancelled();
+      this.fallingBack.delete(s);
     }
     const next = this.core.o.prefs.get(id).nextSource;
     if (next && s.state.status === "idle" && !s.sending) return this.carry(s, next, text, attachments, o);
@@ -467,7 +474,11 @@ export class LiveControl {
     this.core.pin(s);
     try {
       if (!o.queued && !o.tether && s.state.queueHeldBy !== "terminal") this.queue.release(s);
-      const id = await this.carrier(s.id, source, this.core.o.prefs.get(s.id).nextModel);
+      const { nextModel, nextFallbackSettings } = this.core.o.prefs.get(s.id);
+      if (nextFallbackSettings?.permissionMode && !this.fallbackModeAllowed(s, nextFallbackSettings.permissionMode)) {
+        throw new Error("The fallback step exceeds this session's current permissions.");
+      }
+      const id = await this.carrier(s.id, source, nextModel, nextFallbackSettings);
       const n = await this.core.open(id);
       this.core.pin(n);
       try {
@@ -536,7 +547,7 @@ export class LiveControl {
     prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
     const { forkedFrom, worktree: _, ...state } = kept;
     n.setState({ ...state, retryThrottled: this.sourceOf(n) === "subscription" ? undefined : !!kept.retryThrottled });
-    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextModel: undefined, nextBilling: undefined, nextDeployment: undefined, sourceSwitchFailed: undefined });
+    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextFallbackSettings: undefined, nextModel: undefined, nextBilling: undefined, nextDeployment: undefined, sourceSwitchFailed: undefined });
     this.core.moveSides(s.id, n.id);
     prefs.flush();
     s.movedTo = n.id;
@@ -797,6 +808,7 @@ export class LiveControl {
   async interrupt(id: string) {
     const s = await this.core.open(id);
     if (s.retry) this.cancelRetrySession(s, { due: "stopped" });
+    if (this.fallingBack.has(s)) s.retrySuppressed = true;
     const parentId = s.summary.parentSessionId;
     if (parentId) {
       // A subagent: stop just it (SPEC §6a). Its main session's process runs it, however deep it is nested.
@@ -1495,7 +1507,8 @@ export class LiveControl {
   }
 
   /** Makes the thread a source change goes to, on the move module's export and import. */
-  carrier?: (id: string, source: BillingSource, model?: string) => Promise<string>;
+  carrier?: (id: string, source: BillingSource, model?: string, settings?: StartOpts) => Promise<string>;
+  private fallingBack = new WeakMap<Session, symbol>();
 
   /** A queued source remains pending after its first start fails, across views and runner restarts. */
   private markSourceSwitchFailed(s: Session) {
@@ -1506,8 +1519,9 @@ export class LiveControl {
   }
 
   /** From the next process start, which confirms it (only with capabilities.sourceSwitch). */
-  async setSource(id: string, asked: unknown, sourceModel?: string) {
+  async setSource(id: string, asked: unknown, sourceModel?: string, fallback?: { chain: FallbackChain; index: number; settings: StartOpts }) {
     const s = await this.core.open(id);
+    if (!fallback && this.fallingBack.has(s)) throw new Error("The fallback chain is switching this session.");
     if (s.retry) this.cancelRetrySession(s);
     const harness = s.summary.harness;
     if (s.summary.parentSessionId) throw new Error("A subagent uses its main session's source.");
@@ -1523,18 +1537,25 @@ export class LiveControl {
     if (sourceModel && !choice.deployments?.some(({ name }) => name === sourceModel)) {
       throw new Error(asked === "azure" ? `Azure deployment ${sourceModel} isn't available.` : "That model is unavailable on the requested source.");
     }
-    const carries = !!s.capabilities.sourceCarry;
+    if (!fallback && this.fallingBack.has(s)) throw new Error("The fallback chain is switching this session.");
     const own = this.sourceOf(s);
+    const carries = !!s.capabilities.sourceCarry && asked !== own;
+    if (fallback && (s.retrySuppressed || s.state.fallbackChain !== fallback.chain || this.stopping || !fallback.settings.permissionMode ||
+      !this.fallbackModeAllowed(s, fallback.settings.permissionMode))) throw new Error("The fallback chain or session permissions changed.");
+    const busy = sourceSwitchBlocker(s.state);
+    if (busy || s.sending || s.starting || s.carrying) throw new Error(sourceSwitchBlockMessage(busy ?? "turn"));
+    const fallbackChain = fallback ? { ...fallback.chain, active: fallback.index } : undefined;
+    const progress = fallbackChain ? { fallbackChain } : {};
     const lastKey = asked !== "subscription" ? asked : own !== "subscription" ? own : undefined;
     if (lastKey) {
       this.core.o.prefs.set(id, { lastKey });
       s.setState({ lastKey });
     }
-    if (asked === own) {
+    if (asked === own && !fallback) {
       // Thought better of it: the thread never left.
-      if (carries) {
+      if (s.capabilities.sourceCarry) {
         const pendingDeployment = this.core.o.prefs.get(id).nextSource ? { nextDeployment: undefined } : {};
-        this.core.o.prefs.set(id, { nextSource: undefined, nextModel: undefined, nextBilling: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
+        this.core.o.prefs.set(id, { nextSource: undefined, nextFallbackSettings: undefined, nextModel: undefined, nextBilling: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
         this.core.o.prefs.flush();
         s.setState({ nextBilling: undefined, nextModel: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
       }
@@ -1548,10 +1569,12 @@ export class LiveControl {
     const next = this.core.adapter(harness).billing!.label(asked);
     if (carries) {
       // A model picked for another pending source doesn't go with this one.
-      const nextModel = this.core.o.prefs.get(id).nextSource === asked ? this.core.o.prefs.get(id).nextModel : undefined;
-      this.core.o.prefs.set(id, { nextSource: asked, nextModel, nextBilling: next, nextDeployment: sourceModel, sourceSwitchFailed: undefined });
+      const nextModel = fallback ? (hasSourceModels(asked) ? undefined : fallback.settings.model)
+        : this.core.o.prefs.get(id).nextSource === asked ? this.core.o.prefs.get(id).nextModel : undefined;
+      const nextFallbackSettings = fallback && { effort: fallback.settings.effort, permissionMode: fallback.settings.permissionMode };
+      this.core.o.prefs.set(id, { ...progress, nextSource: asked, nextFallbackSettings, nextModel, nextBilling: next, nextDeployment: sourceModel, sourceSwitchFailed: undefined });
       this.core.o.prefs.flush();
-      s.setState({ nextBilling: next, nextModel, nextDeployment: sourceModel, sourceSwitchFailed: undefined });
+      s.setState({ ...progress, nextBilling: next, nextModel, nextDeployment: sourceModel, sourceSwitchFailed: undefined });
       return this.core.touch(s);
     }
     const confirmed = s.state.billing?.label === next.label;
@@ -1561,13 +1584,17 @@ export class LiveControl {
       try { cost = this.startCost(s); }
       catch { cost = { estimated: true, complete: false, reasons: ["unsaved"] }; this.core.log("Couldn't save this session's API cost coverage. Its total is unknown."); }
     }
-    const model = hasSourceModels(asked)
-      ? sourceModel ?? this.pickSourceModel(harness, asked, this.core.o.prefs.get(id).model ?? s.state.model)
-      : hasSourceModels(own) ? this.core.adapter(harness).unset?.model ?? "default" : undefined;
-    const settings = model ? { model, deployment: hasSourceModels(asked) ? model : undefined } : {};
-    this.core.o.prefs.set(id, { source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...settings });
+    // A fallback step names its model; a source with its own model list takes the step's model from that list.
+    const model = fallback ? (hasSourceModels(asked) ? sourceModel ?? fallback.settings.model : fallback.settings.model)
+      : hasSourceModels(asked)
+        ? sourceModel ?? this.pickSourceModel(harness, asked, this.core.o.prefs.get(id).model ?? s.state.model)
+        : hasSourceModels(own) ? this.core.adapter(harness).unset?.model ?? "default" : undefined;
+    const sourceSettings = model ? { model, deployment: hasSourceModels(asked) ? model : undefined } : {};
+    const settings = fallback?.settings;
+    this.core.o.prefs.set(id, { ...progress, ...settings, source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...sourceSettings });
     this.core.o.prefs.flush();
-    s.setState({ nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, retryThrottled: asked === "subscription" ? undefined : this.core.o.prefs.get(id).retryThrottled === true, ...(model ? { model, modelResolved: undefined } : {}), ...(cost ? { cost } : {}) });
+    s.setState({ ...progress, ...settings, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, retryThrottled: asked === "subscription" ? undefined : this.core.o.prefs.get(id).retryThrottled === true, ...(model ? { model, modelResolved: undefined } : {}), ...(cost ? { cost } : {}) });
+    if (settings && s.driver && asked === own) s.credentialRevision = undefined;
     this.core.touch(s);
   }
 
@@ -1671,7 +1698,12 @@ export class LiveControl {
     if (typeof enabled !== "boolean" || (enabled && !order.length)) throw new Error("Add a step before enabling the fallback chain.");
     const old = s.state.fallbackChain;
     const active = enabled && old?.enabled && JSON.stringify(old.steps) === JSON.stringify(order) ? old.active : undefined;
-    const chain = { enabled, steps: order, ...(active === undefined ? {} : { active }) };
+    const chain = redactValue({ enabled, steps: order, ...(active === undefined ? {} : { active }) });
+    if (this.core.o.prefs.get(id).nextFallbackSettings && (!enabled || active === undefined)) {
+      const cleared = { nextBilling: undefined, nextModel: undefined, nextDeployment: undefined, sourceSwitchFailed: undefined };
+      this.core.o.prefs.set(id, { ...cleared, nextSource: undefined, nextFallbackSettings: undefined });
+      s.setState(cleared);
+    }
     this.core.o.prefs.setFallbackOrder(id, chain);
     s.setState({ fallbackChain: chain });
     return chain;
@@ -1706,25 +1738,6 @@ export class LiveControl {
   }
 
   /**
-   * The fallback switch (`on`) and the allowed key order (`fallbackKeys`), saved with this session.
-   * Either may come alone: saving the order never touches the switch, nor the switch the order.
-   */
-  async setAutoKey(id: string, on: boolean | undefined, fallbackKeys?: CredentialSource[]) {
-    const s = await this.core.open(id);
-    if (s.summary.parentSessionId) throw new Error("A subagent uses its main session's source.");
-    if (s.summary.sideOf) throw new Error(SIDE_KEEPS.source);
-    if (!s.capabilities.sourceSwitch) throw new Error("This session can't switch sources.");
-    if (on === undefined && fallbackKeys === undefined) throw new Error("Nothing to change.");
-    const supported = this.core.adapter(s.summary.harness).billing?.keys ?? [];
-    if (fallbackKeys !== undefined && (!Array.isArray(fallbackKeys) || fallbackKeys.some((key) => !supported.includes(key)) || new Set(fallbackKeys).size !== fallbackKeys.length))
-      throw new Error("Choose each supported fallback key at most once.");
-    const patch = { ...(on !== undefined ? { autoKey: on || undefined } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}) };
-    this.core.o.prefs.set(id, patch);
-    this.core.o.prefs.flush();
-    s.setState(patch);
-  }
-
-  /**
    * The "Session can text me" box (SPEC §11 Texting): only a ticked session texts the person.
    * Texting hears of it (canTextChanged): unticked, its number is dropped.
    */
@@ -1750,61 +1763,75 @@ export class LiveControl {
 
   /** What a session's successor on another id keeps (a fork's link back too, SPEC §16; its worktree record, SPEC §4). */
   keptPrefs(s: Session) {
-    const { autoKey, canText, retryThrottled, lastKey, fallbackKeys, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
+    const { canText, retryThrottled, lastKey, fallbackChain, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
     // A side chat's successor is one too, read-only (SPEC §16a): failing closed.
     // The worktree goes on with the conversation: cleanup counts the successor as its user (the old id, moved on, no more).
     // Not a Keep: that was the person's answer on archiving the old id.
     const withoutKeep = ({ keep: _keep, ...rec }: NonNullable<typeof worktree>) => rec;
-    return { ...(autoKey ? { autoKey } : {}), ...(canText ? { canText } : {}), ...(retryThrottled === true ? { retryThrottled } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree: withoutKeep(worktree) } : {}) };
+    return { ...(canText ? { canText } : {}), ...(retryThrottled === true ? { retryThrottled } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackChain ? { fallbackChain } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree: withoutKeep(worktree) } : {}) };
   }
 
-  /**
-   * The plan ran out on a session with the box ticked, the one exception to no fallback (SPEC §10):
-   * its source changes as from the chip, one notice says so, and the message that started the turn
-   * goes again unless the turn had already acted. From there it's a key session, which never comes
-   * here: a key that fails stops as usual, and it stays on the key until you change it.
-   */
-  private async planOut(s: Session, hit: { resetsAt?: number }, sent: Session["lastSend"], acted: boolean) {
+  private fallbackModeAllowed(s: Session, mode: string): boolean {
+    const adapter = this.core.adapter(s.summary.harness);
+    const target = levelOf(adapter, mode);
+    const current = this.core.o.prefs.get(s.id).permissionMode ?? s.state.permissionMode;
+    return target !== undefined && target <= (levelOf(adapter, current) ?? LEVELS.readOnly);
+  }
+
+  /** Advance in order after an exhausted plan or the end of rate-limit recovery. */
+  private async advanceFallback(s: Session, hit: { resetsAt?: number } | undefined, sent: Session["lastSend"], acted: boolean) {
     const prefs = this.core.o.prefs.get(s.id);
+    const chain = s.state.fallbackChain;
     const harness = s.summary.harness;
-    if (!prefs.autoKey || prefs.nextSource || s.summary.parentSessionId || prefs.sideOf || s.state.billing?.kind !== "plan" || this.sourceOf(s) !== "subscription") return;
+    if (!chain?.enabled || !s.capabilities.sourceSwitch || prefs.nextSource || s.summary.parentSessionId ||
+      prefs.sideOf || this.fallingBack.has(s)) return;
+    const source = this.sourceOf(s);
+    if (hit && source !== "subscription") return;
+    const matchesCurrent = (step: FallbackStep) => step.harness === harness && step.source === source &&
+      step.model === s.state.model && (!step.effort || step.effort === s.state.effort) &&
+      (!step.permissionMode || step.permissionMode === s.state.permissionMode);
+    const start = chain.active ?? chain.steps.findIndex(matchesCurrent);
+    const cause = hit ? "Plan limit reached." : "Rate limit retries exhausted.";
+    let resetsAt: number | undefined;
+    const say = (text: string, level: Msg["level"] = "info") => s.apply({
+      type: "msg", msg: { ...notice(`${cause} ${text}`, level), ...(resetsAt ? { resetsAt } : {}) },
+    });
+    const reservation = Symbol();
+    this.fallingBack.set(s, reservation);
     this.core.pin(s);
     try {
       // A turn can end before its send has returned.
       const until = this.core.now() + 5000;
       while ((s.sending || s.starting) && this.core.now() < until) await Bun.sleep(20);
-      const resetsAt = await this.planReset(harness, s, hit);
-      const say = (text: string, level: Msg["level"] = "info") => s.apply({ type: "msg", msg: { ...notice(text, level), ...(resetsAt ? { resetsAt } : {}) } });
-      const selectedModel = this.core.o.prefs.get(s.id).model ?? s.state.model;
-      const model = selectedModel === "default" ? undefined : selectedModel;
-      const candidates = keyTargets((await this.sources(harness)).options, prefs.lastKey, prefs.fallbackKeys);
-      const ranked = candidates.map((option) => {
-        const compatible = option.deployments?.filter((d) => !model || !d.model || d.model === model) ?? [];
-        return { option, deployment: resolveSourceModel(compatible, model) };
-      });
-      const fallback = ranked.find(({ option, deployment }) => !hasSourceModels(option.source) || deployment);
-      if (!fallback) {
-        const reason = candidates.some(({ source }) => source === "azure") ? `No Azure deployment matches ${model ?? "the current model"}`
-          : candidates.some(({ source }) => source === "bedrock") ? `No Bedrock model matches ${model ?? "the current model"}`
-          : prefs.fallbackKeys !== undefined ? "No allowed fallback key is available" : "No API key is set";
-        return void say(`Plan limit reached. ${reason}, so nothing switched.`, "warning");
+      if (hit) resetsAt = await this.planReset(harness, s, hit);
+      const catalog = await this.fallbackCatalog(s, harness);
+      if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) return;
+      for (let index = start + 1; index < chain.steps.length; index++) {
+        const step = chain.steps[index]!;
+        // A different harness takes the next hop once cross-harness switching is supported.
+        if (step.harness !== harness) return say("The next step needs another harness.", "warning");
+        if (fallbackStepProblem(step, catalog)) continue;
+        if (step.source === source && step.model === s.state.model && (!step.effort || step.effort === s.state.effort)) continue;
+        // Azure steps name a deployment; a Bedrock step's model resolves to one of its configured models.
+        const sourceModel = step.source === "azure" ? step.model
+          : step.source === "bedrock" ? resolveSourceModel(this.sourceModels(harness, "bedrock"), step.model) : undefined;
+        if (step.source === "bedrock" && !sourceModel) continue;
+        if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) return;
+        const settings = { model: step.model, effort: step.effort, permissionMode: step.permissionMode ?? catalog.defaultMode };
+        await this.setSource(s.id, step.source, sourceModel, { chain, index, settings });
+        const label = this.labelOf(harness, step.source);
+        const switched = s.capabilities.sourceCarry && step.source !== source ? `Next source: ${label}.` : `Switched to ${label}.`;
+        if (!sent || acted) return say(`${switched} ${acted ? "The turn already acted. " : ""}Send a message to continue.`);
+        say(`${switched} Resending your message.`);
+        // The next exhausted turn, including one which ends during send(), owns the next hop.
+        await this.send(s.id, sent.text, sent.attachments, { tether: sent.tether, fallback: reservation });
+        return;
       }
-      const { option: target, deployment } = fallback;
-      try {
-        await this.setSource(s.id, target.source, deployment);
-      } catch (e) {
-        return void say(`Plan limit reached. Not switched: ${redact((e as Error)?.message ?? String(e))}`, "warning");
-      }
-      const switched = `Plan limit reached. Switched to ${target.billing.label}${deployment ? ` (${deployment})` : ""}.`;
-      if (!sent) return void say(`${switched} Send your message again.`);
-      if (acted) return void say(`${switched} Tools had already run in that turn, so it wasn't resent: replaying could repeat edits. Send a message to continue.`);
-      if (s.driver?.busy()) return void say(`${switched} Background work still runs, so nothing was resent. Send your message again once it's done.`);
-      say(`${switched} Resending your message.`);
-      // A failure says so in the chat, as any send's does.
-      await this.send(s.id, sent.text, sent.attachments, sent.tether ? { tether: true } : {});
+      say("No available fallback step on this harness.", "warning");
     } catch (e) {
-      this.core.log(`${s.id}: after the plan limit: ${(e as Error)?.message ?? e}`);
+      if (!(e instanceof SendCancelled)) say(redact((e as Error)?.message ?? String(e)), "warning");
     } finally {
+      if (this.fallingBack.get(s) === reservation) this.fallingBack.delete(s);
       this.core.unpin(s);
     }
   }
@@ -2085,7 +2112,8 @@ export class LiveControl {
       const rateHit = s.rateHit;
       const error = s.turnError ?? s.state.error;
       const provisional = !!s.sending && s.retry?.phase === "sending" && !lastSend;
-      const recovering = provisional || (!!rateHit && !stopped && this.retries.recover(s, rateHit, lastSend, error ?? "Rate limited."));
+      const retry = !provisional && rateHit && !stopped && this.retries.recover(s, rateHit, lastSend, error ?? "Rate limited.");
+      const recovering = provisional || retry === true;
       if (rateHit && !recovering && !stopped && lastSend) {
         const why = turnActed ? "Tools ran or a message was steered in this turn, so it wasn't resent automatically. Send a message to continue." : s.retry ? "Automatic rate limit retries stopped after reaching the attempt or time limit. Send a message to continue." : undefined;
         if (why) s.apply({ type: "msg", msg: notice(why, "warning") });
@@ -2097,7 +2125,7 @@ export class LiveControl {
       if (limitHit || !s.sending) s.lastSend = undefined;
       bus.emit("turnEnded", { sessionId: s.id, error, ...(stopped ? { stopped } : {}), ...(recovering ? { recovering } : {}) });
       s.turnError = undefined;
-      if (limitHit && !stopped) void this.planOut(s, limitHit, lastSend, turnActed);
+      if (!stopped && (limitHit || retry === "exhausted")) void this.advanceFallback(s, limitHit, lastSend, turnActed);
       this.scheduleIdle(s);
       void this.refreshTitle(s);
     }

@@ -383,7 +383,7 @@ relay directly.
   launch. Its launcher holds an immutable key lease in memory; the real TUI and its tools never
   inherit the raw key in their environment. External/historical proxy starts remain a label gap
   (docs/ISSUES.md).
-- **Plan exhausted:** §10 **When the plan runs out** has the signals.
+- **Plan exhausted:** §10 **Fallback chain** has the signals.
 - **Plan limits:** `rate_limit_event` frames: `rate_limit_info.unifiedWindows.{five_hour,seven_day}`
   (`utilization` 0 to 1, `resetsAt` in seconds), or the top-level `rateLimitType`/`utilization` on a
   frame without them. A frame can have no number at all (status only), or just one window. The latest
@@ -441,7 +441,7 @@ relay directly.
   key only in the daemon's environment shows that way, and isn't used. The account is the daemon's now,
   so it's read at each driver start and remembered per thread (`codex-threads.json`); a stored `openai`
   thread Tether never started is Unknown (the provider of any stored thread is known).
-- **Plan exhausted:** §10 **When the plan runs out** has the signals.
+- **Plan exhausted:** §10 **Fallback chain** has the signals.
 - **Plan limits:** `account/rateLimits/read` when a session opens (at most once a minute, no turn) and
   `account/rateLimits/updated` on a live connection (sparse). `primary`/`secondary` are placed by
   `windowDurationMins` (300, 10080); `usedPercent`, `resetsAt` in seconds.
@@ -1056,7 +1056,7 @@ event (with the message's text) and the queued message's id from `SessionActions
   A message is counted (and an ask opened) right after the check, before anything waits, so calls
   side by side can't all pass; one that doesn't go is given back.
   A refusal is the tool's error and a warning notice in the sender's transcript.
-- **Starting sessions** (`children.ts`). `tether_start {harness, prompt, source?, fallbackKeys?, model?, effort?, title?,
+- **Starting sessions** (`children.ts`). `tether_start {harness, prompt, source?, model?, effort?, title?,
   project?, worktree?}` starts an ordinary session on any harness (claude, codex, antigravity),
   from any harness, and returns at once with `"<title>" (<id>)`. Folder: the caller's; `project`
   only names a known project, and only from a caller nothing confines (judged or full), as another
@@ -1067,9 +1067,7 @@ event (with the message's text) and the queued message's id from `SessionActions
   as `project`: unless it's the caller's own, only from a judged or full caller. The source defaults
   to the subscription when available. The agent must confirm API-key billing with the user before
   starting any session, including a replacement or fallback session. For Azure, `model` can name a
-  configured deployment or its unambiguous model. The start reply names the deployment. For a
-  subscription, `fallbackKeys` enables automatic key fallback in the order the user confirmed.
-  Azure is eligible for fallback when a deployment matches the current model, or the model is unset.
+  configured deployment or its unambiguous model. The start reply names the deployment.
   Mode: the loosest mode the target offers whose level is at or under the caller's
   (Claude's auto counts as judged), so a child is never looser. The prompt goes in as a peer
   message from the caller (carrying its hops) whose hint says its final reply goes back. Who
@@ -1160,9 +1158,7 @@ Billing settings belong to a runner. **Credentials** (`#/settings/credentials`)
 holds keys only: **Anthropic API key** for Claude and **OpenAI API key** for Codex. **Azure**
 (`#/settings/azure`, below) holds Azure's key, its resource and its deployments for Codex. **Bedrock**
 (`#/settings/bedrock`) holds the AWS region, credentials and model lists for Claude and Codex. Setting, replacing or
-unsetting a key touches no other slot and changes no session's source. There is no enable toggle,
-fallback chain or automatic source migration, with one exception you tick per session (**When the
-plan runs out**, below).
+unsetting a key touches no other slot and changes no session's source. Automatic source changes use the session's opt-in **Fallback chain**.
 
 **Each session has one billing source**, chosen when it's made and saved with it (`SessionPrefs.source`,
 which is a source's name, never a key). New session and the Move dialog show **Source**, listing what
@@ -1199,26 +1195,17 @@ before switching: under the plan's name, each window the harness reported, "Week
 `account/rateLimits/read`, at most once a minute; Claude has only its latest report. The chip itself
 keeps its rule: plan % only on a plan session.
 
-**When the plan runs out.** The menu has a checkbox (`SessionPrefs.autoKey`, off by default, per
-session; it doesn't close the menu), shown on a plan session when a key is set for that harness, or
-when it's already on, so it can be turned off. Its label names its target, "Switch to OpenAI API key
-when plan runs out"; with no allowed key set it reads "No allowed key". No description under it.
-Below it, only where the checkbox shows and only for a harness with more than one credential source, "Fallback keys…" opens a dialog to rank and exclude the harness's keys for that
-session (`SessionPrefs.fallbackKeys`): the switch goes to the first key in that order that's set, never
-an excluded one. An empty list excludes all. With nothing saved, the target is the session's last-used
-key (`SessionPrefs.lastKey`), then the harness's other set keys, and the dialog opens on all the
-harness's keys in that order, all ticked, keys not set included, so Save without edits excludes
-nothing. Saving the order sends only `fallbackKeys` (`setAutoKey` with no `on`): it never flips the
-switch, and the switch never changes the order. The order and exclusions survive reopening, restarts,
-toggling and source carries. Unsetting a preferred key only falls through to another allowed key; no
-allowed key set means no switch and a notice. This is the only automatic source change, and exists
-because you ticked it for that session.
+**Fallback chain.** The header pill opens the editor. The session starts off, and the runner
+saves its switch, ordered steps and progress across restarts. Each step selects a harness, login
+or key, model, effort and permission mode. The default permission mode maps the session's current
+mode to the target harness. A hop checks that its permission mode is at or below the session's
+current level. Runner presets can be loaded, saved, renamed or deleted. The editor starts a new
+chain with the runner's most recently saved order and shows why saved steps are unavailable.
 
-When a turn on the plan ends on the harness's own exhausted signal (`Sink.limitReached`,
-`LiveControl.planOut`), the source changes as from the chip, one chat notice says so ("Plan limit
-reached. Switched to OpenAI API key."), with when the plan resets if that's known, and the message that
-started the turn goes again, once. A Codex switch takes the carry route above, with its cost of
-re-sending the history. The loud badge shows as for any key. Push is unchanged.
+A plan-exhausted signal or exhausted rate-limit recovery advances to the next usable step on the
+same harness. The switch uses the same source checks as the billing chip and applies the step's
+model, effort and permission mode. The notice includes the plan reset when available. The chain
+stops at a step on a different harness until cross-harness switching is supported.
 
 | Harness | Exhausted | Not exhausted, whatever it says |
 |---|---|---|
@@ -1229,14 +1216,9 @@ Codes come first: text decides only with no code, except that Claude's `rate_lim
 text, since a short 429 has the same code. The reset is the signal's `resetsAt`, else that of the
 fullest window a fresh read shows at 100%.
 
-A turn that had already run a tool or taken a steer isn't resent, since replaying could repeat
-edits: the source still changes and the notice says so, leaving you to continue. The same goes for
-background work still running, and a turn Tether didn't start. An open terminal keeps the session
-where it is and the notice says why, as does no key being set.
-
-It stays on the key until you change it from the chip. It never switches back, and a key session
-never comes here: a key that fails stops with the usual error, with no further switch. A queue the
-failed turn held goes on after the resend.
+The original message is replayed after a switch if Tether sent it and the turn did not run a tool
+or take a steer. The chat asks for a new message when replay would be unsafe. A terminal or ongoing
+background work blocks switching.
 
 On Claude (`capabilities.sourceSwitch`) the next message's process start takes the new source.
 
@@ -1750,7 +1732,7 @@ when Tether knows what it spent on an API before; otherwise it's partial, `earli
 so. Known means: a new session (nothing before), a session whose confirmed source until now was the
 plan (`state.billing` from the harness, kept across restarts as Claude's `keptBilling` and Codex's
 remembered thread), or what the ledger already holds. The chip's switch and the plan running out
-(`planOut`) decide it at the switch, while the plan is still what's confirmed; otherwise the first
+(`advanceFallback`) decide it at the switch, while the plan is still what's confirmed; otherwise the first
 start that confirms a key decides it from what that start replaced. A Move into a key, on any harness,
 is a new session that starts whole: what came across was spent in the old one, which keeps its total.
 A Codex source change's new thread starts whole and adds what the old thread's entry holds. Unknown
@@ -2105,7 +2087,7 @@ hands over, switching back doesn't; copying works on desktop and phone; the phon
 shell.
 
 **Later (each a module, in an order you choose):** the Tether judge (a policy step), checkpoints with
-the Changes view and file panel, fallback chains, pi, opencode and other harnesses.
+the Changes view and file panel, cross-harness fallback, pi, opencode and other harnesses.
 
 ## 12. Carried over from v1 (`~/web-coder`)
 
@@ -2302,9 +2284,7 @@ exception to "the label changes only after harness confirmation". It's safe beca
 exactly that source saved (a pending change refuses the fork), the label says what the harness
 confirmed for that source, so the API colour shows before anything is typed, and nothing is sent
 until the fork's own start confirms it again; a mismatch refuses the send as for any session. A
-key's copy starts that key's private app-server to make its thread, but no turn. The original's key
-preferences (`lastKey`, `fallbackKeys`) come along; its **When the plan runs out** switch doesn't,
-as it's ticked per session.
+key's copy starts that key's private app-server to make its thread, but no turn. The fork inherits `lastKey`. Each fork starts with its own fallback chain off.
 
 **Links.** `SessionSummary.forkedFrom { sessionId, messageId?, title }` (`SessionPrefs.forkedFrom`,
 kept across a source change like the session's other settings): the header says "Forked from

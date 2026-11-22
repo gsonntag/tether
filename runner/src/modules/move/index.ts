@@ -242,7 +242,7 @@ export class Mover {
    * and the same settings, confirmed and unlisted. Native import or nothing: the file route is a
    * turn on the new source that the person didn't ask for.
    */
-  async carry(id: string, source: BillingSource, picked?: string): Promise<string> {
+  async carry(id: string, source: BillingSource, picked?: string, settings?: StartOpts): Promise<string> {
     const { look, adapter } = await this.source(id);
     // What's waiting follows the session (live.ts send), so it's no reason to refuse.
     const why = await this.blocked(adapter, { ...look, state: { ...look.state, queue: [] } });
@@ -256,7 +256,7 @@ export class Mover {
       const model = picked ?? (hasSourceModels(await this.ctx.sessions.sourceOf(id)) && !hasSourceModels(source) ? undefined : look.state.model);
       const sourceModel = hasSourceModels(source) ? look.state.nextDeployment : undefined;
       const pin = sourceModel ? { sourceModel, model: sourceModel } : model && model !== "default" ? { model } : {};
-      const opts: StartOpts = { ...pin, ...(effort ? { effort } : {}), permissionMode: moveMode(adapter, permissionMode, adapter) };
+      const opts: StartOpts = { ...pin, ...(effort ? { effort } : {}), permissionMode: moveMode(adapter, permissionMode, adapter), ...settings };
       const moved = await this.native(adapter, portable, opts, await this.background(adapter, look), source, id);
       const note = contextNote(moved.kept, moved.total);
       if (note) await this.ctx.sessions.notice(moved.sessionId, { ...notice(`n-carried-${moved.sessionId}`, note, id), link: undefined }, moved.after ? { after: moved.after } : {});
@@ -341,7 +341,7 @@ export const moveModule: Module = {
   name: "move",
   start(ctx) {
     const mover = new Mover(ctx);
-    ctx.sessions.carrier((id, source, model) => mover.carry(id, source, model));
+    ctx.sessions.carrier((id, source, model, settings) => mover.carry(id, source, model, settings));
     ctx.ops.register("moveOptions", (a) => mover.options(String(a.sessionId ?? "")));
     ctx.ops.register("moveSession", (a) => mover.move(String(a.sessionId ?? ""), String(a.harness ?? ""), { ...(typeof a.model === "string" && a.model ? { model: a.model } : {}), ...(typeof a.effort === "string" && a.effort ? { effort: a.effort } : {}), source: a.source }));
   },

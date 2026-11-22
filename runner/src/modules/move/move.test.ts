@@ -602,13 +602,13 @@ describe("a fork's copy (Mover.copy)", () => {
     pi.stored_("s1", [...convo, { id: "u2", role: "user", ts: 12, parts: [{ type: "text", text: "later words" }] }, { id: "a2", role: "assistant", ts: 13, parts: [{ type: "text", text: "later reply" }] }]);
     const s = await runner.core.open("pi:s1");
     s.setState({ model: "m1", permissionMode: "ro" });
-    const id = await mover.copy("pi:s1", "a1", "T (fork)", { forkedFrom: { sessionId: "pi:s1", messageId: "a1" }, keys: { fallbackKeys: ["anthropic"] } });
+    const id = await mover.copy("pi:s1", "a1", "T (fork)", { forkedFrom: { sessionId: "pi:s1", messageId: "a1" }, keys: { lastKey: "anthropic" } });
     const text = pi.imports[0]!.items.map((i) => i.text).join("\n");
     expect(text).toContain("vault-4417.txt");
     expect(text).not.toContain("later words");
     expect(pi.imports[0]!.title).toBe("T (fork)");
     // Stored: nothing started it.
     expect(pi.drivers).toHaveLength(0);
-    expect(runner.core.o.prefs.get(id)).toMatchObject({ model: "m1", permissionMode: "ro", source: "subscription", forkedFrom: { sessionId: "pi:s1", messageId: "a1" }, fallbackKeys: ["anthropic"] });
+    expect(runner.core.o.prefs.get(id)).toMatchObject({ model: "m1", permissionMode: "ro", source: "subscription", forkedFrom: { sessionId: "pi:s1", messageId: "a1" }, lastKey: "anthropic" });
   });
 });

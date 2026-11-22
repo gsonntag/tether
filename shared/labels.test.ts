@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import { modelIdProblem, MODEL_ID_MAX, planLines, reportedAt, mergePlan, isApiBilling, contextDetail, contextPercent, planChip, usageChip, effortLabel, findModel, modelLabel, permissionModeLabel, prettyModel } from "./labels";
-import { keyTarget, keyTargets } from "./credentials";
 
 test("model ids read as people say them", () => {
   expect(prettyModel("claude-opus-5-5")).toBe("Opus 5.5");
@@ -181,23 +180,6 @@ test("multi-pool plan lines and merging", () => {
   const replaced = mergePlan(plan, fresh);
   expect(replaced.pools?.length).toBe(1);
   expect(replaced.pools?.[0]?.id).toBe("other");
-});
-
-test("the key a plan session goes to: its last used, else the first set", () => {
-  const plan = { source: "subscription" as const, billing: { kind: "plan" as const, label: "ChatGPT plan" } };
-  const openai = { source: "openai" as const, billing: { kind: "apiKey" as const, label: "OpenAI API key" } };
-  const azure = { source: "azure" as const, billing: { kind: "provider" as const, label: "Azure" } };
-  expect(keyTarget([plan, openai, azure])).toBe(openai);
-  expect(keyTarget([plan, openai, azure], "azure")).toBe(azure);
-  expect(keyTarget([plan, openai], "azure")).toBe(openai);
-  expect(keyTarget([plan, azure])).toBe(azure);
-  expect(keyTarget([plan])).toBeUndefined();
-  expect(keyTargets([plan, openai, azure], "openai", ["azure", "openai"])).toEqual([azure, openai]);
-  expect(keyTarget([plan, openai, azure], "openai", ["azure"])).toBe(azure);
-  expect(keyTarget([plan, openai], "openai", ["azure"])).toBeUndefined();
-  expect(keyTarget([plan, openai, azure], "azure", [])).toBeUndefined();
-  expect(keyTarget([plan, openai], undefined, ["azure", "openai"])).toBe(openai);
-
 });
 
 test("a typed model or deployment name: trimmed, short, a model id's characters, no control characters", () => {

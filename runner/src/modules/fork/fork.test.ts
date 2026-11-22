@@ -130,14 +130,14 @@ describe("forking a session", () => {
     expect((n.parts[0] as any).text).toBe("Forked from “Busy”. Forked through the last finished turn; the unfinished turn after it isn't included.");
   });
 
-  test("the original's key preferences come along; its plan-runs-out switch doesn't", async () => {
+  test("the fork keeps the last key and starts with fallback off", async () => {
     const { runner } = setup();
     const s = await runner.core.open("claude:s1");
-    s.setState({ autoKey: true, lastKey: "anthropic", fallbackKeys: ["anthropic"] });
+    s.setState({ lastKey: "anthropic", fallbackChain: { enabled: true, steps: [{ harness: "claude", source: "anthropic", model: "sonnet" }] } });
     const id = await runner.look.sessions.fork("claude:s1");
     const p = runner.core.o.prefs.get(id);
-    expect(p).toMatchObject({ lastKey: "anthropic", fallbackKeys: ["anthropic"] });
-    expect(p.autoKey).toBeUndefined();
+    expect(p).toMatchObject({ lastKey: "anthropic" });
+    expect(p.fallbackChain).toBeUndefined();
   });
 
   test("a fork of a session in a worktree is one of its users too (cleanup waits for it); a side chat isn't", async () => {
