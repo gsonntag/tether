@@ -7,6 +7,7 @@ import { useStore } from "../store";
 import { AgentSettings } from "./AgentSettings";
 import { AzureSettings } from "./AzureSettings";
 import { DeviceNotifications } from "./DeviceNotifications";
+import { DisplaySettings } from "./DisplaySettings";
 import { HarnessUpdates } from "./HarnessUpdates";
 import { TextingSettings } from "./TextingSettings";
 import { UsageSettings } from "./UsageSettings";
@@ -17,17 +18,17 @@ import { accessOf } from "../runners";
 /** The Runner menu's "All runners" (Usage only). */
 const ALL = "*all";
 
-type Page = "runners" | "credentials" | "azure" | "texting" | "notifications" | "agents" | "updates" | "usage";
+type Page = "runners" | "credentials" | "azure" | "texting" | "notifications" | "display" | "agents" | "updates" | "usage";
 const labels: Record<CredentialSource, string> = { anthropic: "Anthropic API key", openai: "OpenAI API key", azure: "API key" };
 
 /** Settings, per runner: Runners (names and sharing), Credentials (Anthropic and OpenAI keys), Azure (its key, resource and deployments) Messaging (iMessage, Discord) and this device's Notifications. */
 export function Settings({ page: asked }: { page: Page }) {
-  // Everything but Notifications is the owner's: only runners you own, and none for someone a
+  // Everything but Notifications and Display is the owner's: only runners you own, and none for someone a
   // runner is merely shared with (shared/access.ts).
   const runners = useStore((s) => s.runners).filter((r) => accessOf(r) === "manage");
   const role = useStore((s) => s.user?.role);
   const owner = !role || role === "owner" || runners.length > 0;
-  const page: Page = owner ? asked : "notifications";
+  const page: Page = owner ? asked : asked === "display" ? "display" : "notifications";
   const [chosen, setChosen] = useState("");
   // Usage can show every runner together: its first choice, and where it starts.
   const allRunners = page === "usage" && runners.length > 1 && (chosen === ALL || !chosen);
@@ -43,16 +44,23 @@ export function Settings({ page: asked }: { page: Page }) {
         <a href="#/settings/azure" aria-current={page === "azure" ? "page" : undefined}>Azure</a>
         <a href="#/settings/texting" aria-current={page === "texting" ? "page" : undefined}>Messaging</a>
         <a href="#/settings/notifications" aria-current={page === "notifications" ? "page" : undefined}>Notifications</a>
+        <a href="#/settings/display" aria-current={page === "display" ? "page" : undefined}>Display</a>
         <a href="#/settings/agents" aria-current={page === "agents" ? "page" : undefined}>Agents</a>
         <a href="#/settings/updates" aria-current={page === "updates" ? "page" : undefined}>Updates</a>
         <a href="#/settings/usage" aria-current={page === "usage" ? "page" : undefined}>Usage</a>
         </>}
-        {!owner && <a href="#/settings/notifications" aria-current="page">Notifications</a>}
+        {!owner && <>
+        <a href="#/settings/notifications" aria-current={page === "notifications" ? "page" : undefined}>Notifications</a>
+        <a href="#/settings/display" aria-current={page === "display" ? "page" : undefined}>Display</a>
+        </>}
       </nav>
       <div className={page === "usage" ? "t-credentials t-credentials-wide" : "t-credentials"}>
       {page === "notifications" ? <>
       <Heading level={2}>Notifications</Heading>
       <DeviceNotifications />
+      </> : page === "display" ? <>
+      <Heading level={2}>Display</Heading>
+      <DisplaySettings />
       </> : page === "runners" ? <>
       <Heading level={2}>Runners</Heading>
       <RunnersSettings />

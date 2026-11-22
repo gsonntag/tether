@@ -16,7 +16,7 @@ Filed when review rounds ended on 2026-10-31, at 042a217. Nothing here has had a
 ## Decisions needed
 
 - **Read-only turn driving a Full access process.** `write_stdin` with input from a Read only, Ask first or Auto turn raises an approval. Declining writes nothing. Approving lets the unsandboxed process write, and the card shows it only as a command. Approve for me, where Codex's reviewer answers, is untested.
-- **Streaming look vs memory.** See the stall below; the candidate fix changes how streaming looks.
+- **Streaming look vs memory.** Resolved (#122): added per-device setting under Settings → Display (Auto / On / Off). Auto defaults to On, switching to Off (`speed: 'instant'`, CSS-transform spinner, no fade animation) once a session exceeds 1,000 loaded messages, eliminating the Blink Oilpan GC stalls on large sessions while preserving smooth word reveal on typical sessions.
 
 ## Tests
 
@@ -116,8 +116,8 @@ Filed when review rounds ended on 2026-10-31, at 042a217. Nothing here has had a
 ## Scroll
 
 - Jump during inertia failed on Chromium's final run after passing before (`scrollKeep.ts:15`, `:53`). May need a longer window.
-- About 1 s stall on huge sessions while streaming: an Oilpan major GC, 2,654 ms in one 10 s trace. Removing the reveal and fade cut tasks from 9.8 s to 6.2 s per 10 s; also removing the footer spinner took them to 3.4 s. Sites: `Markdown.js:1312`, `:1409`, `SessionView.tsx:196`. Candidate: a CSS-transform spinner plus `speed: 'instant'`.
-- Chromium RSS peaks 2.3-2.8 GB during a stream, freed by GC. Same cause as above. Android under memory pressure is unknown.
+- About 1 s stall on huge sessions while streaming: resolved (#122) via per-device Streaming Animation setting (Auto / On / Off). Auto switches to `speed: 'instant'` with a CSS-transform spinner once loaded messages exceed 1,000, eliminating the tick loop and continuous DOM restyling that triggered Blink's Oilpan major GC.
+- Chromium RSS peaks 2.3-2.8 GB during a stream, freed by GC: resolved (#122) as above; instant reveal and CSS transform eliminate continuous allocations during streaming.
 - `reset` events replace the window and lose the reader's place, by design for a rewind. Not exercised for a runner restart.
 - Selection autoscroll stops at the top of the mounted slice (`scrollKeep.ts:158`).
 

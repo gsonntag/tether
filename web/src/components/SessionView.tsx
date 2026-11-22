@@ -9,6 +9,7 @@ import { EyeIcon } from "@heroicons/react/24/outline";
 import { useNow } from "./useNow";
 import { watchingDetail, watchingLine } from "../watching";
 import { AGENT_NAMES, HARNESS_LABELS } from "../../../shared/transcript";
+import { shouldAnimateStreaming, useStreamingAnimationSetting } from "../streamingSettings";
 import { rpc } from "../connection";
 import { setSessionCovered } from "../presence";
 import { openSession, replaceSession } from "../route";
@@ -160,9 +161,18 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   const sideChats = useSideChats(runnerId, sessionId, sides || !!side);
   const forkBusy = view?.state ? forkRunning(view.state, view.capabilities) : false;
   const forkingHere = useForking(sessionId);
+  const [streamingSetting] = useStreamingAnimationSetting();
+  const loadedCount = view?.window?.messages.length ?? 0;
+  const animateStreaming = shouldAnimateStreaming(streamingSetting, loadedCount);
   const ctx = useMemo(
-    () => ({ runnerId, sessionId, projectPath: summary?.projectPath, ...(forks ? { fork: { running: forkBusy, from: (messageId: string) => void forkSession(runnerId, sessionId, messageId) } } : {}) }),
-    [runnerId, sessionId, summary?.projectPath, forks, forkBusy],
+    () => ({
+      runnerId,
+      sessionId,
+      projectPath: summary?.projectPath,
+      streamingAnimation: animateStreaming,
+      ...(forks ? { fork: { running: forkBusy, from: (messageId: string) => void forkSession(runnerId, sessionId, messageId) } } : {}),
+    }),
+    [runnerId, sessionId, summary?.projectPath, animateStreaming, forks, forkBusy],
   );
   // The session's PR (SPEC §10 Git actions): its chip in the header, and the pane's Open PR.
   const prs = usePr(runnerId, sessionId, { enabled: runnerGitActions && !!summary && !summary.parentSessionId && !summary.sideOf, paneOpen: changes, status: view?.state?.status ?? "idle" });
@@ -316,7 +326,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
         <>Waiting for you below.</>
       ) : (
         <>
-          <Spinner size="sm" /> {beside ? `Waiting for ${beside} background subagent${beside === 1 ? "" : "s"}…` : isChild ? "Working…" : `${agent} is working…`}
+          {animateStreaming ? <Spinner size="sm" /> : <span className="t-css-spinner" aria-hidden />} {beside ? `Waiting for ${beside} background subagent${beside === 1 ? "" : "s"}…` : isChild ? "Working…" : `${agent} is working…`}
         </>
       )}
     </div>
@@ -371,7 +381,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
               <PendingSends runnerId={runnerId} sessionId={sessionId} list={pending} />
               {forkingHere && (
                 <div className="t-inline-status" role="status" style={{ padding: "8px 0" }}>
-                  <Spinner size="sm" /> Forking…
+                  {animateStreaming ? <Spinner size="sm" /> : <span className="t-css-spinner" aria-hidden />} Forking…
                 </div>
               )}
               {inTerminal ? empty : starting ? <StartStatus row={starting} /> : working || (!watchRow && empty)}
