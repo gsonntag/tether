@@ -91,19 +91,25 @@ describe("pinSession", () => {
     expect(core.book.get("claude:old")).toBeUndefined();
   });
 
-  test("archiving unpins; an archived session or a subagent can't be pinned", async () => {
+  test("archiving unpins; pinning an archived session unarchives it; a subagent can't be pinned", async () => {
     const { ops, core, prefs } = setup();
     await pin(ops, "claude:one", true);
     await ops.handle("setSessionArchived", { sessionId: "claude:one", archived: true });
     expect(prefs.get("claude:one").pinned).toBeUndefined();
     expect((await core.open("claude:one")).summary.pinned).toBeUndefined();
-    expect(await pin(ops, "claude:one", true)).toMatchObject({ ok: false });
-    expect(prefs.get("claude:one").pinned).toBeUndefined();
     expect(await pin(ops, "claude:kid", true)).toMatchObject({ ok: false });
     expect(prefs.get("claude:kid").pinned).toBeUndefined();
     // unarchiving doesn't pin it again
     await ops.handle("setSessionArchived", { sessionId: "claude:one", archived: false });
     expect(prefs.get("claude:one").pinned).toBeUndefined();
+    // pinning an archived session unarchives it, and it's pinned
+    await ops.handle("setSessionArchived", { sessionId: "claude:one", archived: true });
+    expect(await pin(ops, "claude:one", true)).not.toMatchObject({ ok: false });
+    expect(prefs.get("claude:one").archived).toBeUndefined();
+    expect(prefs.get("claude:one").pinned).toBeGreaterThan(0);
+    const one = (await core.open("claude:one")).summary;
+    expect(one.archived).toBeUndefined();
+    expect(one.pinned).toBeGreaterThan(0);
   });
 
   test("search rows and decorated rows carry pinned from prefs, and drop a stale one", async () => {

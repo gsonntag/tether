@@ -130,7 +130,7 @@ export const recentGroups = (list: Row[], o: { query?: string; filter?: string }
  * before pinSession, an archived session, a subagent, a side chat).
  */
 export function pinMenuLabel(s: SessionSummary, canPin: boolean): "Pin" | "Unpin" | undefined {
-  if (!canPin || s.archived || !listed(s)) return undefined;
+  if (!canPin || !listed(s)) return undefined;
   return s.pinned ? "Unpin" : "Pin";
 }
 

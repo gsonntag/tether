@@ -79,7 +79,8 @@ test("the session menu's pin item: only for a main, listed session on a runner t
   expect(pinMenuLabel(s("x", 1), true)).toBe("Pin");
   expect(pinMenuLabel(s("x", 1, { pinned: 3 }), true)).toBe("Unpin");
   expect(pinMenuLabel(s("x", 1), false)).toBeUndefined();
-  expect(pinMenuLabel(s("x", 1, { archived: true }), true)).toBeUndefined();
+  // pinning an archived session unarchives it
+  expect(pinMenuLabel(s("x", 1, { archived: true }), true)).toBe("Pin");
   expect(pinMenuLabel(s("x", 1, { parentSessionId: "y" }), true)).toBeUndefined();
   expect(pinMenuLabel(s("x", 1, { sideOf: "y" }), true)).toBeUndefined();
 });
