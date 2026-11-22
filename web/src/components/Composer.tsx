@@ -18,8 +18,6 @@ import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu"
 import { ArrowUpIcon, ChevronDownIcon, StopIcon } from "@heroicons/react/24/solid";
 import { ClockIcon, CommandLineIcon, PaperClipIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { formatSize, isImageType, type Attachment } from "../../../shared/attachments";
-import { isApiBilling } from "../../../shared/labels";
-import type { Billing } from "../../../shared/transcript";
 import { ATTACH_MAX } from "../../../shared/limits";
 import { menuMatches, menuPick, menuQuery, type HarnessCommand } from "../../../shared/commands";
 import { CommandMenu } from "./CommandMenu";
@@ -72,7 +70,6 @@ export const Composer = forwardRef<
   ComposerHandle,
   {
     draftKey: string;
-    billing?: Billing;
     running: boolean;
     waiting?: boolean;
     disabled?: string;
@@ -108,7 +105,7 @@ export const Composer = forwardRef<
     /** a send or Stop failed: the chat shows it */
     onFailed: (message: string) => void;
   }
->(function Composer({ draftKey, billing, running, waiting, disabled, placeholder, mainFree = false, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, loadCommands, refuse, onSend, onSchedule, sendNow, onStop, onFailed }, ref) {
+>(function Composer({ draftKey, running, waiting, disabled, placeholder, mainFree = false, agent = "Claude", canSteer = false, steerOnly = false, inTerminal = false, uploadTo, shell, loadCommands, refuse, onSend, onSchedule, sendNow, onStop, onFailed }, ref) {
   const [text, setText] = useState(() => drafts.get(draftKey) ?? "");
   const [files, setFilesState] = useState<Pending[]>(() => draftFiles.get(draftKey) ?? []);
   const [busy, setBusy] = useState(false);
@@ -395,8 +392,7 @@ export const Composer = forwardRef<
 
   return (
     <div
-      data-billing={isApiBilling(billing) ? billing!.label : undefined}
-      className={`t-composer${isApiBilling(billing) ? " t-api-composer" : ""}${drag ? " dragging" : ""}${shellOn ? " shell" : ""}`}
+      className={`t-composer${drag ? " dragging" : ""}${shellOn ? " shell" : ""}`}
       onDragOver={(e) => {
         if (!uploadTo || !e.dataTransfer.types.includes("Files")) return;
         e.preventDefault();

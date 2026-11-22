@@ -194,12 +194,12 @@ async function sideBySide(p,phone,cfg,planId,keyId) {
   assert(rows.find((r)=>r.id===planId)?.billing===cfg.plan,`list has ${JSON.stringify(rows.find((r)=>r.id===planId))} for the plan session`);
   assert(rows.find((r)=>r.id===keyId)?.billing===cfg.label,`list has ${JSON.stringify(rows.find((r)=>r.id===keyId))} for the key session`);
   await p.evaluate(()=>{location.hash="#/";});
-  await p.locator(".t-rows .t-api-marker").first().waitFor({timeout:15000});
+  await p.locator(".t-rows .t-api-title").first().waitFor({timeout:15000});
   await noOverflow(p);
   await screenshot(p,`side-${cfg.source}-desktop`);
   await phone.reload();
   await phone.getByRole("button",{name:/navigation|menu/i}).first().tap();
-  await phone.locator(".t-rows .t-api-marker").first().waitFor({timeout:15000});
+  await phone.locator(".t-rows .t-api-title").first().waitFor({timeout:15000});
   await screenshot(phone,`side-${cfg.source}-phone`);
   await phone.keyboard.press("Escape");
 }
@@ -698,7 +698,14 @@ try {
     await p.goto(`${BASE}/#/s/${encodeURIComponent(runner)}/${encodeURIComponent(session)}`);
     // Let the harmless subscribe of the synthetic id fail before injecting UI-only state.
     await p.waitForFunction(({ runner, session }) => globalThis.__tetherStore?.getState().views[`${runner}\u0000${session}`]?.error, { runner, session });
+    const composerStyle = () => p.evaluate(() => {
+      const composer = getComputedStyle(document.querySelector(".t-composer"));
+      const input = getComputedStyle(document.querySelector(".t-composer .t-input"));
+      return [composer.borderTop, composer.backgroundColor, input.borderColor, input.backgroundColor];
+    });
     for (const theme of ["dark", "light"]) {
+      await inject(p, { kind: "plan", label: "Claude plan" }, theme);
+      const planComposer = await composerStyle();
       for (const [source, billing] of [["anthropic", { kind: "apiKey", label: "Anthropic API key" }], ["openai", { kind: "apiKey", label: "OpenAI API key" }], ["azure", { kind: "provider", label: "Azure" }]]) {
         await inject(p, billing, theme);
         const badge = p.locator(".t-paid-badge");
@@ -708,10 +715,12 @@ try {
         const bounds = await badge.boundingBox();
         assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= (await p.viewportSize()).width, "API badge is off screen");
         assert(!(await p.locator(".t-header").innerText()).includes("63%"), "plan usage leaked onto API session");
-        const colours = await p.evaluate(() => { const a = getComputedStyle(document.querySelector(".t-paid-badge")), c = getComputedStyle(document.querySelector(".t-api-composer")); return { fg: a.color, bg: a.backgroundColor, border: c.borderTopColor }; });
-        assert(colours.bg === colours.border, "composer doesn't use the billing colour");
+        const colours = await badge.evaluate((el) => {
+          const style = getComputedStyle(el);
+          return { fg: style.color, bg: style.backgroundColor };
+        });
+        assert(JSON.stringify(await composerStyle()) === JSON.stringify(planComposer), "billing changed the composer styling");
         assert(contrast(colours.fg, colours.bg) >= 4.5, "billing badge contrast is below 4.5:1");
-        assert(await p.locator(".t-api-composer").getAttribute("data-billing") === billing.label, "composer has wrong source");
         await noOverflow(p);
         await screenshot(p, `${name}-${theme}-${source}`);
         await p.evaluate(() => { const c = document.querySelector(".t-chip-options"); c.scrollLeft = c.scrollWidth; });
@@ -722,11 +731,11 @@ try {
       assert(await p.locator(".t-api-cost").innerText() === "est. $1.00" && (await p.locator(".t-api-cost").getAttribute("title")).includes("not the session's whole cost"), "partial subtotal shown as full total");
       await screenshot(p, `${name}-${theme}-partial-cost`);
       await inject(p, { kind: "unknown", label: "Unknown" }, theme);
-      assert(await p.locator(".t-paid-badge, .t-api-composer").count() === 0, "unknown shown as API");
+      assert(await p.locator(".t-paid-badge").count() === 0, "unknown shown as API");
       assert((await p.locator(".t-header").innerText()).includes("Unknown"), "unknown billing is hidden");
       await screenshot(p, `${name}-${theme}-unknown`);
       await inject(p, { kind: "plan", label: "Claude plan" }, theme);
-      assert(await p.locator(".t-paid-badge, .t-api-composer").count() === 0, "subscription has API colour");
+      assert(await p.locator(".t-paid-badge").count() === 0, "subscription has API colour");
       assert((await p.locator(".t-chips > :first-child").innerText()).includes("Week 63%"), "plan usage isn't first before Mode");
       await screenshot(p, `${name}-${theme}-subscription`);
     }
@@ -745,10 +754,10 @@ try {
     assert(await p.getByRole("button", { name: "Rename session: Billing indicator", exact: true }).count() === 1, "Escape didn't cancel title edit");
     await inject(p, { kind: "apiKey", label: "Anthropic API key" }, "dark");
     await p.evaluate(() => { location.hash = "#/"; });
-    await p.locator(`.t-inbox-row[data-session="${session}"] .t-api-marker`).waitFor();
-    if (name === "desktop") assert(await p.locator(".t-rows .t-api-marker").count() > 0, "sidebar API marker missing");
+    await p.locator(`.t-inbox-row[data-session="${session}"] .t-api-title`).waitFor();
+    if (name === "desktop") assert(await p.locator(".t-rows .t-api-title").count() > 0, "sidebar API title missing");
     await screenshot(p, `${name}-home-api`);
-    console.log(`ok ${name}: all source badges, neutral unknown, quiet subscription, phone pinning, composer colour, Home/sidebar markers, title cancel`);
+    console.log(`ok ${name}: all source badges, neutral unknown, quiet subscription, phone pinning, neutral composer, tinted Home/sidebar titles, title cancel`);
   }
   await audit();
 } catch(error) {

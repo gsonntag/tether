@@ -410,7 +410,7 @@ export function TerminalPanel({
         </div>
       </div>
       {showKeys && (
-        <div className={`t-term-phone${metered ? " t-api-composer" : ""}`}>
+        <div className="t-term-phone">
           <div className="t-keybar" role="toolbar" aria-label="Keys">
             {KEYS.map((k) => (
               <button

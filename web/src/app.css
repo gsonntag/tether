@@ -2418,11 +2418,14 @@
 }
 
 /* One metered-billing colour throughout the session, in either theme. */
-:root { --t-api: light-dark(#733395, #d9a5f5); }
+:root {
+  --t-api: light-dark(#0f665e, #77d6c5);
+  --t-api-ink: light-dark(#fff, #102824);
+}
 .t-chip-options { display: contents; }
 .t-chips > .t-chip.t-paid-badge {
   position: relative;
-  color: light-dark(#fff, #21152a);
+  color: var(--t-api-ink);
   background: var(--t-api);
   border-color: var(--t-api);
   font-weight: 700;
@@ -2433,19 +2436,9 @@
 .t-chips > .t-chip.t-paid-badge::before { display: none; }
 .t-api-cost { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; border-left: 1px solid currentColor; padding-left: 7px; margin-left: 2px; font-weight: 600; }
 .t-paid-badge > span:first-child { flex: none; }
-.t-term-api-badge { display: flex; flex: none; flex-wrap: wrap; gap: 8px; padding: 7px 12px; background: var(--t-api); color: light-dark(#fff, #21152a); font-size: 12px; }
+.t-term-api-badge { display: flex; flex: none; flex-wrap: wrap; gap: 8px; padding: 7px 12px; background: var(--t-api); color: var(--t-api-ink); font-size: 12px; }
 .t-term-api-badge > span { border-left: 1px solid currentColor; padding-left: 8px; }
-.t-api-composer {
-  border-top: 3px solid var(--t-api);
-  background: color-mix(in srgb, var(--t-api) 9%, transparent);
-}
-.t-api-composer .t-input, .t-api-composer .t-input:focus { border-color: var(--t-api); }
-.t-api-marker {
-  display: inline-block;
-  color: var(--t-api);
-  font-weight: 800;
-  margin-right: 6px;
-}
+.t-row-title.t-api-title { color: var(--t-api); }
 .t-billing-unknown { color: var(--t-muted); margin-right: 6px; }
 .t-title-button {
   all: unset;
@@ -2620,7 +2613,7 @@
   padding: 1px 8px;
   border-radius: 999px;
   background: var(--t-api);
-  color: light-dark(#fff, #21152a);
+  color: var(--t-api-ink);
   font-weight: 700;
 }
 
