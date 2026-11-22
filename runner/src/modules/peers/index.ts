@@ -143,6 +143,8 @@ export class Peers {
         return this.ask(from, str(a.to), str(a.text), Number(a.timeout_minutes) || ASK_DEFAULT_MIN, c.signal);
       case PEER_TOOLS.start:
         return this.start(from, a);
+      case PEER_TOOLS.models:
+        return this.children.models(str(a.harness));
       case PEER_TOOLS.archive:
         return this.children.archive(from, str(a.to));
       case PEER_TOOLS.broadcast:

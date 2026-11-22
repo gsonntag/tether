@@ -25,13 +25,13 @@ export function matching(sessions: SessionSummary[], f: BroadcastFilter = {}): S
 
 /** Tether's tools, as the agent sees them (the server is named `tether`). */
 export const PEER_SERVER = "tether";
-export const PEER_TOOLS = { sessions: "tether_sessions", send: "tether_send", ask: "tether_ask", broadcast: "tether_broadcast", start: "tether_start", archive: "tether_archive" } as const;
+export const PEER_TOOLS = { sessions: "tether_sessions", send: "tether_send", ask: "tether_ask", broadcast: "tether_broadcast", start: "tether_start", models: "tether_models", archive: "tether_archive" } as const;
 /** The tool on the same server that texts the person through Tether (texting module). */
 export const TEXT_PERSON = "text_person";
 
 /** A peer tool's action from its full name (mcp__tether__tether_ask, or Codex's), else undefined. */
 export function peerAction(name: string): keyof typeof PEER_TOOLS | undefined {
-  const m = /(?:^|__|\.|^mcp_[\w-]+?_)tether_(sessions|send|ask|broadcast|start|archive)$/.exec(name);
+  const m = /(?:^|__|\.|^mcp_[\w-]+?_)tether_(sessions|send|ask|broadcast|start|models|archive)$/.exec(name);
   return m ? (m[1] as keyof typeof PEER_TOOLS) : undefined;
 }
 

@@ -18,7 +18,7 @@ export function sessionInstructions(s: RunnerSettings): string {
     "This session runs in Tether: the person reads your replies in Tether's app, often on a phone.",
     ...(s.conciseReplies === false ? [] : [CONCISE_RULE]),
     TEXTING_RULE,
-    "Use the subscription by default when available for tether_start. You must confirm API-key billing with the user before starting a session. This includes replacement and fallback sessions. Get the user’s confirmation for each automatic fallback billing source and its priority before enabling it.",
+    "Use the subscription by default when available for tether_start. You must confirm API-key billing with the user before starting a session. This includes replacement and fallback sessions. Get the user’s confirmation for each automatic fallback billing source and its priority before enabling it. Tether sets up each billing source itself (keys and Azure deployments in its Settings), so never edit an agent's config or set API-key environment variables for it; tether_models lists each source's models.",
     STARTED_RULE,
   ].join("\n\n");
 }
