@@ -1,3 +1,4 @@
+import { registerHarnessLogin } from "./harnessLogin";
 // The runner's core, assembled: its event bus, ops, harness facts and connection to the app.
 // index.ts adds modules and process handling; tests build one against a fake server.
 
@@ -116,7 +117,7 @@ export function createRunner(o: RunnerOptions) {
     token: o.token,
     log: o.log,
     hello: helloInfo,
-    onRpc: (op, args) => ops.handle(op, args),
+    onRpc: (op, args, loginOwner) => ops.handle(op, args, loginOwner),
     onDetach: (ids) => terminal?.detach(ids),
     onUnwatched: (sessionIds) => bus.emit("unwatched", { sessionIds }),
     // The server forgot every route with the old connection, so after a reconnect nobody watches
@@ -154,6 +155,10 @@ export function createRunner(o: RunnerOptions) {
   // Open requests are kept in runner.json, so they survive a restart (SPEC §7).
   const broker = new RequestBroker(o.policy, { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (open, closed) => prefs.setRequests(open, closed), log: o.log });
   const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, maxLive: o.core?.maxLive, attachmentsDir: o.attachmentsDir, credentials: o.credentials, costs });
+  const stopHarnessLogin = registerHarnessLogin(ops, (harness) => {
+    live.harnessLoginChanged(harness);
+    void core.refreshPlan(harness).catch(() => {});
+  });
   if (o.credentials) {
     ops.register("credentials", () => o.credentials!.status());
     ops.register("setCredential", (a) => { const result = o.credentials!.set(a.source, a.key, a.endpoint, a.deployment, a.rates); live.credentialsChanged(); return result; });
@@ -426,6 +431,7 @@ export function createRunner(o: RunnerOptions) {
       // process groups get SIGKILL 2 s on, waited for at the end).
       const shells = shellRuns.stopAll();
       terminal?.stop();
+      stopHarnessLogin();
       core.stop();
       live.attachments.stop();
       await live.closeAll().catch(() => {});

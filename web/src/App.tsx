@@ -42,7 +42,7 @@ export function App() {
       {auth !== "ok" ? (
         <Blocked auth={auth} />
       ) : route.page === "runners" || route.page === "credentials" || route.page === "azure" || route.page === "texting" || route.page === "notifications" || route.page === "agents" || route.page === "updates" || route.page === "usage" ? (
-        <Settings page={route.page} />
+        <Settings key={route.page === "credentials" ? route.runnerId : undefined} page={route.page} loginTarget={route.page === "credentials" ? route : undefined} />
       ) : route.page === "link" ? (
         <ShortLink key={route.code} code={route.code} />
       ) : route.page === "session" ? (

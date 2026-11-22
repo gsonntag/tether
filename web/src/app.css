@@ -1737,6 +1737,10 @@
   border-top: 1px solid var(--t-border);
   min-width: 0;
 }
+.t-inbox-row > .t-link {
+  max-width: 42%;
+  padding: 8px;
+}
 .t-inbox-row:first-child {
   border-top: none;
 }

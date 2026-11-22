@@ -78,10 +78,19 @@ async function claudeAuthStatus(binary: string, credential: CredentialSnapshot |
     const status = await result.exited;
     await Bun.sleep(25);
     const clean = output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\r/g, "");
-    if (status === 0) try { account = JSON.parse(clean.slice(clean.indexOf("{"), clean.lastIndexOf("}") + 1)); } catch {}
+    if (status === 0 || status === 1) try { account = JSON.parse(clean.slice(clean.indexOf("{"), clean.lastIndexOf("}") + 1)); } catch {}
   } finally { clearTimeout(timer); result.terminal?.close(); }
   if (account?.authMethod === "claude.ai" && account.loggedIn === true) account.subscriptionType ||= "Claude plan";
   return account;
+}
+
+/** The CLI's OAuth account, independent of a configured Tether key. */
+export async function claudeSubscriptionStatus(binary: string) {
+  return claudeAuthStatus(binary, undefined, claudeAuthSettings());
+}
+
+export function clearClaudeLoginStatus() {
+  login = undefined;
 }
 
 const LOGIN_MS = 30_000;

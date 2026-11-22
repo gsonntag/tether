@@ -1,3 +1,4 @@
+import type { HarnessLoginFlow, HarnessLoginStatus } from "./harnessLogin";
 // The wire format between browsers, the relay (server) and runners (SPEC §5).
 //
 //   browser ──rpc {id, runnerId, op, args}──► server ──rpc {id', op, args}──► runner
@@ -152,6 +153,12 @@ export interface Ops {
   retryNow: { args: { sessionId: string }; result: null };
   cancelRetry: { args: { sessionId: string }; result: null };
   credentials: { args: Record<string, never>; result: CredentialStatus };
+  harnessLoginStatus: { args: { harness: HarnessId }; result: HarnessLoginStatus };
+  harnessLoginStart: { args: { harness: HarnessId }; result: { flowId: string } };
+  harnessLoginPoll: { args: { flowId: string }; result: HarnessLoginFlow };
+  harnessLoginCode: { args: { flowId: string; code: string }; result: null };
+  harnessLoginCancel: { args: { flowId: string }; result: null };
+  harnessLogout: { args: { harness: HarnessId }; result: HarnessLoginStatus };
   setCredential: { args: { source: CredentialSource; key: string; endpoint?: string; deployment?: string; rates?: TokenRates }; result: CredentialStatus };
   unsetCredential: { args: { source: CredentialSource }; result: CredentialStatus };
   /** Azure's endpoint (a resource name or a URL) and its deployments, replacing what was there. Its key is untouched */
@@ -618,7 +625,7 @@ export type ServerToBrowser =
   | { t: "pong" };
 
 export type ServerToRunner =
-  | { t: "rpc"; id: string; op: OpName; args: unknown }
+  | { t: "rpc"; id: string; op: OpName; args: unknown; loginOwner?: string }
   /** these attaches lost their browser: close their PTYs */
   | { t: "detach"; attachIds: string[] }
   /** no browser watches these sessions any more */

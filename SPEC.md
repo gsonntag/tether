@@ -1130,9 +1130,16 @@ event (with the message's text) and the queued message's id from `SessionActions
 
 ### Credentials and billing safety
 
-Settings belongs to a runner and has two subpages in one nav. **Credentials** (`#/settings/credentials`)
-holds keys only: **Anthropic API key** for Claude and **OpenAI API key** for Codex. **Azure**
-(`#/settings/azure`, below) holds Azure's key, its resource and its deployments, for Codex. All can be
+**Credentials** (`#/settings/credentials`) shows the selected runner's Claude Code, Codex and
+Antigravity sign-in states, plus its **Anthropic API key** and **OpenAI API key**. Owners can sign in,
+sign in again and sign out. Claude Code and Antigravity open the harness's authorization link in a
+browser tab and accept the returned code in Tether. Codex shows a device code for its authorization
+page. Each flow expires and can be cancelled. The relay sends the challenge only to the requesting
+browser. The harness keeps its credentials in the selected runner's existing CLI profile. An auth
+failure in a session offers its owner a link back to that runner's Credentials, in the transcript
+and Home inbox.
+
+**Azure** (`#/settings/azure`, below) holds Azure's key, its resource and its deployments, for Codex. All can be
 set together. Setting, replacing or
 unsetting a key touches no other slot and changes no session's source. There is no enable toggle,
 fallback chain or automatic source migration, with one exception you tick per session (**When the

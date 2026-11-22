@@ -6,6 +6,7 @@
 // or while a subagent of it runs. Its transcript is read from the harness's store on first open
 // (never kept on disk by Tether) and tailed while it's stored and watched.
 
+import { needsHarnessLogin } from "../../../shared/harnessLogin";
 import { nextScheduled, unscheduled } from "../../../shared/schedule";
 import { watchingSummary } from "../../../shared/watchers";
 import { accessSync, constants, existsSync, lstatSync, mkdirSync, statSync } from "node:fs";
@@ -194,8 +195,8 @@ export class SessionCore {
             return { ...f, ...(p.archived ? { archived: true } : {}), ...(p.pinned ? { pinned: p.pinned } : {}), ...forked(p), ...worktreeOf(p) };
           }),
           (id) => this.owned(id),
-          // Open in a browser, or pinned (a lookup may have failed, pinnedRows.ts): listed still.
-          (id) => this.watched.has(id) || !!this.o.prefs.get(id).pinned,
+          // Keep a login failure in Home even if the harness has not created the session record.
+          (id) => this.watched.has(id) || !!this.o.prefs.get(id).pinned || this.pendingHarnessLogin(id),
         );
       } catch (e: any) {
         this.log(`discovery failed: ${e?.message ?? e}`);
@@ -204,6 +205,11 @@ export class SessionCore {
       }
     })();
     return this.discovering;
+  }
+
+  private pendingHarnessLogin(id: string) {
+    const p = this.o.prefs.get(id);
+    return p.unread === "failed" && !!p.failure && needsHarnessLogin(p.failure);
   }
 
   /** Rows the core keeps current itself: live sessions, running subagents, and sessions waiting on a person. */
@@ -525,8 +531,8 @@ export class SessionCore {
     const t = setTimeout(() => {
       this.evictTimers.delete(s.id);
       if (this.held(s) || this.sessions.get(s.id) !== s) return;
-      // A new session that never got a message has nothing in any store: no row to keep.
-      if (s.fresh) return this.dropFresh(s);
+      // An unused session normally vanishes. A login failure is actionable from Home.
+      if (s.fresh && !this.pendingHarnessLogin(s.id)) return this.dropFresh(s);
       this.sessions.delete(s.id);
       this.seqs.set(s.id, s.seq);
     }, this.o.evictMs ?? 60_000);
@@ -681,7 +687,7 @@ export class SessionCore {
     const stuck = s.state.queue.some((m) => m.held);
     const title = this.o.prefs.get(s.id).title;
     s.summary = { ...rest, ...(s.state.retry ? { retry: s.state.retry } : {}), ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...(this.o.prefs.get(s.id).pinned ? { pinned: this.o.prefs.get(s.id).pinned } : {}), ...worktreeOf(this.o.prefs.get(s.id)), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(watching ? { watching } : {}), ...(at !== undefined ? { scheduledAt: at } : {}), ...(stuck || (q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait && s.state.setup !== "running" && !s.retry) ? { queuePaused: true } : {}) };
-    if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id)) this.book.upsert([s.summary]);
+    if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id) || (this.pendingHarnessLogin(s.id) && this.shown(s.summary))) this.book.upsert([s.summary]);
   }
 }
 

@@ -15,6 +15,7 @@ import { isBillingSource, keyTargets, resolveAzureDeployment, type BillingSource
 import { addSideCost, type CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
+import { needsHarnessLogin } from "../../../shared/harnessLogin";
 import { FROM_TETHER } from "../../../shared/fromTether";
 import { SIDE_KEEPS, SIDE_STAYS, sideCommandRefusal } from "../../../shared/sideChat";
 import { modelIdProblem, reportedAt } from "../../../shared/labels";
@@ -105,6 +106,7 @@ export class LiveControl {
   readonly commands: Commands;
   /** shutting down: drivers close, but their open requests stay saved for the next start */
   private stopping = false;
+  private readonly subscriptionRevisions = new Map<HarnessId, string>();
   /** how long a cut-off session's store must be quiet before Tether continues it (tests shorten these) */
   quiet = { quietMs: 15_000, pollMs: 3_000, maxMs: 10 * 60_000 };
   /**
@@ -206,6 +208,13 @@ export class LiveControl {
   credentialsChanged() {
     for (const s of this.core.sessions.values()) {
       if (s.retry && s.retry.fingerprint !== this.retryIdentity(s).fingerprint) this.cancelRetrySession(s);
+    }
+  }
+
+  harnessLoginChanged(harness: HarnessId) {
+    this.subscriptionRevisions.set(harness, randomUUID());
+    for (const s of this.core.sessions.values()) {
+      if (s.summary.harness === harness && s.retry && this.sourceOf(s) === "subscription") this.cancelRetrySession(s);
     }
   }
 
@@ -1338,7 +1347,7 @@ export class LiveControl {
   private ensureDriver(s: Session, observe = false, limited = true): Promise<Driver> {
     if (s.driver) {
       if (observe) return Promise.resolve(s.driver);
-      if (!this.opts.credentials || this.revisionOf(s) === s.credentialRevision) return Promise.resolve(s.driver);
+      if (this.revisionOf(s) === s.credentialRevision) return Promise.resolve(s.driver);
       // A running turn finishes on its original process and source. No new message can go to it
       // after a change; idle processes are closed before starting again, on the session's source
       // with its key as it is now. With its key unset that start stops, saying so.
@@ -1416,7 +1425,9 @@ export class LiveControl {
 
   /** What a session's process must have been started with to be current. */
   private revisionOf(s: Session): string | undefined {
-    return this.opts.credentials?.snapshot(this.sourceOf(s), this.deploymentOf(s))?.revision;
+    const source = this.sourceOf(s);
+    return (source === "subscription" ? this.subscriptionRevisions.get(s.summary.harness) : undefined)
+      ?? this.opts.credentials?.snapshot(source, this.deploymentOf(s))?.revision;
   }
 
   private labelOf(harness: HarnessId, source: BillingSource): string {
@@ -1723,7 +1734,7 @@ export class LiveControl {
   }
 
   private checkCredential(s: Session) {
-    if (this.opts.credentials && this.revisionOf(s) !== s.credentialRevision) throw new Error(`${this.labelOf(s.summary.harness, this.sourceOf(s))} changed while the process was starting. Send again. Nothing was sent.`);
+    if (this.revisionOf(s) !== s.credentialRevision) throw new Error(`${this.labelOf(s.summary.harness, this.sourceOf(s))} changed while the process was starting. Send again. Nothing was sent.`);
   }
 
   private async startDriver(s: Session, observe = false): Promise<Driver> {
@@ -1732,6 +1743,7 @@ export class LiveControl {
     s.unwatch?.();
     s.unwatch = undefined;
     const sink = this.sink(s);
+    const subscriptionRevision = this.sourceOf(s) === "subscription" ? this.subscriptionRevisions.get(s.summary.harness) : undefined;
     let d: Driver;
     let opts: StartOpts;
     s.setState({ starting: s.fresh ? "start" : "resume" });
@@ -1748,12 +1760,15 @@ export class LiveControl {
       // that was starting it ends its turn as failed (send's catch).
       // (A Back to Tether that failed: modeChanged pauses what waited for the terminal, with Resume.)
       this.setMode(s, "stored", { error, starting: undefined, ...(s.sending ? {} : { status: "idle" as const }) });
+      if (!observe && !s.summary.parentSessionId && this.sourceOf(s) === "subscription" && needsHarnessLogin(error)) {
+        this.read.set(s.id, { failure: error });
+      }
       this.core.tail(s);
       this.core.scheduleEvict(s);
       throw e;
     }
     s.driver = d;
-    s.credentialRevision = d.credentialRevision ?? opts.credential?.revision;
+    s.credentialRevision = subscriptionRevision ?? d.credentialRevision ?? opts.credential?.revision;
     // Waiting for a new thread to confirm it (carry), not this one.
     if (s.state.nextBilling && !this.core.o.prefs.get(s.id).nextSource) {
       this.core.o.prefs.set(s.id, { nextBilling: undefined, sourceSwitchFailed: undefined });

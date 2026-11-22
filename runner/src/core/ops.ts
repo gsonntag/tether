@@ -1,9 +1,10 @@
+import { HARNESS_LOGIN_OPS } from "../../../shared/harnessLogin";
 // Runner-side handlers for the rpc ops browsers call (shared/protocol.ts `Ops`).
 
 import type { OpArgs, OpName, OpResult } from "../../../shared/protocol";
 import { redact, redactValue } from "../credentials";
 
-export type OpHandler<K extends OpName> = (args: OpArgs<K>) => Promise<OpResult<K>> | OpResult<K>;
+export type OpHandler<K extends OpName> = (args: OpArgs<K>, loginOwner?: string) => Promise<OpResult<K>> | OpResult<K>;
 
 export class OpRegistry {
   private handlers = new Map<OpName, OpHandler<any>>();
@@ -20,11 +21,13 @@ export class OpRegistry {
     return (await h(args as never)) as OpResult<K>;
   }
 
-  async handle(op: string, args: unknown): Promise<{ ok: true; data: unknown } | { ok: false; error: string }> {
+  async handle(op: string, args: unknown, loginOwner?: string): Promise<{ ok: true; data: unknown } | { ok: false; error: string }> {
     const h = this.handlers.get(op as OpName);
     if (!h) return { ok: false, error: `This runner doesn't know "${op}". Update and restart it.` };
+    if (HARNESS_LOGIN_OPS.has(op as OpName) && (typeof loginOwner !== "string" || !loginOwner))
+      return { ok: false, error: "Harness sign-in requires an owner connection through an updated server." };
     try {
-      return { ok: true, data: redactValue((await h((args ?? {}) as never)) ?? null) };
+      return { ok: true, data: redactValue((await h((args ?? {}) as never, loginOwner)) ?? null) };
     } catch (e: any) {
       return { ok: false, error: redact(e?.message ?? String(e)) };
     }
