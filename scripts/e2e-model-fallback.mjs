@@ -156,9 +156,12 @@ try {
     await p.keyboard.press("Escape");
     await send(p, "hello on plan");
     await p.getByText(/Fake reply .* on ChatGPT plan/).first().waitFor();
+    const planThread = p.url();
+    const limitErrors = p.getByText(/hit your usage limit/);
+    const previousLimits = await limitErrors.count();
     await send(p, "limit again");
-    await p.getByText(/hit your usage limit/).last().waitFor();
-    want((await chip(p).textContent()).includes("ChatGPT plan"), `${width}: disabling the chain prevents switching`);
+    await limitErrors.nth(previousLimits).waitFor();
+    want(p.url() === planThread && (await chip(p).getAttribute("aria-label")).includes("ChatGPT plan"), `${width}: disabling the chain prevents switching`);
     await p.getByRole("button", { name: "Fallback chain · Off" }).waitFor();
     // Typed on the plan: a model id applies to the model only; the plan's labels stay.
     const planChip = await chip(p).textContent();
