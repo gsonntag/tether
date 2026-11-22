@@ -6,6 +6,7 @@ import { resolveSourceModel, type BillingSource, type SourceChoices } from "../.
 import type { ActiveClone, FolderCheck } from "../../../shared/protocol";
 import type { WorkspaceInfo } from "../../../shared/worktree";
 import { CLAUDE_UNSET, HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
+import { useAccountLabel } from "../accountLabel";
 import { rpc } from "../connection";
 import { CHECK_DELAY_MS, folderBlocked } from "../folderCheck";
 import { openSession } from "../route";
@@ -85,6 +86,11 @@ export function NewSessionDialog() {
   const [sources, setSources] = useState<SourceChoices>();
   const sourcesAsked = useRef<Promise<SourceChoices | undefined>>(undefined);
   const [source, setSource] = useState<BillingSource>();
+  const { label: accountLabel } = useAccountLabel(rid, harness, open);
+  // Antigravity has only its implicit subscription and no source switching.
+  const pickerSources: SourceChoices | undefined = harness === "antigravity" && accountLabel && !sources?.options.length
+    ? { options: [{ source: "subscription", billing: { kind: "plan", label: accountLabel } }] }
+    : sources;
 
   useEffect(() => {
     if (!open) setRunnerId(undefined);
@@ -353,7 +359,7 @@ export function NewSessionDialog() {
             ))}
           </div>
         )}
-        <SourcePicker choices={sources} value={source} onChange={setSource} />
+        <SourcePicker accountLabel={accountLabel} choices={pickerSources} value={source} onChange={setSource} />
         {deployments ? (
           <DeploymentPicker deployments={deployments} value={deployment} onChange={setModel} />
         ) : (

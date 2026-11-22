@@ -111,6 +111,20 @@ export class Prefs {
     return this.shared();
   }
 
+  accountName(harness: HarnessId, accountId: string): string | undefined {
+    const entry = read(this.file).accountNames?.[harness];
+    return entry?.accountId === accountId && typeof entry.displayName === "string" ? entry.displayName : undefined;
+  }
+
+  setAccountName(harness: HarnessId, accountId: string, displayName: string) {
+    const cfg = read(this.file);
+    if (!cfg.runnerId) throw new Error("Runner configuration is unavailable.");
+    const accountNames = { ...cfg.accountNames };
+    if (displayName) accountNames[harness] = { accountId, displayName };
+    else delete accountNames[harness];
+    saveConfig({ ...cfg, runnerId: cfg.runnerId, accountNames }, this.file);
+  }
+
   /** The runner-wide settings. */
   settings(): RunnerSettings {
     return { ...this.runnerSettings };

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { HARNESS_BINS } from "../adapters/detect";
 import { registerHarnessLogin } from "./harnessLogin";
 import { OpRegistry } from "./ops";
+import { Prefs } from "./prefs";
 
 async function waitFor<T>(read: () => Promise<T | undefined>) {
   for (let i = 0; i < 100; i++) {
@@ -32,7 +33,7 @@ case "$*" in
     ;;
   *"auth status --json")
     if test -f '${marker}'; then
-      printf '%s\\n' '{"loggedIn":true,"authMethod":"claude.ai","email":"owner@example.test","subscriptionType":"max","accessToken":"private-access-token"}'
+      printf '%s\\n' '{"loggedIn":true,"authMethod":"claude.ai","email":"owner@example.test","subscriptionType":"max","orgName":"Test Organization","orgId":"test-org","accessToken":"private-access-token"}'
     else
       printf '%s\\n' '{"loggedIn":false}'
       exit 1
@@ -45,7 +46,9 @@ esac
   HARNESS_BINS.claude = cli;
   const ops = new OpRegistry();
   const changed: string[] = [];
-  const stop = registerHarnessLogin(ops, (h) => changed.push(h));
+  const file = join(dir, "runner.json");
+  writeFileSync(file, JSON.stringify({ runnerId: "test-runner" }));
+  const stop = registerHarnessLogin(ops, (h) => changed.push(h), new Prefs(file));
   const owner = "owner-one";
   const remote = (op: string, args: unknown) => ops.handle(op, args, owner);
   try {
@@ -74,7 +77,19 @@ esac
       if (response.ok && (response.data as { state: string }).state !== "pending") return response.data;
     });
     expect(result).toEqual({ state: "done" });
-    expect(await remote("harnessLoginStatus", harness)).toEqual({ ok: true, data: { state: "signedIn", email: "owner@example.test", plan: "max" } });
+    const status = await remote("harnessLoginStatus", harness);
+    expect(status).toEqual({ ok: true, data: { state: "signedIn", email: "owner@example.test", plan: "max", organization: "Test Organization", accountId: expect.any(String) } });
+    if (!status.ok) throw new Error(status.error);
+    const { accountId } = status.data as { accountId: string };
+    const rename = { ...harness, accountId, displayName: "  Work  " };
+    expect(await ops.handle("renameHarnessAccount", rename)).toMatchObject({ ok: false });
+    expect(await remote("renameHarnessAccount", { ...rename, accountId: "previous-login" })).toMatchObject({ ok: false });
+    expect(await remote("renameHarnessAccount", rename)).toMatchObject({ ok: true, data: { displayName: "Work" } });
+    expect(await remote("harnessLoginStatus", harness)).toMatchObject({ ok: true, data: { displayName: "Work" } });
+    expect(new Prefs(file).accountName("claude", accountId)).toBe("Work");
+    expect(new Prefs(file).accountName("claude", "different-account")).toBeUndefined();
+    expect(await remote("renameHarnessAccount", { ...rename, displayName: "" })).toEqual(status);
+    expect(new Prefs(file).accountName("claude", accountId)).toBeUndefined();
     expect(await remote("harnessLogout", harness)).toEqual({ ok: true, data: { state: "signedOut" } });
     expect(changed).toEqual(["claude", "claude"]);
 

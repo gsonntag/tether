@@ -170,6 +170,7 @@ export interface Ops {
   cancelRetry: { args: { sessionId: string }; result: null };
   credentials: { args: Record<string, never>; result: CredentialStatus };
   harnessLoginStatus: { args: { harness: HarnessId }; result: HarnessLoginStatus };
+  renameHarnessAccount: { args: { harness: HarnessId; accountId: string; displayName: string }; result: HarnessLoginStatus };
   harnessLoginStart: { args: { harness: HarnessId }; result: { flowId: string } };
   harnessLoginPoll: { args: { flowId: string }; result: HarnessLoginFlow };
   harnessLoginCode: { args: { flowId: string; code: string }; result: null };

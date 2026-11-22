@@ -14,7 +14,7 @@ export function HarnessLoginLink({ runnerId, harness }: { runnerId: string; harn
 
 const statusText = (s: HarnessLoginStatus | undefined) => {
   switch (s?.state) {
-    case "signedIn": return ["Signed in", s.email, s.plan].filter(Boolean).join(" · ");
+    case "signedIn": return [s.organization || s.email || "Signed in", s.plan].filter(Boolean).join(" · ");
     case "signedOut": return "Signed out";
     case "unavailable": return "Not installed";
     case "unknown": return "Status unavailable";
@@ -22,7 +22,7 @@ const statusText = (s: HarnessLoginStatus | undefined) => {
   }
 };
 
-export function HarnessLogin({ runnerId, harness }: { runnerId: string; harness: HarnessId }) {
+export function HarnessLogin({ runnerId, harness, rename }: { runnerId: string; harness: HarnessId; rename?: boolean }) {
   const connected = useStore((s) => s.link === "open");
   const [status, setStatus] = useState<HarnessLoginStatus>();
   const [error, setError] = useState("");
@@ -141,9 +141,29 @@ export function HarnessLogin({ runnerId, harness }: { runnerId: string; harness:
     } finally { setBusy(false); }
   };
 
+  const renameAccount = async (accountId: string, displayName: string) => {
+    setBusy(true);
+    setError("");
+    try {
+      setStatus(await rpc(runnerId, "renameHarnessAccount", { harness, accountId, displayName }));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally { setBusy(false); }
+  };
+
   return <div className="t-credential-slot">
-    <div className="t-credential-title">Harness account <span className="t-credential-status" role="status">{statusText(status)}</span></div>
+    <div className="t-credential-title">{status?.state === "signedIn" && status.displayName ? status.displayName : "Harness account"} <span className="t-credential-status" role="status">{statusText(status)}</span></div>
     {error && <div className="t-inline-status error" role="alert">{error}</div>}
+    {rename && !flowId && !confirm && status?.state === "signedIn" && status.accountId && (
+      <form className="t-credential-entry" key={status.accountId + (status.displayName ?? "")} onSubmit={(e) => {
+        e.preventDefault();
+        const name = new FormData(e.currentTarget).get("displayName");
+        if (typeof name === "string" && status.accountId) void renameAccount(status.accountId, name);
+      }}>
+        <input className="t-search" name="displayName" aria-label={`${HARNESS_LABELS[harness]} display name`} placeholder="Display name" defaultValue={status.displayName ?? ""} maxLength={80} disabled={busy || !connected} />
+        <Button label="Save name" variant="secondary" type="submit" isDisabled={busy || !connected} />
+      </form>
+    )}
     {flowId ? <>
       {challenge?.url ? <a className="t-link" href={challenge.url} target="_blank" rel="noreferrer">Open {HARNESS_LABELS[harness]} sign-in</a> : <span role="status">Waiting for the harness…</span>}
       {challenge?.deviceCode && <div>Enter this one-time code on the sign-in page <strong><code>{challenge.deviceCode}</code></strong></div>}

@@ -3,7 +3,7 @@ import type { HarnessId } from "./transcript";
 
 export type HarnessLoginStatus =
   | { state: "unavailable" | "unknown" | "signedOut" }
-  | { state: "signedIn"; email?: string; plan?: string };
+  | { state: "signedIn"; email?: string; plan?: string; organization?: string; accountId?: string; displayName?: string };
 
 export type HarnessLoginFlow =
   | { state: "pending"; url?: string; deviceCode?: string; acceptsCode?: boolean }
@@ -19,5 +19,5 @@ export const harnessLoginHref = (runnerId: string, harness: HarnessId) =>
 
 export const HARNESS_LOGIN_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "harnessLoginStatus", "harnessLoginStart", "harnessLoginPoll",
-  "harnessLoginCode", "harnessLoginCancel", "harnessLogout",
+  "renameHarnessAccount", "harnessLoginCode", "harnessLoginCancel", "harnessLogout",
 ]);

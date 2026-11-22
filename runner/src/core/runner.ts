@@ -159,7 +159,7 @@ export function createRunner(o: RunnerOptions) {
   const stopHarnessLogin = registerHarnessLogin(ops, (harness) => {
     live.harnessLoginChanged(harness);
     void core.refreshPlan(harness).catch(() => {});
-  });
+  }, prefs);
   ops.register("fallbackSetup", (a) => live.fallbackSetup(a.sessionId));
   ops.register("setFallbackChain", (a) => live.setFallbackChain(a.sessionId, a.enabled, a.steps, a.continueOnReset));
   ops.register("editFallbackPreset", (a) => live.editFallbackPreset(a));

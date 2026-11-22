@@ -2,16 +2,17 @@ import { isApiBilling } from "../../../shared/labels";
 import type { BillingSource, SourceChoices, SourceOption } from "../../../shared/credentials";
 
 /** What a session will draw from: a choice when there are several, in the API colour on a key. */
-export function SourcePicker({ choices, value, onChange }: { choices?: SourceChoices; value?: BillingSource; onChange: (source: BillingSource) => void }) {
+export function SourcePicker({ choices, value, onChange, accountLabel }: { accountLabel?: string; choices?: SourceChoices; value?: BillingSource; onChange: (source: BillingSource) => void }) {
   const options = choices?.options ?? [];
   const picked = options.find((o) => o.source === value) ?? options[0];
   if (!picked) return null;
+  const label = (option: SourceOption) => (option.source === "subscription" && accountLabel) || option.billing.label;
   const api = isApiBilling(picked.billing);
   if (options.length === 1) {
     return (
       <div>
         <span className="t-field-label">Source</span>
-        <div>{api ? <span className="t-move-api">{picked.billing.label}</span> : picked.billing.label}</div>
+        <div>{api ? <span className="t-move-api">{label(picked)}</span> : label(picked)}</div>
       </div>
     );
   }
@@ -21,7 +22,7 @@ export function SourcePicker({ choices, value, onChange }: { choices?: SourceCho
       <select aria-label="Source" className={`t-select${api ? " t-source-api" : ""}`} value={picked.source} onChange={(e) => onChange(e.target.value as BillingSource)}>
         {options.map((o) => (
           <option key={o.source} value={o.source}>
-            {o.billing.label}
+            {label(o)}
           </option>
         ))}
       </select>
