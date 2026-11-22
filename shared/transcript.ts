@@ -384,6 +384,7 @@ export interface LiveState {
   autoKey?: boolean;
   /** ticked ("Session can text me"): it may text the person, and plain texts can come to it (SPEC §11 Texting). Absent: it never texts */
   canText?: boolean;
+  /** Whether extended throttle retries are enabled. Absent if unavailable for this session. */
   retryThrottled?: boolean;
   /** the key this session last used or had picked: default when no fallback order is saved */
   lastKey?: BillingSource;

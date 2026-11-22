@@ -532,7 +532,7 @@ export class LiveControl {
     // The pin goes with the conversation: the new thread takes the old one's place in Pinned.
     prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
     const { forkedFrom, worktree: _, ...state } = kept;
-    n.setState(state);
+    n.setState({ ...state, retryThrottled: this.sourceOf(n) === "subscription" ? undefined : !!kept.retryThrottled });
     prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextModel: undefined, nextBilling: undefined, nextDeployment: undefined, sourceSwitchFailed: undefined });
     this.core.moveSides(s.id, n.id);
     prefs.flush();
@@ -581,7 +581,7 @@ export class LiveControl {
       const { pinned, pinnedRow } = this.core.o.prefs.get(s.id);
       this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
       const { forkedFrom, worktree: _, ...state } = kept;
-      n.setState(state);
+      n.setState({ ...state, retryThrottled: source === "subscription" ? undefined : !!kept.retryThrottled });
       this.core.touch(n, forkedFrom ? { forkedFrom } : {});
       try {
         await this.ensureDriver(n);
@@ -1477,6 +1477,7 @@ export class LiveControl {
     opts = this.forSource(source, opts);
     const s = this.core.create(harness, await this.newNativeId(harness, folder, opts, source), folder, opts);
     this.core.o.prefs.set(s.id, { source, ...(source === "azure" && opts.model ? { deployment: opts.model } : {}) });
+    if (source !== "subscription") s.setState({ retryThrottled: false });
     return s;
   }
 
@@ -1550,7 +1551,7 @@ export class LiveControl {
     const azure = azureDeployment ? { deployment: azureDeployment, model: azureDeployment } : {};
     this.core.o.prefs.set(id, { source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...azure });
     this.core.o.prefs.flush();
-    s.setState({ nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...(azure.model ? { model: azure.model } : {}), ...(cost ? { cost } : {}) });
+    s.setState({ nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, retryThrottled: asked === "subscription" ? undefined : this.core.o.prefs.get(id).retryThrottled === true, ...(azure.model ? { model: azure.model } : {}), ...(cost ? { cost } : {}) });
     this.core.touch(s);
   }
 
@@ -1648,7 +1649,7 @@ export class LiveControl {
     }
     this.core.o.prefs.set(id, { retryThrottled: on || undefined });
     this.core.o.prefs.flush();
-    s.setState({ retryThrottled: on || undefined });
+    s.setState({ retryThrottled: on });
     if (!on && s.retry?.extended && s.retry.phase === "waiting") this.cancelRetrySession(s);
   }
 

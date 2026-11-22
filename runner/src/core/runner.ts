@@ -106,7 +106,6 @@ export function createRunner(o: RunnerOptions) {
     ...(process.env.TETHER_PEERS === "0" ? {} : { spawnedFamily: true }),
     existingWorktrees: true,
     canText: true,
-    retryThrottled: true,
     // The relay shows the runner to these people (shared/access.ts) and only its owners see the list.
     ...(prefs.shared().length ? { shared: prefs.shared() } : {}),
     ...(hubPort.state ? { textingHub: hubPort.state } : {}),

@@ -48,10 +48,7 @@ export function SessionHeader({
   const started = children.filter((c) => c.spawned);
   // Only where the runner takes it, for its owner, on a main session (runners.ts offersCanText).
   const textMe = useStore((s) => offersCanText(s.runners.find((r) => r.id === runnerId), session));
-  const canSetRetryThrottled = useStore((s) => {
-    const runner = s.runners.find((r) => r.id === runnerId);
-    return runner?.retryThrottled === true && accessOf(runner) !== "view";
-  });
+  const canSetRetryThrottled = useStore((s) => accessOf(s.runners.find((r) => r.id === runnerId)) !== "view");
   const paid = isApiBilling(billingForDisplay(state));
   const nextBilling = visibleNextBilling(state);
   const [editingTitle, setEditingTitle] = useState(false);

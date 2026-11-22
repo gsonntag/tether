@@ -93,6 +93,14 @@ describe("automatic rate limit retry integration", () => {
     expect(adapter.drivers).toHaveLength(0);
   });
 
+  test("the option is available before a new key session sends its first message", async () => {
+    const { live } = setup();
+    const session = await live.createSession("claude", "/project", {}, "anthropic");
+    expect(session.state.retryThrottled).toBe(false);
+    await live.setRetryThrottled(session.id, true);
+    expect(session.state.retryThrottled).toBe(true);
+  });
+
   test("a subscription session cannot enable extended throttle retries", async () => {
     const { adapter, live } = setup();
     adapter.addStored("plan", []);

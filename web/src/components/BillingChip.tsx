@@ -49,12 +49,12 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
 
   const planName = choices?.options.find((o) => o.source === "subscription")?.billing.label ?? (billing.kind === "plan" ? billing.label : "Plan limits");
   const plan = planLines(state.plan);
-  const hasMenu = !!choices || plan.length > 0 || showSessionCost;
+  const showRetryThrottled = onRetryThrottled && !session.parentSessionId && !session.sideOf && state.retryThrottled !== undefined;
+  const hasMenu = !!choices || plan.length > 0 || showSessionCost || showRetryThrottled;
   if (!hasMenu) return <span {...chip}>{body}</span>;
 
   const menu = choices ? sourceMenu(session.harness, state, choices) : undefined;
   const autoKey = choices && (!onAutoKey || session.sideOf ? undefined : autoKeyItem(session.harness, state, choices));
-  const showRetryThrottled = onRetryThrottled && !session.parentSessionId && !session.sideOf && isApiBilling(state.billing);
   const hasMoreBelowPlan = showSessionCost || (!!menu && (menu.items.length > 0 || menu.addKey));
   return (
     <>

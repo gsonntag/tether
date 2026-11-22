@@ -110,8 +110,6 @@ export interface RunnerInfo {
   existingWorktrees?: boolean;
   /** it takes `setCanText` (SPEC §11 Texting: the "Session can text me" box). Absent: an older runner, and no box */
   canText?: boolean;
-  /** Takes setRetryThrottled for API-key sessions. */
-  retryThrottled?: boolean;
   /** the people its owner shared it with (shared/access.ts); only sent to its owners */
   shared?: RunnerGrant[];
   /** it's the texting hub (SPEC §11 Texting): it texts for its owner's other runners too, and whether texts can go now */
