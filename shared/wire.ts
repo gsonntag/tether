@@ -66,7 +66,7 @@ function parseRunnerInfo(v: unknown): Omit<RunnerInfo, "connectedAt"> | null {
   const shared = cleanGrants(v.shared);
   const textingHub = parseHubState(v.textingHub);
   const build = parseRunnerBuild(v.build);
-  return { id: v.id, name, hostname: v.hostname, version: v.version, protocol: v.protocol, harnesses, ...(homeFolder ? { homeFolder } : {}), ...(v.git === true ? { git: true } : {}), ...(v.gitActions === true ? { gitActions: true } : {}), ...(v.files === true ? { files: true } : {}), ...(v.pinning === true ? { pinning: true } : {}), ...(v.spawnedFamily === true ? { spawnedFamily: true } : {}), ...(v.existingWorktrees === true ? { existingWorktrees: true } : {}), ...(v.canText === true ? { canText: true } : {}), ...(shared.length ? { shared } : {}), ...(textingHub ? { textingHub } : {}), ...(build ? { build } : {}) };
+  return { id: v.id, name, hostname: v.hostname, version: v.version, protocol: v.protocol, harnesses, ...(homeFolder ? { homeFolder } : {}), ...(v.git === true ? { git: true } : {}), ...(v.gitActions === true ? { gitActions: true } : {}), ...(v.files === true ? { files: true } : {}), ...(v.pinning === true ? { pinning: true } : {}), ...(v.spawnedFamily === true ? { spawnedFamily: true } : {}), ...(v.existingWorktrees === true ? { existingWorktrees: true } : {}), ...(v.canText === true ? { canText: true } : {}), ...(v.retryThrottled === true ? { retryThrottled: true } : {}), ...(shared.length ? { shared } : {}), ...(textingHub ? { textingHub } : {}), ...(build ? { build } : {}) };
 }
 
 /** A runner frame, or null when it isn't one the server understands. Rebuilt like browser frames. */

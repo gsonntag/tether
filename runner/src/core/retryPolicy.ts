@@ -5,9 +5,12 @@ import { NAME_BYTES_MAX, type Attachment } from "../../../shared/attachments";
 export const RETRY_DELAYS_MS = [15_000, 30_000, 60_000, 120_000, 120_000] as const;
 export const RETRY_DEADLINE_MS = 600_000;
 export const RETRY_MAX_ATTEMPTS = 5;
+export const EXTENDED_RETRY_DEADLINE_MS = 6 * 60 * 60_000;
+export const EXTENDED_RETRY_MAX_ATTEMPTS = 60;
+const EXTENDED_RETRY_DELAY_CAP_MS = 10 * 60_000;
 
 /**
- * Calculate an absolute retry time. `attempt` is the ordinal of the additional attempt (1..5).
+ * Calculate an absolute retry time. `attempt` is the ordinal of the additional attempt.
  * A provider hint is a lower bound; callers can apply any other lower bounds themselves.
  */
 export function retryTime(
@@ -16,12 +19,14 @@ export function retryTime(
   deadline: number,
   retryAt?: number,
   random: () => number = Math.random,
+  extended = false,
 ): number | undefined {
-  if (!Number.isInteger(attempt) || attempt < 1 || attempt > RETRY_MAX_ATTEMPTS) return undefined;
+  if (!Number.isInteger(attempt) || attempt < 1 || attempt > (extended ? EXTENDED_RETRY_MAX_ATTEMPTS : RETRY_MAX_ATTEMPTS)) return undefined;
   if (!Number.isFinite(now) || !Number.isFinite(deadline) || (retryAt !== undefined && !Number.isFinite(retryAt))) return undefined;
   const sample = random();
   if (!Number.isFinite(sample) || sample < 0 || sample > 1) return undefined;
-  const delay = Math.round(RETRY_DELAYS_MS[attempt - 1]! * (0.8 + sample * 0.4));
+  const base = extended ? 60_000 * 2 ** (attempt - 1) : RETRY_DELAYS_MS[attempt - 1]!;
+  const delay = Math.min(Math.round(base * (0.8 + sample * 0.4)), EXTENDED_RETRY_DELAY_CAP_MS);
   const nextAt = Math.max(Math.ceil(now + delay), retryAt === undefined ? -Infinity : Math.ceil(retryAt));
   if (!Number.isFinite(nextAt) || nextAt >= deadline) return undefined;
   return nextAt;
@@ -31,6 +36,7 @@ export interface SavedRetry {
   id: string;
   attempt: number;
   maxAttempts: number;
+  extended?: true;
   nextAt: number;
   deadline: number;
   error: string;
@@ -65,9 +71,12 @@ export function isSavedRetry(value: unknown): value is SavedRetry {
   if (!isBoundedString(r.id, 128) || !isBoundedString(r.fingerprint, 512) || !isBoundedString(r.scope, 512)) return false;
   if (r.storeRevision !== undefined && !isBoundedString(r.storeRevision, 256)) return false;
   if (!Number.isInteger(r.attempt) || (r.attempt as number) < 1) return false;
-  if (!Number.isInteger(r.maxAttempts) || (r.maxAttempts as number) < 1 || (r.maxAttempts as number) > RETRY_MAX_ATTEMPTS || (r.attempt as number) > (r.maxAttempts as number)) return false;
+  if (r.extended !== undefined && r.extended !== true) return false;
+  const maxAttempts = r.extended ? EXTENDED_RETRY_MAX_ATTEMPTS : RETRY_MAX_ATTEMPTS;
+  const maxDuration = r.extended ? EXTENDED_RETRY_DEADLINE_MS : RETRY_DEADLINE_MS;
+  if (!Number.isInteger(r.maxAttempts) || (r.maxAttempts as number) < 1 || (r.maxAttempts as number) > maxAttempts || (r.attempt as number) > (r.maxAttempts as number)) return false;
   if (typeof r.nextAt !== "number" || !Number.isFinite(r.nextAt) || r.nextAt < 0) return false;
-  if (typeof r.deadline !== "number" || !Number.isFinite(r.deadline) || r.deadline <= 0 || r.nextAt >= r.deadline || r.deadline - r.nextAt > RETRY_DEADLINE_MS) return false;
+  if (typeof r.deadline !== "number" || !Number.isFinite(r.deadline) || r.deadline <= 0 || r.nextAt >= r.deadline || r.deadline - r.nextAt > maxDuration) return false;
   if (r.minAt !== undefined && (typeof r.minAt !== "number" || !Number.isFinite(r.minAt) || r.minAt < 0 || r.minAt > r.nextAt)) return false;
   if (!isBoundedString(r.error, 4096, true)) return false;
   if (r.phase !== "waiting" && r.phase !== "sending") return false;

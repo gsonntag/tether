@@ -12,7 +12,7 @@ import { forkedFromTitle } from "../fork";
 import { BillingChip, useSources } from "./BillingChip";
 import { ChoiceMenu } from "./ChoiceMenu";
 import { TextMeChip } from "./TextMeChip";
-import { offersCanText } from "../runners";
+import { accessOf, offersCanText } from "../runners";
 import { shownStatus } from "../sessionList";
 import { StatusDot } from "./SessionRow";
 import { StartedChips, SubagentChips } from "./SubagentChips";
@@ -48,6 +48,10 @@ export function SessionHeader({
   const started = children.filter((c) => c.spawned);
   // Only where the runner takes it, for its owner, on a main session (runners.ts offersCanText).
   const textMe = useStore((s) => offersCanText(s.runners.find((r) => r.id === runnerId), session));
+  const canSetRetryThrottled = useStore((s) => {
+    const runner = s.runners.find((r) => r.id === runnerId);
+    return runner?.retryThrottled === true && accessOf(runner) !== "view";
+  });
   const paid = isApiBilling(billingForDisplay(state));
   const nextBilling = visibleNextBilling(state);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -135,7 +139,15 @@ export function SessionHeader({
         </div>
       )}
       <div className={`t-chips${paid ? " t-paid-chips" : ""}`}>
-        <BillingChip runnerId={runnerId} session={session} state={state} capabilities={capabilities} onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))} onAutoKey={(on) => void call(rpc(runnerId, "setAutoKey", { sessionId: session.id, on }))} />
+        <BillingChip
+          runnerId={runnerId}
+          session={session}
+          state={state}
+          capabilities={capabilities}
+          onSwitch={(source) => void call(rpc(runnerId, "setSessionSource", { sessionId: session.id, source }))}
+          onAutoKey={(on) => void call(rpc(runnerId, "setAutoKey", { sessionId: session.id, on }))}
+          onRetryThrottled={canSetRetryThrottled ? (on) => void call(rpc(runnerId, "setRetryThrottled", { sessionId: session.id, on })) : undefined}
+        />
         {nextBilling && <span className={`t-chip t-chip-info t-next-source${isApiBilling(nextBilling) ? " t-next-api" : ""}`} title={`${nextBilling.label} from the next start`}>Next: {nextBilling.label}</span>}
         <div className="t-chip-options">
         {isChild ? (

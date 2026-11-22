@@ -132,6 +132,7 @@ export class LiveControl {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
     this.retries = new RetryControl(core, {
       identity: (s) => this.retryIdentity(s),
+      extended: (s) => s.state.retryThrottled === true && this.sourceOf(s) !== "subscription",
       revision: (s) => core.adapter(s.summary.harness).storeRevision?.(s.summary.nativeId, s.summary.projectPath),
       blocked: (s) => s.state.mode === "terminal" || !!s.state.terminal || !!s.state.requests.length || !!this.terminal?.blocked(s) || !!core.o.prefs.get(s.id).nextSource || this.restartWaits.has(s.id),
       held: (s) => !!this.heldWhy(s.id),
@@ -1640,12 +1641,23 @@ export class LiveControl {
     this.core.o.bus.emit("canTextChanged", { sessionId: id, canText: on });
   }
 
+  async setRetryThrottled(id: string, on: boolean) {
+    const s = await this.core.open(id);
+    if (s.summary.parentSessionId || s.summary.sideOf || this.sourceOf(s) === "subscription") {
+      throw new Error("Extended throttle retries require a main session using an API key.");
+    }
+    this.core.o.prefs.set(id, { retryThrottled: on || undefined });
+    this.core.o.prefs.flush();
+    s.setState({ retryThrottled: on || undefined });
+    if (!on && s.retry?.extended && s.retry.phase === "waiting") this.cancelRetrySession(s);
+  }
+
   /** What a session's successor on another id keeps (a fork's link back too, SPEC §16; its worktree record, SPEC §4). */
   keptPrefs(s: Session) {
-    const { autoKey, canText, lastKey, fallbackKeys, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
+    const { autoKey, canText, retryThrottled, lastKey, fallbackKeys, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
     // A side chat's successor is one too, read-only (SPEC §16a): failing closed.
     // The worktree goes on with the conversation: cleanup counts the successor as its user (the old id, moved on, no more).
-    return { ...(autoKey ? { autoKey } : {}), ...(canText ? { canText } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree } : {}) };
+    return { ...(autoKey ? { autoKey } : {}), ...(canText ? { canText } : {}), ...(retryThrottled === true ? { retryThrottled } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree } : {}) };
   }
 
   /**

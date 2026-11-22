@@ -33,7 +33,7 @@ export function useSources(runnerId: string, harness: HarnessId, wanted: boolean
 /**
  * What the session draws from, loud on a key, and the way to change it.
  */
-export function BillingChip({ runnerId, session, state, capabilities, onSwitch, onAutoKey }: { runnerId: string; session: SessionSummary; state: LiveState; capabilities?: HarnessCapabilities; onSwitch: (source: BillingSource) => void; onAutoKey?: (on: boolean) => void }) {
+export function BillingChip({ runnerId, session, state, capabilities, onSwitch, onAutoKey, onRetryThrottled }: { runnerId: string; session: SessionSummary; state: LiveState; capabilities?: HarnessCapabilities; onSwitch: (source: BillingSource) => void; onAutoKey?: (on: boolean) => void; onRetryThrottled?: (on: boolean) => void }) {
   const [editingFallback, setEditingFallback] = useState(false);
   // A side chat keeps its session's source (SPEC §16a).
   const changeable = !session.parentSessionId && !session.sideOf && !!capabilities?.sourceSwitch;
@@ -54,6 +54,7 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
 
   const menu = choices ? sourceMenu(session.harness, state, choices) : undefined;
   const autoKey = choices && (!onAutoKey || session.sideOf ? undefined : autoKeyItem(session.harness, state, choices));
+  const showRetryThrottled = onRetryThrottled && !session.parentSessionId && !session.sideOf && isApiBilling(state.billing);
   const hasMoreBelowPlan = showSessionCost || (!!menu && (menu.items.length > 0 || menu.addKey));
   return (
     <>
@@ -89,6 +90,10 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
         {autoKey && <DropdownMenuDivider />}
         {autoKey && <DropdownMenuCheckboxItem label={autoKey.label} value={!!state.autoKey} onChange={(on) => onAutoKey?.(on)} />}
         {autoKey?.order && <DropdownMenuItem label="Fallback keys…" onClick={() => setEditingFallback(true)} />}
+        {showRetryThrottled && <>
+          <DropdownMenuDivider />
+          <DropdownMenuCheckboxItem label="Keep retrying when throttled" description="Wait up to six hours for this API key to recover." value={!!state.retryThrottled} onChange={onRetryThrottled} />
+        </>}
         {menu?.addKey && menu.items.length > 0 && <DropdownMenuDivider />}
         {menu?.addKey && <DropdownMenuItem label="Add API key…" onClick={() => navigate({ page: "credentials" })} />}
       </DropdownMenu>
