@@ -74,3 +74,18 @@ test("runner pickers list only runners that allow the page's ops", () => {
   // The driven runner must NOT appear in the Credentials runner picker
   expect(html).not.toContain("Driven");
 });
+
+test("a deep link survives the first render before hello and the runner list arrive", async () => {
+  // First render: no user yet, no runners. Only Notifications is usable, and it is what shows.
+  const before = renderToStaticMarkup(<Settings page="credentials" runners={[]} />);
+  expect(before).toContain('href="#/settings/notifications" aria-current="page"');
+  // An owner whose runners are not listed yet sees Runners.
+  expect(renderToStaticMarkup(<Settings page="credentials" runners={[]} role="owner" />)).toContain('href="#/settings/runners" aria-current="page"');
+  // Once hello and the runners frame are in, the same asked page shows Credentials.
+  const after = renderToStaticMarkup(<Settings page="credentials" runners={[runner("main-dev")]} role="owner" />);
+  expect(after).toContain('href="#/settings/credentials" aria-current="page"');
+  // That only holds if the early fallback never rewrote the URL (the route is the hash). Static
+  // rendering runs no effects, so check the source: Settings must not replace or assign the hash.
+  const source = await Bun.file(new URL("./Credentials.tsx", import.meta.url)).text();
+  expect(source).not.toMatch(/location\.(replace|assign)\(|location\.hash\s*=[^=]/);
+});

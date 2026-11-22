@@ -12,7 +12,7 @@ import { TextingSettings } from "./TextingSettings";
 import { UsageSettings } from "./UsageSettings";
 
 import type { KnownRunner } from "../runners";
-import { defaultSettingsPage, PAGE_LABELS, resolveSettingsPage, runnersForPage, visibleSettingsPages, type SettingsPage } from "../settings";
+import { PAGE_LABELS, resolveSettingsPage, runnersForPage, visibleSettingsPages, type SettingsPage } from "../settings";
 import { RunnersSettings } from "./RunnersSettings";
 
 /** The Runner menu's "All runners" (Usage only). */
@@ -28,14 +28,9 @@ export function Settings({ page: asked, runners: propRunners, role: propRole }: 
   const role = propRole ?? storeRole;
   const visiblePages = visibleSettingsPages(allRunners, role);
   const page = resolveSettingsPage(asked, allRunners, role);
+  // The URL keeps the asked page: before hello and the runner list arrive nothing looks usable, so
+  // rewriting it to the fallback would stick and lose every reload or deep link.
   const pageRunners = runnersForPage(allRunners, page);
-
-  useEffect(() => {
-    if (typeof location !== "undefined" && !visiblePages.includes(asked)) {
-      const target = `#/settings/${page}`;
-      if (location.hash !== target) location.replace(target);
-    }
-  }, [asked, visiblePages, page]);
 
   const [chosen, setChosen] = useState("");
   // Usage can show every runner together: its first choice, and where it starts.
