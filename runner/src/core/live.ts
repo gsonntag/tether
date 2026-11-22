@@ -7,11 +7,14 @@
 // permission requests go to the request desk (core/requests.ts), and subagents become child
 // sessions (SPEC §6a).
 
+import { FALLBACK_BACKOFF_MS, fallbackOrder, fallbackStepProblem, type FallbackProgress, type FallbackChain, type FallbackHarness, type FallbackPresetEdit, type FallbackSetup, type FallbackStep } from "../../../shared/fallbackChain";
+import { LEVELS, mapMode } from "../../../shared/move";
+import { levelOf } from "./permissionLevel";
 import { Commands } from "./commands";
 import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { CredentialStore, redact, redactValue, type CredentialSnapshot } from "../credentials";
-import { isBillingSource, keyTargets, resolveAzureDeployment, type BillingSource, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
+import { hasSourceModels, isBillingSource, resolveSourceModel, type BillingSource, type CredentialSource, type SourceChoices, type SourceOption } from "../../../shared/credentials";
 import { addSideCost, type CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
@@ -23,7 +26,7 @@ import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
 import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
 import { PLAN_MODE } from "../../../shared/plan";
 import { sourceSwitchBlockMessage, sourceSwitchBlocker } from "../../../shared/sourceSwitch";
-import { AGENT_NAMES, HARNESS_LABELS, type Billing, type HarnessId, type LiveState, type ModelList, type Msg, type RequestAnswer } from "../../../shared/transcript";
+import { AGENT_NAMES, HARNESS_LABELS, type Billing, type HarnessId, type LiveState, type ModelList, type PlanUsage, type Msg, type RequestAnswer } from "../../../shared/transcript";
 import { SendCancelled, type Driver, type Sink, type StartOpts, type SubagentStart } from "./adapter";
 import { AttachmentStore } from "./attachments";
 import type { RequestBroker } from "./broker";
@@ -37,7 +40,7 @@ import { RetryControl } from "./retryControl";
 import { lockWorktree } from "./worktreeLock";
 
 /** How a message is sent (LiveControl.send). */
-type SendOpts = { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string; clientId?: string };
+type SendOpts = { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string; fallback?: symbol; continuedFallback?: boolean; clientId?: string };
 
 /** Idle this long, a live session's process closes. */
 export const IDLE_CLOSE_MS = 5 * 60_000;
@@ -134,10 +137,16 @@ export class LiveControl {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
     this.retries = new RetryControl(core, {
       identity: (s) => this.retryIdentity(s),
+      extended: (s) => s.state.retryThrottled === true && this.sourceOf(s) !== "subscription",
       revision: (s) => core.adapter(s.summary.harness).storeRevision?.(s.summary.nativeId, s.summary.projectPath),
       blocked: (s) => s.state.mode === "terminal" || !!s.state.terminal || !!s.state.requests.length || !!this.terminal?.blocked(s) || !!core.o.prefs.get(s.id).nextSource || this.restartWaits.has(s.id),
       held: (s) => !!this.heldWhy(s.id),
       send: (s, r) => this.send(s.id, r.text, r.attachments, { tether: r.tether, retryId: r.id }),
+      exhausted: (s, r, error) => {
+        if (!this.canAdvanceFallback(s)) return false;
+        void this.advanceFallback(s, undefined, r, false, false, false, error);
+        return true;
+      },
     });
     this.desk = new RequestDesk(core, broker, {
       send: (id, text) => this.send(id, text, [], { tether: true }),
@@ -304,6 +313,9 @@ export class LiveControl {
     if (text.length > MESSAGE_TEXT_MAX) throw new Error("That message is too long.");
     this.sideCommand(id, text);
     const s = await this.core.open(id);
+    if (!o.fallback && !o.continuedFallback && !o.retryId) this.cancelFallbackTimer(id);
+    const fallback = this.fallingBack.get(s);
+    if (fallback && fallback !== o.fallback) throw new Error("The fallback chain is switching this session. Try again shortly.");
     if (o.retryId && (s.retry?.id !== o.retryId || s.retry.phase !== "sending")) throw new SendCancelled();
     if (!o.retryId && (s.retry || this.core.o.prefs.get(id).retry)) {
       if (o.queued) throw new Error("A rate limit retry is waiting.");
@@ -364,6 +376,17 @@ export class LiveControl {
       } finally {
         s.sending = undefined;
       }
+    }
+    if (!o.fallback && !o.continuedFallback && !o.retryId && s.state.status === "idle" && !s.sending && !s.starting &&
+      !s.retrySuppressed && s.state.fallbackChain?.active !== undefined && !this.core.o.prefs.get(id).nextSource) {
+      const { active, steps } = s.state.fallbackChain;
+      const progress = this.core.o.prefs.get(id).fallbackProgress;
+      if (progress && fallbackOrder(steps.length, active, progress, this.core.now(), true).length &&
+        await this.advanceFallback(s, undefined, { text, attachments, tether: o.tether }, false, true)) return;
+    }
+    if (o.fallback) {
+      if (this.fallingBack.get(s) !== o.fallback || s.retrySuppressed) throw new SendCancelled();
+      this.fallingBack.delete(s);
     }
     const next = this.core.o.prefs.get(id).nextSource;
     if (next && s.state.status === "idle" && !s.sending) return this.carry(s, next, text, attachments, o);
@@ -472,7 +495,11 @@ export class LiveControl {
     this.core.pin(s);
     try {
       if (!o.queued && !o.tether && s.state.queueHeldBy !== "terminal") this.queue.release(s);
-      const id = await this.carrier(s.id, source, this.core.o.prefs.get(s.id).nextModel);
+      const { nextModel, nextFallbackSettings } = this.core.o.prefs.get(s.id);
+      if (nextFallbackSettings?.permissionMode && !this.fallbackModeAllowed(s, nextFallbackSettings.permissionMode)) {
+        throw new Error("The fallback step exceeds this session's current permissions.");
+      }
+      const id = await this.carrier(s.id, source, nextModel, nextFallbackSettings);
       const n = await this.core.open(id);
       this.core.pin(n);
       try {
@@ -538,10 +565,11 @@ export class LiveControl {
     const { title, pinned, pinnedRow } = prefs.get(s.id);
     const kept = this.keptPrefs(s);
     // The pin goes with the conversation: the new thread takes the old one's place in Pinned.
-    prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
-    const { forkedFrom, worktree: _, ...state } = kept;
-    n.setState(state);
-    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextModel: undefined, nextBilling: undefined, nextDeployment: undefined, sourceSwitchFailed: undefined });
+    prefs.set(n.id, { movedTo: undefined, carried: undefined, carrying: undefined, ...(title ? { title } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
+    const { forkedFrom, worktree: _, fallbackProgress: __, ...state } = kept;
+    n.setState({ ...state, continuedIn: undefined, carried: undefined, retryThrottled: this.sourceOf(n) === "subscription" ? undefined : !!kept.retryThrottled });
+    n.movedTo = undefined;
+    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextFallbackSettings: undefined, nextModel: undefined, nextBilling: undefined, nextDeployment: undefined, sourceSwitchFailed: undefined });
     this.core.moveSides(s.id, n.id);
     prefs.flush();
     s.movedTo = n.id;
@@ -588,8 +616,8 @@ export class LiveControl {
       const kept = this.keptPrefs(s);
       const { pinned, pinnedRow } = this.core.o.prefs.get(s.id);
       this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
-      const { forkedFrom, worktree: _, ...state } = kept;
-      n.setState(state);
+      const { forkedFrom, worktree: _, fallbackProgress: __, ...state } = kept;
+      n.setState({ ...state, retryThrottled: source === "subscription" ? undefined : !!kept.retryThrottled });
       this.core.touch(n, forkedFrom ? { forkedFrom } : {});
       try {
         await this.ensureDriver(n);
@@ -802,6 +830,8 @@ export class LiveControl {
   async interrupt(id: string) {
     const s = await this.core.open(id);
     if (s.retry) this.cancelRetrySession(s, { due: "stopped" });
+    this.cancelFallbackTimer(id);
+    if (this.fallingBack.has(s)) s.retrySuppressed = true;
     const parentId = s.summary.parentSessionId;
     if (parentId) {
       // A subagent: stop just it (SPEC §6a). Its main session's process runs it, however deep it is nested.
@@ -863,10 +893,10 @@ export class LiveControl {
   private async holdNextModel(id: string, source: BillingSource, model: string) {
     const s = await this.core.open(id);
     if (s.summary.parentSessionId) throw new Error("Change settings on the main session. A subagent keeps the settings it started with.");
-    if (source === "azure" && model !== "default" && !this.opts.credentials?.azure().deployments.some((d) => d.name === model)) throw new Error(`${model} isn't a deployment in Settings, Azure. The model is unchanged.`);
-    // Onto Azure the pick is the deployment the change takes (as the chip's own pick); elsewhere a model id.
+    if (hasSourceModels(source) && model !== "default" && !this.sourceModels(s.summary.harness, source).some((d) => d.name === model)) throw new Error(source === "azure" ? `${model} isn't a deployment in Settings, Azure. The model is unchanged.` : "Choose a configured model in Settings, Bedrock.");
+    // A source with configured models keeps the pick in nextDeployment.
     const picked = model === "default" ? undefined : model;
-    const patch = source === "azure" ? { nextDeployment: picked } : { nextModel: picked };
+    const patch = hasSourceModels(source) ? { nextDeployment: picked } : { nextModel: picked };
     this.core.o.prefs.set(id, patch);
     this.core.o.prefs.flush();
     s.setState(patch);
@@ -1120,6 +1150,8 @@ export class LiveControl {
     // What's open now is asked again after the restart: it stays saved.
     this.stopping = true;
     this.retries.stop();
+    for (const timer of this.fallbackTimers.values()) clearTimeout(timer);
+    this.fallbackTimers.clear();
     this.queue.stop();
     this.desk.broker.freeze();
     await Promise.all([...this.core.sessions.values()].filter((s) => s.driver).map((s) => this.close(s)));
@@ -1146,18 +1178,19 @@ export class LiveControl {
   private async applySetting(s: Session, patch: StartOpts, apply: (d: Driver) => Promise<void>) {
     const id = s.id;
     const before = this.core.o.prefs.get(id);
-    const azureModel = patch.model !== undefined && this.sourceOf(s) === "azure";
-    if (azureModel) {
-      const deployment = this.opts.credentials?.azure().deployments.find((d) => d.name === patch.model);
-      if (!deployment) throw new Error(`${patch.model} isn't a deployment in Settings, Azure. The model is unchanged.`);
-      if (s.state.terminal || s.state.mode === "terminal") throw new Error("Close the terminal before changing the Azure deployment.");
+    const source = this.sourceOf(s);
+    const providerModel = patch.model !== undefined && hasSourceModels(source);
+    if (providerModel) {
+      const deployment = this.sourceModels(s.summary.harness, source).find((d) => d.name === patch.model);
+      if (!deployment) throw new Error(source === "azure" ? `${patch.model} isn't a deployment in Settings, Azure. The model is unchanged.` : "Choose a configured model in Settings, Bedrock.");
+      if (s.state.terminal || s.state.mode === "terminal") throw new Error(source === "azure" ? "Close the terminal before changing the Azure deployment." : "Close the terminal before changing the Bedrock model.");
       // Its process is priced for the deployment it started on: a turn running there keeps it, and
       // the new one waits for the next send, which restarts the process priced for that one.
-      if (this.turnBusy(s)) return this.holdDeployment(s, patch.model!);
+      if (this.turnBusy(s) || (source === "bedrock" && s.driver)) return this.holdDeployment(s, patch.model!);
       this.holdDeployment(s, undefined);
     }
     const shown: StartOpts = Object.fromEntries(Object.keys(patch).map((k) => [k, (s.state as any)[k]]));
-    this.core.o.prefs.set(id, { projectPath: s.summary.projectPath, ...patch, ...(azureModel ? { deployment: patch.model } : {}) });
+    this.core.o.prefs.set(id, { projectPath: s.summary.projectPath, ...patch, ...(providerModel ? { deployment: patch.model } : {}) });
     s.rolledBack = undefined;
     this.noteTurnSettings(s, patch);
     if (patch.permissionMode) this.notePlanEntry(s, patch.permissionMode);
@@ -1180,7 +1213,7 @@ export class LiveControl {
       // were, so nothing runs with settings other than those shown. A late confirmation still
       // counts (the sink says so).
       const undo = Object.fromEntries(Object.keys(patch).map((k) => [k, (before as any)[k]]));
-      this.core.o.prefs.set(id, { ...undo, ...(azureModel ? { deployment: before.deployment } : {}) });
+      this.core.o.prefs.set(id, { ...undo, ...(providerModel ? { deployment: before.deployment } : {}) });
       s.rolledBack = patch;
       this.rollBackTurnSettings(s, shown);
       s.setState(shown);
@@ -1194,7 +1227,7 @@ export class LiveControl {
   }
 
   /**
-   * An Azure deployment picked while a turn ran, kept (across restarts too) until the next send
+   * A source model picked while a turn ran, kept (across restarts too) until the next send
    * applies it. The one it runs on now, or undefined, cancels it.
    */
   private holdDeployment(s: Session, deployment: string | undefined) {
@@ -1212,7 +1245,7 @@ export class LiveControl {
   private applyNextDeployment(s: Session) {
     const next = this.core.o.prefs.get(s.id).nextDeployment;
     if (!next) return;
-    const go = this.sourceOf(s) === "azure" ? { deployment: next, model: next } : {};
+    const go = hasSourceModels(this.sourceOf(s)) ? { deployment: next, model: next } : {};
     this.core.o.prefs.set(s.id, { ...go, nextDeployment: undefined });
     this.core.o.prefs.flush();
     s.setState({ ...(go.model ? { model: go.model } : {}), nextDeployment: undefined });
@@ -1377,7 +1410,7 @@ export class LiveControl {
   chosen(s: Session, observe = false): StartOpts {
     const credential = observe ? undefined : this.credentialFor(s.summary.harness, this.sourceOf(s), this.deploymentOf(s));
     const prefs = this.core.o.prefs.get(s.id);
-    return { ...chosenOf(this.core.adapter(s.summary.harness), prefs), ...(prefs.sideOf ? { readOnly: true } : {}), ...(credential ? { credential } : {}) };
+    return { ...chosenOf(this.core.adapter(s.summary.harness), prefs), ...(credential?.source === "bedrock" ? { model: credential.deployment } : {}), ...(prefs.sideOf ? { readOnly: true } : {}), ...(credential ? { credential } : {}) };
   }
 
   /**
@@ -1396,31 +1429,36 @@ export class LiveControl {
   }
 
   /**
-   * An Azure session's deployment: what's saved with it, else (a session from before deployment
-   * lists) its model if that's a deployment, else the first, which is then saved. Model changes update it:
-   * one that's removed later stops the session, saying so, and nothing stands in for it.
+   * The provider model saved with the session. Older sessions use a configured match or the first entry.
+   * A removed pinned model stops the session at its next send.
    */
   deploymentOf(s: Session): string | undefined {
-    if (!this.opts.credentials || this.sourceOf(s) !== "azure") return undefined;
+    const source = this.sourceOf(s);
+    if (!this.opts.credentials || !hasSourceModels(source)) return undefined;
     const id = s.summary.parentSessionId ?? s.id;
     const prefs = this.core.o.prefs.get(id);
     if (prefs.deployment) return prefs.deployment;
-    const deployment = this.pickDeployment(prefs.model ?? s.state.model);
-    if (deployment) this.core.o.prefs.set(id, { deployment });
+    const deployment = this.pickSourceModel(s.summary.harness, source, prefs.model ?? s.state.model);
+    if (deployment) this.core.o.prefs.set(id, { deployment, ...(source === "bedrock" ? { model: deployment } : {}) });
     return deployment;
   }
 
-  /** The deployment a model names, else Azure's first. None when there are none. */
-  private pickDeployment(model?: string): string | undefined {
-    const list = this.opts.credentials?.azure().deployments ?? [];
-    return (list.find((d) => d.name === model) ?? list[0])?.name;
+  private sourceModels(harness: HarnessId, source: BillingSource): NonNullable<SourceOption["deployments"]> {
+    if (source === "azure") return this.opts.credentials?.azure().deployments.map((d) => ({ name: d.name, ...(d.model ? { model: d.model } : {}) })) ?? [];
+    if (source === "bedrock") return this.opts.credentials?.bedrock()?.models.filter((m) => m.harness === harness).map((m) => ({ name: m.id, ...(m.alias ? { model: m.alias } : {}) })) ?? [];
+    return [];
   }
 
-  /** On Azure, the model is a deployment: the one asked for if it's there, else the first. */
-  forSource(source: BillingSource, opts: StartOpts): StartOpts {
-    if (source !== "azure" || !this.opts.credentials) return opts;
-    const deployment = opts.azureDeployment ?? this.pickDeployment(opts.model);
-    return { ...opts, model: deployment };
+  private pickSourceModel(harness: HarnessId, source: BillingSource, model?: string): string | undefined {
+    const list = this.sourceModels(harness, source);
+    const selected = source === "bedrock" ? resolveSourceModel(list, model) : list.find((d) => d.name === model)?.name;
+    return selected ?? list[0]?.name;
+  }
+
+  forSource(harness: HarnessId, source: BillingSource, opts: StartOpts): StartOpts {
+    if (!hasSourceModels(source) || !this.opts.credentials) return opts;
+    const model = opts.sourceModel ?? this.pickSourceModel(harness, source, opts.model);
+    return { ...opts, model };
   }
 
   /** What a session's process must have been started with to be current. */
@@ -1438,7 +1476,10 @@ export class LiveControl {
   credentialFor(harness: HarnessId, source: BillingSource, deployment?: string): CredentialSnapshot | undefined {
     const store = this.opts.credentials;
     if (!store) return undefined;
-    const credential = store.snapshot(source, source === "azure" ? deployment ?? "" : undefined);
+    if (source === "bedrock" && !this.sourceModels(harness, source).some((m) => m.name === deployment)) {
+      throw new Error("This session needs a configured model for its harness in Settings, Bedrock.");
+    }
+    const credential = store.snapshot(source, hasSourceModels(source) ? deployment ?? "" : undefined);
     if (credential) return credential;
     const change = this.core.adapter(harness).capabilities.sourceSwitch ? "change the session's Source" : "use Move to continue on another source";
     if (source === "azure" && store.snapshot("azure")) {
@@ -1446,7 +1487,7 @@ export class LiveControl {
       throw new Error(`This session's Azure deployment ${deployment} was removed. Add it again in Settings, Azure, or ${change}. Nothing was sent.`);
     }
     if (source === "azure" && store.status().azure.set) throw new Error("Azure has no resource set. Set it in Settings, Azure. Nothing was sent.");
-    throw new Error(`This session uses ${this.labelOf(harness, source)}, which isn't set. Set it in ${source === "azure" ? "Settings, Azure" : "Credentials"}, or ${change}. Nothing was sent.`);
+    throw new Error(`This session uses ${this.labelOf(harness, source)}, which isn't set. Set it in ${source === "azure" ? "Settings, Azure" : source === "bedrock" ? "Settings, Bedrock" : "Credentials"}, or ${change}. Nothing was sent.`);
   }
 
   /** The sources that exist for a harness now: its login, if it reports one, and keys that are set. */
@@ -1455,12 +1496,13 @@ export class LiveControl {
     if (!billing || !this.opts.credentials) return { options: [] };
     const status = this.opts.credentials.status();
     const login = await billing.loggedIn().catch(() => false);
-    // Azure is there with its key, its resource and a deployment to run on.
-    const ready = (k: CredentialSource) => status[k].set && (k !== "azure" || (!!status.azure.endpoint && !!status.azure.deployments?.length));
-    const options = [...(login ? ["subscription" as const] : []), ...billing.keys.filter(ready)].map((source) => {
-      const deployments = source === "azure" ? status.azure.deployments!.map((d) => ({ name: d.name, ...(d.model ? { model: d.model } : {}) })) : undefined;
-      return { source, billing: billing.label(source), ...(deployments ? { deployments } : {}) };
-    });
+    const ready = (source: CredentialSource) => {
+      if (source === "bedrock") return !!this.opts.credentials?.snapshot(source) && this.sourceModels(harness, source).length > 0;
+      return status[source].set && (source !== "azure" || (!!status.azure.endpoint && !!status.azure.deployments?.length));
+    };
+    const options = [...(login ? ["subscription" as const] : []), ...billing.keys.filter(ready)].map((source) => ({
+      source, billing: billing.label(source), ...(hasSourceModels(source) ? { deployments: this.sourceModels(harness, source) } : {}),
+    }));
     const fallback = login ? "subscription" : options[0]?.source;
     return { options, ...(fallback ? { default: fallback } : {}) };
   }
@@ -1477,21 +1519,25 @@ export class LiveControl {
 
   /** A new native id on a source: a key's thread is made on its own private process. */
   async newNativeId(harness: HarnessId, folder: string, opts: StartOpts, source: BillingSource): Promise<string> {
-    opts = this.forSource(source, opts);
+    opts = this.forSource(harness, source, opts);
     const credential = this.credentialFor(harness, source, opts.model);
     return this.core.adapter(harness).newId(folder, { ...opts, ...(credential ? { credential } : {}) });
   }
 
   /** A new session, its source saved with it before anything can start it. */
   async createSession(harness: HarnessId, folder: string, opts: StartOpts, source: BillingSource): Promise<Session> {
-    opts = this.forSource(source, opts);
+    opts = this.forSource(harness, source, opts);
     const s = this.core.create(harness, await this.newNativeId(harness, folder, opts, source), folder, opts);
-    this.core.o.prefs.set(s.id, { source, ...(source === "azure" && opts.model ? { deployment: opts.model } : {}) });
+    this.core.o.prefs.set(s.id, { source, ...(hasSourceModels(source) && opts.model ? { deployment: opts.model } : {}) });
+    if (source !== "subscription") s.setState({ retryThrottled: false });
     return s;
   }
 
   /** Makes the thread a source change goes to, on the move module's export and import. */
-  carrier?: (id: string, source: BillingSource, model?: string) => Promise<string>;
+  carrier?: (id: string, source: BillingSource, model?: string, settings?: StartOpts) => Promise<string>;
+  fallbackMover?: (id: string, harness: HarnessId, source: BillingSource, settings: StartOpts) => Promise<{ sessionId: string; history?: string; after?: string }>;
+  fallbackArchive?: (from: string, to: string, after?: string) => Promise<string>;
+  private fallingBack = new WeakMap<Session, symbol>();
 
   /** A queued source remains pending after its first start fails, across views and runner restarts. */
   private markSourceSwitchFailed(s: Session) {
@@ -1502,8 +1548,9 @@ export class LiveControl {
   }
 
   /** From the next process start, which confirms it (only with capabilities.sourceSwitch). */
-  async setSource(id: string, asked: unknown, azureDeployment?: string) {
+  async setSource(id: string, asked: unknown, sourceModel?: string, fallback?: { chain: FallbackChain; index: number; settings: StartOpts }) {
     const s = await this.core.open(id);
+    if (!fallback && this.fallingBack.has(s)) throw new Error("The fallback chain is switching this session.");
     if (s.retry) this.cancelRetrySession(s);
     const harness = s.summary.harness;
     if (s.summary.parentSessionId) throw new Error("A subagent uses its main session's source.");
@@ -1516,21 +1563,28 @@ export class LiveControl {
     if (s.sending || s.starting || s.carrying) throw new Error(sourceSwitchBlockMessage("turn"));
     const choice = (await this.sources(harness)).options.find((o) => o.source === asked);
     if (!choice) throw new Error(`${this.labelOf(harness, asked)} isn't available.`);
-    if (azureDeployment && !choice.deployments?.some(({ name }) => name === azureDeployment)) {
-      throw new Error(`Azure deployment ${azureDeployment} isn't available.`);
+    if (sourceModel && !choice.deployments?.some(({ name }) => name === sourceModel)) {
+      throw new Error(asked === "azure" ? `Azure deployment ${sourceModel} isn't available.` : "That model is unavailable on the requested source.");
     }
-    const carries = !!s.capabilities.sourceCarry;
+    if (!fallback && this.fallingBack.has(s)) throw new Error("The fallback chain is switching this session.");
     const own = this.sourceOf(s);
+    const carries = !!s.capabilities.sourceCarry && asked !== own;
+    if (fallback && (s.retrySuppressed || s.state.fallbackChain !== fallback.chain || this.stopping || !fallback.settings.permissionMode ||
+      !this.fallbackModeAllowed(s, fallback.settings.permissionMode))) throw new Error("The fallback chain or session permissions changed.");
+    const busy = sourceSwitchBlocker(s.state);
+    if (busy || s.sending || s.starting || s.carrying) throw new Error(sourceSwitchBlockMessage(busy ?? "turn"));
+    const fallbackChain = fallback ? { ...fallback.chain, active: fallback.index } : undefined;
+    const progress = fallbackChain ? { fallbackChain } : {};
     const lastKey = asked !== "subscription" ? asked : own !== "subscription" ? own : undefined;
     if (lastKey) {
       this.core.o.prefs.set(id, { lastKey });
       s.setState({ lastKey });
     }
-    if (asked === own) {
+    if (asked === own && !fallback) {
       // Thought better of it: the thread never left.
-      if (carries) {
+      if (s.capabilities.sourceCarry) {
         const pendingDeployment = this.core.o.prefs.get(id).nextSource ? { nextDeployment: undefined } : {};
-        this.core.o.prefs.set(id, { nextSource: undefined, nextModel: undefined, nextBilling: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
+        this.core.o.prefs.set(id, { nextSource: undefined, nextFallbackSettings: undefined, nextModel: undefined, nextBilling: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
         this.core.o.prefs.flush();
         s.setState({ nextBilling: undefined, nextModel: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
       }
@@ -1544,10 +1598,12 @@ export class LiveControl {
     const next = this.core.adapter(harness).billing!.label(asked);
     if (carries) {
       // A model picked for another pending source doesn't go with this one.
-      const nextModel = this.core.o.prefs.get(id).nextSource === asked ? this.core.o.prefs.get(id).nextModel : undefined;
-      this.core.o.prefs.set(id, { nextSource: asked, nextModel, nextBilling: next, nextDeployment: azureDeployment, sourceSwitchFailed: undefined });
+      const nextModel = fallback ? (hasSourceModels(asked) ? undefined : fallback.settings.model)
+        : this.core.o.prefs.get(id).nextSource === asked ? this.core.o.prefs.get(id).nextModel : undefined;
+      const nextFallbackSettings = fallback && { effort: fallback.settings.effort, permissionMode: fallback.settings.permissionMode };
+      this.core.o.prefs.set(id, { ...progress, nextSource: asked, nextFallbackSettings, nextModel, nextBilling: next, nextDeployment: sourceModel, sourceSwitchFailed: undefined });
       this.core.o.prefs.flush();
-      s.setState({ nextBilling: next, nextModel, nextDeployment: azureDeployment, sourceSwitchFailed: undefined });
+      s.setState({ ...progress, nextBilling: next, nextModel, nextDeployment: sourceModel, sourceSwitchFailed: undefined });
       return this.core.touch(s);
     }
     const confirmed = s.state.billing?.label === next.label;
@@ -1557,10 +1613,17 @@ export class LiveControl {
       try { cost = this.startCost(s); }
       catch { cost = { estimated: true, complete: false, reasons: ["unsaved"] }; this.core.log("Couldn't save this session's API cost coverage. Its total is unknown."); }
     }
-    const azure = azureDeployment ? { deployment: azureDeployment, model: azureDeployment } : {};
-    this.core.o.prefs.set(id, { source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...azure });
+    // A fallback step names its model; a source with its own model list takes the step's model from that list.
+    const model = fallback ? (hasSourceModels(asked) ? sourceModel ?? fallback.settings.model : fallback.settings.model)
+      : hasSourceModels(asked)
+        ? sourceModel ?? this.pickSourceModel(harness, asked, this.core.o.prefs.get(id).model ?? s.state.model)
+        : hasSourceModels(own) ? this.core.adapter(harness).unset?.model ?? "default" : undefined;
+    const sourceSettings = model ? { model, deployment: hasSourceModels(asked) ? model : undefined } : {};
+    const settings = fallback?.settings;
+    this.core.o.prefs.set(id, { ...progress, ...settings, source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...sourceSettings });
     this.core.o.prefs.flush();
-    s.setState({ nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...(azure.model ? { model: azure.model } : {}), ...(cost ? { cost } : {}) });
+    s.setState({ ...progress, ...settings, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, retryThrottled: asked === "subscription" ? undefined : this.core.o.prefs.get(id).retryThrottled === true, ...(model ? { model, modelResolved: undefined } : {}), ...(cost ? { cost } : {}) });
+    if (settings && s.driver && asked === own) s.credentialRevision = undefined;
     this.core.touch(s);
   }
 
@@ -1619,23 +1682,90 @@ export class LiveControl {
     return cost;
   }
 
-  /**
-   * The fallback switch (`on`) and the allowed key order (`fallbackKeys`), saved with this session.
-   * Either may come alone: saving the order never touches the switch, nor the switch the order.
-   */
-  async setAutoKey(id: string, on: boolean | undefined, fallbackKeys?: CredentialSource[]) {
+  private async fallbackSession(id: string) {
     const s = await this.core.open(id);
-    if (s.summary.parentSessionId) throw new Error("A subagent uses its main session's source.");
-    if (s.summary.sideOf) throw new Error(SIDE_KEEPS.source);
-    if (!s.capabilities.sourceSwitch) throw new Error("This session can't switch sources.");
-    if (on === undefined && fallbackKeys === undefined) throw new Error("Nothing to change.");
-    const supported = this.core.adapter(s.summary.harness).billing?.keys ?? [];
-    if (fallbackKeys !== undefined && (!Array.isArray(fallbackKeys) || fallbackKeys.some((key) => !supported.includes(key)) || new Set(fallbackKeys).size !== fallbackKeys.length))
-      throw new Error("Choose each supported fallback key at most once.");
-    const patch = { ...(on !== undefined ? { autoKey: on || undefined } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}) };
-    this.core.o.prefs.set(id, patch);
-    this.core.o.prefs.flush();
-    s.setState(patch);
+    if (s.summary.parentSessionId || s.summary.sideOf) throw new Error("Set the fallback chain on the main session.");
+    return s;
+  }
+
+  async fallbackCatalog(s: Session, harness: HarnessId): Promise<FallbackHarness> {
+    const target = this.core.o.adapters.find((a) => a.id === harness);
+    if (!target || !await target.available().catch(() => false)) return { harness, sources: [], unavailable: true };
+    const [choices, models] = await Promise.all([
+      this.sources(harness),
+      target.listModels(harness === s.summary.harness ? s.driver : undefined).catch(() => undefined),
+    ]);
+    const own = this.core.adapter(s.summary.harness);
+    const mode = this.core.o.prefs.get(s.id).permissionMode ?? s.state.permissionMode;
+    const ceiling = levelOf(own, mode) ?? LEVELS.readOnly;
+    const permitted = (models?.permissionModes ?? []).flatMap(({ id }) => {
+      const level = levelOf(target, id);
+      return level !== undefined && level <= ceiling ? [{ mode: id, level }] : [];
+    });
+    const defaultMode = permitted.find((entry) => harness === own.id && entry.mode === mode)?.mode ??
+      (permitted.length ? mapMode(ceiling, permitted) : undefined);
+    const sources = target.billing ? choices.options : [{ source: "subscription" as const, billing: { kind: "plan" as const, label: `${HARNESS_LABELS[harness]} login` } }];
+    return { harness, sources, defaultMode, models: models && {
+      ...models, permissionModes: models.permissionModes.filter(({ id }) => permitted.some((entry) => entry.mode === id)),
+    } };
+  }
+
+  async fallbackSetup(id: string): Promise<FallbackSetup> {
+    const s = await this.fallbackSession(id);
+    const { fallbackPresets, lastFallbackOrder } = this.core.o.prefs.fallbackOrders();
+    return {
+      chain: s.state.fallbackChain ?? { enabled: false, steps: lastFallbackOrder },
+      saved: !!s.state.fallbackChain,
+      presets: fallbackPresets,
+      harnesses: await Promise.all(this.core.o.adapters.map(({ id }) => this.fallbackCatalog(s, id))),
+    };
+  }
+
+  async setFallbackChain(id: string, enabled: boolean, steps: FallbackStep[], continueOnReset = false): Promise<FallbackChain> {
+    const s = await this.fallbackSession(id);
+    const order = this.cleanFallbackSteps(steps);
+    if (typeof enabled !== "boolean" || (enabled && !order.length)) throw new Error("Add a step before enabling the fallback chain.");
+    const old = s.state.fallbackChain;
+    const active = enabled && old?.enabled && JSON.stringify(old.steps) === JSON.stringify(order) ? old.active : undefined;
+    const chain = redactValue({ enabled, steps: order, ...(continueOnReset === true ? { continueOnReset: true } : {}), ...(active === undefined ? {} : { active }) });
+    if (this.core.o.prefs.get(id).nextFallbackSettings && (!enabled || active === undefined)) {
+      const cleared = { nextBilling: undefined, nextModel: undefined, nextDeployment: undefined, sourceSwitchFailed: undefined };
+      this.core.o.prefs.set(id, { ...cleared, nextSource: undefined, nextFallbackSettings: undefined });
+      s.setState(cleared);
+    }
+    if (!enabled || !continueOnReset || active === undefined) this.cancelFallbackTimer(id);
+    if (!enabled || JSON.stringify(old?.steps) !== JSON.stringify(order)) this.core.o.prefs.set(id, { fallbackProgress: undefined });
+    this.core.o.prefs.setFallbackOrder(id, chain);
+    s.setState({ fallbackChain: chain });
+    return chain;
+  }
+
+  editFallbackPreset(edit: FallbackPresetEdit) {
+    const { fallbackPresets } = this.core.o.prefs.fallbackOrders();
+    if (edit.action !== "save" && edit.action !== "rename" && edit.action !== "delete") throw new Error("Unknown preset action.");
+    if (edit.action !== "save" && !fallbackPresets.some(({ id }) => id === edit.id)) throw new Error("Preset unavailable.");
+    const name = edit.action === "delete" ? "" : redact(typeof edit.name === "string" ? edit.name.trim().slice(0, 80) : "");
+    if (edit.action !== "delete" && !name) throw new Error("Enter a preset name.");
+    const next = edit.action === "save"
+      ? [...fallbackPresets, { id: randomUUID(), name, steps: redactValue(this.cleanFallbackSteps(edit.steps)) }]
+      : edit.action === "delete"
+        ? fallbackPresets.filter(({ id }) => id !== edit.id)
+        : fallbackPresets.map((preset) => preset.id === edit.id ? { ...preset, name } : preset);
+    this.core.o.prefs.setFallbackPresets(next);
+    return next;
+  }
+
+  private cleanFallbackSteps(steps: FallbackStep[]): FallbackStep[] {
+    const text = (value: unknown): value is string => typeof value === "string" && !!value.trim() && value.length <= 200;
+    if (!Array.isArray(steps) || steps.length > 50) throw new Error("Choose up to 50 fallback steps.");
+    return steps.map((step) => {
+      if (!step || !Object.hasOwn(HARNESS_LABELS, step.harness) || !isBillingSource(step.source) || !text(step.model) ||
+        (step.effort !== undefined && !text(step.effort)) || (step.permissionMode !== undefined && !text(step.permissionMode))) {
+        throw new Error("Each fallback step needs a harness, source and model.");
+      }
+      const { harness, source, model, effort, permissionMode } = step;
+      return { harness, source, model, ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) };
+    });
   }
 
   /**
@@ -1651,70 +1781,363 @@ export class LiveControl {
     this.core.o.bus.emit("canTextChanged", { sessionId: id, canText: on });
   }
 
-  /** What a session's successor on another id keeps (a fork's link back too, SPEC §16; its worktree record, SPEC §4). */
-  keptPrefs(s: Session) {
-    const { autoKey, canText, lastKey, fallbackKeys, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
-    // A side chat's successor is one too, read-only (SPEC §16a): failing closed.
-    // The worktree goes on with the conversation: cleanup counts the successor as its user (the old id, moved on, no more).
-    return { ...(autoKey ? { autoKey } : {}), ...(canText ? { canText } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackKeys !== undefined ? { fallbackKeys: [...fallbackKeys] } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree } : {}) };
+  async setRetryThrottled(id: string, on: boolean) {
+    const s = await this.core.open(id);
+    if (s.summary.parentSessionId || s.summary.sideOf || this.sourceOf(s) === "subscription") {
+      throw new Error("Extended throttle retries require a main session using an API key.");
+    }
+    this.core.o.prefs.set(id, { retryThrottled: on || undefined });
+    this.core.o.prefs.flush();
+    s.setState({ retryThrottled: on });
+    if (!on && s.retry?.extended && s.retry.phase === "waiting") this.cancelRetrySession(s);
   }
 
-  /**
-   * The plan ran out on a session with the box ticked, the one exception to no fallback (SPEC §10):
-   * its source changes as from the chip, one notice says so, and the message that started the turn
-   * goes again unless the turn had already acted. From there it's a key session, which never comes
-   * here: a key that fails stops as usual, and it stays on the key until you change it.
-   */
-  private async planOut(s: Session, hit: { resetsAt?: number }, sent: Session["lastSend"], acted: boolean) {
+  /** What a session's successor on another id keeps (a fork's link back too, SPEC §16; its worktree record, SPEC §4). */
+  keptPrefs(s: Session) {
+    const { canText, retryThrottled, lastKey, fallbackChain, fallbackProgress, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
+    // A side chat's successor is one too, read-only (SPEC §16a): failing closed.
+    // The worktree goes on with the conversation: cleanup counts the successor as its user (the old id, moved on, no more).
+    // Not a Keep: that was the person's answer on archiving the old id.
+    const withoutKeep = ({ keep: _keep, ...rec }: NonNullable<typeof worktree>) => rec;
+    return { ...(canText ? { canText } : {}), ...(retryThrottled === true ? { retryThrottled } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackChain ? { fallbackChain } : {}), ...(fallbackProgress ? { fallbackProgress } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree: withoutKeep(worktree) } : {}) };
+  }
+
+  private fallbackModeAllowed(s: Session, mode: string, harness = s.summary.harness): boolean {
+    const adapter = this.core.adapter(s.summary.harness);
+    const target = levelOf(this.core.adapter(harness), mode);
+    const current = this.core.o.prefs.get(s.id).permissionMode ?? s.state.permissionMode;
+    return target !== undefined && target <= (levelOf(adapter, current) ?? LEVELS.readOnly);
+  }
+
+  private async returnToFallback(s: Session, chain: FallbackChain, index: number, step: FallbackStep, settings: StartOpts, progress: FallbackProgress, sourceModel?: string) {
+    const previous = progress.steps[index];
+    if (!previous?.sessionId || previous.sessionId === s.id || !this.fallbackArchive) return;
+    const prefs = this.core.o.prefs;
+    const old = await this.core.open(previous.sessionId).catch(() => undefined);
+    if (!old || old.summary.harness !== step.harness || this.sourceOf(old) !== step.source ||
+      old.state.status !== "idle" || old.state.terminal || old.driver?.busy() || !old.movedTo) return;
+    if (!settings.permissionMode || !this.fallbackModeAllowed(s, settings.permissionMode, step.harness)) return;
+    const saved = prefs.get(old.id);
+    if (await this.core.adapter(old.summary.harness).noStore?.(old.summary.nativeId).catch(() => true)) return;
+    // In the returning thread's own moved folder: the only one its agent may read without asking.
+    const file = await this.fallbackArchive(s.id, old.id, previous.after).catch(() => undefined);
+    if (!file) return;
+    if (s.retrySuppressed || this.stopping || s.state.fallbackChain !== chain) throw new SendCancelled();
+    const was = { model: old.state.model, effort: old.state.effort, permissionMode: old.state.permissionMode };
+    const wasFresh = old.fresh, wasRebuilt = old.rebuilt, transcript = old.transcript;
+    // As setSource does: a source with its own model list runs the step's model from that list.
+    const model = hasSourceModels(step.source) ? sourceModel ?? settings.model : settings.model;
+    prefs.set(old.id, { ...settings, model, ...(hasSourceModels(step.source) && model ? { deployment: model } : {}) });
+    old.setState({ ...settings, model });
+    old.fresh = old.rebuilt = false;
+    if (wasRebuilt) old.transcript = null;
+    try {
+      // A process opened before the archive was written doesn't allow reading it.
+      if (old.driver) await this.close(old);
+      await this.ensureDriver(old);
+      if (s.retrySuppressed || this.stopping || s.state.fallbackChain !== chain ||
+        !this.fallbackModeAllowed(s, settings.permissionMode, step.harness)) throw new SendCancelled();
+    } catch (e) {
+      await this.close(old).catch(() => {});
+      prefs.set(old.id, { model: saved.model, effort: saved.effort, permissionMode: saved.permissionMode, deployment: saved.deployment });
+      old.fresh = wasFresh;
+      old.rebuilt = wasRebuilt;
+      old.transcript = transcript;
+      old.setState(was);
+      if (e instanceof SendCancelled) throw e;
+      return;
+    }
+    delete progress.steps[index]?.retryAt;
+    prefs.set(s.id, { fallbackChain: { ...chain, active: index }, fallbackProgress: progress });
+    await this.replaceWith(s, old);
+    return { session: old, note: `Another agent worked on this; read ${file} and continue.` };
+  }
+
+  private fallbackTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  fallbackResetDelay = 60_000;
+
+  restoreFallbackTimers() {
+    for (const id of this.core.o.prefs.ids((p) => p.fallbackResumeAt !== undefined && !!p.fallbackChain?.enabled &&
+      !!p.fallbackChain.continueOnReset && !p.movedTo && !p.archived)) this.armFallbackTimer(id);
+  }
+
+  private cancelFallbackTimer(id: string) {
+    clearTimeout(this.fallbackTimers.get(id));
+    this.fallbackTimers.delete(id);
+    const prefs = this.core.o.prefs;
+    if (prefs.get(id).fallbackResumeAt === undefined) return;
+    prefs.set(id, { fallbackResumeAt: undefined });
+    prefs.flush();
+  }
+
+  private scheduleFallbackTimer(id: string, at: number) {
+    this.core.o.prefs.set(id, { fallbackResumeAt: at });
+    this.core.o.prefs.flush();
+    this.armFallbackTimer(id);
+  }
+
+  private armFallbackTimer(id: string) {
+    clearTimeout(this.fallbackTimers.get(id));
+    const at = this.core.o.prefs.get(id).fallbackResumeAt;
+    if (this.stopping || at === undefined) return;
+    const timer = setTimeout(() => void this.wakeFallback(id, at).catch((e) => this.core.log(
+      `${id}: couldn't continue the fallback chain: ${redact((e as Error).message)}`)), Math.min(2 ** 31 - 1, Math.max(0, at - this.core.now())));
+    timer.unref?.();
+    this.fallbackTimers.set(id, timer);
+  }
+
+  private async wakeFallback(id: string, at: number) {
+    const prefs = this.core.o.prefs;
+    if (this.stopping || prefs.get(id).fallbackResumeAt !== at) return;
+    if (this.core.now() < at) return this.armFallbackTimer(id);
+    const s = await this.core.open(id).catch(() => undefined);
+    if (this.stopping || prefs.get(id).fallbackResumeAt !== at) return;
+    if (!s || s.movedTo || prefs.get(id).archived || !s.state.fallbackChain?.continueOnReset) return this.cancelFallbackTimer(id);
+    if (sourceSwitchBlocker(s.state) || s.sending || s.starting || s.driver?.busy() || s.retry || this.heldWhy(id)) {
+      this.scheduleFallbackTimer(id, this.core.now() + this.fallbackResetDelay);
+      return;
+    }
+    this.cancelFallbackTimer(id);
+    s.retrySuppressed = false;
+    const continued = await this.advanceFallback(s, undefined, { text: "continue", attachments: [], tether: true }, false, true, true);
+    if (!continued && !s.retrySuppressed && !s.movedTo && s.state.fallbackChain?.continueOnReset) {
+      this.scheduleFallbackTimer(id, this.core.now() + FALLBACK_BACKOFF_MS + this.fallbackResetDelay);
+    }
+  }
+
+  private fallbackExhausted(s: Session, chain: FallbackChain, progress: FallbackProgress) {
+    const times: number[] = [];
+    const entries = chain.steps.map((step, index) => {
+      const retryAt = progress.steps[index]?.retryAt;
+      if (retryAt && retryAt > this.core.now()) times.push(retryAt);
+      return `${index + 1}. ${HARNESS_LABELS[step.harness]} · ${step.source} · ${step.model} — ${retryAt ? `retry after ${new Date(retryAt).toISOString()}` : "no reset known"}`;
+    });
+    this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+    this.core.o.prefs.flush();
+    const text = "Used every available source.";
+    s.apply({ type: "msg", msg: notice([text, ...entries].join("\n"), "warning") });
+    s.setState({ error: text });
+    // The turn's own end (with fallbackPending) was already reported: no second turnEnded.
+    this.core.o.bus.emit("fallbackStatus", { sessionId: s.id, status: "exhausted" });
+    if (chain.continueOnReset && times.length) this.scheduleFallbackTimer(s.id, Math.min(...times) + this.fallbackResetDelay);
+  }
+
+  private canAdvanceFallback(s: Session, hit?: { resetsAt?: number }) {
     const prefs = this.core.o.prefs.get(s.id);
+    return !!s.state.fallbackChain?.enabled && (!!s.capabilities.sourceSwitch || !!this.fallbackMover && !!s.capabilities.move) && !prefs.nextSource && !s.summary.parentSessionId &&
+      !prefs.sideOf && !this.fallingBack.has(s) && (!hit || this.sourceOf(s) === "subscription");
+  }
+
+  private async waitForFallbackHandoff(s: Session, chain: FallbackChain) {
+    const adapter = this.core.adapter(s.summary.harness);
+    s.setState({ fallbackWaiting: true });
+    try {
+      while (!s.retrySuppressed && !this.stopping && s.state.fallbackChain === chain) {
+        if (s.state.mode === "terminal" || s.state.terminal || this.terminal?.blocked(s)) throw new Error("Close the terminal first.");
+        if (!s.sending && !s.starting && !s.state.requests.length && s.state.status === "idle" &&
+          !s.driver?.busy() && !s.state.backgroundSubagents && !s.shellsRunning &&
+          !await adapter.backgroundRuns?.(s.summary.nativeId).catch(() => true)) return;
+        await Bun.sleep(250);
+      }
+      throw new SendCancelled();
+    } finally {
+      s.setState({ fallbackWaiting: undefined });
+    }
+  }
+
+  private async moveFallback(s: Session, chain: FallbackChain, start: number, index: number, step: FallbackStep,
+    settings: StartOpts, progress: FallbackProgress, resetsAt?: number) {
+    if (!this.fallbackMover) throw new Error("The Move module is unavailable on this runner.");
+    if (s.retrySuppressed || this.stopping || s.state.fallbackChain !== chain) throw new SendCancelled();
+    const mover = await this.fallbackMover(s.id, step.harness, step.source, settings);
+    const next = await this.core.open(mover.sessionId);
+    if (s.retrySuppressed || this.stopping || s.state.fallbackChain !== chain || !settings.permissionMode ||
+      !this.fallbackModeAllowed(s, settings.permissionMode, step.harness)) {
+      await this.close(next, true);
+      await this.core.adapter(step.harness).move?.discard?.(next.summary.nativeId).catch(() => {});
+      this.core.dropFresh(next);
+      throw new SendCancelled();
+    }
+    delete progress.steps[index]?.retryAt;
+    if (progress.steps[start] && mover.after) progress.steps[start]!.after = mover.after;
+    this.core.o.prefs.set(s.id, { fallbackChain: { ...chain, active: index }, fallbackProgress: progress });
+    const from = this.labelOf(s.summary.harness, this.sourceOf(s));
+    const when = resetsAt ? `, resets ${new Date(resetsAt).toISOString()}` : "";
+    const link = (text: string, sessionId: string): Msg => ({ ...notice(text), link: { sessionId, label: "Open session" } });
+    s.apply({ type: "msg", msg: { ...link(`Moved to this ${HARNESS_LABELS[step.harness]} session · ${from} hit a usage limit${when}.`, next.id), ...(resetsAt ? { resetsAt } : {}) } });
+    next.apply({ type: "msg", msg: link(`Continued from this ${HARNESS_LABELS[s.summary.harness]} session.`, s.id) });
+    await this.replaceWith(s, next);
+    return { session: next, note: mover.history ? `Read the conversation and work history at ${mover.history}.` : undefined };
+  }
+
+  /** Advance in order after an exhausted plan or the end of rate-limit recovery. */
+  /** `ended`: why the turn ended, told to the person when the chain stops and waits on them. */
+  private async advanceFallback(s: Session, hit: { resetsAt?: number } | undefined, sent: Session["lastSend"], acted: boolean, returning = false, waking = false, ended?: string): Promise<boolean> {
+    const prefs = this.core.o.prefs.get(s.id);
+    const chain = s.state.fallbackChain;
     const harness = s.summary.harness;
-    if (!prefs.autoKey || prefs.nextSource || s.summary.parentSessionId || prefs.sideOf || s.state.billing?.kind !== "plan" || this.sourceOf(s) !== "subscription") return;
+    if (!chain || !this.canAdvanceFallback(s, hit)) return false;
+    const source = this.sourceOf(s);
+    const matchesCurrent = (step: FallbackStep) => step.harness === harness && step.source === source &&
+      step.model === s.state.model && (!step.effort || step.effort === s.state.effort) &&
+      (!step.permissionMode || step.permissionMode === s.state.permissionMode);
+    const start = chain.active ?? chain.steps.findIndex(matchesCurrent);
+    const cause = waking ? "Fallback chain resumed." : returning ? "Higher-priority source available." : hit ? "Plan limit reached." : "Rate limit retries exhausted.";
+    let resetsAt: number | undefined;
+    const say = (text: string, level: Msg["level"] = "info") => s.apply({
+      type: "msg", msg: { ...notice(`${cause} ${text}`, level), ...(resetsAt ? { resetsAt } : {}) },
+    });
+    // The turn end before this carried fallbackPending, so push waits for this instead.
+    const waiting = (error = ended) => {
+      if (!returning) this.core.o.bus.emit("fallbackStatus", { sessionId: s.id, status: "waiting", ...(error ? { error } : {}) });
+    };
+    const reservation = Symbol();
+    this.fallingBack.set(s, reservation);
     this.core.pin(s);
+    let switchedSource = false;
     try {
       // A turn can end before its send has returned.
       const until = this.core.now() + 5000;
       while ((s.sending || s.starting) && this.core.now() < until) await Bun.sleep(20);
-      const resetsAt = await this.planReset(harness, s, hit);
-      const say = (text: string, level: Msg["level"] = "info") => s.apply({ type: "msg", msg: { ...notice(text, level), ...(resetsAt ? { resetsAt } : {}) } });
-      const selectedModel = this.core.o.prefs.get(s.id).model ?? s.state.model;
-      const model = selectedModel === "default" ? undefined : selectedModel;
-      const candidates = keyTargets((await this.sources(harness)).options, prefs.lastKey, prefs.fallbackKeys);
-      const ranked = candidates.map((option) => {
-        const compatible = option.deployments?.filter((d) => !model || !d.model || d.model === model) ?? [];
-        return { option, deployment: resolveAzureDeployment(compatible, model) };
-      });
-      const fallback = ranked.find(({ option, deployment }) => option.source !== "azure" || deployment);
-      if (!fallback) {
-        const reason = candidates.some(({ source }) => source === "azure") ? `No Azure deployment matches ${model ?? "the current model"}`
-          : prefs.fallbackKeys !== undefined ? "No allowed fallback key is available" : "No API key is set";
-        return void say(`Plan limit reached. ${reason}, so nothing switched.`, "warning");
+      if (hit) resetsAt = await this.planReset(harness, s, hit);
+      if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) {
+        if (!waking && !s.retrySuppressed && !this.stopping) waiting();
+        return false;
       }
-      const { option: target, deployment } = fallback;
-      try {
-        await this.setSource(s.id, target.source, deployment);
-      } catch (e) {
-        return void say(`Plan limit reached. Not switched: ${redact((e as Error)?.message ?? String(e))}`, "warning");
+      const progress: FallbackProgress = { ...prefs.fallbackProgress, steps: { ...prefs.fallbackProgress?.steps } };
+      if (sent && !sent.tether) progress.lastUserText = sent.text;
+      if (returning && !waking && start >= 0) {
+        progress.steps[start] = { sessionId: s.id, after: s.transcript?.messages.at(-1)?.id };
       }
-      const switched = `Plan limit reached. Switched to ${target.billing.label}${deployment ? ` (${deployment})` : ""}.`;
-      if (!sent) return void say(`${switched} Send your message again.`);
-      if (acted) return void say(`${switched} Tools had already run in that turn, so it wasn't resent: replaying could repeat edits. Send a message to continue.`);
-      if (s.driver?.busy()) return void say(`${switched} Background work still runs, so nothing was resent. Send your message again once it's done.`);
-      say(`${switched} Resending your message.`);
-      // A failure says so in the chat, as any send's does.
-      await this.send(s.id, sent.text, sent.attachments, sent.tether ? { tether: true } : {});
+      if (!returning && start >= 0) {
+        progress.steps[start] = { retryAt: resetsAt ?? this.core.now() + FALLBACK_BACKOFF_MS, sessionId: s.id, after: s.transcript?.messages.at(-1)?.id };
+        this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+        this.core.o.prefs.flush();
+      }
+      const indexes = fallbackOrder(chain.steps.length, waking ? -1 : start, progress, this.core.now(), returning && !waking)
+        .filter((index) => waking ? progress.steps[index]?.retryAt !== undefined : index > start || progress.steps[index]?.retryAt !== undefined);
+      const catalogs = new Map<HarnessId, FallbackHarness>();
+      const plans = new Map<HarnessId, PlanUsage | undefined>();
+      for (const index of indexes) {
+        const step = chain.steps[index]!;
+        const cross = step.harness !== harness || !s.capabilities.sourceSwitch;
+        const catalog = catalogs.get(step.harness) ?? await this.fallbackCatalog(s, step.harness);
+        catalogs.set(step.harness, catalog);
+        if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) {
+          if (!waking && !s.retrySuppressed && !this.stopping) waiting();
+          return false;
+        }
+        if (fallbackStepProblem(step, catalog)) {
+          if (!returning) progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS };
+          continue;
+        }
+        if (step.source === "subscription" && step.harness !== "claude") {
+          if (!plans.has(step.harness)) plans.set(step.harness, await this.core.refreshPlan(step.harness));
+          const now = this.core.now();
+          const resets = this.planWindows(step.harness, step.model, plans.get(step.harness)).flatMap((w) =>
+            w?.resetsAt && w.resetsAt > now && w.resetsAt < 8.64e15 ? [w.resetsAt] : []);
+          if (resets.length) {
+            progress.steps[index] = { ...progress.steps[index], retryAt: Math.max(...resets) };
+            this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+            this.core.o.prefs.flush();
+            continue;
+          }
+        }
+        if (!waking && step.source === source && step.model === s.state.model && (!step.effort || step.effort === s.state.effort) &&
+          (!step.permissionMode || step.permissionMode === s.state.permissionMode)) continue;
+        // Azure steps name a deployment; a Bedrock step's model resolves to one of its configured models.
+        const sourceModel = step.source === "azure" ? step.model
+          : step.source === "bedrock" ? resolveSourceModel(this.sourceModels(step.harness, "bedrock"), step.model) : undefined;
+        if (step.source === "bedrock" && !sourceModel) continue;
+        if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) return false;
+        const settings = { model: step.model, effort: step.effort, permissionMode: step.permissionMode ?? catalog.defaultMode };
+        if (cross || index < start && progress.steps[index]?.sessionId !== s.id && progress.steps[index]?.sessionId) await this.waitForFallbackHandoff(s, chain);
+        const returned = index < start ? await this.returnToFallback(s, chain, index, step, settings, progress, sourceModel) : undefined;
+        if (returned) {
+          switchedSource = true;
+          if (waking) this.core.o.bus.emit("fallbackStatus", { sessionId: returned.session.id, status: "resumed" });
+          say(`Returned to ${this.labelOf(harness, step.source)}.`);
+          returned.session.apply({ type: "msg", msg: notice(returned.note) });
+          if (sent && !acted) await this.send(returned.session.id, `${returned.note}
+
+${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
+          return true;
+        }
+        if (cross) {
+          if (!this.fallbackMover) {
+            if (returning) continue;
+            say("The Move module is unavailable on this runner.", "warning");
+            waiting();
+            return true;
+          }
+          const moveSettings = sourceModel ? { ...settings, model: sourceModel } : settings;
+          const moved = await this.moveFallback(s, chain, start, index, step, moveSettings, progress, resetsAt).catch((e) => {
+            if (e instanceof SendCancelled || s.movedTo || this.core.o.prefs.get(s.id).movedTo) throw e;
+            say(`${HARNESS_LABELS[step.harness]} could not take over: ${redact((e as Error).message)}`, "warning");
+            progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS };
+            this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+            this.core.o.prefs.flush();
+            return undefined;
+          });
+          if (!moved) continue;
+          switchedSource = true;
+          if (waking) this.core.o.bus.emit("fallbackStatus", { sessionId: moved.session.id, status: "resumed" });
+          const last = progress.lastUserText;
+          const opening = [
+            "Continue the task where it stopped.",
+            moved.note,
+            last ? "Last user message:\n" + last.split("\n").map((line) => "> " + line).join("\n") : undefined,
+          ].filter(Boolean).join("\n\n");
+          await this.send(moved.session.id, opening.slice(0, MESSAGE_TEXT_MAX), sent?.attachments, { tether: true, continuedFallback: true });
+          return true;
+        }
+        await this.setSource(s.id, step.source, sourceModel, { chain, index, settings });
+        switchedSource = true;
+        if (waking) this.core.o.bus.emit("fallbackStatus", { sessionId: s.id, status: "resumed" });
+        const label = this.labelOf(harness, step.source);
+        const switched = s.capabilities.sourceCarry && step.source !== source ? `Next source: ${label}.` : `Switched to ${label}.`;
+        delete progress.steps[index]?.retryAt;
+        this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+        this.core.o.prefs.flush();
+        if (!sent || acted) {
+          say(`${switched} ${acted ? "The turn already acted. " : ""}Send a message to continue.`);
+          waiting();
+          return true;
+        }
+        say(`${switched} Resending your message.`);
+        // The next exhausted turn, including one which ends during send(), owns the next hop.
+        await this.send(s.id, sent.text, sent.attachments, { tether: sent.tether, fallback: reservation });
+        return true;
+      }
+      if (returning) return false;
+      this.fallbackExhausted(s, chain, progress);
+      return true;
     } catch (e) {
-      this.core.log(`${s.id}: after the plan limit: ${(e as Error)?.message ?? e}`);
+      if (!(e instanceof SendCancelled)) {
+        const error = redact((e as Error)?.message ?? String(e));
+        say(error, "warning");
+        if (!switchedSource) waiting(error);
+      }
+      return !returning || switchedSource;
     } finally {
+      if (this.fallingBack.get(s) === reservation) this.fallingBack.delete(s);
       this.core.unpin(s);
     }
   }
 
-  /** When the plan comes back: the signal says, else the full window that resets last. Unknown: undefined. */
+  private planWindows(harness: HarnessId, model: string | undefined, plan: PlanUsage | undefined) {
+    const pool = harness === "antigravity" && plan?.pools?.length
+      ? plan.pools.find((p) => (p.id === "gemini") === /gemini/i.test(model ?? "")) : plan;
+    return [pool?.fiveHour, pool?.week].filter((w) => w && (w.exhausted || w.percent >= 100));
+  }
+
+  /** The limit signal takes priority over a cached or separately polled usage report. */
   private async planReset(harness: HarnessId, s: Session, hit: { resetsAt?: number }) {
     const now = this.core.now();
-    if (hit.resetsAt && hit.resetsAt > now) return hit.resetsAt;
+    if (hit.resetsAt && hit.resetsAt > now && hit.resetsAt < 8.64e15) return hit.resetsAt;
     await this.core.refreshPlan(harness);
-    const full = [s.state.plan?.fiveHour, s.state.plan?.week].flatMap((w) => (w?.resetsAt && w.percent >= 100 && w.resetsAt > now ? [w.resetsAt] : []));
+    const full = this.planWindows(harness, s.state.model, s.state.plan)
+      .flatMap((w) => w?.resetsAt && w.resetsAt > now && w.resetsAt < 8.64e15 ? [w.resetsAt] : []);
     return full.length ? Math.max(...full) : undefined;
   }
 
@@ -1989,7 +2412,8 @@ export class LiveControl {
       const rateHit = s.rateHit;
       const error = s.turnError ?? s.state.error;
       const provisional = !!s.sending && s.retry?.phase === "sending" && !lastSend;
-      const recovering = provisional || (!!rateHit && !stopped && this.retries.recover(s, rateHit, lastSend, error ?? "Rate limited."));
+      const retry = !provisional && rateHit && !stopped && this.retries.recover(s, rateHit, lastSend, error ?? "Rate limited.");
+      const recovering = provisional || retry === true;
       if (rateHit && !recovering && !stopped && lastSend) {
         const why = turnActed ? "Tools ran or a message was steered in this turn, so it wasn't resent automatically. Send a message to continue." : s.retry ? "Automatic rate limit retries stopped after reaching the attempt or time limit. Send a message to continue." : undefined;
         if (why) s.apply({ type: "msg", msg: notice(why, "warning") });
@@ -1999,9 +2423,10 @@ export class LiveControl {
       s.limitHit = undefined;
       // A process start can report idle before the turn: the send isn't over.
       if (limitHit || !s.sending) s.lastSend = undefined;
-      bus.emit("turnEnded", { sessionId: s.id, error, ...(stopped ? { stopped } : {}), ...(recovering ? { recovering } : {}) });
+      const fallbackPending = !stopped && (limitHit || retry === "exhausted") && this.canAdvanceFallback(s, limitHit);
+      bus.emit("turnEnded", { sessionId: s.id, error, ...(stopped ? { stopped } : {}), ...(recovering ? { recovering } : {}), ...(fallbackPending ? { fallbackPending: true } : {}) });
       s.turnError = undefined;
-      if (limitHit && !stopped) void this.planOut(s, limitHit, lastSend, turnActed);
+      if (fallbackPending) void this.advanceFallback(s, limitHit, lastSend, turnActed, false, false, error);
       this.scheduleIdle(s);
       void this.refreshTitle(s);
     }

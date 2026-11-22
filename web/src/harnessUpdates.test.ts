@@ -5,11 +5,13 @@ import { canUpdate, checkedAgo, runLine, updateAllTargets } from "./harnessUpdat
 const row = (o: Partial<HarnessVersion>): HarnessVersion => ({ id: "codex", name: "Codex", pkg: "@openai/codex", status: "available", method: "npm", updatable: true, installed: "1.0.0", latest: "1.1.0", ...o });
 
 test("Update all takes every updatable row on online runners, never bundled or busy ones", () => {
-  const a: HarnessReport = { checkedAt: 0, harnesses: [row({}), row({ id: "claude", status: "current" }), row({ id: "sdk", method: "bundled", updatable: false })] };
+  const a: HarnessReport = { checkedAt: 0, harnesses: [row({}), row({ id: "claude", status: "current" }), row({ id: "sdk", method: "bundled", updatable: false }), row({ id: "antigravity", name: "Antigravity", status: "current", updatable: true })] };
   const b: HarnessReport = { checkedAt: 0, harnesses: [row({ update: { state: "running", startedAt: 0, output: "", command: "x" } }), row({ id: "claude" })] };
   const c: HarnessReport = { checkedAt: 0, harnesses: [row({})] };
   expect(updateAllTargets({ a, b, c, d: undefined }, (id) => id !== "c")).toEqual([{ runnerId: "a", id: "codex" }, { runnerId: "b", id: "claude" }]);
   expect(canUpdate(row({ status: "unknown" }))).toBe(false);
+  expect(canUpdate(row({ id: "antigravity", status: "current", installed: "1.5.14" }))).toBe(true);
+  expect(canUpdate(row({ id: "antigravity", status: "missing", installed: undefined }))).toBe(false);
 });
 
 test("the run's line", () => {
@@ -19,6 +21,9 @@ test("the run's line", () => {
   expect(runLine(u({ from: "1.0.0", to: "1.1.0" }))).toBe("Updated 1.0.0 → 1.1.0");
   expect(runLine(u({ from: "1.0.0", to: "1.0.0" }))).toBe("Update finished (1.0.0)");
   expect(runLine(u({ state: "failed", error: "It exited with code 1." }))).toBe("Update failed: It exited with code 1.");
+  expect(runLine(row({ id: "antigravity", update: { state: "running", startedAt: 0, output: "", command: "x" } }))).toBe("Checking compatibility…");
+  expect(runLine(row({ id: "antigravity", update: { state: "done", startedAt: 0, output: "", command: "x" } }))).toBe("Compatibility checks passed");
+  expect(runLine(row({ id: "antigravity", update: { state: "failed", error: "ACP server failed", startedAt: 0, output: "", command: "x" } }))).toBe("Compatibility check failed: ACP server failed");
   expect(checkedAgo(0, 30_000)).toBe("Checked just now");
   expect(checkedAgo(0, 4 * 60_000)).toBe("Checked 4 min ago");
 });

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { codexAnswer, codexAsk } from "./requests";
+import { codexAnswer, codexAsk, stdinRefusal, stdinTarget } from "./requests";
 
 const cmd = { threadId: "T", turnId: "t", itemId: "exec-1", command: "/bin/bash -lc 'rm -rf build'", cwd: "/p", reason: "Needs to delete", availableDecisions: ["accept", "cancel"] };
 
@@ -37,4 +37,20 @@ test("more sandbox access, MCP tool approvals; MCP forms aren't asked", () => {
 test("a network approval is flagged as one (pushes say only that)", () => {
   const r = codexAsk("item/commandExecution/requestApproval", { itemId: "e", command: "psql -h db1", networkApprovalContext: { host: "db1" } }, "/p");
   expect(r).toMatchObject({ network: true, reason: "Network access to db1" });
+});
+
+// As codex-cli 0.171.0 sends them (recorded 2026-11-21): input from a read-only turn to a python REPL
+// a Full access turn left running, asked of the client, and the same reviewed by Codex's reviewer.
+const stdinAsk = { kind: "writeStdin", threadId: "T", turnId: "t2", itemId: "exec-c7cc", startedAtMs: 1, approvalId: "exec-e896", environmentId: "local", reason: "Send input to an existing terminal. This terminal runs without a filesystem sandbox.", command: "write_stdin --session-id 89156 \"open('x','w').write('x')\n\"", cwd: "/p", availableDecisions: ["accept", "cancel"] };
+const stdinReview = { threadId: "T", turnId: "t2", reviewId: "r1", targetItemId: "exec-86a8", review: { status: "inProgress" }, action: { type: "writeStdin", approvalId: "exec-a252", processId: "38180", stdin: "x\n", cwd: "/p" } };
+
+test("input to a running command (write_stdin): the command it's for, from Tether's request or Codex's reviewer; the card says what it is", () => {
+  expect(stdinTarget("item/commandExecution/requestApproval", stdinAsk)).toEqual({ itemId: "exec-c7cc", processId: "89156" });
+  expect(stdinTarget("item/autoApprovalReview/started", stdinReview)).toEqual({ itemId: "exec-86a8", processId: "38180" });
+  // A plain command approval, or a review of anything else, isn't input.
+  expect(stdinTarget("item/commandExecution/requestApproval", cmd)).toBeUndefined();
+  expect(stdinTarget("item/autoApprovalReview/started", { ...stdinReview, action: { type: "command", command: "ls" } })).toBeUndefined();
+  expect(codexAsk("item/commandExecution/requestApproval", stdinAsk, "/p")).toMatchObject({ kind: "approval", title: "Send input to a running command", toolId: "exec-c7cc" });
+  expect(stdinRefusal("full-access", "read-only")).toBe("Tether refused input to that process: it was started with more access (Full access) than this session now has (Read only). Nothing was written to it. Start a new one under the current mode, or ask the person to stop it.");
+  expect(stdinRefusal(undefined, "auto@codex-reviews", true)).toContain("stopped it: it was started with access Tether can't confirm is no more than this session now has (Auto (Codex reviews))");
 });

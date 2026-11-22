@@ -50,6 +50,15 @@ describe("setSessionArchived", () => {
     expect(prefs.get("claude:one").archived).toBeUndefined();
   });
 
+  test("rejects a worktree answer it doesn't know; without a worktree record, Keep and Delete just archive", async () => {
+    const { ops, prefs } = setup();
+    expect(await ops.handle("setSessionArchived", { sessionId: "claude:one", archived: true, worktree: "maybe" })).toMatchObject({ ok: false });
+    expect(prefs.get("claude:one").archived).toBeUndefined();
+    expect(await ops.handle("setSessionArchived", { sessionId: "claude:one", archived: true, worktree: "remove" })).toMatchObject({ ok: true });
+    expect(prefs.get("claude:one")).toMatchObject({ archived: true });
+    expect(prefs.get("claude:one").worktree).toBeUndefined();
+  });
+
   test("on a stored session: persists and flushes, a repeat changes nothing, unarchive clears it", async () => {
     const { ops, core, adapter, prefs, file } = setup();
     await core.discover();

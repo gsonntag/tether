@@ -26,6 +26,8 @@ import { billingOf, BYPASS } from "./models";
 import { fetchQuota, findLanguageServerPort, keptPlan, registerLanguageServer, unregisterLanguageServer } from "./quota";
 import { acpArgv, agyHome, noteCommands, noteOpened, reader, seenContext, seenSettings, seenTitles, settingsOf, stampOf, storeStamp } from "./store";
 import { childrenOf, matchCalls } from "./subagents";
+import { rateLimitHit } from "../../rateLimit";
+import { agyUsageDir, recordAgyUsage } from "./usage";
 
 /** How long Antigravity may take to load a conversation before the start counts as failed. */
 const START_TIMEOUT_MS = 90_000;
@@ -123,6 +125,7 @@ export class AgyDriver implements Driver {
     readonly nativeId: string,
     private projectPath: string,
     private sink: Sink,
+    private usageDir: string,
   ) {
     this.t = new AcpTranscript("m", {
       stamp: stampOf(nativeId, () => Date.now()),
@@ -143,9 +146,9 @@ export class AgyDriver implements Driver {
     });
   }
 
-  static async open(nativeId: string, projectPath: string, opts: StartOpts, sink: Sink): Promise<AgyDriver> {
+  static async open(nativeId: string, projectPath: string, opts: StartOpts, sink: Sink, usageDir = agyUsageDir): Promise<AgyDriver> {
     if (!existsSync(projectPath)) throw new Error(`The session's folder ${projectPath} doesn't exist any more.`);
-    const d = new AgyDriver(nativeId, projectPath, sink);
+    const d = new AgyDriver(nativeId, projectPath, sink, usageDir);
     await d.start(opts);
     return d;
   }
@@ -340,21 +343,39 @@ export class AgyDriver implements Driver {
     this.flush();
     this.sink.state({ status: "running", error: undefined });
     const prompt = [{ type: "text", text }, ...images.map((i) => ({ type: "image", mimeType: i.mimeType, data: i.data }))];
+    const usageTurn = { session: this.nativeId, project: this.projectPath, model: this.settings.model, plan: billingOf().kind === "plan" };
     this.turn = this.client
       .call("session/prompt", { sessionId: this.nativeId, prompt }, 0)
       .then(
-        (r: any) => this.ended(r?.stopReason === "cancelled" || this.stopping ? undefined : stopError(r?.stopReason), r?.stopReason === "cancelled" || this.stopping),
-        (e: any) => this.ended(this.stopping ? undefined : `Antigravity: ${e?.message ?? e}`, this.stopping),
-      )
-      .finally(() => (this.turn = undefined));
+        async (r: any) => {
+          const stopped = r?.stopReason === "cancelled" || this.stopping;
+          try {
+            await recordAgyUsage(this.usageDir, usageTurn, r?.usage);
+          } catch (e) {
+            console.warn("Could not record Antigravity turn usage:", e);
+          }
+          this.ended(stopped ? undefined : stopError(r?.stopReason), stopped);
+        },
+        (e: unknown) => this.ended(this.stopping ? undefined : `Antigravity: ${(e as Error)?.message ?? e}`, this.stopping, e),
+      );
   }
 
-  private ended(error: string | undefined, stopped: boolean) {
+  private ended(error: string | undefined, stopped: boolean, cause?: unknown) {
+    this.turn = undefined;
     this.abortAsks();
     // A process that exited ended its turn already (exited).
     if (this.closed) return;
     this.t.end(error, stopped);
     this.flush();
+    if (error && !stopped) {
+      const code = (cause as { data?: { code?: string } } | undefined)?.data?.code;
+      if (code === "QUOTA_EXCEEDED" || code === "USAGE_LIMIT_EXCEEDED" ||
+        /^Antigravity: (?:quota exceeded|usage limit exceeded)(?:[.!]|$)/i.test(error)) this.sink.limitReached?.({});
+      else {
+        const hit = rateLimitHit(cause);
+        if (hit) this.sink.rateLimited?.(hit);
+      }
+    }
     this.sink.state({ status: "idle", ...(error ? {} : { error: undefined }) });
     if (!error && !stopped) this.offerPlan();
     void this.pollQuota();

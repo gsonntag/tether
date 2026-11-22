@@ -22,8 +22,13 @@ export function mergeRunners(known: KnownRunner[], online: RunnerInfo[], now: nu
 /** Whether the runner takes `pinSession` (RunnerInfo.pinning): pin buttons show only then. */
 export const canPin = (runners: RunnerInfo[], runnerId: string) => !!runners.find((r) => r.id === runnerId)?.pinning;
 
-/** Whether the runner takes `listWorktrees` and `existingWorktreeSession` (RunnerInfo.existingWorktrees): New session's "Existing worktree" shows only then. */
-export const canJoinWorktree = (runners: RunnerInfo[], runnerId: string) => !!runners.find((r) => r.id === runnerId)?.existingWorktrees;
+/**
+ * Whether archiving the session asks "Delete its worktree too?" (SPEC §4): its runner takes the
+ * answer (RunnerInfo.archiveWorktree) and it's in a worktree Tether made. An older runner archives as
+ * it always did; a worktree made by hand is never removed, so there's nothing to ask.
+ */
+export const asksWorktree = (runners: RunnerInfo[], runnerId: string, s: Pick<SessionSummary, "archived" | "worktreeOf" | "worktreeHandMade">) =>
+  !s.archived && !!s.worktreeOf && !s.worktreeHandMade && !!runners.find((r) => r.id === runnerId)?.archiveWorktree;
 
 /**
  * Whether a session's header offers the "Session can text me" box: its runner takes `setCanText`

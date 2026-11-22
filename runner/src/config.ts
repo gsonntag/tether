@@ -2,12 +2,13 @@
 // id, per-session prefs, queued messages, pending retry payloads, read state and open requests.
 // Complete transcripts stay in the harness's own store.
 
+import type { FallbackChain, FallbackPreset, FallbackProgress, FallbackStep } from "../../shared/fallbackChain";
 import type { RunnerGrant } from "../../shared/access";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
-import type { BillingSource, CredentialSource } from "../../shared/credentials";
+import type { BillingSource } from "../../shared/credentials";
 import type { ForkedFrom } from "../../shared/fork";
 import type { RunnerSettings } from "../../shared/protocol";
 import type { Billing, HarnessId, QueuedMessage } from "../../shared/transcript";
@@ -23,6 +24,8 @@ export interface RunnerConfig {
    * server lets the newer connection replace the older), so it is not the hostname.
    */
   runnerId: string;
+  fallbackPresets?: FallbackPreset[];
+  lastFallbackOrder?: FallbackStep[];
   /** what people see; the hostname unless set */
   name?: string;
   /** runner-wide settings (the Settings page) */
@@ -53,10 +56,12 @@ export interface WorktreeRecord {
   /** "" for a detached HEAD (only in one Tether didn't make) */
   branch: string;
   repo: string;
-  /** started in it with Existing worktree: another session (or a person) made it */
+  /** started in an existing one (tether_start, a fork, a Move): another session (or a person) made it */
   joined?: boolean;
   /** Tether didn't make it (`git worktree add` by hand): it's never removed by Tether */
   handMade?: boolean;
+  /** the person archived the session with "Keep" (SPEC §4): never removed by Tether; unarchiving drops it */
+  keep?: boolean;
   /** ignored files there once it was made and set up, with size, time and (up to 1 MB) a content hash: removal on archive may delete these while unchanged */
   known?: Record<string, [number, number, string?]>;
 }
@@ -100,14 +105,16 @@ export interface SessionPrefs {
   nextSource?: BillingSource;
   /** with nextSource: the model picked for the new source, which its thread starts on (else the carry's own pick) */
   nextModel?: string;
-  /** switch to a key when the plan runs out, the one exception to no fallback (SPEC §10). Ticked by you */
-  autoKey?: boolean;
+  /** Effort and permission mode for a pending fallback source carry. */
+  nextFallbackSettings?: Pick<SessionPrefs, "effort" | "permissionMode">;
+  fallbackChain?: FallbackChain;
+  fallbackProgress?: FallbackProgress;
+  fallbackResumeAt?: number;
   /** "Session can text me", ticked by you: it may text the person, and gets plain texts (SPEC §11 Texting). Kept whatever its age */
   canText?: boolean;
+  retryThrottled?: boolean;
   /** the key this session last used or had picked */
   lastKey?: BillingSource;
-  /** Allowed automatic fallback keys, in priority order. Empty excludes all keys. */
-  fallbackKeys?: CredentialSource[];
   /** its API cost has had an entry in costs.json: one missing there now was lost, not never needed */
   metered?: boolean;
   /** a thread being made for a source change: nobody's until its first message has an answer */

@@ -78,12 +78,35 @@ export class CostLedger {
     }
     return this.get(sessionId);
   }
-  /** A thread taking a session's place starts from what the session had spent. The same id replaces. */
+  /**
+   * A thread taking a session's place starts from what the session had spent. Its reports go over one
+   * by one, each under the id of the session that spent it, so a thread taken over again later (a
+   * fallback chain returning to it) replaces them instead of adding a total that already holds its own.
+   */
   carry(from: string, to: string): SessionCost | undefined {
     if (!Object.hasOwn(this.data.sessions, from)) return undefined; // plans and unmetered sessions
-    const prior = this.get(from);
     if (!Object.hasOwn(this.data.sessions, to)) this.begin(to, true);
-    return this.report(to, `carried:${from}`, prior);
+    const source = this.data.sessions[from]!, entry = this.data.sessions[to]!;
+    const was = { complete: entry.complete, reasons: entry.reasons, reports: { ...entry.reports } };
+    for (const [id, report] of Object.entries(source.reports)) {
+      const key = id.startsWith("carried:") ? id : `carried:${from}#${id}`;
+      // What `to` spent itself (or a total that began from it) it holds already.
+      if (key === `carried:${to}` || key.startsWith(`carried:${to}#`)) continue;
+      const previous = entry.reports[key];
+      entry.reports[key] = previous?.complete && report.complete && validUsd(previous.usd) && validUsd(report.usd) && report.usd < previous.usd
+        ? { ...report, usd: previous.usd } : { ...report };
+    }
+    if (!source.complete) {
+      entry.complete = false;
+      entry.reasons = costReasons([...(entry.reasons ?? []), ...(source.reasons?.length ? source.reasons : ["earlier-usage"])]);
+    }
+    try { this.save(); } catch (error) {
+      entry.complete = was.complete;
+      entry.reasons = was.reasons;
+      entry.reports = Object.assign(Object.create(null), was.reports);
+      throw error;
+    }
+    return this.get(to);
   }
   /** Usage Tether can't see from here on (a terminal's), or before (`earlier-usage`): coverage stops being whole. */
   markUnknown(sessionId: string, reason = "terminal"): SessionCost {

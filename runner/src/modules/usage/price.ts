@@ -32,7 +32,7 @@ export function priceRec(harness: HarnessId, r: Rec, provider?: string): Price |
       savings: (x * read * (b.input - b.read)) / 1e6,
     };
   }
-  if (flags & LONG) return undefined;
+  if (harness !== "codex" || flags & LONG) return undefined;
   if (provider !== undefined && provider !== "openai" && provider !== "tether_openai") return undefined;
   const rates = STANDARD_OPENAI[model];
   if (!rates) return undefined;
