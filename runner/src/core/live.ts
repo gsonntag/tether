@@ -21,7 +21,7 @@ import { modelIdProblem, reportedAt } from "../../../shared/labels";
 import { sessionId as makeId, parseSessionId } from "../../../shared/ids";
 import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
 import { PLAN_MODE } from "../../../shared/plan";
-import { MODEL_AFTER_SOURCE, sourceSwitchBlockMessage, sourceSwitchBlocker } from "../../../shared/sourceSwitch";
+import { sourceSwitchBlockMessage, sourceSwitchBlocker } from "../../../shared/sourceSwitch";
 import { AGENT_NAMES, HARNESS_LABELS, type Billing, type HarnessId, type LiveState, type ModelList, type Msg, type RequestAnswer } from "../../../shared/transcript";
 import { SendCancelled, type Driver, type Sink, type StartOpts, type SubagentStart } from "./adapter";
 import { AttachmentStore } from "./attachments";
@@ -463,7 +463,7 @@ export class LiveControl {
     this.core.pin(s);
     try {
       if (!o.queued && !o.tether && s.state.queueHeldBy !== "terminal") this.queue.release(s);
-      const id = await this.carrier(s.id, source);
+      const id = await this.carrier(s.id, source, this.core.o.prefs.get(s.id).nextModel);
       const n = await this.core.open(id);
       this.core.pin(n);
       try {
@@ -532,7 +532,7 @@ export class LiveControl {
     prefs.set(n.id, { carrying: undefined, ...(title ? { title } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
     const { forkedFrom, worktree: _, ...state } = kept;
     n.setState(state);
-    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextBilling: undefined, nextDeployment: undefined, sourceSwitchFailed: undefined });
+    prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextModel: undefined, nextBilling: undefined, nextDeployment: undefined, sourceSwitchFailed: undefined });
     this.core.moveSides(s.id, n.id);
     prefs.flush();
     s.movedTo = n.id;
@@ -826,9 +826,9 @@ export class LiveControl {
 
   /**
    * A model from the menu or typed (SPEC §10 "Other model or deployment…"). Refused: the chat says
-   * why and the model stays as it was. While a source change waits for the next message, the model
-   * can't change: it would go to the source being left (a deployment name to the ChatGPT daemon, or a
-   * model id to an Azure process). Pick it once the session is on the new source.
+   * why and the model stays as it was. While a source change waits for the next message, the pick is
+   * for the new source: held (`nextModel`) for the thread the change starts, never sent to the source
+   * being left (a deployment name to the ChatGPT daemon, or a model id to an Azure process).
    */
   async setModel(id: string, model: string) {
     const parsed = parseSessionId(id);
@@ -837,7 +837,8 @@ export class LiveControl {
     try {
       const problem = modelIdProblem(model);
       if (problem) throw new Error(`That model name won't do. ${problem}`);
-      if (this.core.o.prefs.get(id).nextSource) throw new Error(MODEL_AFTER_SOURCE);
+      const next = this.core.o.prefs.get(id).nextSource;
+      if (next) return await this.holdNextModel(id, next, model);
       await this.setting(id, { model }, (d) => d.setModel(model));
     } catch (e) {
       const s = await this.core.open(id).catch(() => undefined);
@@ -847,6 +848,19 @@ export class LiveControl {
       }
       throw e;
     }
+  }
+
+  /** A model for the source a pending change goes to: its new thread starts on it. */
+  private async holdNextModel(id: string, source: BillingSource, model: string) {
+    const s = await this.core.open(id);
+    if (s.summary.parentSessionId) throw new Error("Change settings on the main session. A subagent keeps the settings it started with.");
+    if (source === "azure" && model !== "default" && !this.opts.credentials?.azure().deployments.some((d) => d.name === model)) throw new Error(`${model} isn't a deployment in Settings, Azure. The model is unchanged.`);
+    // Onto Azure the pick is the deployment the change takes (as the chip's own pick); elsewhere a model id.
+    const picked = model === "default" ? undefined : model;
+    const patch = source === "azure" ? { nextDeployment: picked } : { nextModel: picked };
+    this.core.o.prefs.set(id, patch);
+    this.core.o.prefs.flush();
+    s.setState(patch);
   }
 
   async setEffort(id: string, effort: string) {
@@ -1466,7 +1480,7 @@ export class LiveControl {
   }
 
   /** Makes the thread a source change goes to, on the move module's export and import. */
-  carrier?: (id: string, source: BillingSource) => Promise<string>;
+  carrier?: (id: string, source: BillingSource, model?: string) => Promise<string>;
 
   /** A queued source remains pending after its first start fails, across views and runner restarts. */
   private markSourceSwitchFailed(s: Session) {
@@ -1505,9 +1519,9 @@ export class LiveControl {
       // Thought better of it: the thread never left.
       if (carries) {
         const pendingDeployment = this.core.o.prefs.get(id).nextSource ? { nextDeployment: undefined } : {};
-        this.core.o.prefs.set(id, { nextSource: undefined, nextBilling: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
+        this.core.o.prefs.set(id, { nextSource: undefined, nextModel: undefined, nextBilling: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
         this.core.o.prefs.flush();
-        s.setState({ nextBilling: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
+        s.setState({ nextBilling: undefined, nextModel: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
       }
       return;
     }
@@ -1518,9 +1532,11 @@ export class LiveControl {
     }
     const next = this.core.adapter(harness).billing!.label(asked);
     if (carries) {
-      this.core.o.prefs.set(id, { nextSource: asked, nextBilling: next, nextDeployment: azureDeployment, sourceSwitchFailed: undefined });
+      // A model picked for another pending source doesn't go with this one.
+      const nextModel = this.core.o.prefs.get(id).nextSource === asked ? this.core.o.prefs.get(id).nextModel : undefined;
+      this.core.o.prefs.set(id, { nextSource: asked, nextModel, nextBilling: next, nextDeployment: azureDeployment, sourceSwitchFailed: undefined });
       this.core.o.prefs.flush();
-      s.setState({ nextBilling: next, nextDeployment: azureDeployment, sourceSwitchFailed: undefined });
+      s.setState({ nextBilling: next, nextModel, nextDeployment: azureDeployment, sourceSwitchFailed: undefined });
       return this.core.touch(s);
     }
     const confirmed = s.state.billing?.label === next.label;

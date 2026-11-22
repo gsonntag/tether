@@ -2,9 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { privateThreadBusy, providerConfig, privateEnvironment, retirePrivateSource, sourceBilling, threadConnection } from "./sources";
+import { deploymentOfRevision, privateThreadBusy, providerConfig, privateEnvironment, retirePrivateSource, sourceBilling, threadConnection } from "./sources";
 import { remember, remembered, rememberIn } from "./remember";
 import { codexAdapter } from ".";
+import { CredentialStore } from "../../credentials";
 
 let dir: string | undefined;
 afterEach(() => { rememberIn(undefined); if (dir) rmSync(dir, { recursive: true, force: true }); dir = undefined; });
@@ -85,4 +86,17 @@ test("an API source whose mapping cannot be persisted fails before it can be off
   writeFileSync(join(dir, "not-a-directory"), "x");
   rememberIn(join(dir, "not-a-directory", "threads.json"));
   expect(() => remember("id", { source: { id: "private", source: "openai", projectPath: "/tmp" } })).toThrow("billing source");
+});
+
+test("a rejoined Azure process's credential names the deployment its revision was made for", () => {
+  dir = mkdtempSync("/tmp/codex-observed-");
+  const store = new CredentialStore(join(dir, "credentials.json"));
+  store.set("azure", `fake-${randomUUID()}`);
+  store.setAzure({ endpoint: "my-res", deployments: [{ name: "luna", model: "gpt-6-luna" }, { name: "sol", model: "gpt-6.2-sol" }] });
+  const sol = store.snapshot("azure", "sol")!.revision;
+  expect(deploymentOfRevision(store, sol)).toBe("sol");
+  // Without it, the send-time check (the snapshot of no deployment) never matches the process.
+  expect(store.snapshot("azure")!.revision).not.toBe(sol);
+  expect(deploymentOfRevision(store, "unknown")).toBeUndefined();
+  expect(deploymentOfRevision(undefined, sol)).toBeUndefined();
 });

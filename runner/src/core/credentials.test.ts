@@ -580,7 +580,7 @@ describe("Azure model changes on the same session", () => {
 });
 
 describe("the model while a source change waits, and typed model names", () => {
-  test("a pending source change blocks model changes: nothing reaches the process being left", async () => {
+  test("a pending source change holds the model for the new source: nothing reaches the process being left", async () => {
     const t = setup();
     t.adapter.capabilities = { ...t.adapter.capabilities, sourceSwitch: true, sourceCarry: true };
     t.adapter.billing = { ...t.adapter.billing, keys: ["azure"] };
@@ -593,14 +593,51 @@ describe("the model while a source change waits, and typed model names", () => {
     await t.live.setSource("claude:one", "azure");
     expect(t.prefs.get("claude:one").nextSource).toBe("azure");
     d.settings = {};
-    await expect(t.live.setModel("claude:one", "one")).rejects.toThrow("after the source change");
+    // Onto Azure the pick is a deployment, held for the carry; a name that isn't one is refused.
+    await expect(t.live.setModel("claude:one", "gpt-6-luna")).rejects.toThrow("isn't a deployment");
+    await t.live.setModel("claude:one", "one");
     expect(d.settings).toEqual({});
     expect(s.state.model).not.toBe("one");
-    expect(s.transcript!.messages.at(-1)).toMatchObject({ role: "notice", level: "error" });
-    // Back on its own source: the model changes again.
+    expect(s.state.nextDeployment).toBe("one");
+    // The carry gets it.
+    let carried: [string, string | undefined] | undefined;
+    t.live.carrier = async (_id, source, model) => { carried = [source, model]; throw new Error("stop here"); };
+    await expect(t.live.send("claude:one", "go")).rejects.toThrow("stop here");
+    expect(carried).toEqual(["azure", undefined]);
+    expect(t.prefs.get("claude:one").nextDeployment).toBe("one");
+    // Back on its own source: the pick is dropped and the model changes in place again.
     await t.live.setSource("claude:one", "subscription");
+    expect(s.state.nextDeployment).toBeUndefined();
     await t.live.setModel("claude:one", "haiku");
     expect(d.settings.model).toBe("haiku");
+  });
+
+  test("leaving Azure: the model picked while the change waits goes to the new thread, not the Azure process", async () => {
+    const t = setup();
+    t.adapter.capabilities = { ...t.adapter.capabilities, sourceSwitch: true, sourceCarry: true };
+    t.adapter.billing = { ...t.adapter.billing, keys: ["azure"] };
+    t.credentials.set("azure", `fake-${crypto.randomUUID()}`);
+    t.credentials.setAzure({ endpoint: "test-resource", deployments: [{ name: "one" }] });
+    t.prefs.set("claude:one", { source: "azure", deployment: "one", model: "one" });
+    await t.live.send("claude:one", "on azure");
+    const d = t.adapter.drivers.at(-1)!;
+    const s = await t.core.open("claude:one");
+    await t.live.setSource("claude:one", "subscription");
+    d.settings = {};
+    await t.live.setModel("claude:one", "gpt-6.2-sol");
+    expect(d.settings).toEqual({});
+    expect(s.state.model).toBe("one");
+    expect(s.state.nextModel).toBe("gpt-6.2-sol");
+    let carried: [string, string | undefined] | undefined;
+    t.live.carrier = async (_id, source, model) => { carried = [source, model]; throw new Error("stop here"); };
+    await expect(t.live.send("claude:one", "go")).rejects.toThrow("stop here");
+    expect(carried).toEqual(["subscription", "gpt-6.2-sol"]);
+    // "Default" clears it; cancelling the change drops it too.
+    await t.live.setModel("claude:one", "default");
+    expect(s.state.nextModel).toBeUndefined();
+    await t.live.setModel("claude:one", "gpt-6.2-sol");
+    await t.live.setSource("claude:one", "azure");
+    expect(t.prefs.get("claude:one").nextModel).toBeUndefined();
   });
 
   test("a typed model name is checked: refused with a chat error, the model kept", async () => {

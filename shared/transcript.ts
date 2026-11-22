@@ -375,6 +375,8 @@ export interface LiveState {
   nextBilling?: Billing;
   /** on Azure: a deployment picked while a turn ran, the model from the next send ("Next: <deployment>") */
   nextDeployment?: string;
+  /** with a pending carried source change: the model picked for the new source ("Next model") */
+  nextModel?: string;
   /** the last process start for nextBilling failed; the confirmed source is still current */
   sourceSwitchFailed?: boolean;
   /** ticked: when the plan runs out, the session switches to a key and resends (SPEC §10) */
