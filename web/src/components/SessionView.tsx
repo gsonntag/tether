@@ -235,7 +235,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
   // whenever: never busy for the composer (SPEC §9).
   // A message on its way counts too: the next one queues behind it, as it will once the runner says so.
   const sendingNow = pending.some((p) => p.status === "sending");
-  const running = !inTerminal && (state.status === "running" || state.status === "waiting" || waiting || sendingNow);
+  const running = !inTerminal && (state.status === "running" || state.status === "waiting" || state.fallbackWaiting || waiting || sendingNow);
 
   const shared = view.capabilities?.terminal === "shared";
   /**

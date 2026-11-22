@@ -62,6 +62,7 @@ export const FALLBACK_BACKOFF_MS = 10 * 60_000;
 
 /** Runner-local progress keyed by the index in the saved order. */
 export interface FallbackProgress {
+  lastUserText?: string;
   steps: Record<number, { retryAt?: number; sessionId?: string; after?: string }>;
 }
 

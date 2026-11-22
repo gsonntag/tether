@@ -383,6 +383,7 @@ export interface LiveState {
   sourceSwitchFailed?: boolean;
   /** ticked: when the plan runs out, the session switches to a key and resends (SPEC §10) */
   fallbackChain?: FallbackChain;
+  fallbackWaiting?: boolean;
   /** ticked ("Session can text me"): it may text the person, and plain texts can come to it (SPEC §11 Texting). Absent: it never texts */
   canText?: boolean;
   /** Whether extended throttle retries are enabled. Absent if unavailable for this session. */

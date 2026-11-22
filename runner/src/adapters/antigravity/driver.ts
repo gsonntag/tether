@@ -26,6 +26,7 @@ import { billingOf, BYPASS } from "./models";
 import { fetchQuota, findLanguageServerPort, keptPlan, registerLanguageServer, unregisterLanguageServer } from "./quota";
 import { acpArgv, agyHome, noteCommands, noteOpened, reader, seenContext, seenSettings, seenTitles, settingsOf, stampOf, storeStamp } from "./store";
 import { childrenOf, matchCalls } from "./subagents";
+import { rateLimitHit } from "../../rateLimit";
 import { agyUsageDir, recordAgyUsage } from "./usage";
 
 /** How long Antigravity may take to load a conversation before the start counts as failed. */
@@ -355,17 +356,26 @@ export class AgyDriver implements Driver {
           }
           this.ended(stopped ? undefined : stopError(r?.stopReason), stopped);
         },
-        (e: any) => this.ended(this.stopping ? undefined : `Antigravity: ${e?.message ?? e}`, this.stopping),
-      )
-      .finally(() => (this.turn = undefined));
+        (e: unknown) => this.ended(this.stopping ? undefined : `Antigravity: ${(e as Error)?.message ?? e}`, this.stopping, e),
+      );
   }
 
-  private ended(error: string | undefined, stopped: boolean) {
+  private ended(error: string | undefined, stopped: boolean, cause?: unknown) {
+    this.turn = undefined;
     this.abortAsks();
     // A process that exited ended its turn already (exited).
     if (this.closed) return;
     this.t.end(error, stopped);
     this.flush();
+    if (error && !stopped) {
+      const code = (cause as { data?: { code?: string } } | undefined)?.data?.code;
+      if (code === "QUOTA_EXCEEDED" || code === "USAGE_LIMIT_EXCEEDED" ||
+        /^Antigravity: (?:quota exceeded|usage limit exceeded)(?:[.!]|$)/i.test(error)) this.sink.limitReached?.({});
+      else {
+        const hit = rateLimitHit(cause);
+        if (hit) this.sink.rateLimited?.(hit);
+      }
+    }
     this.sink.state({ status: "idle", ...(error ? {} : { error: undefined }) });
     if (!error && !stopped) this.offerPlan();
     void this.pollQuota();

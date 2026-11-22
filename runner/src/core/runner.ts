@@ -279,7 +279,7 @@ export function createRunner(o: RunnerOptions) {
       sessions: {
         adapters: () => o.adapters ?? [],
         open: async (id: string) => lookAt(await core.open(id)),
-        adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string, extra: { stored?: boolean; forkedFrom?: ForkedFrom; keys?: Pick<SessionPrefs, "lastKey">; sideOf?: string } = {}) => {
+        adopt: async (harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string, extra: { stored?: boolean; forkedFrom?: ForkedFrom; keys?: Pick<SessionPrefs, "lastKey">; sideOf?: string; fresh?: boolean } = {}) => {
           const id = sessionId(harness, nativeId);
           opts = live.forSource(harness, source, opts);
           core.o.prefs.set(id, { projectPath, ...chosenOf(core.adapter(harness), opts), source, ...(hasSourceModels(source) && opts.model ? { deployment: opts.model } : {}), ...(from ? { carrying: true } : {}), ...(extra.forkedFrom ? { forkedFrom: extra.forkedFrom } : {}), ...extra.keys, ...(extra.sideOf ? { sideOf: extra.sideOf } : {}) });
@@ -290,7 +290,7 @@ export function createRunner(o: RunnerOptions) {
           if (source !== "subscription") {
             try { live.beginCost(id, true); } catch { core.log("Couldn't save this session's API cost coverage. Its total is unknown."); }
           }
-          const s = await core.open(id);
+          const s = extra.fresh ? core.create(harness, nativeId, projectPath, opts) : await core.open(id);
           core.book.upsert([s.summary]);
           if (from) {
             // A source change: nothing is anyone's until the harness has confirmed it.
@@ -319,6 +319,7 @@ export function createRunner(o: RunnerOptions) {
         answer: (id: string, requestId: string, a: RequestAnswer) =>
           live.answerRequest(id, requestId, a.allow ? { ...a, ...(a.notes ? { notes: defang(a.notes) } : {}) } : { allow: false, ...(a.reason ? { reason: defang(a.reason) } : {}) }),
         carrier: (f: NonNullable<LiveControl["carrier"]>) => { live.carrier = f; },
+        fallbackMover: (f: NonNullable<LiveControl["fallbackMover"]>) => { live.fallbackMover = f; },
         fallbackArchiver: (f: NonNullable<LiveControl["fallbackArchive"]>) => { live.fallbackArchive = f; },
         fork: (id: string, f: ForkOptions = {}) => (forker ? forker(id, f) : Promise.reject(new Error("This runner can't fork sessions."))),
         forker: (f: (id: string, o: ForkOptions) => Promise<string>) => { forker = f; },
