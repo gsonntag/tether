@@ -11,15 +11,16 @@
 
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AcpClient } from "../acp/client";
 import { HARNESS_BINS, parseVersion } from "../detect";
 import { copyStore, discardStore } from "./fork";
-import { agyScreen } from "./screen";
-import { acpArgv, conversationFile, reader } from "./store";
-import { childInfo, parentMessage } from "./subagents";
+import { Tmux } from "../../terminal/tmux";
+import { AGY_QUIT, agyScreen } from "./screen";
+import { agyHome, conversationFile, reader } from "./store";
+import { parentMessage } from "./subagents";
 import { runCommand, type RunResult } from "../../modules/updates/check";
 
 export interface CheckItem {
@@ -48,9 +49,95 @@ export interface CompatDeps {
   run: (argv: string[], opts?: { timeoutMs?: number; env?: Record<string, string> }) => Promise<RunResult>;
   initAcp?: (bin: string) => Promise<{ version?: string; capabilities?: any; configOptions?: any[]; listCount?: number }>;
   testStoreAndFork?: () => Promise<{ integrity: boolean; replayed: boolean }>;
-  testSubagentFormat?: () => Promise<boolean>;
-  testScreenParsing?: () => boolean;
+  /** `detail`: what was checked against agy itself, and what only against Tether's own sample */
+  testSubagentFormat?: () => Promise<{ ok: boolean; detail: string }>;
+  /** Tether's screen reader on the installed TUI's own screens; `skipped`: it couldn't be run here (no tmux) */
+  testScreenParsing?: (bin: string) => Promise<{ ok: boolean; detail: string; skipped?: boolean }>;
   testLiveTurn?: (bin: string) => Promise<boolean>;
+}
+
+/** Subagent first steps among the newest conversations in `dir` (a first step that is "[Message] …"), and how many no longer decode. */
+export function realSubagentSteps(dir: string, max = 200): { found: number; failed: number } {
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir).filter((f) => f.endsWith(".db"));
+  } catch {
+    return { found: 0, failed: 0 };
+  }
+  const at = (f: string) => {
+    try {
+      return statSync(join(dir, f)).mtimeMs;
+    } catch {
+      return 0;
+    }
+  };
+  let found = 0;
+  let failed = 0;
+  for (const f of names.map((f) => ({ f, t: at(f) })).sort((a, b) => b.t - a.t).slice(0, max)) {
+    let db: Database | undefined;
+    try {
+      db = new Database(join(dir, f.f), { readonly: true });
+      const row = db.query("select step_payload from steps where idx = 0").get() as { step_payload?: Uint8Array } | null;
+      if (!row?.step_payload || !Buffer.from(row.step_payload).toString("latin1").includes("[Message]")) continue;
+      found++;
+      if (!parentMessage(row.step_payload)) failed++;
+    } catch {
+      // mid-write, locked, or not a conversation: not one to judge by
+    } finally {
+      db?.close();
+    }
+  }
+  return { found, failed };
+}
+
+/** Polls the screen until `want` holds of what agyScreen reads; the last screen either way. */
+async function waitScreen(tmux: Tmux, name: string, want: (r: ReturnType<typeof agyScreen>) => boolean, ms: number): Promise<{ ok: boolean; screen: string }> {
+  const end = Date.now() + ms;
+  let screen = "";
+  for (;;) {
+    screen = await tmux.capture(name).catch(() => screen);
+    if (want(agyScreen(screen))) return { ok: true, screen };
+    if (Date.now() > end) return { ok: false, screen };
+    await Bun.sleep(250);
+  }
+}
+
+const tail = (screen: string) => screen.split("\n").map((l) => l.trim()).filter(Boolean).slice(-4).join(" | ").slice(0, 300);
+
+/**
+ * The installed TUI's own screens, as terminal mode reads them: started in a throwaway tmux in a new
+ * folder, it asks to trust it (Needs you); trusted for this run only (`--settings`, never saved), it
+ * shows its idle prompt box, then what's typed in it. Nothing is sent, so it spends no tokens.
+ */
+export async function realScreenCheck(bin: string, o: { timeoutMs?: number } = {}): Promise<{ ok: boolean; detail: string; skipped?: boolean }> {
+  if (!Bun.which("tmux")) return { ok: true, skipped: true, detail: "tmux isn't installed, so terminal mode can't run here" };
+  const ms = o.timeoutMs ?? 20_000;
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "tether-agy-screen-")));
+  const tmux = new Tmux({ socket: `tether-agy-compat-${process.pid}`, log: () => {} });
+  const start = (name: string, argv: string[]) => tmux.create({ name, cwd: dir, argv, cols: 120, rows: 40, tags: {} });
+  try {
+    await start("trust", [bin]);
+    // A folder inside one agy already trusts (a temp folder under a trusted home) gets no question.
+    const trust = await waitScreen(tmux, "trust", (r) => r.state === "asking" || (r.state === "idle" && r.prompt === "normal"), ms);
+    if (!trust.ok) return { ok: false, detail: `the folder-trust question wasn't read as Needs you (screen: ${tail(trust.screen)})` };
+    const asked = agyScreen(trust.screen).state === "asking";
+    await tmux.kill("trust");
+    await start("prompt", [bin, "--settings", JSON.stringify({ trustedWorkspaces: [dir] })]);
+    const idle = await waitScreen(tmux, "prompt", (r) => r.state === "idle" && r.prompt === "normal" && !r.input, ms);
+    if (!idle.ok) return { ok: false, detail: `the idle prompt box wasn't recognized (screen: ${tail(idle.screen)})` };
+    const words = "tether compatibility check";
+    await tmux.type("prompt", words);
+    const typed = await waitScreen(tmux, "prompt", (r) => r.state === "idle" && r.input === words, 5_000);
+    if (!typed.ok) return { ok: false, detail: `text typed in the prompt box wasn't read back (screen: ${tail(typed.screen)})` };
+    // Quit as terminal mode does (text typed: Esc, then Ctrl-Cs); whatever is left goes with the tmux server.
+    for (const step of AGY_QUIT) "keys" in step ? await tmux.keys("prompt", ...step.keys).catch(() => {}) : "waitMs" in step && (await Bun.sleep(step.waitMs));
+    return { ok: true, detail: `${asked ? "trust question, " : ""}idle prompt box and typed text read from the real TUI${asked ? "" : " (temp folder already trusted: trust question not seen)"}` };
+  } finally {
+    await tmux.killServer().catch(() => {});
+    // tmux leaves its socket file behind: one per check would pile up.
+    if (process.getuid) rmSync(join(process.env.TMUX_TMPDIR || "/tmp", `tmux-${process.getuid()}`, tmux.socket), { force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 export const realCompatDeps: CompatDeps = {
@@ -102,71 +189,44 @@ export const realCompatDeps: CompatDeps = {
     return { integrity, replayed };
   },
   async testSubagentFormat() {
-    // 1. Synthetic protobuf payload with the message shape agy writes
+    // 1. Tether's decoder on the line shape agy wrote when this was checked (1.5.13): a self-test only.
     const sample = new Uint8Array(
       Buffer.from("\x12\x0a..$abc\x1a[Message] timestamp=2026-11-21T00:37:56Z sender=4afd15cc-2c80-4b26-adbc-60918bcdeee5 priority=MESSAGE_PRIORITY_HIGH content=Please run ls here.\x0a\x12more", "latin1"),
     );
     const parsed = parentMessage(sample);
     if (!parsed || parsed.parent !== "4afd15cc-2c80-4b26-adbc-60918bcdeee5" || parsed.prompt !== "Please run ls here.") {
-      return false;
+      return { ok: false, detail: "Tether's decoder fails its own sample" };
     }
-    // 2. If real conversations exist on this machine, test childInfo on one
-    const convDir = join(homedir(), ".gemini", "antigravity-cli", "conversations");
-    if (existsSync(convDir)) {
-      try {
-        const dbs = readdirSync(convDir).filter((f) => f.endsWith(".db"));
-        for (const db of dbs.slice(0, 50)) {
-          const id = db.slice(0, -3);
-          const info = childInfo(id);
-          if (info) {
-            // Found a real subagent on disk and successfully parsed its parent & prompt
-            if (!info.parent || !info.prompt) return false;
-            break;
-          }
-        }
-      } catch {}
-    }
-    return true;
+    // 2. The real subagent conversations agy wrote on this machine, newest first: each must still decode.
+    const real = realSubagentSteps(join(agyHome(), "conversations"));
+    if (real.failed) return { ok: false, detail: `${real.failed} of ${real.found} subagent first steps on disk no longer decode (sender=<parent id> … content=)` };
+    if (!real.found) return { ok: true, detail: "no subagent conversation on this machine to check against; decoder self-test only" };
+    return { ok: true, detail: `${real.found} subagent conversations on disk decoded` };
   },
-  testScreenParsing() {
-    const idleScreen = "────────────────────────\n>\n────────────────────────\n? for shortcuts";
-    const busyScreen = "⠋ Working on task\n────────────────────────\n>\n────────────────────────\nesc to cancel";
-    const permScreen = "Requesting permission for command\n1. Allow\n2. Deny\n↑/↓ Navigate";
-    const trustScreen = "Do you want to trust this folder?\n1. Yes\n2. No\n↑/↓ Navigate";
-
-    const sIdle = agyScreen(idleScreen);
-    const sBusy = agyScreen(busyScreen);
-    const sPerm = agyScreen(permScreen);
-    const sTrust = agyScreen(trustScreen);
-
-    return (
-      sIdle.state === "idle" &&
-      sIdle.prompt === "normal" &&
-      sBusy.state === "busy" &&
-      sPerm.state === "asking" &&
-      sTrust.state === "asking"
-    );
+  async testScreenParsing(bin: string) {
+    return realScreenCheck(bin);
   },
   async testLiveTurn(bin: string) {
     const csrfToken = process.env.ANTIGRAVITY_CSRF_TOKEN || randomUUID();
+    // The client reads its callbacks from these options only: the reply's text arrives through onUpdate.
+    let sessionId: string | undefined;
+    let gotText = "";
     const c = new AcpClient({
       argv: [bin, "acp"],
       cwd: homedir(),
       env: { ANTIGRAVITY_CSRF_TOKEN: csrfToken },
       name: "Antigravity",
-      onUpdate: () => {},
+      onUpdate: (sid, u) => {
+        if (sid === sessionId && u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") gotText += u.content.text;
+      },
+      // A check asks nothing of tools; were it asked, it declines, as the store's reader does.
+      onRequest: async (method) => (method === "session/request_permission" ? { outcome: { outcome: "cancelled" } } : Promise.reject(new Error("Not supported."))),
     });
     try {
       await c.initialize();
       const tmp = mkdtempSync(join(tmpdir(), "tether-agy-live-"));
       try {
-        const { sessionId } = (await c.call("session/new", { cwd: tmp, mcpServers: [] })) as { sessionId: string };
-        let gotText = "";
-        c.onUpdate = (_sid, u) => {
-          if (u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") {
-            gotText += u.content.text;
-          }
-        };
+        sessionId = ((await c.call("session/new", { cwd: tmp, mcpServers: [] })) as { sessionId: string }).sessionId;
         const promptRes = await c.call("session/prompt", {
           sessionId,
           prompt: [{ type: "text", text: "Reply with just: pong" }],
@@ -186,8 +246,8 @@ export const realCompatDeps: CompatDeps = {
  * Tests the 4 undocumented mechanisms Tether relies on:
  * 1. ACP protocol & message shapes (initialize, session/load, session/list)
  * 2. SQLite conversation store & fork (copyStore, UUID rewriting, replay)
- * 3. Subagent first step detection (parentMessage sender=<parent id>)
- * 4. Terminal TUI screen parsing (agyScreen)
+ * 3. Subagent first step detection (parentMessage sender=<parent id>) on the subagent conversations on disk
+ * 4. Terminal TUI screen parsing (agyScreen) on the installed TUI's own screens, in a throwaway tmux
  */
 export async function checkAntigravityCompatibility(
   opts: CompatOptions = {},
@@ -259,15 +319,15 @@ export async function checkAntigravityCompatibility(
 
   // 4. Subagent first step detection (sender=<parent id>)
   try {
-    const subOk = deps.testSubagentFormat ? await deps.testSubagentFormat() : true;
-    if (!subOk) {
-      const why = "subagent step format decoding failed";
+    const sub = deps.testSubagentFormat ? await deps.testSubagentFormat() : { ok: true, detail: "not checked" };
+    if (!sub.ok) {
+      const why = `subagent step format decoding failed: ${sub.detail}`;
       checks.push({ name: "subagents", ok: false, detail: why });
       lines.push(`FAIL subagent format (${why})`);
       return { ok: false, version, checks, error: why, output: lines.join("\n") };
     }
-    checks.push({ name: "subagents", ok: true, detail: "parentMessage sender decoding verified" });
-    lines.push("ok   subagent step decoding (sender=<parent id>)");
+    checks.push({ name: "subagents", ok: true, detail: sub.detail });
+    lines.push(`ok   subagent step decoding (${sub.detail})`);
   } catch (e) {
     const msg = `subagent format check failed: ${(e as Error)?.message ?? e}`;
     checks.push({ name: "subagents", ok: false, detail: msg });
@@ -277,15 +337,15 @@ export async function checkAntigravityCompatibility(
 
   // 5. Terminal TUI screen parsing (Needs you, prompt box, busy spinner)
   try {
-    const screenOk = deps.testScreenParsing ? deps.testScreenParsing() : true;
-    if (!screenOk) {
-      const why = "screen parsing failed for prompt, busy or permission";
+    const screen = deps.testScreenParsing ? await deps.testScreenParsing(bin) : { ok: true, detail: "not checked", skipped: true };
+    if (!screen.ok) {
+      const why = `screen parsing failed: ${screen.detail}`;
       checks.push({ name: "screen_parsing", ok: false, detail: why });
       lines.push(`FAIL screen parsing (${why})`);
       return { ok: false, version, checks, error: why, output: lines.join("\n") };
     }
-    checks.push({ name: "screen_parsing", ok: true, detail: "prompt, busy, permission, trust parsed" });
-    lines.push("ok   terminal TUI screen parsing (prompt, busy, permission, trust)");
+    checks.push({ name: "screen_parsing", ok: true, detail: screen.detail });
+    lines.push(`${screen.skipped ? "skip" : "ok  "} terminal TUI screen parsing (${screen.detail})`);
   } catch (e) {
     const msg = `screen parsing check failed: ${(e as Error)?.message ?? e}`;
     checks.push({ name: "screen_parsing", ok: false, detail: msg });
