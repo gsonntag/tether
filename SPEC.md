@@ -1789,9 +1789,13 @@ a key, any other provider is a provider, OpenAI's own whose token count after it
 source from then on; before it unknown, since it may have been another. A Codex token count of rate
 limits only (no usage) marks only the record just before it.
 
-The `usage` module reads the harness stores, not Tether's records: each adapter's
+The `usage` module scans each adapter's
 `usageStores()` (Claude's `projects/`, subagents included; Codex's `sessions/`, `archived_sessions/`
-and the private homes of Tether's key threads, `codex-keys/`). The ledger and the hidden folders come
+and the private homes of Tether's key threads, `codex-keys/`; Antigravity's runner-local
+`antigravity-usage/`). Antigravity records one aggregate entry per live Tether prompt with usage in
+its ACP result. It uses the selected model at prompt submission, includes thought tokens in output,
+and leaves the entry unpriced. The page labels this scope. Older turns, standalone CLI or terminal
+turns, and work without a prompt result are outside the recording scope. The ledger and the hidden folders come
 through `ModuleContext` (`apiCost`, `hiddenFolder`). A request is one record. Claude: one per message
 id and request id, at the largest counts its streamed entries carry; a compaction's own request isn't
 in the store. Codex: `token_usage_record` by response id; before a file's first one, each
