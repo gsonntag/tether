@@ -81,6 +81,19 @@ const convo: Msg[] = [
   { id: "a1", role: "assistant", ts: 11, parts: [{ type: "tool", id: "call_native_1", name: "bash", kind: "shell", input: { command: "ls" }, command: "ls", status: "done", output: "vault-4417.txt" }, { type: "text", text: "One file." }] },
 ];
 
+describe("a fallback chain's return (Mover.fallbackArchive)", () => {
+  test("the work since the handoff goes where the returning thread may read it", async () => {
+    const pi = new Neutral("pi", true);
+    const { mover, dir } = setup([pi]);
+    pi.stored_("paid", [...convo, { id: "a2", role: "assistant", ts: 12, parts: [{ type: "text", text: "Done on the key." }] }]);
+    const file = await mover.fallbackArchive("pi:paid", "pi:one", "a1");
+    expect(file.startsWith(join(movedDir("pi:one", join(dir, "modules/move")), "fallback-"))).toBe(true);
+    const text = readFileSync(file, "utf8");
+    expect(text).toContain("Done on the key.");
+    expect(text).not.toContain("vault-4417.txt");
+  });
+});
+
 describe("a source change (Mover.carry)", () => {
   test("the same harness, settings and history, unlisted and marked as taking over", async () => {
     const pi = new Neutral("pi", true);

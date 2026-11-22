@@ -2,7 +2,7 @@
 // id, per-session prefs, queued messages, pending retry payloads, read state and open requests.
 // Complete transcripts stay in the harness's own store.
 
-import type { FallbackChain, FallbackPreset, FallbackStep } from "../../shared/fallbackChain";
+import type { FallbackChain, FallbackPreset, FallbackProgress, FallbackStep } from "../../shared/fallbackChain";
 import type { RunnerGrant } from "../../shared/access";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -107,6 +107,7 @@ export interface SessionPrefs {
   /** Effort and permission mode for a pending fallback source carry. */
   nextFallbackSettings?: Pick<SessionPrefs, "effort" | "permissionMode">;
   fallbackChain?: FallbackChain;
+  fallbackProgress?: FallbackProgress;
   /** "Session can text me", ticked by you: it may text the person, and gets plain texts (SPEC §11 Texting). Kept whatever its age */
   canText?: boolean;
   retryThrottled?: boolean;

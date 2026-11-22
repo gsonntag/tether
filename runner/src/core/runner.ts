@@ -318,7 +318,8 @@ export function createRunner(o: RunnerOptions) {
         tell: (id: string, text: string, attachments: Attachment[] = []) => (live.attachments.markUsed(attachments), live.tell(id, defang(text), attachments)),
         answer: (id: string, requestId: string, a: RequestAnswer) =>
           live.answerRequest(id, requestId, a.allow ? { ...a, ...(a.notes ? { notes: defang(a.notes) } : {}) } : { allow: false, ...(a.reason ? { reason: defang(a.reason) } : {}) }),
-        carrier: (f: (id: string, source: BillingSource, model?: string) => Promise<string>) => { live.carrier = f; },
+        carrier: (f: NonNullable<LiveControl["carrier"]>) => { live.carrier = f; },
+        fallbackArchiver: (f: NonNullable<LiveControl["fallbackArchive"]>) => { live.fallbackArchive = f; },
         fork: (id: string, f: ForkOptions = {}) => (forker ? forker(id, f) : Promise.reject(new Error("This runner can't fork sessions."))),
         forker: (f: (id: string, o: ForkOptions) => Promise<string>) => { forker = f; },
         moveSides: (from: string, to: string) => core.moveSides(from, to),

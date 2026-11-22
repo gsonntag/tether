@@ -56,3 +56,15 @@ export function fallbackStepProblem(step: FallbackStep, catalog?: FallbackHarnes
     return "No permission mode within this session's access.";
   }
 }
+
+export const FALLBACK_BACKOFF_MS = 10 * 60_000;
+
+/** Runner-local progress keyed by the index in the saved order. */
+export interface FallbackProgress {
+  steps: Record<number, { retryAt?: number; sessionId?: string; after?: string }>;
+}
+
+export function fallbackOrder(length: number, current: number, progress: FallbackProgress, now: number, returning = false): number[] {
+  return Array.from({ length }, (_, index) => index).filter((index) =>
+    index !== current && (!returning || index < current) && (progress.steps[index]?.retryAt ?? 0) <= now);
+}
