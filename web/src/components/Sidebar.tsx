@@ -12,6 +12,7 @@ import { folderName, isHomeChat, listed, recentGroups, mergeRows, recentSessions
 import { activeRunnerFilter, aggregateProjects } from "../runnerFilter";
 import { avatarSrc } from "../avatar";
 import { canPin } from "../runners";
+import { defaultSettingsPage, isSettingsPage } from "../settings";
 import { setRunnerFilter, useStore } from "../store";
 import { RunnerDot } from "./RunnerStatus";
 import { SessionRow, StatusDot } from "./SessionRow";
@@ -178,12 +179,12 @@ export function Sidebar() {
           )}
           <button
             type="button"
-            className={route.page === "credentials" || route.page === "azure" || route.page === "texting" || route.page === "notifications" || route.page === "agents" || route.page === "updates" || route.page === "usage" ? "t-settings selected" : "t-settings"}
+            className={isSettingsPage(route.page) ? "t-settings selected" : "t-settings"}
             aria-label="Settings"
             title="Settings"
-            aria-current={route.page === "credentials" || route.page === "azure" || route.page === "texting" || route.page === "notifications" || route.page === "agents" || route.page === "updates" || route.page === "usage" ? "page" : undefined}
+            aria-current={isSettingsPage(route.page) ? "page" : undefined}
             onClick={() => {
-              navigate({ page: "credentials" });
+              navigate({ page: defaultSettingsPage(runners, user?.role) });
               close();
             }}
           >

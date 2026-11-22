@@ -34,12 +34,13 @@ export const VIEW_OPS: ReadonlySet<OpName> = new Set<OpName>([
 
 /**
  * The ops only the runner's owners may use: who it's shared with, and the owner's own
- * runner-wide setup (keys, texting to their phone, updates, name, settings).
+ * runner-wide setup (keys, texting to their phone, updates, name, settings, usage).
  */
 export const MANAGE_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "setRunnerAccess",
   "setRunnerName",
   "setRunnerSettings",
+  "runnerSettings",
   "credentials",
   "setCredential",
   "unsetCredential",
@@ -57,6 +58,8 @@ export const MANAGE_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "setCanText",
   "harnessAutoUpdate",
   "harnessUpdate",
+  "harnessVersions",
+  "usage",
 ]);
 
 /**
