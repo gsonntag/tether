@@ -359,8 +359,8 @@ export function failedSend(runnerId: string, sessionId: string, text: string) {
  * Archives or unarchives a session (SPEC §10); throws the runner's error. `worktree`: the answer to
  * "Delete its worktree too?" (runners.ts asksWorktree); with "remove", what the cleanup decided.
  */
-export async function setArchived(runnerId: string, sessionId: string, archived: boolean, worktree?: ArchiveWorktree): Promise<WorktreeCleanup | undefined> {
-  const r = await rpc(runnerId, "setSessionArchived", { sessionId, archived, ...(worktree ? { worktree } : {}) });
+export async function setArchived(runnerId: string, sessionId: string, archived: boolean, worktree?: ArchiveWorktree, via?: string): Promise<WorktreeCleanup | undefined> {
+  const r = await rpc(runnerId, "setSessionArchived", { sessionId, archived, ...(worktree ? { worktree } : {}), ...(via ? { via } : {}) });
   set({ archiveEdit: { runnerId, sessionId, archived } });
   return r?.worktree;
 }

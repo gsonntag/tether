@@ -57,7 +57,7 @@ export function registerSessionOps(ops: OpRegistry, core: SessionCore, live: Liv
     // "remove": the answer says what the cleanup decided (the worktrees module's word), so the person sees why one stays.
     const cleaned = worktree === "remove" && core.o.prefs.get(s.id).worktree ? cleanupWord(core, s.id, cleanupWaitMs) : undefined;
     try {
-      const changed = await core.setArchived(s, a.archived, worktree);
+      const changed = await core.setArchived(s, a.archived, worktree, `person: ${typeof a.via === "string" && a.via ? a.via : "app"}`);
       if (!cleaned || !changed) return null;
       return { worktree: await cleaned.done };
     } finally {

@@ -46,7 +46,7 @@ export function ArchiveWorktreeDialog() {
     setBusy(worktree);
     setError(undefined);
     try {
-      const text = cleanupText(await setArchived(ask.runnerId, ask.session.id, true, worktree));
+      const text = cleanupText(await setArchived(ask.runnerId, ask.session.id, true, worktree, "the worktree question"));
       if (text) setSaid(text);
       else useStore.setState({ archiveAsk: undefined });
     } catch (e) {

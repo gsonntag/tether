@@ -377,7 +377,7 @@ export function createRunner(o: RunnerOptions) {
           core.touch(s, { title });
         },
         interrupt: (id: string) => live.interrupt(id),
-        setArchived: async (id: string, archived: boolean) => void (await core.setArchived(await core.open(id), archived)),
+        setArchived: async (id: string, archived: boolean, by?: string) => void (await core.setArchived(await core.open(id), archived, undefined, by)),
         setWorktree: async (id: string, worktree: WorktreeRecord) => core.setWorktree(await core.open(id), worktree),
         worktree: (id: string) => prefs.get(id).worktree,
         // A session that went on under another id (a source change, a renewal) isn't one: its successor has the record.

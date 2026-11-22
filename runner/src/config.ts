@@ -75,6 +75,8 @@ export interface SessionPrefs {
   title?: string;
   /** Kept out of Recent while remaining available through explicit search. */
   archived?: boolean;
+  /** The last archive or unarchive: what did it (ArchiveCause) and when (ms). Logged too, as `[archive]`. */
+  archiveCause?: { archived: boolean; by: string; at: number };
   /** When it was pinned (ms): the Sidebar's Pinned group, oldest pin first. Archiving unpins. */
   pinned?: number;
   /** A pinned session's row as last seen (from its pin on): listed from this when its harness can't find it. */

@@ -1669,6 +1669,12 @@ The flag is saved in the runner's prefs (`setSessionArchived`), so it survives r
 90-day pruning, and shows on every connected device. A failure shows once: in the chat from ⋯, under
 the row from the Sidebar until the next click or key or a few seconds.
 
+**What archived it.** Every archive and unarchive logs a line on the runner (`[archive] <id> archived
+by <cause> (was pinned): "<title>"`) and keeps the last one in the session's prefs (`archiveCause`:
+archived, by, at). The cause says who: `person: <where in the app>` (the browser passes `via`: the
+Sidebar row, the session menu, the worktree question), `send: a message to it`, `pin`, `side chats: …`,
+`fork: …`, or `peers: tether_archive by its starter <id>` / `peers: its starter <id> is archived`.
+
 **Sending unarchives.** A message you send to an archived session (`send`, not the queue's own
 sends: a scheduled message firing stays as it is) unarchives it once the send is taken (a refused one
 leaves it archived), under its worktree's lock (§4), so never while cleanup removes that worktree. A

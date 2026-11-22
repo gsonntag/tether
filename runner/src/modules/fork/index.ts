@@ -88,7 +88,7 @@ export class Forker {
       } catch (e) {
         // No half-made fork: its store goes, and its row, if it got one, is archived.
         await a!.fork!.discard?.(made, projectPath).catch(() => {});
-        await this.ctx.sessions.setArchived(`${harness}:${made}`, true).catch(() => {});
+        await this.ctx.sessions.setArchived(`${harness}:${made}`, true, "fork: the fork failed").catch(() => {});
         throw e;
       }
     }

@@ -22,7 +22,7 @@ afterEach(() => {
   for (const c of cleanups.splice(0)) c();
 });
 
-function setup() {
+function setup(log: (line: string) => void = () => {}) {
   const dir = mkdtempSync(join(tmpdir(), "tether-archive-")), file = join(dir, "runner.json");
   saveConfig({ runnerId: "archive-test" }, file);
   const adapter = new FakeAdapter();
@@ -31,7 +31,7 @@ function setup() {
   const frames: RunnerToServer[] = [];
   // A long delay: only an explicit flush writes the file.
   const prefs = new Prefs(file, 60_000);
-  const core = new SessionCore({ adapters: [adapter], bus: new EventBus<CoreEvents>(), send: (m) => (frames.push(m), true), prefs, epoch: "archive", log: () => {} });
+  const core = new SessionCore({ adapters: [adapter], bus: new EventBus<CoreEvents>(), send: (m) => (frames.push(m), true), prefs, epoch: "archive", log });
   new ReadState(core);
   const live = new LiveControl(core, new RequestBroker(), { idleMs: 60_000 });
   const ops = new OpRegistry();
@@ -43,6 +43,25 @@ function setup() {
 const saved = (file: string, id: string) => JSON.parse(readFileSync(file, "utf8")).sessions?.[id];
 
 describe("setSessionArchived", () => {
+  test("logs and keeps what archived or unarchived it: where in the app, a pin, a send; a repeat logs nothing", async () => {
+    const lines: string[] = [];
+    const { ops, core, prefs, file } = setup((l) => lines.push(l));
+    await ops.handle("pinSession", { sessionId: "claude:two", pinned: true });
+    expect(await ops.handle("setSessionArchived", { sessionId: "claude:two", archived: true, via: "the session menu" })).toMatchObject({ ok: true });
+    expect(lines.filter((l) => l.startsWith("[archive]"))).toEqual(['[archive] claude:two archived by person: the session menu (was pinned): "Other"']);
+    expect(saved(file, "claude:two").archiveCause).toMatchObject({ archived: true, by: "person: the session menu" });
+    expect(prefs.get("claude:two").archiveCause!.at).toBeGreaterThan(0);
+    await ops.handle("setSessionArchived", { sessionId: "claude:two", archived: true, via: "again" });
+    expect(lines.filter((l) => l.startsWith("[archive]"))).toHaveLength(1);
+    await ops.handle("pinSession", { sessionId: "claude:two", pinned: true });
+    expect(prefs.get("claude:two").archiveCause).toMatchObject({ archived: false, by: "pin" });
+    // an older browser says nothing of where; control characters never reach the log
+    await ops.handle("setSessionArchived", { sessionId: "claude:one", archived: true });
+    expect(prefs.get("claude:one").archiveCause!.by).toBe("person: app");
+    await core.setArchived(await core.open("claude:one"), false, undefined, "x\n\u0007y");
+    expect(prefs.get("claude:one").archiveCause!.by).toBe("xy");
+  });
+
   test("rejects a non-boolean and changes nothing", async () => {
     const { ops, prefs } = setup();
     for (const archived of ["true", 1, undefined, null])

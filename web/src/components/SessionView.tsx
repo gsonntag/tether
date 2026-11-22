@@ -218,7 +218,7 @@ export function SessionView({ runnerId, sessionId }: { runnerId: string; session
     setPanel(null);
     setChanges(false);
     setSide({ id });
-    if (sideChats.find((c) => c.id === id)?.archived) void setArchived(runnerId, id, false).catch(() => {});
+    if (sideChats.find((c) => c.id === id)?.archived) void setArchived(runnerId, id, false, undefined, "reopened a side chat").catch(() => {});
   };
   /** Close: a turn it runs stops, then it's archived (the Side chats chip has it). */
   const closeSide = (id: string | undefined) => {

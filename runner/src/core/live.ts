@@ -316,7 +316,7 @@ export class LiveControl {
     if (s.summary.parentSessionId || s.rebuilt || s.movedTo) return this.sendNow(id, text, attachments, o);
     const go = async () => {
       await this.sendNow(id, text, attachments, o);
-      if (this.core.o.prefs.get(id).archived) await this.core.setArchived(s, false);
+      if (this.core.o.prefs.get(id).archived) await this.core.setArchived(s, false, undefined, "send: a message to it");
     };
     return prefs.worktree?.path ? lockWorktree(prefs.worktree.path, go) : go();
   }

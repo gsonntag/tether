@@ -127,8 +127,8 @@ export interface SessionActions {
   rename(id: string, title: string): Promise<void>;
   /** stops its running turn */
   interrupt(id: string): Promise<void>;
-  /** keeps a session out of Recent (or puts it back), as the archive button does */
-  setArchived(id: string, archived: boolean): Promise<void>;
+  /** keeps a session out of Recent (or puts it back), as the archive button does. `by`: why, for the archive log ("module: what") */
+  setArchived(id: string, archived: boolean, by?: string): Promise<void>;
   /** a one-shot side query on the session's harness and source (Adapter.ask): never a turn, nothing in its transcript. Rejects when its harness can't, or its source can't be confirmed */
   ask?(id: string, prompt: string, opts: { system: string; timeoutMs: number }): Promise<string>;
   /** holds every main session whose folder is in `folder` (stored ones, and any made there meanwhile, too), as `hold` */
