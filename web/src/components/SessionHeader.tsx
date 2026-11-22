@@ -11,6 +11,7 @@ import type { Row } from "../sessionList";
 import { loadModels, useStore } from "../store";
 import { forkedFromTitle } from "../fork";
 import { BillingChip, useSources } from "./BillingChip";
+import { FallbackChainDialog } from "./FallbackChainDialog";
 import { ChoiceMenu } from "./ChoiceMenu";
 import { TextMeChip } from "./TextMeChip";
 import { accessOf, offersCanText } from "../runners";
@@ -43,6 +44,9 @@ export function SessionHeader({
   sideChats?: React.ReactNode;
   capabilities?: HarnessCapabilities;
 }) {
+  const [editingFallback, setEditingFallback] = useState(false);
+  const chain = state.fallbackChain;
+  const activeStep = chain?.active === undefined ? undefined : chain.steps[chain.active];
   const [error, setError] = useState<string>();
   const isChild = !!session.parentSessionId;
   const subagents = children.filter((c) => !c.spawned);
@@ -146,6 +150,7 @@ export function SessionHeader({
           onAutoKey={(on) => void call(rpc(runnerId, "setAutoKey", { sessionId: session.id, on }))}
           onRetryThrottled={canSetRetryThrottled ? (on) => void call(rpc(runnerId, "setRetryThrottled", { sessionId: session.id, on })) : undefined}
         />
+        {editingFallback && <FallbackChainDialog runnerId={runnerId} sessionId={session.id} onClose={() => setEditingFallback(false)} />}
         {nextBilling && <span className={`t-chip t-chip-info t-next-source${isApiBilling(nextBilling) ? " t-next-api" : ""}`} title={`${nextBilling.label} from the next start`}>Next: {nextBilling.label}</span>}
         <div className="t-chip-options">
         {isChild ? (
@@ -182,6 +187,10 @@ export function SessionHeader({
               onOpen={ensureModels}
               onPick={(mode) => void call(rpc(runnerId, "setPermissionMode", { sessionId: session.id, mode }))}
             />}
+            {/* With the choices, so on a phone it scrolls with them instead of narrowing them. */}
+            {!session.sideOf && <button type="button" className="t-chip t-fallback-chip" onClick={() => setEditingFallback(true)}>
+              Fallback chain{chain?.enabled ? activeStep && chain.active !== undefined ? ` · ${chain.active + 1}/${chain.steps.length} · ${HARNESS_LABELS[activeStep.harness]}` : " · On" : " · Off"}
+            </button>}
           </>
         )}
         {textMe && <TextMeChip on={!!state.canText} onChange={(canText) => void call(rpc(runnerId, "setCanText", { sessionId: session.id, canText }))} />}

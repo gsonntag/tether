@@ -7,6 +7,9 @@
 // permission requests go to the request desk (core/requests.ts), and subagents become child
 // sessions (SPEC §6a).
 
+import type { FallbackChain, FallbackHarness, FallbackPresetEdit, FallbackSetup, FallbackStep } from "../../../shared/fallbackChain";
+import { LEVELS, mapMode } from "../../../shared/move";
+import { levelOf } from "./permissionLevel";
 import { Commands } from "./commands";
 import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -1621,6 +1624,85 @@ export class LiveControl {
     const cost = this.opts.costs?.begin(id, known);
     if (cost) this.core.o.prefs.set(id, { metered: true });
     return cost;
+  }
+
+  private async fallbackSession(id: string) {
+    const s = await this.core.open(id);
+    if (s.summary.parentSessionId || s.summary.sideOf) throw new Error("Set the fallback chain on the main session.");
+    return s;
+  }
+
+  async fallbackCatalog(s: Session, harness: HarnessId): Promise<FallbackHarness> {
+    const target = this.core.o.adapters.find((a) => a.id === harness);
+    if (!target || !await target.available().catch(() => false)) return { harness, sources: [], unavailable: true };
+    const [choices, models] = await Promise.all([
+      this.sources(harness),
+      target.listModels(harness === s.summary.harness ? s.driver : undefined).catch(() => undefined),
+    ]);
+    const own = this.core.adapter(s.summary.harness);
+    const mode = this.core.o.prefs.get(s.id).permissionMode ?? s.state.permissionMode;
+    const ceiling = levelOf(own, mode) ?? LEVELS.readOnly;
+    const permitted = (models?.permissionModes ?? []).flatMap(({ id }) => {
+      const level = levelOf(target, id);
+      return level !== undefined && level <= ceiling ? [{ mode: id, level }] : [];
+    });
+    const defaultMode = permitted.find((entry) => harness === own.id && entry.mode === mode)?.mode ??
+      (permitted.length ? mapMode(ceiling, permitted) : undefined);
+    const sources = target.billing ? choices.options : [{ source: "subscription" as const, billing: { kind: "plan" as const, label: `${HARNESS_LABELS[harness]} login` } }];
+    return { harness, sources, defaultMode, models: models && {
+      ...models, permissionModes: models.permissionModes.filter(({ id }) => permitted.some((entry) => entry.mode === id)),
+    } };
+  }
+
+  async fallbackSetup(id: string): Promise<FallbackSetup> {
+    const s = await this.fallbackSession(id);
+    const { fallbackPresets, lastFallbackOrder } = this.core.o.prefs.fallbackOrders();
+    return {
+      chain: s.state.fallbackChain ?? { enabled: false, steps: lastFallbackOrder },
+      saved: !!s.state.fallbackChain,
+      presets: fallbackPresets,
+      harnesses: await Promise.all(this.core.o.adapters.map(({ id }) => this.fallbackCatalog(s, id))),
+    };
+  }
+
+  async setFallbackChain(id: string, enabled: boolean, steps: FallbackStep[]): Promise<FallbackChain> {
+    const s = await this.fallbackSession(id);
+    const order = this.cleanFallbackSteps(steps);
+    if (typeof enabled !== "boolean" || (enabled && !order.length)) throw new Error("Add a step before enabling the fallback chain.");
+    const old = s.state.fallbackChain;
+    const active = enabled && old?.enabled && JSON.stringify(old.steps) === JSON.stringify(order) ? old.active : undefined;
+    const chain = { enabled, steps: order, ...(active === undefined ? {} : { active }) };
+    this.core.o.prefs.setFallbackOrder(id, chain);
+    s.setState({ fallbackChain: chain });
+    return chain;
+  }
+
+  editFallbackPreset(edit: FallbackPresetEdit) {
+    const { fallbackPresets } = this.core.o.prefs.fallbackOrders();
+    if (edit.action !== "save" && edit.action !== "rename" && edit.action !== "delete") throw new Error("Unknown preset action.");
+    if (edit.action !== "save" && !fallbackPresets.some(({ id }) => id === edit.id)) throw new Error("Preset unavailable.");
+    const name = edit.action === "delete" ? "" : redact(typeof edit.name === "string" ? edit.name.trim().slice(0, 80) : "");
+    if (edit.action !== "delete" && !name) throw new Error("Enter a preset name.");
+    const next = edit.action === "save"
+      ? [...fallbackPresets, { id: randomUUID(), name, steps: redactValue(this.cleanFallbackSteps(edit.steps)) }]
+      : edit.action === "delete"
+        ? fallbackPresets.filter(({ id }) => id !== edit.id)
+        : fallbackPresets.map((preset) => preset.id === edit.id ? { ...preset, name } : preset);
+    this.core.o.prefs.setFallbackPresets(next);
+    return next;
+  }
+
+  private cleanFallbackSteps(steps: FallbackStep[]): FallbackStep[] {
+    const text = (value: unknown): value is string => typeof value === "string" && !!value.trim() && value.length <= 200;
+    if (!Array.isArray(steps) || steps.length > 50) throw new Error("Choose up to 50 fallback steps.");
+    return steps.map((step) => {
+      if (!step || !Object.hasOwn(HARNESS_LABELS, step.harness) || !isBillingSource(step.source) || !text(step.model) ||
+        (step.effort !== undefined && !text(step.effort)) || (step.permissionMode !== undefined && !text(step.permissionMode))) {
+        throw new Error("Each fallback step needs a harness, source and model.");
+      }
+      const { harness, source, model, effort, permissionMode } = step;
+      return { harness, source, model, ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) };
+    });
   }
 
   /**

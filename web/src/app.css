@@ -2528,6 +2528,8 @@
   .t-header > .t-chips { order: 2; flex: 1 1 100%; overflow: visible; }
   .t-chip-options { display: flex; flex: 1 1 0; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
   .t-chip-options::-webkit-scrollbar { display: none; }
+  /* The strip scrolls; its chips keep their values instead of narrowing to fit. */
+  .t-chip-options > .t-chip { flex: none; }
   .t-chips > .t-chip.t-paid-badge { padding: 6px 10px; min-height: 30px; align-self: center; }
   /* The loud pill stays 30 px; the button around it is a full tap target. */
   .t-chips > .t-chip.t-paid-badge.t-source-chip::after { content: ""; position: absolute; inset: -7px 0; }
@@ -3086,3 +3088,11 @@
   align-items: center;
   gap: 6px;
 }
+
+.t-fallback-editor { padding: 16px; max-height: 70dvh; overflow: auto; }
+.t-fallback-editor fieldset { border: 0; min-width: 0; padding: 0; display: grid; gap: 8px; justify-items: start; }
+.t-fallback-field { display: grid; gap: 4px; width: 100%; }
+.t-fallback-field > select, .t-fallback-field > input { width: 100%; }
+.t-fallback-steps { width: 100%; margin: 0; padding-inline-start: 24px; }
+.t-fallback-steps > li { padding: 8px 0; }
+.t-fallback-steps .t-fallback-field { margin-block: 6px; }

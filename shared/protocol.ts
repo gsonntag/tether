@@ -23,6 +23,7 @@
 // the browser keeps those with seq > snapshot.seq (shared/sync.ts). Any gap or reconnect means
 // subscribe again for a fresh snapshot.
 
+import type { FallbackChain, FallbackPreset, FallbackPresetEdit, FallbackSetup, FallbackStep } from "./fallbackChain";
 import type { RunnerGrant } from "./access";
 import type { HarnessCommand } from "./commands";
 import type { DirList, FileChanges, FileRead, FindResult } from "./files";
@@ -161,6 +162,9 @@ export interface User {
 
 /** Op name -> its args and result. Later phases add the rest of the core ops (SPEC §5). */
 export interface Ops {
+  fallbackSetup: { args: { sessionId: string }; result: FallbackSetup };
+  setFallbackChain: { args: { sessionId: string; enabled: boolean; steps: FallbackStep[] }; result: FallbackChain };
+  editFallbackPreset: { args: FallbackPresetEdit; result: FallbackPreset[] };
   retryNow: { args: { sessionId: string }; result: null };
   cancelRetry: { args: { sessionId: string }; result: null };
   credentials: { args: Record<string, never>; result: CredentialStatus };
