@@ -1276,6 +1276,7 @@ export const textingModule: Module = {
       ctx.bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) =>
         stopped || recovering ? t.turnStopped(sessionId, !stopped) : void later(FINISH_DELAY_MS, ((end) => () => t.turnEnded(sessionId, error, end))(t.endOf(sessionId))),
       ),
+      ctx.bus.on("error", ({ sessionId, message }) => void (!sessionId && later(0, () => t.send(message).then(() => {})))),
     ];
     // iMessage's own ops, for a web from before connectors.
     const imessage = t.channel(IMESSAGE)!;

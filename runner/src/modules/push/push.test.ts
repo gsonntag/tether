@@ -85,6 +85,13 @@ describe("what gets sent, to whom", () => {
     expect(store.list().map((s) => s.deviceId)).toEqual(["laptop"]);
   });
 
+  test("a runner error notifies every device", async () => {
+    const { n, sender } = setup({ "claude:s1": ["laptop"] });
+    await n.notify({ kind: "failed", title: "Tether", body: "Antigravity compatibility check failed", tag: "runner-error" });
+    expect(sender.sent.map(([d]) => d).sort()).toEqual(["laptop", "phone"]);
+    expect(sender.sent[0]![1]).toMatchObject({ kind: "failed", title: "Tether", body: "Antigravity compatibility check failed", tag: "runner-error" });
+  });
+
   test("one subscription per device", () => {
     const store = new SubscriptionStore(join(mkdtempSync(join(tmpdir(), "push-")), "push.json"));
     store.add(sub("phone"));

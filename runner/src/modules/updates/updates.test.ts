@@ -177,3 +177,69 @@ test("a which of a path checks it exists", () => {
   expect(realDeps.which(join(d, "missing"))).toBeNull();
   rmSync(d, { recursive: true });
 });
+
+test("Antigravity install method, update plan, and effect note", () => {
+  const AGY: HarnessSpec = { id: "antigravity", name: "Antigravity", pkg: "", bin: "agy" };
+  expect(detectInstall("/home/u/.local/bin/agy", "")).toEqual({ method: "native" });
+  expect(updatePlan(AGY, { method: "native" }, "1.5.14", "/home/u/.local/bin/agy")).toEqual({ argv: ["bun", "scripts/antigravity-compat.ts"] });
+  const { effectNote } = require("./install");
+  expect(effectNote(AGY, "native")).toBe("Antigravity updates itself.");
+});
+
+test("Antigravity compatibility check runs when a new agy version is seen and reports failures", async () => {
+  const AGY: HarnessSpec = { id: "antigravity", name: "Antigravity", pkg: "", bin: "agy" };
+  const f = fakeDeps({ versions: { "/bin/agy": "1.5.14" } });
+  f.deps.which = (bin) => (bin === "agy" ? "/bin/agy" : null);
+
+  let checkCalls = 0;
+  let failures: { version: string; error: string }[] = [];
+  let savedState: any = undefined;
+
+  const compatTracker = {
+    get: () => savedState,
+    set: (st: any) => { savedState = st; },
+    runCheck: async (v: string) => {
+      checkCalls++;
+      if (v === "1.5.15-bad") return { ok: false, error: "ACP server shape changed", output: "FAIL agy acp server" };
+      return { ok: true, output: "All checks passed" };
+    },
+    onFailure: (version: string, error: string) => failures.push({ version, error }),
+  };
+
+  // 1. First time seeing 1.5.14: runs check and passes
+  const c = new UpdateChecker(f.deps, [AGY], () => {}, compatTracker);
+  const rep1 = await c.report();
+  expect(checkCalls).toBe(1);
+  const agy1 = rep1.harnesses.find((h) => h.id === "antigravity")!;
+  expect(agy1).toMatchObject({ installed: "1.5.14", latest: "1.5.14", status: "current", updatable: true });
+  expect(agy1.error).toBeUndefined();
+  expect(failures).toHaveLength(0);
+
+  // 2. Same version again: cached check, not re-run
+  await c.report(true);
+  expect(checkCalls).toBe(1);
+
+  // 3. New agy version seen (1.5.15-bad): runs check, fails, reports error & calls onFailure
+  f.versions["/bin/agy"] = "1.5.15-bad";
+  const rep2 = await c.report(true);
+  expect(checkCalls).toBe(2);
+  const agy2 = rep2.harnesses.find((h) => h.id === "antigravity")!;
+  expect(agy2.status).toBe("unknown");
+  expect(agy2.error).toContain("Compatibility check failed: ACP server shape changed");
+  expect(agy2.update).toMatchObject({ state: "failed", error: "ACP server shape changed", output: "FAIL agy acp server" });
+  expect(failures).toEqual([{ version: "1.5.15-bad", error: "ACP server shape changed" }]);
+
+  // 4. Manual check: can be triggered even when status is current or unknown
+  let passCheck = false;
+  compatTracker.runCheck = async (v: string) => {
+    checkCalls++;
+    if (!passCheck && v === "1.5.15-bad") return { ok: false, error: "ACP server shape changed", output: "FAIL agy acp server" };
+    return { ok: true, output: "All checks passed" };
+  };
+  passCheck = true;
+  await c.update("antigravity");
+  for (let i = 0; i < 50 && (await c.report()).harnesses[0]!.update?.state !== "done"; i++) await Bun.sleep(5);
+  const agy3 = (await c.report()).harnesses.find((h) => h.id === "antigravity")!;
+  expect(agy3.status).toBe("current");
+  expect(agy3.update).toMatchObject({ state: "done", output: "All checks passed" });
+});
