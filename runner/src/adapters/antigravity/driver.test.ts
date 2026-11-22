@@ -3,6 +3,8 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolPart } from "../../../../shared/transcript";
+import { buildReport } from "../../modules/usage/report";
+import { UsageScanner } from "../../modules/usage/scan";
 import { HARNESS_BINS } from "../detect";
 import { TestSink } from "../codex/testSink";
 import { AgyDriver } from "./driver";
@@ -31,7 +33,8 @@ const until = async (f: () => boolean, ms = 3000) => {
 
 test("a session loads, takes the shown settings, and its turn streams after the stored messages", async () => {
   const sink = new TestSink();
-  const d = await AgyDriver.open("s1", dir, { model: "claude-sonnet-4-6", effort: "low", permissionMode: "accept-edits" }, sink);
+  const usageDir = join(dir, "usage");
+  const d = await AgyDriver.open("s1", dir, { model: "claude-sonnet-4-6", effort: "low", permissionMode: "accept-edits" }, sink, usageDir);
   try {
     expect(sink.lastWith("model")).toMatchObject({ model: "claude-sonnet-4-6", effort: "low", permissionMode: "accept-edits", billing: { kind: "plan", label: "Google AI Pro" } });
     await d.send("ping");
@@ -43,6 +46,17 @@ test("a session loads, takes the shown settings, and its turn streams after the 
     ]);
     expect(sink.t.messages[1]!.streaming).toBe(false);
     expect(sink.lastWith("context")?.context).toEqual({ used: 10000, total: 1048576 });
+
+    const scanner = new UsageScanner({ roots: () => [{ harness: "antigravity", dir: usageDir }] });
+    await scanner.scan();
+    await scanner.scan();
+    const report = buildReport({ files: scanner.files, days: 7, timeZone: "UTC", now: Date.now(), source: () => "unknown" });
+    const counts = { requests: 1, input: 11, output: 7, cacheRead: 7, cacheWrite: 3, unpriced: 1 };
+    expect(report.total).toMatchObject(counts);
+    expect(report.total.sources.plan.requests).toBe(1);
+    expect(report.byDay.find((day) => day.requests > 0)).toMatchObject(counts);
+    expect(report.byModel).toMatchObject([{ harness: "antigravity", model: "claude-sonnet-4-6", ...counts }]);
+    expect(report.byProject).toMatchObject([{ path: dir, ...counts }]);
   } finally {
     await d.close();
   }

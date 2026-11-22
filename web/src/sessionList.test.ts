@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { SessionSummary } from "../../shared/transcript";
-import { childrenOf, folderName, groupByProject, mergeRows, recentGroups, pinMenuLabel, recentSessions, setHomeFolders, splitPinned, waitingOn , inbox } from "./sessionList";
+import { childrenOf, foldWorktrees, folderName, groupByProject, inProject, mergeRows, recentGroups, pinMenuLabel, recentSessions, setHomeFolders, splitPinned, waitingOn , inbox } from "./sessionList";
 
 const s = (id: string, updatedAt: number, extra: Partial<SessionSummary> = {}): SessionSummary => ({ id, harness: "claude", nativeId: id, projectPath: "/p/web", title: `T ${id}`, mode: "stored", status: "idle", updatedAt, ...extra });
 const summaries = {
@@ -101,6 +101,20 @@ test("Recent by project: groups in order of their newest session, newest first w
   expect(groupByProject(list.slice(0, 3)).map((g) => g.path)).toEqual(["/p/web", "/p/api"]);
   // whatever order it comes in
   expect(groupByProject([...list].reverse()).map((g) => g.rows[0]!.id)).toEqual(["a1", "b1", "c1"]);
+});
+
+test("a worktree session is grouped, filtered and counted under its main checkout", () => {
+  const r = (id: string, at: number, projectPath: string, worktreeOf?: string) => ({ ...s(id, at, { projectPath, ...(worktreeOf ? { worktreeOf } : {}) }), runnerId: "a" });
+  const wt = r("w", 9, "/p/web-worktrees/tether-fix", "/p/web");
+  expect(groupByProject([wt, r("m", 8, "/p/web"), r("o", 7, "/p/api")]).map((g) => [g.path, g.rows.map((x) => x.id)])).toEqual([["/p/web", ["w", "m"]], ["/p/api", ["o"]]]);
+  expect(inProject(wt, "/p/web/")).toBe(true);
+  expect(inProject(wt, "/p/web-worktrees/tether-fix")).toBe(true);
+  expect(inProject(wt, "/p/api")).toBe(false);
+  const p = (path: string, sessions: number, updatedAt: number, runnerIds = ["a"]) => ({ path, name: path.split("/").pop()!, harnesses: ["claude" as const], sessions, updatedAt, runnerIds });
+  const folded = foldWorktrees([p("/p/web-worktrees/tether-fix", 1, 9), p("/p/api", 2, 7), p("/p/web", 3, 5, ["b"])], [wt]);
+  expect(folded.map((x) => [x.path, x.name, x.sessions, x.updatedAt, x.runnerIds])).toEqual([["/p/web", "web", 4, 9, ["a", "b"]], ["/p/api", "api", 2, 7, ["a"]]]);
+  // A worktree whose main checkout isn't listed (yet) takes its place.
+  expect(foldWorktrees([p("/p/web-worktrees/tether-fix", 1, 9)], [wt]).map((x) => [x.path, x.name])).toEqual([["/p/web", "web"]]);
 });
 
 test("Recent by project: folders with the same name are told apart by their parent", () => {

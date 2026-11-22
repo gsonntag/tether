@@ -7,7 +7,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFi
 import { basename, join } from "node:path";
 import { parseSessionId } from "../../../../shared/ids";
 import { archiveMarkdown, budgetFor, contextNote, contextOpening, imageName, mapMode, movedFrom, movedTo, PORTABLE_VERSION, planImport, type MoveOptions, type MoveTarget, type PortableSession, type PortableSubagent } from "../../../../shared/move";
-import type { BillingSource } from "../../../../shared/credentials";
+import { hasSourceModels, type BillingSource } from "../../../../shared/credentials";
 import { HARNESS_LABELS, type HarnessId, type Msg } from "../../../../shared/transcript";
 import { SIDE_KEEPS } from "../../../../shared/sideChat";
 import type { Adapter, StartOpts } from "../../core/adapter";
@@ -253,9 +253,9 @@ export class Mover {
       const { effort, permissionMode } = look.state;
       // The model picked for the new source while the change waited, else: an Azure deployment's
       // name means nothing on another source, so there the default model.
-      const model = picked ?? ((await this.ctx.sessions.sourceOf(id)) === "azure" && source !== "azure" ? undefined : look.state.model);
-      const azureDeployment = source === "azure" ? look.state.nextDeployment : undefined;
-      const pin = azureDeployment ? { azureDeployment, model: azureDeployment } : model && model !== "default" ? { model } : {};
+      const model = picked ?? (hasSourceModels(await this.ctx.sessions.sourceOf(id)) && !hasSourceModels(source) ? undefined : look.state.model);
+      const sourceModel = hasSourceModels(source) ? look.state.nextDeployment : undefined;
+      const pin = sourceModel ? { sourceModel, model: sourceModel } : model && model !== "default" ? { model } : {};
       const opts: StartOpts = { ...pin, ...(effort ? { effort } : {}), permissionMode: moveMode(adapter, permissionMode, adapter), ...settings };
       const moved = await this.native(adapter, portable, opts, await this.background(adapter, look), source, id);
       const note = contextNote(moved.kept, moved.total);

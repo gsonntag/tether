@@ -14,7 +14,7 @@ import { Commands } from "./commands";
 import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { CredentialStore, redact, redactValue, type CredentialSnapshot } from "../credentials";
-import { isBillingSource, type BillingSource, type CredentialSource, type SourceChoices } from "../../../shared/credentials";
+import { hasSourceModels, isBillingSource, resolveSourceModel, type BillingSource, type CredentialSource, type SourceChoices, type SourceOption } from "../../../shared/credentials";
 import { addSideCost, type CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
@@ -135,6 +135,7 @@ export class LiveControl {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
     this.retries = new RetryControl(core, {
       identity: (s) => this.retryIdentity(s),
+      extended: (s) => s.state.retryThrottled === true && this.sourceOf(s) !== "subscription",
       revision: (s) => core.adapter(s.summary.harness).storeRevision?.(s.summary.nativeId, s.summary.projectPath),
       blocked: (s) => s.state.mode === "terminal" || !!s.state.terminal || !!s.state.requests.length || !!this.terminal?.blocked(s) || !!core.o.prefs.get(s.id).nextSource || this.restartWaits.has(s.id),
       held: (s) => !!this.heldWhy(s.id),
@@ -552,7 +553,7 @@ export class LiveControl {
     // The pin goes with the conversation: the new thread takes the old one's place in Pinned.
     prefs.set(n.id, { movedTo: undefined, carried: undefined, carrying: undefined, ...(title ? { title } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
     const { forkedFrom, worktree: _, fallbackProgress: __, ...state } = kept;
-    n.setState({ ...state, continuedIn: undefined, carried: undefined });
+    n.setState({ ...state, continuedIn: undefined, carried: undefined, retryThrottled: this.sourceOf(n) === "subscription" ? undefined : !!kept.retryThrottled });
     n.movedTo = undefined;
     prefs.set(s.id, { movedTo: n.id, carried: true, projectPath: s.summary.projectPath, pinned: undefined, pinnedRow: undefined, nextSource: undefined, nextFallbackSettings: undefined, nextModel: undefined, nextBilling: undefined, nextDeployment: undefined, sourceSwitchFailed: undefined });
     this.core.moveSides(s.id, n.id);
@@ -602,7 +603,7 @@ export class LiveControl {
       const { pinned, pinnedRow } = this.core.o.prefs.get(s.id);
       this.core.o.prefs.set(n.id, { source, ...(deployment ? { deployment } : {}), ...(pinned ? { pinned, pinnedRow } : {}), ...kept });
       const { forkedFrom, worktree: _, fallbackProgress: __, ...state } = kept;
-      n.setState(state);
+      n.setState({ ...state, retryThrottled: source === "subscription" ? undefined : !!kept.retryThrottled });
       this.core.touch(n, forkedFrom ? { forkedFrom } : {});
       try {
         await this.ensureDriver(n);
@@ -877,10 +878,10 @@ export class LiveControl {
   private async holdNextModel(id: string, source: BillingSource, model: string) {
     const s = await this.core.open(id);
     if (s.summary.parentSessionId) throw new Error("Change settings on the main session. A subagent keeps the settings it started with.");
-    if (source === "azure" && model !== "default" && !this.opts.credentials?.azure().deployments.some((d) => d.name === model)) throw new Error(`${model} isn't a deployment in Settings, Azure. The model is unchanged.`);
-    // Onto Azure the pick is the deployment the change takes (as the chip's own pick); elsewhere a model id.
+    if (hasSourceModels(source) && model !== "default" && !this.sourceModels(s.summary.harness, source).some((d) => d.name === model)) throw new Error(source === "azure" ? `${model} isn't a deployment in Settings, Azure. The model is unchanged.` : "Choose a configured model in Settings, Bedrock.");
+    // A source with configured models keeps the pick in nextDeployment.
     const picked = model === "default" ? undefined : model;
-    const patch = source === "azure" ? { nextDeployment: picked } : { nextModel: picked };
+    const patch = hasSourceModels(source) ? { nextDeployment: picked } : { nextModel: picked };
     this.core.o.prefs.set(id, patch);
     this.core.o.prefs.flush();
     s.setState(patch);
@@ -1160,18 +1161,19 @@ export class LiveControl {
   private async applySetting(s: Session, patch: StartOpts, apply: (d: Driver) => Promise<void>) {
     const id = s.id;
     const before = this.core.o.prefs.get(id);
-    const azureModel = patch.model !== undefined && this.sourceOf(s) === "azure";
-    if (azureModel) {
-      const deployment = this.opts.credentials?.azure().deployments.find((d) => d.name === patch.model);
-      if (!deployment) throw new Error(`${patch.model} isn't a deployment in Settings, Azure. The model is unchanged.`);
-      if (s.state.terminal || s.state.mode === "terminal") throw new Error("Close the terminal before changing the Azure deployment.");
+    const source = this.sourceOf(s);
+    const providerModel = patch.model !== undefined && hasSourceModels(source);
+    if (providerModel) {
+      const deployment = this.sourceModels(s.summary.harness, source).find((d) => d.name === patch.model);
+      if (!deployment) throw new Error(source === "azure" ? `${patch.model} isn't a deployment in Settings, Azure. The model is unchanged.` : "Choose a configured model in Settings, Bedrock.");
+      if (s.state.terminal || s.state.mode === "terminal") throw new Error(source === "azure" ? "Close the terminal before changing the Azure deployment." : "Close the terminal before changing the Bedrock model.");
       // Its process is priced for the deployment it started on: a turn running there keeps it, and
       // the new one waits for the next send, which restarts the process priced for that one.
-      if (this.turnBusy(s)) return this.holdDeployment(s, patch.model!);
+      if (this.turnBusy(s) || (source === "bedrock" && s.driver)) return this.holdDeployment(s, patch.model!);
       this.holdDeployment(s, undefined);
     }
     const shown: StartOpts = Object.fromEntries(Object.keys(patch).map((k) => [k, (s.state as any)[k]]));
-    this.core.o.prefs.set(id, { projectPath: s.summary.projectPath, ...patch, ...(azureModel ? { deployment: patch.model } : {}) });
+    this.core.o.prefs.set(id, { projectPath: s.summary.projectPath, ...patch, ...(providerModel ? { deployment: patch.model } : {}) });
     s.rolledBack = undefined;
     this.noteTurnSettings(s, patch);
     if (patch.permissionMode) this.notePlanEntry(s, patch.permissionMode);
@@ -1194,7 +1196,7 @@ export class LiveControl {
       // were, so nothing runs with settings other than those shown. A late confirmation still
       // counts (the sink says so).
       const undo = Object.fromEntries(Object.keys(patch).map((k) => [k, (before as any)[k]]));
-      this.core.o.prefs.set(id, { ...undo, ...(azureModel ? { deployment: before.deployment } : {}) });
+      this.core.o.prefs.set(id, { ...undo, ...(providerModel ? { deployment: before.deployment } : {}) });
       s.rolledBack = patch;
       this.rollBackTurnSettings(s, shown);
       s.setState(shown);
@@ -1208,7 +1210,7 @@ export class LiveControl {
   }
 
   /**
-   * An Azure deployment picked while a turn ran, kept (across restarts too) until the next send
+   * A source model picked while a turn ran, kept (across restarts too) until the next send
    * applies it. The one it runs on now, or undefined, cancels it.
    */
   private holdDeployment(s: Session, deployment: string | undefined) {
@@ -1226,7 +1228,7 @@ export class LiveControl {
   private applyNextDeployment(s: Session) {
     const next = this.core.o.prefs.get(s.id).nextDeployment;
     if (!next) return;
-    const go = this.sourceOf(s) === "azure" ? { deployment: next, model: next } : {};
+    const go = hasSourceModels(this.sourceOf(s)) ? { deployment: next, model: next } : {};
     this.core.o.prefs.set(s.id, { ...go, nextDeployment: undefined });
     this.core.o.prefs.flush();
     s.setState({ ...(go.model ? { model: go.model } : {}), nextDeployment: undefined });
@@ -1391,7 +1393,7 @@ export class LiveControl {
   chosen(s: Session, observe = false): StartOpts {
     const credential = observe ? undefined : this.credentialFor(s.summary.harness, this.sourceOf(s), this.deploymentOf(s));
     const prefs = this.core.o.prefs.get(s.id);
-    return { ...chosenOf(this.core.adapter(s.summary.harness), prefs), ...(prefs.sideOf ? { readOnly: true } : {}), ...(credential ? { credential } : {}) };
+    return { ...chosenOf(this.core.adapter(s.summary.harness), prefs), ...(credential?.source === "bedrock" ? { model: credential.deployment } : {}), ...(prefs.sideOf ? { readOnly: true } : {}), ...(credential ? { credential } : {}) };
   }
 
   /**
@@ -1410,31 +1412,36 @@ export class LiveControl {
   }
 
   /**
-   * An Azure session's deployment: what's saved with it, else (a session from before deployment
-   * lists) its model if that's a deployment, else the first, which is then saved. Model changes update it:
-   * one that's removed later stops the session, saying so, and nothing stands in for it.
+   * The provider model saved with the session. Older sessions use a configured match or the first entry.
+   * A removed pinned model stops the session at its next send.
    */
   deploymentOf(s: Session): string | undefined {
-    if (!this.opts.credentials || this.sourceOf(s) !== "azure") return undefined;
+    const source = this.sourceOf(s);
+    if (!this.opts.credentials || !hasSourceModels(source)) return undefined;
     const id = s.summary.parentSessionId ?? s.id;
     const prefs = this.core.o.prefs.get(id);
     if (prefs.deployment) return prefs.deployment;
-    const deployment = this.pickDeployment(prefs.model ?? s.state.model);
-    if (deployment) this.core.o.prefs.set(id, { deployment });
+    const deployment = this.pickSourceModel(s.summary.harness, source, prefs.model ?? s.state.model);
+    if (deployment) this.core.o.prefs.set(id, { deployment, ...(source === "bedrock" ? { model: deployment } : {}) });
     return deployment;
   }
 
-  /** The deployment a model names, else Azure's first. None when there are none. */
-  private pickDeployment(model?: string): string | undefined {
-    const list = this.opts.credentials?.azure().deployments ?? [];
-    return (list.find((d) => d.name === model) ?? list[0])?.name;
+  private sourceModels(harness: HarnessId, source: BillingSource): NonNullable<SourceOption["deployments"]> {
+    if (source === "azure") return this.opts.credentials?.azure().deployments.map((d) => ({ name: d.name, ...(d.model ? { model: d.model } : {}) })) ?? [];
+    if (source === "bedrock") return this.opts.credentials?.bedrock()?.models.filter((m) => m.harness === harness).map((m) => ({ name: m.id, ...(m.alias ? { model: m.alias } : {}) })) ?? [];
+    return [];
   }
 
-  /** On Azure, the model is a deployment: the one asked for if it's there, else the first. */
-  forSource(source: BillingSource, opts: StartOpts): StartOpts {
-    if (source !== "azure" || !this.opts.credentials) return opts;
-    const deployment = opts.azureDeployment ?? this.pickDeployment(opts.model);
-    return { ...opts, model: deployment };
+  private pickSourceModel(harness: HarnessId, source: BillingSource, model?: string): string | undefined {
+    const list = this.sourceModels(harness, source);
+    const selected = source === "bedrock" ? resolveSourceModel(list, model) : list.find((d) => d.name === model)?.name;
+    return selected ?? list[0]?.name;
+  }
+
+  forSource(harness: HarnessId, source: BillingSource, opts: StartOpts): StartOpts {
+    if (!hasSourceModels(source) || !this.opts.credentials) return opts;
+    const model = opts.sourceModel ?? this.pickSourceModel(harness, source, opts.model);
+    return { ...opts, model };
   }
 
   /** What a session's process must have been started with to be current. */
@@ -1450,7 +1457,10 @@ export class LiveControl {
   credentialFor(harness: HarnessId, source: BillingSource, deployment?: string): CredentialSnapshot | undefined {
     const store = this.opts.credentials;
     if (!store) return undefined;
-    const credential = store.snapshot(source, source === "azure" ? deployment ?? "" : undefined);
+    if (source === "bedrock" && !this.sourceModels(harness, source).some((m) => m.name === deployment)) {
+      throw new Error("This session needs a configured model for its harness in Settings, Bedrock.");
+    }
+    const credential = store.snapshot(source, hasSourceModels(source) ? deployment ?? "" : undefined);
     if (credential) return credential;
     const change = this.core.adapter(harness).capabilities.sourceSwitch ? "change the session's Source" : "use Move to continue on another source";
     if (source === "azure" && store.snapshot("azure")) {
@@ -1458,7 +1468,7 @@ export class LiveControl {
       throw new Error(`This session's Azure deployment ${deployment} was removed. Add it again in Settings, Azure, or ${change}. Nothing was sent.`);
     }
     if (source === "azure" && store.status().azure.set) throw new Error("Azure has no resource set. Set it in Settings, Azure. Nothing was sent.");
-    throw new Error(`This session uses ${this.labelOf(harness, source)}, which isn't set. Set it in ${source === "azure" ? "Settings, Azure" : "Credentials"}, or ${change}. Nothing was sent.`);
+    throw new Error(`This session uses ${this.labelOf(harness, source)}, which isn't set. Set it in ${source === "azure" ? "Settings, Azure" : source === "bedrock" ? "Settings, Bedrock" : "Credentials"}, or ${change}. Nothing was sent.`);
   }
 
   /** The sources that exist for a harness now: its login, if it reports one, and keys that are set. */
@@ -1467,12 +1477,13 @@ export class LiveControl {
     if (!billing || !this.opts.credentials) return { options: [] };
     const status = this.opts.credentials.status();
     const login = await billing.loggedIn().catch(() => false);
-    // Azure is there with its key, its resource and a deployment to run on.
-    const ready = (k: CredentialSource) => status[k].set && (k !== "azure" || (!!status.azure.endpoint && !!status.azure.deployments?.length));
-    const options = [...(login ? ["subscription" as const] : []), ...billing.keys.filter(ready)].map((source) => {
-      const deployments = source === "azure" ? status.azure.deployments!.map((d) => ({ name: d.name, ...(d.model ? { model: d.model } : {}) })) : undefined;
-      return { source, billing: billing.label(source), ...(deployments ? { deployments } : {}) };
-    });
+    const ready = (source: CredentialSource) => {
+      if (source === "bedrock") return !!this.opts.credentials?.snapshot(source) && this.sourceModels(harness, source).length > 0;
+      return status[source].set && (source !== "azure" || (!!status.azure.endpoint && !!status.azure.deployments?.length));
+    };
+    const options = [...(login ? ["subscription" as const] : []), ...billing.keys.filter(ready)].map((source) => ({
+      source, billing: billing.label(source), ...(hasSourceModels(source) ? { deployments: this.sourceModels(harness, source) } : {}),
+    }));
     const fallback = login ? "subscription" : options[0]?.source;
     return { options, ...(fallback ? { default: fallback } : {}) };
   }
@@ -1489,16 +1500,17 @@ export class LiveControl {
 
   /** A new native id on a source: a key's thread is made on its own private process. */
   async newNativeId(harness: HarnessId, folder: string, opts: StartOpts, source: BillingSource): Promise<string> {
-    opts = this.forSource(source, opts);
+    opts = this.forSource(harness, source, opts);
     const credential = this.credentialFor(harness, source, opts.model);
     return this.core.adapter(harness).newId(folder, { ...opts, ...(credential ? { credential } : {}) });
   }
 
   /** A new session, its source saved with it before anything can start it. */
   async createSession(harness: HarnessId, folder: string, opts: StartOpts, source: BillingSource): Promise<Session> {
-    opts = this.forSource(source, opts);
+    opts = this.forSource(harness, source, opts);
     const s = this.core.create(harness, await this.newNativeId(harness, folder, opts, source), folder, opts);
-    this.core.o.prefs.set(s.id, { source, ...(source === "azure" && opts.model ? { deployment: opts.model } : {}) });
+    this.core.o.prefs.set(s.id, { source, ...(hasSourceModels(source) && opts.model ? { deployment: opts.model } : {}) });
+    if (source !== "subscription") s.setState({ retryThrottled: false });
     return s;
   }
 
@@ -1516,7 +1528,7 @@ export class LiveControl {
   }
 
   /** From the next process start, which confirms it (only with capabilities.sourceSwitch). */
-  async setSource(id: string, asked: unknown, azureDeployment?: string, fallback?: { chain: FallbackChain; index: number; settings: StartOpts }) {
+  async setSource(id: string, asked: unknown, sourceModel?: string, fallback?: { chain: FallbackChain; index: number; settings: StartOpts }) {
     const s = await this.core.open(id);
     if (!fallback && this.fallingBack.has(s)) throw new Error("The fallback chain is switching this session.");
     if (s.retry) this.cancelRetrySession(s);
@@ -1531,8 +1543,8 @@ export class LiveControl {
     if (s.sending || s.starting || s.carrying) throw new Error(sourceSwitchBlockMessage("turn"));
     const choice = (await this.sources(harness)).options.find((o) => o.source === asked);
     if (!choice) throw new Error(`${this.labelOf(harness, asked)} isn't available.`);
-    if (azureDeployment && !choice.deployments?.some(({ name }) => name === azureDeployment)) {
-      throw new Error(`Azure deployment ${azureDeployment} isn't available.`);
+    if (sourceModel && !choice.deployments?.some(({ name }) => name === sourceModel)) {
+      throw new Error(asked === "azure" ? `Azure deployment ${sourceModel} isn't available.` : "That model is unavailable on the requested source.");
     }
     if (!fallback && this.fallingBack.has(s)) throw new Error("The fallback chain is switching this session.");
     const own = this.sourceOf(s);
@@ -1566,12 +1578,12 @@ export class LiveControl {
     const next = this.core.adapter(harness).billing!.label(asked);
     if (carries) {
       // A model picked for another pending source doesn't go with this one.
-      const nextModel = fallback ? (asked === "azure" ? undefined : fallback.settings.model)
+      const nextModel = fallback ? (hasSourceModels(asked) ? undefined : fallback.settings.model)
         : this.core.o.prefs.get(id).nextSource === asked ? this.core.o.prefs.get(id).nextModel : undefined;
       const nextFallbackSettings = fallback && { effort: fallback.settings.effort, permissionMode: fallback.settings.permissionMode };
-      this.core.o.prefs.set(id, { ...progress, nextSource: asked, nextFallbackSettings, nextModel, nextBilling: next, nextDeployment: azureDeployment, sourceSwitchFailed: undefined });
+      this.core.o.prefs.set(id, { ...progress, nextSource: asked, nextFallbackSettings, nextModel, nextBilling: next, nextDeployment: sourceModel, sourceSwitchFailed: undefined });
       this.core.o.prefs.flush();
-      s.setState({ ...progress, nextBilling: next, nextModel, nextDeployment: azureDeployment, sourceSwitchFailed: undefined });
+      s.setState({ ...progress, nextBilling: next, nextModel, nextDeployment: sourceModel, sourceSwitchFailed: undefined });
       return this.core.touch(s);
     }
     const confirmed = s.state.billing?.label === next.label;
@@ -1581,11 +1593,16 @@ export class LiveControl {
       try { cost = this.startCost(s); }
       catch { cost = { estimated: true, complete: false, reasons: ["unsaved"] }; this.core.log("Couldn't save this session's API cost coverage. Its total is unknown."); }
     }
-    const azure = azureDeployment ? { deployment: azureDeployment, model: azureDeployment } : {};
+    // A fallback step names its model; a source with its own model list takes the step's model from that list.
+    const model = fallback ? (hasSourceModels(asked) ? sourceModel ?? fallback.settings.model : fallback.settings.model)
+      : hasSourceModels(asked)
+        ? sourceModel ?? this.pickSourceModel(harness, asked, this.core.o.prefs.get(id).model ?? s.state.model)
+        : hasSourceModels(own) ? this.core.adapter(harness).unset?.model ?? "default" : undefined;
+    const sourceSettings = model ? { model, deployment: hasSourceModels(asked) ? model : undefined } : {};
     const settings = fallback?.settings;
-    this.core.o.prefs.set(id, { ...progress, ...settings, source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...azure });
+    this.core.o.prefs.set(id, { ...progress, ...settings, source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...sourceSettings });
     this.core.o.prefs.flush();
-    s.setState({ ...progress, ...settings, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...(azure.model ? { model: azure.model } : {}), ...(cost ? { cost } : {}) });
+    s.setState({ ...progress, ...settings, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, retryThrottled: asked === "subscription" ? undefined : this.core.o.prefs.get(id).retryThrottled === true, ...(model ? { model, modelResolved: undefined } : {}), ...(cost ? { cost } : {}) });
     if (settings && s.driver && asked === own) s.credentialRevision = undefined;
     this.core.touch(s);
   }
@@ -1743,12 +1760,25 @@ export class LiveControl {
     this.core.o.bus.emit("canTextChanged", { sessionId: id, canText: on });
   }
 
+  async setRetryThrottled(id: string, on: boolean) {
+    const s = await this.core.open(id);
+    if (s.summary.parentSessionId || s.summary.sideOf || this.sourceOf(s) === "subscription") {
+      throw new Error("Extended throttle retries require a main session using an API key.");
+    }
+    this.core.o.prefs.set(id, { retryThrottled: on || undefined });
+    this.core.o.prefs.flush();
+    s.setState({ retryThrottled: on });
+    if (!on && s.retry?.extended && s.retry.phase === "waiting") this.cancelRetrySession(s);
+  }
+
   /** What a session's successor on another id keeps (a fork's link back too, SPEC §16; its worktree record, SPEC §4). */
   keptPrefs(s: Session) {
-    const { canText, lastKey, fallbackChain, fallbackProgress, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
+    const { canText, retryThrottled, lastKey, fallbackChain, fallbackProgress, forkedFrom, sideOf, worktree } = this.core.o.prefs.get(s.id);
     // A side chat's successor is one too, read-only (SPEC §16a): failing closed.
     // The worktree goes on with the conversation: cleanup counts the successor as its user (the old id, moved on, no more).
-    return { ...(canText ? { canText } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackChain ? { fallbackChain } : {}), ...(fallbackProgress ? { fallbackProgress } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree } : {}) };
+    // Not a Keep: that was the person's answer on archiving the old id.
+    const withoutKeep = ({ keep: _keep, ...rec }: NonNullable<typeof worktree>) => rec;
+    return { ...(canText ? { canText } : {}), ...(retryThrottled === true ? { retryThrottled } : {}), ...(lastKey ? { lastKey } : {}), ...(fallbackChain ? { fallbackChain } : {}), ...(fallbackProgress ? { fallbackProgress } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(sideOf ? { sideOf } : {}), ...(worktree ? { worktree: withoutKeep(worktree) } : {}) };
   }
 
   private fallbackModeAllowed(s: Session, mode: string): boolean {
@@ -1758,7 +1788,7 @@ export class LiveControl {
     return target !== undefined && target <= (levelOf(adapter, current) ?? LEVELS.readOnly);
   }
 
-  private async returnToFallback(s: Session, chain: FallbackChain, index: number, step: FallbackStep, settings: StartOpts, progress: FallbackProgress) {
+  private async returnToFallback(s: Session, chain: FallbackChain, index: number, step: FallbackStep, settings: StartOpts, progress: FallbackProgress, sourceModel?: string) {
     const previous = progress.steps[index];
     if (!previous?.sessionId || previous.sessionId === s.id || !this.fallbackArchive) return;
     const prefs = this.core.o.prefs;
@@ -1772,9 +1802,10 @@ export class LiveControl {
     if (s.retrySuppressed || this.stopping || s.state.fallbackChain !== chain) throw new SendCancelled();
     const was = { model: old.state.model, effort: old.state.effort, permissionMode: old.state.permissionMode };
     const wasFresh = old.fresh, wasRebuilt = old.rebuilt, transcript = old.transcript;
-    const deployment = step.source === "azure" ? step.model : undefined;
-    prefs.set(old.id, { ...settings, ...(deployment ? { deployment } : {}) });
-    old.setState(settings);
+    // As setSource does: a source with its own model list runs the step's model from that list.
+    const model = hasSourceModels(step.source) ? sourceModel ?? settings.model : settings.model;
+    prefs.set(old.id, { ...settings, model, ...(hasSourceModels(step.source) && model ? { deployment: model } : {}) });
+    old.setState({ ...settings, model });
     old.fresh = old.rebuilt = false;
     if (wasRebuilt) old.transcript = null;
     try {
@@ -1819,8 +1850,9 @@ export class LiveControl {
     this.core.pin(s);
     let switchedSource = false;
     try {
-      const until = Date.now() + 5000;
-      while ((s.sending || s.starting) && Date.now() < until) await Bun.sleep(20);
+      // A turn can end before its send has returned.
+      const until = this.core.now() + 5000;
+      while ((s.sending || s.starting) && this.core.now() < until) await Bun.sleep(20);
       if (hit) resetsAt = await this.planReset(harness, s, hit);
       if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) return false;
       const progress: FallbackProgress = { steps: { ...prefs.fallbackProgress?.steps } };
@@ -1847,8 +1879,13 @@ export class LiveControl {
         if (fallbackStepProblem(step, catalog)) continue;
         if (step.source === source && step.model === s.state.model && (!step.effort || step.effort === s.state.effort) &&
           (!step.permissionMode || step.permissionMode === s.state.permissionMode)) continue;
+        // Azure steps name a deployment; a Bedrock step's model resolves to one of its configured models.
+        const sourceModel = step.source === "azure" ? step.model
+          : step.source === "bedrock" ? resolveSourceModel(this.sourceModels(harness, "bedrock"), step.model) : undefined;
+        if (step.source === "bedrock" && !sourceModel) continue;
+        if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) return false;
         const settings = { model: step.model, effort: step.effort, permissionMode: step.permissionMode ?? catalog.defaultMode };
-        const returned = index < start ? await this.returnToFallback(s, chain, index, step, settings, progress) : undefined;
+        const returned = index < start ? await this.returnToFallback(s, chain, index, step, settings, progress, sourceModel) : undefined;
         if (returned) {
           switchedSource = true;
           say(`Returned to ${this.labelOf(harness, step.source)}.`);
@@ -1858,7 +1895,7 @@ export class LiveControl {
 ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
           return true;
         }
-        await this.setSource(s.id, step.source, step.source === "azure" ? step.model : undefined, { chain, index, settings });
+        await this.setSource(s.id, step.source, sourceModel, { chain, index, settings });
         switchedSource = true;
         const label = this.labelOf(harness, step.source);
         const switched = s.capabilities.sourceCarry && step.source !== source ? `Next source: ${label}.` : `Switched to ${label}.`;

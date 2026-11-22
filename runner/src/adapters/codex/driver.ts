@@ -15,17 +15,18 @@ import { NATIVE_IMAGE_MAX } from "../../core/attachments";
 import { FROM_TETHER, titleText } from "../../../../shared/fromTether";
 import { UNKNOWN_BILLING } from "../../../../shared/transcript";
 import { RESOLVED_ELSEWHERE, SendCancelled, type Driver, type Sink, type StartOpts } from "../../core/adapter";
-import { assertCredentialCurrent, confirmedProxy, newConnection, observedCredential, rememberSource, retirePrivateSource, sourceBilling, sourceProvider, sourceCredentialRevision, stopPrivateSource, threadConnection } from "./sources";
+import { assertCredentialCurrent, confirmedProxy, credentialEndpoint, newConnection, observedCredential, rememberSource, retirePrivateSource, sourceBilling, sourceProvider, sourceCredentialRevision, stopPrivateSource, threadConnection } from "./sources";
 import { CostLedger } from "../../costs";
 import { sourceHome } from "./sources";
 import { join } from "node:path";
 import { type CredentialSnapshot } from "../../credentials";
 import { agentName } from "./items";
 import { codexBilling, dropCache, hasTurnContext, itemContextOf, PLACEHOLDER_NAME, turnContextOf } from "./discovery";
-import { effOfRollout, effOfSettings, Running, UNKNOWN, type BackgroundCommand, type Eff } from "./running";
+import { effOfRollout, effOfSettings, Running, runsLooser, UNKNOWN, type BackgroundCommand, type Eff } from "./running";
+import { permissionModeLabel } from "../../../../shared/labels";
 import { collaborationMode, customProfile, knownMode, looser, modeOf, planningOf, sandboxExtras, sandboxOf, sandboxPolicy, type CodexModel } from "./modes";
 import { remember, remembered } from "./remember";
-import { ASKS, CANT_SHOW, cantShow, codexAnswer, codexAsk, codexPlanAsk, DECLINE_ELICITATION } from "./requests";
+import { ASKS, CANT_SHOW, cantShow, codexAnswer, codexAsk, codexPlanAsk, DECLINE_ELICITATION, stdinRefusal, stdinTarget } from "./requests";
 import type { CodexRpc } from "./rpc";
 import { CodexStream } from "./stream";
 import { confirmSubscriptionProvider } from "./billing";
@@ -51,7 +52,7 @@ const NO_ROLLOUT = /no rollout found/i;
 export function startSettings(opts: StartOpts) {
   const out: Record<string, unknown> = { approvalsReviewer: "user" };
   if (opts.model && opts.model !== "default") out.model = opts.model;
-  else if (opts.credential?.source === "azure" && opts.credential.deployment) out.model = opts.credential.deployment;
+  else if (opts.credential?.deployment) out.model = opts.credential.deployment;
   const m = knownMode(opts.permissionMode);
   if (m) {
     out.approvalPolicy = m.approvalPolicy;
@@ -261,7 +262,7 @@ export class CodexDriver implements Driver {
       const cfg: any = await this.rpc.call("config/read", { cwd: this.projectPath });
       const configured = cfg?.config?.model_providers?.[sourceProvider(source.source)];
       const proxy = confirmedProxy(source);
-      if (configured?.env_key !== "TETHER_CODEX_API_KEY" || configured?.requires_openai_auth !== false || (configured?.base_url !== proxy.proxyBase || (this.credential && proxy.endpoint?.replace(/\/$/, "") !== (source.source === "openai" ? "https://api.openai.com/v1" : this.credential.endpoint?.replace(/\/$/, ""))))) throw new Error("Codex did not confirm its isolated API authentication. Nothing was sent.");
+      if (configured?.env_key !== "TETHER_CODEX_API_KEY" || configured?.requires_openai_auth !== false || (configured?.base_url !== proxy.proxyBase || (this.credential && proxy.endpoint?.replace(/\/$/, "") !== credentialEndpoint(this.credential)?.replace(/\/$/, "")))) throw new Error("Codex did not confirm its isolated API authentication. Nothing was sent.");
       billing = sourceBilling(source.source);
     }
     if (enforce && !source) {
@@ -373,6 +374,7 @@ export class CodexDriver implements Driver {
   private notify(method: string, p: any) {
     if (method === "turn/completed") this.noteCost();
     if (method === "serverRequest/resolved") return this.resolved(String(p.requestId));
+    if (method === "item/autoApprovalReview/started") void this.reviewedInput(p);
     if (method === "thread/goal/updated" && p.threadId === this.nativeId) this.goalChanged(p.goal);
     if (method === "thread/name/updated" && p.threadId === this.nativeId && p.threadName && p.threadName !== PLACEHOLDER_NAME && this.placeholder) {
       this.placeholder = false;
@@ -504,7 +506,7 @@ export class CodexDriver implements Driver {
       // Not answered: as it was (never taken for "nothing runs").
       if (!list) seen.push(...this.running.commands.filter((c) => c.threadId === threadId));
       else if (threadId !== this.nativeId && !list.data?.length && !this.running.has(threadId)) this.quiet.add(threadId);
-      for (const t of list?.data ?? []) if (t?.processId) seen.push({ threadId, processId: t.processId, eff: await this.effOfCommand(threadId, t.itemId, String(t.processId)) });
+      for (const t of list?.data ?? []) if (t?.processId) seen.push({ threadId, processId: String(t.processId), ...(typeof t.itemId === "string" ? { itemId: t.itemId } : {}), eff: await this.effOfCommand(threadId, t.itemId, String(t.processId)) });
     }
     if (this.closed) return;
     const changed = JSON.stringify(seen) !== JSON.stringify(this.running.commands);
@@ -660,6 +662,61 @@ export class CodexDriver implements Driver {
   }
 
   private ask(method: string, p: any, id: number | string, thread: string): Promise<unknown> {
+    const target = stdinTarget(method, p);
+    if (!target) return this.askPerson(method, p, id, thread);
+    return this.refusedInput(target).then((refused) => {
+      if (!refused) return this.askPerson(method, p, id, thread);
+      this.saidRefused(thread, refused.cmd, false);
+      return codexAnswer(method, p, { allow: false, reason: "Refused by Tether." });
+    });
+  }
+
+  /**
+   * Input to a background command (write_stdin) that has more access than the session now has, or
+   * that nothing confirms hasn't (not found, settings unknown: fail closed), is refused without
+   * asking anyone: approved, the command would do what a tighter turn tells it with its own wider
+   * access. `{ cmd }` when refused; undefined: it runs as shown or tighter, so it's asked as usual.
+   */
+  private async refusedInput(t: { itemId?: string; processId?: string }): Promise<{ cmd?: BackgroundCommand } | undefined> {
+    let cmd = this.running.command(t);
+    if (!cmd) {
+      await this.pollCommands();
+      cmd = this.running.command(t);
+    }
+    return cmd && !runsLooser(cmd, this.currentEff()) ? undefined : { cmd };
+  }
+
+  /**
+   * "Approve for me": Codex's reviewer answers inside Codex, and Tether never gets the request. A
+   * review of input to a command with more access than the session now has stops that command
+   * instead, before the review ends (it takes seconds), so nothing reaches it either way.
+   */
+  private async reviewedInput(p: any) {
+    const thread: string | undefined = p?.threadId;
+    const target = stdinTarget("item/autoApprovalReview/started", p);
+    if (!target || !thread || (thread !== this.nativeId && !this.stream.child(thread))) return;
+    const refused = await this.refusedInput(target);
+    if (!refused || this.closed) return;
+    const processId = refused.cmd?.processId ?? target.processId;
+    if (processId) await this.rpc.call("thread/backgroundTerminals/terminate", { threadId: refused.cmd?.threadId ?? thread, processId }, 10_000).catch(() => {});
+    this.saidRefused(thread, refused.cmd, true);
+    void this.pollCommands();
+  }
+
+  /** A refusal said: a notice for the person, and the reason steered into the turn for the agent. */
+  private saidRefused(thread: string, cmd: BackgroundCommand | undefined, stopped: boolean) {
+    const now = this.currentEff().mode;
+    const had = cmd?.eff.mode ? `runs with ${permissionModeLabel(cmd.eff.mode)}` : "has settings Tether can't confirm";
+    const view = thread === this.nativeId ? this.stream.main : (this.stream.child(thread) ?? this.stream.main);
+    const what = stopped
+      ? `Tether stopped a background command that ${had}: this turn asked to send it input, which Codex's reviewer would have answered. A command with more access than this session's ${permissionModeLabel(now ?? "unknown")} takes no input.`
+      : `Tether refused input from this turn to a background command that ${had}, more than this session's ${permissionModeLabel(now ?? "unknown")}.`;
+    this.stream.notice(view, what, "warning");
+    // A subagent takes no input: its tool call fails, and the notice says why.
+    if (thread === this.nativeId) void this.steerTurn(thread, `${FROM_TETHER}${stdinRefusal(cmd?.eff.mode, now, stopped)}`).catch(() => {});
+  }
+
+  private askPerson(method: string, p: any, id: number | string, thread: string): Promise<unknown> {
     const sink = thread === this.nativeId ? this.sink : (this.stream.child(thread)?.sink ?? this.sink);
     // What Tether can't show (an MCP form, a link, a method it doesn't know): left for Codex's TUI,
     // with a card saying so. Declining from Tether is the one answer it can give.

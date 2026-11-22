@@ -1,7 +1,8 @@
 diff --git a/dist/CodeBlock/CodeBlock.js b/dist/CodeBlock/CodeBlock.js
+index 333d6ce0e1129693ef3c9686b622fac99f9f0fd1..b0c48cabaa7eda0bb0efd70352413a4c7bd4c720 100644
 --- a/dist/CodeBlock/CodeBlock.js
 +++ b/dist/CodeBlock/CodeBlock.js
-@@ -271,6 +271,7 @@
+@@ -271,6 +271,7 @@ function isSafari() {
   */
  function useTokenLines(code, language, customTokenizer) {
    const [asyncTokenResult, setAsyncTokenResult] = useState(null);
@@ -9,7 +10,7 @@ diff --git a/dist/CodeBlock/CodeBlock.js b/dist/CodeBlock/CodeBlock.js
    const syncTokens = useMemo(() => {
      if (customTokenizer) {
        return flatTokensToLines(customTokenizer(code, language), code);
-@@ -310,13 +311,15 @@
+@@ -310,13 +311,15 @@ function useTokenLines(code, language, customTokenizer) {
        abortController.abort();
      };
    }, [code, language, customTokenizer]);
@@ -18,19 +19,69 @@ diff --git a/dist/CodeBlock/CodeBlock.js b/dist/CodeBlock/CodeBlock.js
 +  // transcript's scrollTop mid-rewrite).
    if (syncTokens != null) {
 -    return syncTokens;
--  }
++    lastTokensRef.current = syncTokens;
++  } else if (asyncTokenResult?.code === code && asyncTokenResult.language === language) {
++    lastTokensRef.current = asyncTokenResult.tokens;
+   }
 -  if (asyncTokenResult?.code === code && asyncTokenResult.language === language) {
 -    return asyncTokenResult.tokens;
 -  }
 -  return [];
-+    lastTokensRef.current = syncTokens;
-+  } else if (asyncTokenResult?.code === code && asyncTokenResult.language === language) {
-+    lastTokensRef.current = asyncTokenResult.tokens;
-+  }
 +  return lastTokensRef.current;
  }
  
  // ---------------------------------------------------------------------------
+diff --git a/dist/Markdown/Markdown.d.ts b/dist/Markdown/Markdown.d.ts
+index 7dbfcd8925196acfbdff375b1c905e6c1ae40bc7..e7d3b76370a7558a5231b0b2af13668cc258aebb 100644
+--- a/dist/Markdown/Markdown.d.ts
++++ b/dist/Markdown/Markdown.d.ts
+@@ -98,6 +98,7 @@ export interface MarkdownProps<Plugins extends ReadonlyArray<MarkdownPluginEntry
+      */
+     headingLevelStart?: 1 | 2 | 3 | 4 | 5 | 6;
+     isStreaming?: boolean;
++    speed?: 'natural' | 'fast' | 'instant';
+     onLinkClick?: (href: string, event: React.MouseEvent<HTMLAnchorElement>) => void | false;
+     /**
+      * Citation sources keyed by ID. When provided, `[id]` and `【id】` markers
+@@ -168,7 +169,7 @@ export interface MarkdownProps<Plugins extends ReadonlyArray<MarkdownPluginEntry
+  * </Markdown>
+  * ```
+  */
+-export declare function Markdown<const Plugins extends ReadonlyArray<MarkdownPluginEntry> = readonly []>({ ref, children, display, density, headingLevelStart, isStreaming, onLinkClick, sources, citationStyle, contentWidth, contentAlign, components, plugins, inlinePlugins, autolink, xstyle, className, style, id: rootId, 'data-testid': testId, ...props }: MarkdownProps<Plugins>): React.ReactElement;
++export declare function Markdown<const Plugins extends ReadonlyArray<MarkdownPluginEntry> = readonly []>({ ref, children, display, density, headingLevelStart, isStreaming, speed, onLinkClick, sources, citationStyle, contentWidth, contentAlign, components, plugins, inlinePlugins, autolink, xstyle, className, style, id: rootId, 'data-testid': testId, ...props }: MarkdownProps<Plugins>): React.ReactElement;
+ export declare namespace Markdown {
+     var displayName: string;
+ }
+diff --git a/dist/Markdown/Markdown.js b/dist/Markdown/Markdown.js
+index 2326b8d0da6afc962ec17a42e2d272d5a074dfad..30311c14edcae1735839c7ead4734bcac03fcd76 100644
+--- a/dist/Markdown/Markdown.js
++++ b/dist/Markdown/Markdown.js
+@@ -1262,6 +1262,7 @@ export function Markdown({
+   density = 'default',
+   headingLevelStart = 1,
+   isStreaming = false,
++  speed,
+   onLinkClick,
+   sources,
+   citationStyle = 'label',
+@@ -1309,7 +1310,7 @@ export function Markdown({
+ 
+   // Smooth bursty streamed chunks into a steady character-by-character reveal.
+   // When not streaming, the hook returns children unchanged (no-op).
+-  const smoothedText = useStreamingText(children, isStreaming);
++  const smoothedText = useStreamingText(children, isStreaming, speed != null ? { speed } : undefined);
+   const incrementalStateRef = useRef(createIncrementalState());
+   // Reset incremental cache when parser-affecting component options toggle —
+   // cached settled blocks were parsed with the previous setting.
+@@ -1406,7 +1407,7 @@ export function Markdown({
+   const cursor = {
+     offset: 0,
+     boundaries,
+-    active: isStreaming
++    active: isStreaming && speed !== 'instant'
+   };
+ 
+   // Build citation context — numbers are assigned in encounter order during rendering.
 diff --git a/dist/Text/useTruncation.js b/dist/Text/useTruncation.js
 index 75d33acdc1514fea1cc066457aa9589882ca2c59..2f026681af61263de24941b24ca0488b7cd96dd5 100644
 --- a/dist/Text/useTruncation.js

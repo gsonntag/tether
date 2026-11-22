@@ -55,10 +55,12 @@ export interface WorktreeRecord {
   /** "" for a detached HEAD (only in one Tether didn't make) */
   branch: string;
   repo: string;
-  /** started in it with Existing worktree: another session (or a person) made it */
+  /** started in an existing one (tether_start, a fork, a Move): another session (or a person) made it */
   joined?: boolean;
   /** Tether didn't make it (`git worktree add` by hand): it's never removed by Tether */
   handMade?: boolean;
+  /** the person archived the session with "Keep" (SPEC §4): never removed by Tether; unarchiving drops it */
+  keep?: boolean;
   /** ignored files there once it was made and set up, with size, time and (up to 1 MB) a content hash: removal on archive may delete these while unchanged */
   known?: Record<string, [number, number, string?]>;
 }
@@ -108,6 +110,7 @@ export interface SessionPrefs {
   fallbackProgress?: FallbackProgress;
   /** "Session can text me", ticked by you: it may text the person, and gets plain texts (SPEC §11 Texting). Kept whatever its age */
   canText?: boolean;
+  retryThrottled?: boolean;
   /** the key this session last used or had picked */
   lastKey?: BillingSource;
   /** its API cost has had an entry in costs.json: one missing there now was lost, not never needed */
