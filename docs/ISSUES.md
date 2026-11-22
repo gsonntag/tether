@@ -15,7 +15,6 @@ Filed when review rounds ended on 2026-10-31, at 042a217. Nothing here has had a
 
 ## Decisions needed
 
-- **Read-only turn driving a Full access process.** `write_stdin` with input from a Read only, Ask first or Auto turn raises an approval. Declining writes nothing. Approving lets the unsandboxed process write, and the card shows it only as a command. Approve for me, where Codex's reviewer answers, is untested.
 - **Streaming look vs memory.** See the stall below; the candidate fix changes how streaming looks.
 
 ## Tests

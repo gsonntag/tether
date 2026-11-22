@@ -409,6 +409,19 @@ relay directly.
   `thread/settings/update` and pinned on `turn/start`, in a read-only sandbox. The app-server has
   no review step (its TUI's "Implement this plan?" is client-side), so a turn that completes with a
   `plan` item raises a plan request (`planFollowUp`, §7) that Tether answers itself.
+- **Input to a background command with more access.** A command in one of Codex's background
+  terminals keeps the settings of the turn that started it (`running.ts`). Once the session is
+  tightened, a later turn's `write_stdin` raises `item/commandExecution/requestApproval` with
+  `kind: "writeStdin"` (its `itemId` is the command's). If that command has more access than the
+  session now has, or Tether can't find it or its settings (fail closed), Tether declines without
+  asking anyone: approved, the command would do what the tighter turn tells it with its own wider
+  access. The agent gets the reason as a steer, the person a notice. Input to a command no looser
+  than shown is asked as usual ("Send input to a running command"). With **Approve for me**
+  (`@codex-reviews`) Codex's reviewer answers inside Codex and Tether never gets the request, only
+  `item/autoApprovalReview/started` (action `writeStdin`, with the `processId`). For a looser command
+  Tether stops it (`thread/backgroundTerminals/terminate`) as the review starts. The review takes
+  seconds, so the write fails ("Unknown process id"). Checked on codex-cli 0.171.0, 2026-11-21: with
+  no fix, the reviewer approved and the write went through.
 - **History:** rollout files under `~/.codex/sessions/`, or `thread/read`. The parser comes from v1.
 - **Terminal:** `terminal: "shared"`. `codex resume --remote <socket> <id>` attaches the TUI to the
   same live thread through the daemon (without `--remote` the TUI runs its own app-server). Tether
