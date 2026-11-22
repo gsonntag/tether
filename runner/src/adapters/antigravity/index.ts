@@ -16,6 +16,7 @@ import { refreshAntigravityQuota } from "./quota";
 import { AGY_EXIT, AGY_QUIT, agyScreen } from "./screen";
 import { hasStore, lastCommands, reader, seenContext, seenSettings, seenTitles, stampOf, storeStamp, type AgySession } from "./store";
 import { childInfo, childrenOf, matchCalls } from "./subagents";
+import { agyUsageDir } from "./usage";
 
 const summary = (s: AgySession): SessionSummary => ({
   id: `antigravity:${s.sessionId}`,
@@ -209,6 +210,7 @@ export const antigravityAdapter: Adapter = {
     return modelList(await reader.config().catch(() => []));
   },
 
+  usageStores: () => [{ dir: agyUsageDir }],
   planUsage: async () => refreshAntigravityQuota(),
 
   async listCommands(_projectPath, driver) {
