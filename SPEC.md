@@ -1984,6 +1984,12 @@ with the same people in TETHER_RUNNER_OWNERS), one that can text first, then the
 It passes `{t: "texting"}` frames only between a runner and its hub; a call to anyone else is
 answered "That computer is offline." The other runners (spokes) need no messaging set up: their
 last channel is the hub's (`hubChannel.ts`), used when no connector of their own is connected.
+One line, one runner: a hub's hello also lists the lines its connectors hold (`lines`: a hash each
+of the Photon project and phone, or the Discord bot; `Connector.line`), and the relay passes them
+on. A runner whose own connector holds one of them keeps it closed while that hub can text
+(`Texter.yields`; settings show "Through <hub>") and texts through the hub, since two links on one
+line both hear every reply and each answers with its own numbers. Two hubs holding one line: the
+relay names the one with the lower id as the other's hub, which then leaves the line the same way.
 - Out: a spoke's text goes to the hub with the session it's about; the hub numbers it in its own
   router (the session kept as `\u0001<runner>\u0001<session>`), so every computer's sessions share
   one set of numbers and one picker, sends it on its connector, and notes it for threaded replies.

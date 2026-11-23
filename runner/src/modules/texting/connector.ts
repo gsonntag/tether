@@ -8,6 +8,7 @@
 // Channel runs one connector's link: connects when it's on and set, reconnects after a drop with
 // backoff, and keeps its status (connected, the last error) for settings.
 
+import { createHash } from "node:crypto";
 import type { ConnectorForm } from "../../../../shared/protocol";
 
 /** A file the person sent, fetched only when something takes it (texting/index.ts stash). */
@@ -90,6 +91,11 @@ export interface Connector {
   readonly images?: boolean;
   /** how long a settings change waits for its old link to close before connecting again (Channel's 3 s when unset) */
   readonly stopWaitMs?: number;
+  /**
+   * The line it holds, when it's set: a hash of what makes it that line and no other (lineOf). Two
+   * runners holding one line both hear every reply; the texting hub's wins (texting/index.ts).
+   */
+  line?(): string | undefined;
   /** turned on (by its settings or its environment) */
   enabled(): boolean;
   /** everything its link needs is set */
@@ -105,6 +111,9 @@ export interface Connector {
   /** changes settings (an empty string clears a field; `enabled` turns it on or off); throws on a bad value */
   update(a: { enabled?: unknown; values?: Record<string, unknown> }): void;
 }
+
+/** A line's hash (Connector.line): the connector's id and what names its line, never readable back. */
+export const lineOf = (id: string, ...parts: string[]): string => createHash("sha256").update([id, ...parts].join("\u0000")).digest("hex").slice(0, 32);
 
 /**
  * `p`, or a rejection after `ms` ("<service> didn't answer <what> within Ns", with `timedOut: what`):
@@ -148,6 +157,8 @@ export class Channel {
     readonly connector: Connector,
     private onInbound: (m: Inbound) => void,
     private log: (line: string) => void,
+    /** it must stay closed for now (the texting hub holds its line): asked before every connect */
+    private held: () => boolean = () => false,
   ) {}
 
   get id() {
@@ -163,11 +174,11 @@ export class Channel {
   start(): Promise<void> {
     this.stopped = false;
     if (this.link || this.connecting) return this.connecting ?? Promise.resolve();
-    if (!this.connector.enabled() || !this.connector.configured()) return Promise.resolve();
+    if (!this.connector.enabled() || !this.connector.configured() || this.held()) return Promise.resolve();
     this.connecting = (async () => {
       try {
         const link = await this.connector.open((m) => this.onInbound({ ...m, via: this.id }), this.log);
-        if (this.stopped) return void (await link.stop());
+        if (this.stopped || this.held()) return void (await link.stop());
         this.link = link;
         this.lastError = undefined;
         this.delay = RETRY_MIN_MS;

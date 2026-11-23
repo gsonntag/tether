@@ -67,6 +67,7 @@ import { TextingStore } from "./store";
 import { HUB, HUB_SEND_MS, HUB_VIA, HubChannel, isHubVia, type HubAbout, type HubSent } from "./hubChannel";
 import { HubWire, type WireFile } from "./hubWire";
 import type { HubPort } from "../../core/hubPort";
+import { hubLines } from "../../../../shared/textingHub";
 import { TEXTS } from "./texts";
 
 /** The reaction on a text Tether read and passed on to its session. */
@@ -232,6 +233,9 @@ export class Texter {
   private migrated = new Set<string>();
   private migrating?: Promise<void>;
   private offHub?: () => void;
+  /** connectors closing or opening after a hub change, one change at a time */
+  private yielding: Promise<void> = Promise.resolve();
+  private stopped = false;
 
   constructor(
     private ctx: Ctx,
@@ -245,7 +249,7 @@ export class Texter {
     this.router = new Router(store.router, now);
     this.caps = new AgentTextCaps(now);
     const list = deps.list ?? connectors(store, { ...deps.connectors, [IMESSAGE]: open });
-    this.channels = list.map((c) => new Channel(c, (m) => void this.heard(m), ctx.log));
+    this.channels = list.map((c) => new Channel(c, (m) => void this.heard(m), ctx.log, () => this.yields(c)));
     if (ctx.hub) {
       const port = ctx.hub;
       this.port = port;
@@ -254,8 +258,9 @@ export class Texter {
       // Last: a connector of this runner's own, when connected, comes first (target).
       this.hubChannel = new HubChannel(() => port.hub, this.wire);
       this.channels.push(this.hubChannel);
-      // A hub (re)connected: it hears again which of this runner's sessions may text.
-      this.offHub = port.onHub((h) => void (h && this.syncHub()));
+      // A hub (re)connected: it hears again which of this runner's sessions may text, once this
+      // runner's connectors have left it the lines it holds (or taken them back).
+      this.offHub = port.onHub((h) => void this.yieldLines().then(() => h && this.syncHub()));
     }
   }
 
@@ -266,8 +271,37 @@ export class Texter {
 
   // ── the links ──
 
+  /**
+   * This runner's connector `c` holds a line its texting hub holds too, and the hub can text: the
+   * hub has it. Both connected, each would hear every reply and answer it with its own numbers
+   * (one delivers "pause it" to its [1], the other asks which session and sends it to another).
+   */
+  private yields(c: Connector): boolean {
+    const hub = this.port?.hub;
+    const line = hub?.up && hub.lines?.length ? c.line?.() : undefined;
+    return !!line && hub!.lines!.includes(line);
+  }
+
+  /** The hub changed: connectors whose line it holds now close, and the ones it doesn't (any more) connect. */
+  private yieldLines(): Promise<void> {
+    this.yielding = this.yielding
+      .then(async () => {
+        if (this.stopped) return;
+        for (const ch of this.own) {
+          if (this.yields(ch.connector)) {
+            if (ch.connected) this.ctx.log(`texting: ${ch.connector.label} is left to ${this.port?.hub?.name ?? "the texting hub"}, which holds the same line`);
+            await ch.stop();
+          } else await ch.start();
+        }
+        this.announce();
+      })
+      .catch((e) => this.ctx.log(`texting: ${e?.message ?? e}`));
+    return this.yielding;
+  }
+
   /** Connects every connector that's on and set; each reconnects after a drop, backing off. */
   async start() {
+    this.stopped = false;
     this.rearmHeld();
     this.wire?.start();
     if (this.port) {
@@ -284,7 +318,9 @@ export class Texter {
   announce() {
     if (!this.port) return;
     const t = this.ownTarget();
-    this.port.setState(this.store.hub ? { up: !!t, images: !!t?.connector.images } : undefined);
+    // Its lines whether connected or not: a hub that left one to another still holds it.
+    const lines = hubLines(this.own.filter((c) => c.connector.enabled()).map((c) => c.connector.line?.()));
+    this.port.setState(this.store.hub ? { up: !!t, images: !!t?.connector.images, ...(lines ? { lines } : {}) } : undefined);
   }
 
   /** The held files' timer again, for what's left of HELD_MS (after a restart, or a stop that cleared it). */
@@ -293,6 +329,7 @@ export class Texter {
   }
 
   async stop() {
+    this.stopped = true;
     clearTimeout(this.heldTimer);
     this.heldTimer = undefined;
     clearInterval(this.hubTimer);
@@ -455,7 +492,7 @@ export class Texter {
       ...(via ? { via: { id: via.id, name: via.name, up: via.up } } : {}),
       connectors: this.own.map((ch) => {
         const c = ch.connector;
-        return { id: c.id, label: c.label, enabled: c.enabled(), configured: c.configured(), connected: ch.connected, ...(ch.lastError ? { lastError: ch.lastError } : {}), about: c.about, forms: c.forms() };
+        return { id: c.id, label: c.label, enabled: c.enabled(), configured: c.configured(), connected: ch.connected, ...(via && this.yields(c) ? { leftTo: via.name } : {}), ...(ch.lastError ? { lastError: ch.lastError } : {}), about: c.about, forms: c.forms() };
       }),
       ...(this.store.prefer ? { prefer: this.store.prefer } : {}),
       ...(this.store.lastVia && !isHubVia(this.store.lastVia) ? { lastUsed: this.store.lastVia } : {}),

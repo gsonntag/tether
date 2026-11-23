@@ -9,6 +9,7 @@ import { HARNESS_LOGIN_OPS } from "../../shared/harnessLogin";
 
 import { CLOSE_PROTOCOL, CLOSE_REAUTH, CLOSE_REPLACED, CLOSE_RUNNER_ID, CLOSE_TOO_SLOW, PROTOCOL_VERSION, TERMINAL_OPS, type BrowserToServer, type PushKeys, type OpName, type ResultMsg, type RunnerBuild, type RunnerInfo, type RunnerToServer, type ServerToBrowser, type ServerToRunner, type User } from "../../shared/protocol";
 import { LONG_OPS } from "../../shared/gitActions";
+import { sharesLine } from "../../shared/textingHub";
 import { fitCloseReason, runnerIdAllowed, runnerIdRefusal } from "./runnerIds";
 import { accessAllows, grantedAccess, type RunnerAccess } from "../../shared/access";
 import { mayUseRunner, type RunnerOwners } from "./tenancy";
@@ -422,13 +423,17 @@ export class Relay {
 
   /**
    * The runner that texts for this one (SPEC §11 Texting): a connected texting hub of the same
-   * person's, one that can text now first, then the longest connected. None for a hub itself.
+   * person's, one that can text now first, then the longest connected. None for a hub itself,
+   * unless another hub holds a line it holds too (shared/textingHub.ts `lines`): then the one
+   * with the lower id texts for the other, which leaves that line alone. By id, not by which can
+   * text now: the one that stands down can't, and the two mustn't swap.
    */
   private hubOf(r: RunnerConn): RunnerConn | undefined {
-    if (r.info.textingHub) return undefined;
+    const own = r.info.textingHub;
     let best: RunnerConn | undefined;
     for (const h of this.runners.values()) {
       if (h === r || !h.info.textingHub || !this.sameTenant(r, h)) continue;
+      if (own && !(sharesLine(own.lines, h.info.textingHub.lines) && h.info.id < r.info.id)) continue;
       const better = !best || (h.info.textingHub.up !== best.info.textingHub!.up ? h.info.textingHub.up : (h.info.connectedAt ?? 0) !== (best.info.connectedAt ?? 0) ? (h.info.connectedAt ?? 0) < (best.info.connectedAt ?? 0) : h.info.id < best.info.id);
       if (better) best = h;
     }
@@ -441,7 +446,7 @@ export class Relay {
       const h = this.hubOf(r);
       // A new connection starts with no hub (the runner forgets it on disconnect): nothing to say yet.
       if (!h && !this.hubSent.has(id)) continue;
-      const frame = JSON.stringify({ t: "textHub", hub: h ? { id: h.info.id, name: h.info.name, up: h.info.textingHub!.up, images: h.info.textingHub!.images } : null } satisfies ServerToRunner);
+      const frame = JSON.stringify({ t: "textHub", hub: h ? { id: h.info.id, name: h.info.name, up: h.info.textingHub!.up, images: h.info.textingHub!.images, ...(h.info.textingHub!.lines ? { lines: h.info.textingHub!.lines } : {}) } : null } satisfies ServerToRunner);
       if (this.hubSent.get(id) === frame) continue;
       this.hubSent.set(id, frame);
       this.raw(r.sock, frame);
