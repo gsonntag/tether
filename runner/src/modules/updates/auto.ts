@@ -83,6 +83,11 @@ export class AutoUpdater {
     }
   }
 
+  /** installing (or looking): a runner restart waits for it */
+  get busy(): boolean {
+    return this.ticking;
+  }
+
   status(): AutoUpdateStatus {
     return { enabled: this.saved.enabled === true, ...(this.waiting && this.saved.enabled ? { waiting: this.waiting } : {}), ...(this.saved.last ? { last: this.saved.last } : {}) };
   }

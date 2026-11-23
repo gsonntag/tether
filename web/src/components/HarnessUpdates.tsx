@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Heading } from "@astryxdesign/core/Heading";
-import { statusLabel, type AutoUpdateStatus, type HarnessReport, type HarnessVersion } from "../../../shared/harnessUpdates";
+import { statusLabel, type AutoUpdateStatus, type HarnessReport, type HarnessVersion, type RunnerUpdateStatus } from "../../../shared/harnessUpdates";
 import { rpc } from "../connection";
-import { autoLines, canUpdate, checkedAgo, METHOD_LABELS, runLine, updateAllTargets, updating } from "../harnessUpdates";
+import { autoLines, canUpdate, checkedAgo, METHOD_LABELS, runLine, runnerUpdateLines, updateAllTargets, updating } from "../harnessUpdates";
 import { accessOf } from "../runners";
 import { runnersForPage } from "../settings";
 import { useStore } from "../store";
@@ -11,6 +11,8 @@ import { useNow } from "./useNow";
 
 interface RunnerState {
   report?: HarnessReport;
+  /** the runner's own update (absent from a runner from before it) */
+  self?: RunnerUpdateStatus;
   error?: string;
   checking?: boolean;
 }
@@ -32,8 +34,8 @@ export function HarnessUpdates() {
   const load = useCallback(async (runnerId: string, refresh: boolean, quiet = false) => {
     if (!quiet) patch(runnerId, { checking: true, error: undefined });
     try {
-      const report = await rpc(runnerId, "harnessVersions", { refresh });
-      if (alive.current) patch(runnerId, { report, checking: false, error: undefined });
+      const [report, self] = await Promise.all([rpc(runnerId, "harnessVersions", { refresh }), rpc(runnerId, "runnerAutoUpdate", {}).catch(() => undefined)]);
+      if (alive.current) patch(runnerId, { report, self, checking: false, error: undefined });
     } catch (e) {
       const msg = (e as Error)?.message ?? "";
       if (alive.current) patch(runnerId, { checking: false, error: /doesn't know/.test(msg) ? "This runner can't check for updates. Update and restart it." : msg || "Couldn't check." });
@@ -74,6 +76,13 @@ export function HarnessUpdates() {
       patch(runnerId, { error: (e as Error)?.message || "Couldn't change the setting." });
     }
   };
+  const setSelf = async (runnerId: string, on: boolean) => {
+    try {
+      patch(runnerId, { self: await rpc(runnerId, "runnerAutoUpdate", { on }), error: undefined });
+    } catch (e) {
+      patch(runnerId, { error: (e as Error)?.message || "Couldn't change the setting." });
+    }
+  };
   const isOnline = (id: string) => online.some((r) => r.id === id);
   const targets = updateAllTargets(Object.fromEntries(Object.entries(state).map(([k, v]) => [k, v.report])), isOnline);
   const updateAll = async () => {
@@ -105,6 +114,7 @@ export function HarnessUpdates() {
           {s.error && <div className="t-inline-status error" role="alert">{s.error}</div>}
           {r.online && s.report && <UpdatesTable report={s.report} disabled={disabled} onUpdate={(id) => void update(r.id, id)} />}
           {r.online && s.report?.auto && <AutoUpdate status={s.report.auto} disabled={disabled} now={now} onChange={(on) => void setAuto(r.id, on)} />}
+          {r.online && s.self && <RunnerUpdate status={s.self} disabled={disabled} now={now} onChange={(on) => void setSelf(r.id, on)} />}
           {r.online && !s.report && !s.error && <div className="t-inline-status">Checking…</div>}
         </section>
       );
@@ -181,3 +191,26 @@ function AutoUpdate({ status, disabled, now, onChange }: { status: AutoUpdateSta
     </div>
   );
 }
+
+/** "Update the runner when all agents idle": the runner's setting, what it waits for, and its last update. */
+export function RunnerUpdate({ status, disabled, now, onChange }: { status: RunnerUpdateStatus; disabled: boolean; now: number; onChange: (on: boolean) => void }) {
+  const lines = runnerUpdateLines(status, now);
+  const last = status.last;
+  return (
+    <div className="t-updates-auto">
+      <label className="t-check">
+        <input type="checkbox" checked={status.enabled} disabled={disabled || (!!status.unsupported && !status.enabled)} onChange={(e) => onChange(e.target.checked)} />
+        <span>Update the runner when all agents idle <span className="t-updates-warning">(it restarts on the newest main)</span></span>
+      </label>
+      {lines.state && <div className="t-updates-note">{lines.state}</div>}
+      {lines.last && <div className={`t-updates-result ${last?.ok ? "ok" : "fail"}`}>{lines.last}</div>}
+      {last && !last.ok && last.output && (
+        <details className="t-updates-output">
+          <summary>Output</summary>
+          <pre>{last.output}</pre>
+        </details>
+      )}
+    </div>
+  );
+}
+

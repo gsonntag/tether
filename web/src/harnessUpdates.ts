@@ -1,6 +1,6 @@
 // Settings → Updates: the words and choices the page needs, kept pure for tests.
 
-import type { AutoUpdateStatus, HarnessReport, HarnessVersion, InstallMethod } from "../../shared/harnessUpdates";
+import type { AutoUpdateStatus, HarnessReport, HarnessVersion, InstallMethod, RunnerUpdateStatus } from "../../shared/harnessUpdates";
 
 export const METHOD_LABELS: Record<InstallMethod, string> = {
   native: "Native installer",
@@ -54,4 +54,23 @@ export function autoLines(a: AutoUpdateStatus, now: number): { waiting?: string;
   const l = a.last;
   const parts = l ? [...l.results.map((r) => (r.ok ? `${r.name} ${r.from ?? "?"} → ${r.to ?? "?"}` : `${r.name} failed: ${r.error ?? "unknown error"} (still ${r.from ?? "on its old version"})`)), ...(l.aborted ? [l.aborted] : [])] : [];
   return { ...(waiting ? { waiting } : {}), ...(l ? { last: `Last auto-update ${ago(l.at)}: ${parts.join("; ") || "nothing updated"}` } : {}) };
+}
+
+/** "Update the runner when all agents idle": what the runner runs, what it waits for, and its last update. */
+export function runnerUpdateLines(r: RunnerUpdateStatus, now: number): { state?: string; last?: string } {
+  const ago = (at: number) => checkedAgo(at, now).replace(/^Checked /, "");
+  const sh = (c?: string) => (c ?? "?").slice(0, 7);
+  const behind = r.available ? `${r.available.behind} commit${r.available.behind === 1 ? "" : "s"} behind main` : undefined;
+  const state = r.unsupported
+    ? r.unsupported
+    : r.enabled && r.waiting
+      ? `${behind ? `${behind}. ` : ""}Waiting to update and restart: ${r.waiting.why}.`
+      : behind
+        ? `${behind}.`
+        : r.enabled && r.commit
+          ? `Up to date (${sh(r.commit)}).`
+          : undefined;
+  const l = r.last;
+  const last = l ? (l.ok ? `Last update ${ago(l.at)}: ${sh(l.from)} → ${sh(l.to)}, restarted.` : `Last update ${ago(l.at)} failed: ${l.error ?? "unknown error"} (still ${sh(l.from)}).`) : undefined;
+  return { ...(state ? { state } : {}), ...(last ? { last } : {}) };
 }
