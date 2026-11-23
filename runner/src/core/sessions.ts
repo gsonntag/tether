@@ -105,6 +105,12 @@ const forked = (p: SessionPrefs) => ({ ...(p.forkedFrom ? { forkedFrom: p.forked
 
 const emptyState = (mode: LiveState["mode"] = "stored"): LiveState => ({ mode, status: "idle", requests: [], queue: [] });
 
+/** An archive's cause as logged and kept: a short label, printable, whatever a caller passed. */
+export function archiveCause(by: unknown): string {
+  const t = typeof by === "string" ? by.replace(/[^\x20-\x7e]/g, "").trim().slice(0, 120) : "";
+  return t || "unknown";
+}
+
 export class SessionCore {
   readonly sessions = new Map<string, Session>();
   /** each harness's latest plan limits report: account-wide, so not any one session's */
@@ -620,13 +626,16 @@ export class SessionCore {
    * (archiving): "keep" marks its worktree record kept, saved with the archive (SPEC §4);
    * unarchiving drops the mark, so the next archive asks again. False: it already was.
    */
-  async setArchived(s: Session, archived: boolean, worktree?: ArchiveWorktree): Promise<boolean> {
+  async setArchived(s: Session, archived: boolean, worktree?: ArchiveWorktree, by: string = "unknown"): Promise<boolean> {
     const p = this.o.prefs.get(s.id);
     if ((p.archived === true) === archived) return false;
     const rec = p.worktree;
     const kept = rec && (archived ? worktree === "keep" : false);
+    // What did it, in the log and with the session: an archive nobody remembers can be traced.
+    const cause = archiveCause(by);
+    this.log(`[archive] ${s.id} ${archived ? "archived" : "unarchived"} by ${cause}${p.pinned ? " (was pinned)" : ""}: ${JSON.stringify((s.summary.title ?? "").slice(0, 80))}`);
     // Archiving unpins: an archived session is out of every list.
-    this.o.prefs.set(s.id, { projectPath: s.summary.projectPath, archived: archived || undefined, ...(archived ? { pinned: undefined, pinnedRow: undefined } : {}), ...(rec && !!rec.keep !== !!kept ? { worktree: { ...rec, keep: kept || undefined } } : {}) });
+    this.o.prefs.set(s.id, { projectPath: s.summary.projectPath, archived: archived || undefined, archiveCause: { archived, by: cause, at: this.now() }, ...(archived ? { pinned: undefined, pinnedRow: undefined } : {}), ...(rec && !!rec.keep !== !!kept ? { worktree: { ...rec, keep: kept || undefined } } : {}) });
     this.o.prefs.flush();
     this.touch(s);
     await this.discover();
@@ -652,7 +661,7 @@ export class SessionCore {
     if (pinned && (s.summary.sideOf || this.o.prefs.get(s.id).sideOf)) throw new Error("A side chat can't be pinned: it shows under its session.");
     // TETHER_HIDE_PROJECTS folders are never in the lists.
     if (pinned && this.hide?.test(s.summary.projectPath)) throw new Error("Sessions in this folder aren't listed, so they can't be pinned.");
-    if (pinned && this.o.prefs.get(s.id).archived) await this.setArchived(s, false);
+    if (pinned && this.o.prefs.get(s.id).archived) await this.setArchived(s, false, undefined, "pin");
     // Unarchiving awaited a discovery: another pin call may have landed meanwhile.
     if (!!this.o.prefs.get(s.id).pinned === pinned) return;
     const { title, projectPath, updatedAt } = s.summary;

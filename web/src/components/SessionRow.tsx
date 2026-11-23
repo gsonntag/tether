@@ -109,7 +109,7 @@ export function SessionRow({ row, now, selected, child, runnerLabel, canPin, hid
     setArchiveBusy(true);
     setArchiveError(undefined);
     try {
-      await saveArchived(row.runnerId, row.id, !archived);
+      await saveArchived(row.runnerId, row.id, !archived, undefined, "the sidebar row's button");
       setArchived(!archived);
     } catch (e) {
       setArchiveError(`Archive failed: ${(e as Error).message}`);

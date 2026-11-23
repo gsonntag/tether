@@ -201,7 +201,7 @@ export interface Ops {
    * the answer waits for what the cleanup decided; "keep": Tether never removes it while archived.
    * Without it: the automatic cleanup, as an agent's archive (and an older browser) gets.
    */
-  setSessionArchived: { args: { sessionId: string; archived: boolean; worktree?: ArchiveWorktree }; result: null | { worktree?: WorktreeCleanup } };
+  setSessionArchived: { args: { sessionId: string; archived: boolean; worktree?: ArchiveWorktree; /** where in the app the person did it, for the runner's archive log */ via?: string }; result: null | { worktree?: WorktreeCleanup } };
   /** Puts a main session in the Sidebar's Pinned group (the last of it), or takes it out. Archiving unpins. */
   pinSession: { args: { sessionId: string; pinned: boolean }; result: null };
   runnerSettings: { args: Record<string, never>; result: RunnerSettings };

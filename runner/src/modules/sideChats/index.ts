@@ -51,7 +51,7 @@ export class SideChats {
         await this.ctx.sessions.tell(id, q);
       } catch (e) {
         // Nothing asked, nothing to keep.
-        await this.ctx.sessions.setArchived(id, true).catch(() => {});
+        await this.ctx.sessions.setArchived(id, true, "side chats: its first question failed").catch(() => {});
         throw e;
       }
     return id;
@@ -62,7 +62,7 @@ export class SideChats {
     const look = await this.ctx.sessions.open(id);
     if (!look.summary.sideOf) throw new Error("That isn't a side chat.");
     if (look.status !== "idle" || look.busy) await this.ctx.sessions.interrupt(id).catch((e) => this.ctx.log(`couldn't stop side chat ${id}: ${(e as Error)?.message ?? e}`));
-    await this.ctx.sessions.setArchived(id, true);
+    await this.ctx.sessions.setArchived(id, true, "side chats: closed");
   }
 
   /** Asks side chat `id` for a short summary and returns it as a draft for its session's box. */

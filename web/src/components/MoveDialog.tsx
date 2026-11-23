@@ -39,7 +39,7 @@ export function SessionMenu({ runnerId, session, state, canMove, canFork, onSide
     if (asksWorktree(useStore.getState().runners, runnerId, session)) return useStore.setState({ archiveAsk: { runnerId, session } });
     setArchiveBusy(true);
     try {
-      await setArchived(runnerId, session.id, !session.archived);
+      await setArchived(runnerId, session.id, !session.archived, undefined, "the session menu");
     } catch (e) {
       // Shown once, in the chat, like the session's other errors.
       failedSend(runnerId, session.id, `Archive failed: ${(e as Error).message}`);

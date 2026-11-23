@@ -480,7 +480,7 @@ export class Children {
     }
     this.archiving.add(id);
     try {
-      await this.ctx.sessions.setArchived(id, true);
+      await this.ctx.sessions.setArchived(id, true, cascade ? `peers: its starter ${c?.parent ?? "(unknown)"} is archived` : `peers: tether_archive by its starter ${c?.parent ?? "(unknown)"}`);
     } catch (e) {
       // It may have been archived all the same (a failure after the mark was saved).
       const now = this.ctx.sessions.kept?.(id)?.archived ?? (await this.look(id))?.summary.archived;
@@ -559,7 +559,7 @@ export class Children {
       this.save();
       this.archiving.add(id);
       try {
-        await this.ctx.sessions.setArchived(id, false);
+        await this.ctx.sessions.setArchived(id, false, `peers: its starter ${parent} is back`);
       } catch (e) {
         this.ctx.log(`peers: couldn't unarchive ${id}: ${(e as Error).message}`);
       } finally {
