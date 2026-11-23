@@ -36,7 +36,7 @@ import type { WorkspaceInfo, WorktreeJoined, WorktreeList, WorktreeMade } from "
 import type { Attachment } from "./attachments";
 import type { AccountSource, AzureDeployment, BedrockSettings, BillingSource, CredentialSource, CredentialStatus, SourceChoices } from "./credentials";
 import type { TokenRates } from "./costs";
-import type { AutoUpdateStatus, HarnessReport } from "./harnessUpdates";
+import type { AutoUpdateStatus, HarnessReport, RunnerUpdateStatus } from "./harnessUpdates";
 import type { PartChunk } from "./limits";
 import type { UsageReport } from "./usage";
 import type { HubFrame, TextingHubInfo, TextingHubState } from "./textingHub";
@@ -215,6 +215,8 @@ export interface Ops {
   harnessVersions: { args: { refresh?: boolean }; result: HarnessReport };
   /** "Update all harnesses when all agents idle": `on` turns it on or off (kept on the runner, default off); none just answers */
   harnessAutoUpdate: { args: { on?: boolean }; result: AutoUpdateStatus };
+  /** "Update the runner when all agents idle": `on` turns it on or off (kept on the runner, default off); none just answers */
+  runnerAutoUpdate: { args: { on?: boolean }; result: RunnerUpdateStatus };
   /** Starts updating one harness (one at a time per runner) and answers at once; poll harnessVersions for its output. Running sessions aren't stopped */
   harnessUpdate: { args: { id: string }; result: HarnessReport };
   /**

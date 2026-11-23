@@ -28,6 +28,16 @@ test("the run's line", () => {
   expect(checkedAgo(0, 4 * 60_000)).toBe("Checked 4 min ago");
 });
 
+test("the runner update's lines", async () => {
+  const { runnerUpdateLines } = await import("./harnessUpdates");
+  expect(runnerUpdateLines({ enabled: false }, 0)).toEqual({});
+  expect(runnerUpdateLines({ enabled: true, commit: "abcdef1234" }, 0).state).toBe("Up to date (abcdef1).");
+  expect(runnerUpdateLines({ enabled: true, available: { commit: "b", behind: 3 }, waiting: { since: 0, why: "2 sessions are busy" } }, 0).state).toBe("3 commits behind main. Waiting to update and restart: 2 sessions are busy.");
+  expect(runnerUpdateLines({ enabled: false, unsupported: "The runner isn't run by systemd, so it can't restart itself." }, 0).state).toContain("systemd");
+  expect(runnerUpdateLines({ enabled: true, last: { at: 0, from: "aaaaaaaa", to: "bbbbbbbb", ok: true } }, 60 * 60_000).last).toBe("Last update 1 h ago: aaaaaaa → bbbbbbb, restarted.");
+  expect(runnerUpdateLines({ enabled: true, last: { at: 0, from: "aaaaaaaa", to: "bbbbbbbb", ok: false, error: "bun install failed" } }, 60 * 60_000).last).toBe("Last update 1 h ago failed: bun install failed (still aaaaaaa).");
+});
+
 test("the auto-update's lines", async () => {
   const { autoLines } = await import("./harnessUpdates");
   expect(autoLines({ enabled: false }, 0)).toEqual({});

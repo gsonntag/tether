@@ -60,6 +60,7 @@ export const MANAGE_OPS: ReadonlySet<OpName> = new Set<OpName>([
   // Which sessions may text the owner's phone.
   "setCanText",
   "harnessAutoUpdate",
+  "runnerAutoUpdate",
   "harnessUpdate",
   "harnessVersions",
   "usage",

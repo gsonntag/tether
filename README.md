@@ -279,6 +279,18 @@ systemctl --user restart tether-runner
 A restart stops running turns and continues them when the runner is back. Open requests and queued
 messages survive it.
 
+Or let the runner do it: **Settings → Updates → "Update the runner when all agents idle"** (off by
+default, per runner). The runner then fetches `origin/main` every half hour. When there's a newer
+commit, it waits until every session has been idle for 5 minutes: no turn running, nobody waiting on
+you, no queued messages, no background work or retry countdown. An open terminal doesn't hold it up,
+because tmux outlives the restart. Then it checks the commit out (detached), runs
+`bun install --frozen-lockfile` in `shared/` and `runner/`, and test-builds the runner's entry points.
+If all of that works, it stops the same way SIGTERM does, and systemd's `Restart=always` brings it
+back on the new code. If a step fails, it goes back to the old commit, shows the error under the
+setting, and doesn't try that commit again for a day. It only updates when systemd runs it from a
+pinned checkout: detached HEAD, no local changes, and HEAD on `origin/main`. It logs each step as
+`[updates] runner update: …`.
+
 ## Testing
 
 Unit tests and type checks, per package:

@@ -93,6 +93,21 @@ export interface AutoUpdateStatus {
   last?: { at: number; results: AutoUpdateResult[]; aborted?: string };
 }
 
+/** "Update the runner when all agents idle": off by default; when on, it pulls origin/main and restarts once every session is idle. */
+export interface RunnerUpdateStatus {
+  enabled: boolean;
+  /** the commit it runs */
+  commit?: string;
+  /** why this runner can't update itself (not run by systemd, a branch, local changes) */
+  unsupported?: string;
+  /** a newer commit on origin/main, as of the last fetch */
+  available?: { commit: string; behind: number };
+  /** waiting for every session to be idle */
+  waiting?: { since: number; why: string };
+  /** the last update: it restarted on `to`, or it failed and stayed on `from` */
+  last?: { at: number; from: string; to: string; ok: boolean; error?: string; output?: string };
+}
+
 const NUM = /(\d+)\.(\d+)(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?/;
 
 /** The first version in a CLI's output: "2.1.312 (Claude Code)" → "2.1.312"; "codex-cli 0.164.0" → "0.164.0". */

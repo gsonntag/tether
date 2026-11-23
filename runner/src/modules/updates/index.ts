@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Module } from "..";
 import { AutoUpdater } from "./auto";
 import { FileCompatStore, UpdateChecker } from "./check";
+import { SelfUpdater } from "./self";
 
 export const updatesModule: Module = {
   name: "updates",
@@ -24,7 +25,23 @@ export const updatesModule: Module = {
     ctx.ops.register("harnessUpdate", async (a) => ({ ...(await checker.update(String(a?.id ?? ""))), auto: auto.status() }));
     ctx.ops.register("harnessAutoUpdate", (a) => (typeof a?.on === "boolean" ? auto.set(a.on) : auto.status()));
     const stopAuto = auto.start();
+    // The runner's own update: from the checkout this file is in, restarting as SIGTERM stops it.
+    const self = new SelfUpdater({
+      repo: join(import.meta.dir, "..", "..", "..", ".."),
+      looks: () => ctx.loaded?.() ?? [],
+      otherBusy: () => auto.busy,
+      supported: () => (process.env.INVOCATION_ID ? undefined : "The runner isn't run by systemd, so it can't restart itself."),
+      restart: () => process.kill(process.pid, "SIGTERM"),
+      file: join(ctx.dataDir, "self.json"),
+      log: ctx.log,
+    });
+    ctx.ops.register("runnerAutoUpdate", (a) => (typeof a?.on === "boolean" ? self.set(a.on) : self.status()));
+    let stopSelf: (() => void) | undefined;
+    void self.start().then((stop) => (stopSelf = stop));
     void checker.report().catch(() => {});
-    return stopAuto;
+    return () => {
+      stopAuto();
+      stopSelf?.();
+    };
   },
 };
