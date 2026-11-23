@@ -4,7 +4,7 @@
 // every Photon call gives up after PHOTON.ms (link.ts timed).
 
 import type { ConnectorForm } from "../../../../shared/protocol";
-import { PartialSend, type Connector, type Outbound } from "./connector";
+import { lineOf, PartialSend, type Connector, type Outbound } from "./connector";
 import { readOutgoingImage } from "./images";
 import { openSpectrum, timed, type OpenLink, type TextLink } from "./link";
 import type { TextingStore } from "./store";
@@ -22,6 +22,11 @@ export function imessageConnector(store: TextingStore, open: OpenLink = openSpec
     about: "Phone must be added and verified on Photon dashboard",
     notReady: "Set the phone and the Photon project's id and secret first, and turn texting on.",
     enabled: () => store.enabled(),
+    // The Photon project's number and the person's phone: one conversation.
+    line: () => {
+      const cfg = store.config();
+      return cfg ? lineOf(IMESSAGE, cfg.projectId, cfg.phone) : undefined;
+    },
     configured: () => {
       const st = store.status({ connected: false });
       return st.keysSet && !!st.phoneLast4;

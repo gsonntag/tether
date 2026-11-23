@@ -26,7 +26,7 @@ import { ATTACH_FILE_MAX } from "../../../../shared/limits";
 import { readOutgoingImage } from "./images";
 import type { ConnectorForm } from "../../../../shared/protocol";
 import { registerSecret } from "../../credentials";
-import { PartialSend, type Connector, type Inbound, type InboundFile } from "./connector";
+import { lineOf, PartialSend, type Connector, type Inbound, type InboundFile } from "./connector";
 import { download, Gateway, keepIdentifies, MESSAGE_MAX, Rest, type GatewayOptions } from "./discordGateway";
 import type { TextingStore } from "./store";
 
@@ -210,6 +210,11 @@ export function discordConnector(store: TextingStore, deps: DiscordDeps = {}): C
     notReady: "Set the bot token and your Discord user ID first, and turn Discord on.",
     enabled: () => saved().enabled ?? (!!envToken() && envOwners().length > 0),
     configured: () => !!config(),
+    // The bot: every gateway connection of one bot hears the same DMs.
+    line: () => {
+      const cfg = config();
+      return cfg ? lineOf(DISCORD, cfg.token) : undefined;
+    },
     async open(onInbound, log) {
       const cfg = config();
       if (!cfg) throw new Error("not set up");

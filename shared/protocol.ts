@@ -703,6 +703,8 @@ export interface ConnectorStatus {
   /** everything it needs is set */
   configured: boolean;
   connected: boolean;
+  /** it's left closed: the texting hub (its name) holds the same line, and texts for this runner on it */
+  leftTo?: string;
   lastError?: string;
   about: string;
   forms: ConnectorForm[];

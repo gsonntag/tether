@@ -20,13 +20,35 @@ export interface TextingHubInfo {
   up: boolean;
   /** the connector texts go to takes images */
   images: boolean;
+  /** the lines it holds (TextingHubState.lines) */
+  lines?: string[];
 }
 
 /** What a hub says about itself in its hello (RunnerInfo.textingHub). */
 export interface TextingHubState {
   up: boolean;
   images: boolean;
+  /**
+   * The lines its connectors hold, each a hash of what makes it that line (the Photon project and
+   * phone, the Discord bot): a runner whose own connector holds one of them leaves it to the hub
+   * while the hub can text. Two links on one line would both hear every reply and both answer it,
+   * each with its own session numbers.
+   */
+  lines?: string[];
 }
+
+/** At most this many lines in a hub's hello. */
+export const HUB_LINES_MAX = 8;
+
+/** A hub's lines, checked (none: undefined). */
+export function hubLines(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out = [...new Set(v.filter((x): x is string => typeof x === "string" && /^[a-f0-9]{16,64}$/.test(x)))].slice(0, HUB_LINES_MAX).sort();
+  return out.length ? out : undefined;
+}
+
+/** Whether two hubs' lines have one in common. */
+export const sharesLine = (a: string[] | undefined, b: string[] | undefined): boolean => !!a && !!b && a.some((x) => b.includes(x));
 
 /** One file's bytes travel in pieces this big (base64 makes each frame a third bigger). */
 export const HUB_CHUNK = 256 * 1024;
@@ -83,5 +105,7 @@ export function parseHubFrame(v: unknown): HubFrame | null {
 
 /** A hub state from a hello, or undefined. */
 export function parseHubState(v: unknown): TextingHubState | undefined {
-  return isObj(v) ? { up: v.up === true, images: v.images === true } : undefined;
+  if (!isObj(v)) return undefined;
+  const lines = hubLines(v.lines);
+  return { up: v.up === true, images: v.images === true, ...(lines ? { lines } : {}) };
 }

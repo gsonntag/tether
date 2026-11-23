@@ -402,3 +402,85 @@ describe("one number for every computer", () => {
     await expect(w.call("aws", "deliver", { sessionId: "claude:a", n: 1, text: "y" })).rejects.toThrow("doesn't text for this one");
   });
 });
+
+describe("one line, one runner", () => {
+  const L = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  /** A connector holding line `line`, counting its open links. */
+  function lined(id: string, line: string) {
+    const f = fake(id);
+    const links = { open: 0 };
+    const open = f.c.open.bind(f.c);
+    const c: Connector = {
+      ...f.c,
+      line: () => line,
+      async open(onInbound, log) {
+        const l = await open(onInbound, log);
+        links.open++;
+        return { ...l, stop: async () => void links.open-- };
+      },
+    };
+    return { c, state: f.state, links };
+  }
+
+  test("a spoke's connector on the hub's line closes and its texts go through the hub; it's back when the hub can't text", async () => {
+    const net = app();
+    const hubIm = lined("imessage", L);
+    const spokeIm = lined("imessage", L);
+    const hub = runner("dev", net.port("dev"), { connectors: [hubIm.c], hub: true });
+    const spoke = runner("aws", net.port("aws"), { connectors: [spokeIm.c] });
+    await hub.t.start();
+    await spoke.t.start();
+    hub.add("claude:here");
+    spoke.add("claude:there");
+    expect(spokeIm.links.open).toBe(1);
+    // The hub says which lines it holds.
+    expect(net.ports.get("dev")!.state).toEqual({ up: true, images: false, lines: [L] });
+    net.ports.get("aws")!.gotHub({ id: "dev", name: "dev", up: true, images: false, lines: [L] });
+    await tick(20);
+    expect(spokeIm.links.open).toBe(0);
+    expect(spoke.t.messaging().connectors[0]).toMatchObject({ connected: false, leftTo: "dev" });
+    // Its text is numbered by the hub and goes on the hub's link only.
+    await spoke.t.tell("claude:there", "finished", "done", { always: true });
+    expect(spokeIm.state.sent).toEqual([]);
+    expect(words(hubIm.state.sent.at(-1))).toBe("[1] done");
+    // The reply is heard once, by the hub, and reaches the spoke's session.
+    hubIm.state.hear({ text: "pause analyses" });
+    await tick(20);
+    expect(spoke.told.at(-1)?.[0]).toBe("claude:there");
+    expect(hubIm.state.sent.length).toBe(1);
+    // The hub can't text now: the spoke's own link is back.
+    net.ports.get("aws")!.gotHub({ id: "dev", name: "dev", up: false, images: false, lines: [L] });
+    await tick(20);
+    expect(spokeIm.links.open).toBe(1);
+    expect(spoke.t.messaging().connectors[0]!.leftTo).toBeUndefined();
+    await spoke.t.stop();
+    await hub.t.stop();
+  });
+
+  test("a connector on another line stays open beside the hub", async () => {
+    const net = app();
+    const spokeIm = lined("imessage", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    const spoke = runner("aws", net.port("aws"), { connectors: [spokeIm.c] });
+    await spoke.t.start();
+    net.ports.get("aws")!.gotHub({ id: "dev", name: "dev", up: true, images: false, lines: [L] });
+    await tick(20);
+    expect(spokeIm.links.open).toBe(1);
+    // A settings change reconnects it; on the hub's line now, it stays closed.
+    (spokeIm.c as any).line = () => L;
+    await spoke.t.restart("imessage");
+    expect(spokeIm.links.open).toBe(0);
+    await spoke.t.stop();
+  });
+
+  test("a hub told another hub holds its line leaves it, and still says the line is its own", async () => {
+    const net = app();
+    const im = lined("imessage", L);
+    const b = runner("b", net.port("b"), { connectors: [im.c], hub: true });
+    await b.t.start();
+    net.ports.get("b")!.gotHub({ id: "a", name: "a", up: true, images: false, lines: [L] });
+    await tick(20);
+    expect(im.links.open).toBe(0);
+    expect(net.ports.get("b")!.state).toEqual({ up: false, images: false, lines: [L] });
+    await b.t.stop();
+  });
+});

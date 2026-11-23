@@ -69,7 +69,7 @@ export function TextingSettings({ runnerId }: { runnerId: string }) {
     </p>
     {status.via && (
       <p className="t-inline-status">
-        Texts from this computer go through {status.via.name}, which texts for all your computers{status.via.up ? "." : ", but it can't send texts right now."} A messaging app turned on below comes first.
+        Texts from this computer go through {status.via.name}, which texts for all your computers{status.via.up ? "." : ", but it can't send texts right now."} A messaging app turned on below comes first, unless it's the same one {status.via.name} texts on: that one is left to {status.via.name}, so only one computer answers your replies.
       </p>
     )}
     {!legacy && (
@@ -104,7 +104,7 @@ function Connector({ c, ops, disabled, run }: { c: ConnectorStatus; ops: { set: 
     setNote(undefined);
     return run(() => ops.set(c.id, args), setError);
   };
-  const state = !c.enabled ? "Off" : !c.configured ? "Not set up" : c.connected ? "Connected" : "Not connected";
+  const state = !c.enabled ? "Off" : !c.configured ? "Not set up" : c.leftTo ? `Through ${c.leftTo}` : c.connected ? "Connected" : "Not connected";
   return (
     <section className="t-credential-harness" aria-label={c.label}>
       <Heading level={3}>{c.label}</Heading>

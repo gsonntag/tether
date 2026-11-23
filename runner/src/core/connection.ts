@@ -8,7 +8,7 @@
 
 import { capEvent, guardFrame } from "../../../shared/limits";
 import { redactValue } from "../credentials";
-import { parseHubFrame, type HubFrame, type TextingHubInfo } from "../../../shared/textingHub";
+import { hubLines, parseHubFrame, type HubFrame, type TextingHubInfo } from "../../../shared/textingHub";
 import { CLOSE_PROTOCOL, CLOSE_REPLACED, CLOSE_RUNNER_ID, type PushKeys, type RunnerInfo, type RunnerToServer, type ServerToRunner } from "../../../shared/protocol";
 
 export interface ConnectionOptions {
@@ -50,7 +50,8 @@ function textHubOf(h: unknown): TextingHubInfo | null {
   if (!h || typeof h !== "object") return null;
   const v = h as Record<string, unknown>;
   if (typeof v.id !== "string" || !v.id) return null;
-  return { id: v.id, name: typeof v.name === "string" && v.name ? v.name.slice(0, 200) : v.id, up: v.up === true, images: v.images === true };
+  const lines = hubLines(v.lines);
+  return { id: v.id, name: typeof v.name === "string" && v.name ? v.name.slice(0, 200) : v.id, up: v.up === true, images: v.images === true, ...(lines ? { lines } : {}) };
 }
 
 /** 1 s, 2 s, 4 s … up to 30 s, each ±20% so a fleet of runners doesn't reconnect in lockstep. */

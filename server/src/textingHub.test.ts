@@ -19,13 +19,13 @@ class FakeSocket implements Socket {
   }
 }
 
-const info = (id: string, hub?: { up: boolean; images?: boolean }): Omit<RunnerInfo, "connectedAt"> => ({ id, name: id, hostname: "h", version: "0", protocol: PROTOCOL_VERSION, harnesses: [], ...(hub ? { textingHub: { up: hub.up, images: !!hub.images } } : {}) });
+const info = (id: string, hub?: { up: boolean; images?: boolean; lines?: string[] }): Omit<RunnerInfo, "connectedAt"> => ({ id, name: id, hostname: "h", version: "0", protocol: PROTOCOL_VERSION, harnesses: [], ...(hub ? { textingHub: { up: hub.up, images: !!hub.images, ...(hub.lines ? { lines: hub.lines } : {}) } } : {}) });
 
 function setup(owners?: Map<string, Set<string>>) {
   let now = 1000;
   const relay = new Relay({ now: () => now++, owners: owners ?? null });
   const socks = new Map<string, FakeSocket>();
-  const join = (id: string, hub?: { up: boolean; images?: boolean }, token = "runner") => {
+  const join = (id: string, hub?: { up: boolean; images?: boolean; lines?: string[] }, token = "runner") => {
     const s = socks.get(id) ?? new FakeSocket();
     if (!socks.has(id)) relay.addRunner(s, token);
     socks.set(id, s);
@@ -94,5 +94,26 @@ describe("the texting hub", () => {
     join("runner-a", { up: true }, "runner-a");
     expect(mine.take("textHub").at(-1).hub.id).toBe("runner-a");
     expect(theirs.take("textHub")).toEqual([]);
+  });
+
+  test("a hub's lines go to its spokes; of two hubs holding one line, the lower id texts for the other", () => {
+    const { join } = setup();
+    const L = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const aws = join("aws");
+    const b = join("b", { up: true, lines: [L] });
+    expect(aws.take("textHub")).toEqual([{ t: "textHub", hub: { id: "b", name: "b", up: true, images: false, lines: [L] } }]);
+    // Another hub on another line: each stays its own.
+    const c = join("c", { up: true, lines: ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"] });
+    expect(b.take("textHub")).toEqual([]);
+    expect(c.take("textHub")).toEqual([]);
+    // One on the same line, with a lower id: it texts for the other, whichever can text now.
+    const a = join("a", { up: false, lines: [L] });
+    expect(a.take("textHub")).toEqual([]);
+    expect(b.take("textHub")).toEqual([{ t: "textHub", hub: { id: "a", name: "a", up: false, images: false, lines: [L] } }]);
+    join("a", { up: true, lines: [L] });
+    expect(b.take("textHub").at(-1).hub).toMatchObject({ id: "a", up: true });
+    // It let the line go (another project now): the other is its own hub again.
+    join("a", { up: true, lines: ["cccccccccccccccccccccccccccccccc"] });
+    expect(b.take("textHub")).toEqual([{ t: "textHub", hub: null }]);
   });
 });
