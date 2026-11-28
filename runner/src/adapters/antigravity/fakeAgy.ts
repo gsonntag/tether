@@ -5,9 +5,28 @@ export {};
 // until cancelled; anything else answers "pong".
 
 const config = (model: string, effort: string, mode: string) => [
-  { id: "model", category: "model", type: "select", currentValue: model, options: [{ value: "gemini-3.8-flash", name: "Gemini 3.8 Flash" }, { value: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Thinking)" }] },
-  { id: "thought_level", category: "thought_level", type: "select", currentValue: effort, options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }] },
+  {
+    id: "model",
+    category: "model",
+    type: "select",
+    currentValue: model,
+    options: [
+      { value: "gemini-3.8-flash", name: "Gemini 3.8 Flash" },
+      { value: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Thinking)" },
+      { value: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
+    ],
+  },
+  ...(model === "gpt-oss-120b-medium"
+    ? []
+    : [{ id: "thought_level", category: "thought_level", type: "select", currentValue: effort, options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }] }]),
   { id: "mode", category: "mode", type: "select", currentValue: mode, options: [{ value: "default", name: "Default" }, { value: "accept-edits", name: "Accept edits" }, { value: "plan", name: "Plan" }] },
+];
+const availableModels = [
+  { modelId: "gemini-3.8-flash-low", name: "Gemini 3.8 Flash (Low)" },
+  { modelId: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)" },
+  { modelId: "claude-sonnet-4-6-low", name: "Claude Sonnet 4.6 (Low)" },
+  { modelId: "claude-sonnet-4-6-high", name: "Claude Sonnet 4.6 (High)" },
+  { modelId: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
 ];
 let model = "gemini-3.8-flash";
 let effort = "high";
@@ -92,16 +111,23 @@ for await (const chunk of Bun.stdin.stream()) {
     const ok = (result: unknown) => out({ jsonrpc: "2.0", id: m.id, result });
     switch (m.method) {
       case "initialize":
-        ok({ protocolVersion: 1, agentCapabilities: { loadSession: true }, agentInfo: { name: "Antigravity ACP Server", version: "1.5.13" } });
+        ok({ protocolVersion: 1, agentCapabilities: { loadSession: true }, agentInfo: { name: "Antigravity ACP Server", version: "1.5.19" } });
         break;
       case "session/new":
-        ok({ sessionId: crypto.randomUUID(), modes: { currentModeId: mode }, configOptions: config(model, effort, mode) });
+        ok({ sessionId: crypto.randomUUID(), models: { availableModels, currentModelId: `${model}-${effort}` }, modes: { currentModeId: mode }, configOptions: config(model, effort, mode) });
         break;
       case "session/load":
+        if (m.params?.sessionId === "00000000-0000-4000-8000-000000000000") {
+          out({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: "Session not found: 00000000-0000-4000-8000-000000000000" } });
+          break;
+        }
         loaded = m.params;
         update(m.params.sessionId, { sessionUpdate: "user_message_chunk", content: { type: "text", text: "earlier" } });
         update(m.params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "before" } });
-        ok({ sessionId: m.params.sessionId, modes: { currentModeId: mode }, configOptions: config(model, effort, mode), _meta: { antigravity: { tier: { name: "Google AI Pro" } } } });
+        ok({ sessionId: m.params.sessionId, models: { availableModels, currentModelId: `${model}-${effort}` }, modes: { currentModeId: mode }, configOptions: config(model, effort, mode), _meta: { antigravity: { tier: { name: "Google AI Pro" } } } });
+        break;
+      case "session/list":
+        ok({ sessions: [] });
         break;
       case "session/set_config_option":
         if (m.params.configId === "model") model = m.params.value;

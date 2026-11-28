@@ -145,6 +145,7 @@ export const realCompatDeps: CompatDeps = {
   run: (argv, opts) => runCommand(argv, { timeoutMs: opts?.timeoutMs ?? 15_000, env: opts?.env }),
   async initAcp(bin: string) {
     const csrfToken = process.env.ANTIGRAVITY_CSRF_TOKEN || randomUUID();
+    const tmp = mkdtempSync(join(tmpdir(), "tether-agy-init-"));
     const c = new AcpClient({
       argv: [bin, "acp"],
       cwd: homedir(),
@@ -152,16 +153,24 @@ export const realCompatDeps: CompatDeps = {
       name: "Antigravity",
       onUpdate: () => {},
     });
+    let sid: string | undefined;
     try {
       await c.initialize();
       const version = c.agent?.version;
       const capabilities = c.agent?.capabilities;
-      const loadRes = await c.call("session/load", { sessionId: "00000000-0000-4000-8000-000000000000", cwd: homedir(), mcpServers: [] });
+      // agy 1.5.19 rejects session/load for unknown session ids: create a throwaway session to verify session/new, session/load, and configOptions.
+      const created = await c.call("session/new", { cwd: tmp, mcpServers: [] });
+      sid = typeof created?.sessionId === "string" ? created.sessionId : undefined;
+      if (!sid) throw new Error("session/new returned no sessionId");
+      const loadRes = await c.call("session/load", { sessionId: sid, cwd: tmp, mcpServers: [] });
       const listRes = await c.call("session/list", {});
       const listCount = Array.isArray(listRes?.sessions) ? listRes.sessions.length : undefined;
-      return { version, capabilities, configOptions: loadRes?.configOptions, listCount };
+      await c.call("session/close", { sessionId: sid }, 5000).catch(() => {});
+      return { version, capabilities, configOptions: loadRes?.configOptions ?? created?.configOptions, listCount };
     } finally {
       await c.close().catch(() => {});
+      if (sid) discardStore(sid);
+      rmSync(tmp, { recursive: true, force: true });
     }
   },
   async testStoreAndFork() {

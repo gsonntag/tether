@@ -291,3 +291,26 @@ test("AgyDriver reports plan to sink when keptPlan is present", async () => {
     await d.close();
   }
 });
+
+test("switching to a model without thinking levels clears effort, and starting with one skips setEffort", async () => {
+  const sink = new TestSink();
+  const d = await AgyDriver.open("s-fixed-model", dir, { model: "gemini-3.8-flash", effort: "high" }, sink);
+  try {
+    expect(sink.lastWith("effort")?.effort).toBe("high");
+    await d.setModel("gpt-oss-120b-medium");
+    expect(sink.states.at(-1)).toMatchObject({ model: "gpt-oss-120b-medium", effort: undefined });
+  } finally {
+    await d.close();
+  }
+
+  const sink2 = new TestSink();
+  const d2 = await AgyDriver.open("s-fixed-start", dir, { model: "gpt-oss-120b-medium", effort: "high" }, sink2);
+  try {
+    expect(sink2.lastWith("model")?.model).toBe("gpt-oss-120b-medium");
+    expect(sink2.lastWith("model")?.effort).toBeUndefined();
+    // Said explicitly, so an effort left in Tether's state from an earlier run is cleared.
+    expect("effort" in (sink2.lastWith("model") ?? {})).toBe(true);
+  } finally {
+    await d2.close();
+  }
+});

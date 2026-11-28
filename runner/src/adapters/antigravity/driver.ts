@@ -111,6 +111,8 @@ export class AgyDriver implements Driver {
   /** open permission requests, aborted when the turn ends */
   private asks = new Set<AbortController>();
   private settings: { model?: string; effort?: string; permissionMode?: string } = {};
+  /** thinking levels offered for the currently selected model (empty when the model takes no effort) */
+  private offeredEfforts?: string[];
   private commandList: { name: string; description?: string }[] = [];
   /** the plan file this turn wrote for review (plan mode) */
   private plan?: { path: string; toolId: string; content?: string };
@@ -184,12 +186,13 @@ export class AgyDriver implements Driver {
       const r: any = await this.client.call("session/load", { sessionId: this.nativeId, cwd: this.projectPath, mcpServers, ...(append ? { _meta: { antigravity: { systemPrompt: { append } } } } : {}) }, START_TIMEOUT_MS);
       noteOpened(r);
       this.t.drain();
+      this.recordOfferedEfforts(r?.configOptions);
       this.note(settingsOf(r?.configOptions, typeof r?.modes?.currentModeId === "string" ? r.modes.currentModeId : undefined));
       // The session's settings as Tether shows them: they go to Antigravity before the first prompt.
       // A side chat is always in Antigravity's default mode, which asks before anything that changes something.
       const mode = this.readOnly ? "default" : opts.permissionMode;
       if (opts.model && opts.model !== "default" && opts.model !== this.settings.model) await this.setModel(opts.model);
-      if (opts.effort && opts.effort !== this.settings.effort) await this.setEffort(opts.effort);
+      if (opts.effort && opts.effort !== this.settings.effort && (this.offeredEfforts === undefined || this.offeredEfforts.length > 0)) await this.setEffort(opts.effort);
       if (mode && mode !== this.settings.permissionMode) await this.setPermissionMode(mode);
     } catch (e: any) {
       this.closed = true;
@@ -200,7 +203,9 @@ export class AgyDriver implements Driver {
     this.live = true;
     reader.forget();
     const context = seenContext.get(this.nativeId);
-    this.sink.state({ ...this.settings, billing: billingOf(), ...(context ? { context } : {}) });
+    // A model with no thinking levels clears any effort Tether still shows from before.
+    const noEffort = this.offeredEfforts?.length === 0 ? { effort: undefined } : {};
+    this.sink.state({ ...this.settings, ...noEffort, billing: billingOf(), ...(context ? { context } : {}) });
     void this.pollQuota();
   }
 
@@ -216,28 +221,43 @@ export class AgyDriver implements Driver {
     } catch {}
   }
 
+  private recordOfferedEfforts(options: any[] | undefined) {
+    if (!Array.isArray(options)) return;
+    const tl = options.find((c) => c?.id === "thought_level" || c?.category === "thought_level");
+    this.offeredEfforts = Array.isArray(tl?.options)
+      ? tl.options.map((o: any) => (typeof o?.value === "string" ? o.value : "")).filter(Boolean)
+      : [];
+  }
+
   /**
    * Model and effort from a settings snapshot. Not the mode: a snapshot can arrive after a mode
    * change and carry the old one (checked on 1.5.13), so the mode comes only from
    * `current_mode_update` and from what Tether sets.
    */
   private noteConfig(options: any[] | undefined) {
+    this.recordOfferedEfforts(options);
     const { permissionMode: _, ...rest } = settingsOf(options);
-    this.note(rest);
+    const clearEffort = Array.isArray(options) && this.offeredEfforts?.length === 0 && this.settings.effort !== undefined;
+    this.note(rest, clearEffort);
   }
 
   /** Settings as Antigravity reports them: what the session shows. */
-  private note(s: { model?: string; effort?: string; permissionMode?: string }) {
+  private note(s: { model?: string; effort?: string; permissionMode?: string }, clearEffort = false) {
     // Under Bypass permissions Antigravity reports accept-edits; any other mode it reports ends the bypass.
     if (s.permissionMode !== undefined && this.bypass) {
       if (s.permissionMode === "accept-edits" || s.permissionMode === BYPASS) s = { ...s, permissionMode: BYPASS };
       else this.bypass = false;
     }
-    const changed = (Object.keys(s) as (keyof typeof s)[]).filter((k) => s[k] !== undefined && s[k] !== this.settings[k]);
-    if (!changed.length) return;
-    this.settings = { ...this.settings, ...s };
+    const patch: Partial<{ model?: string; effort?: string; permissionMode?: string }> = {};
+    for (const k of Object.keys(s) as (keyof typeof s)[]) {
+      if (s[k] !== undefined && s[k] !== this.settings[k]) patch[k] = s[k];
+    }
+    if (clearEffort && s.effort === undefined && this.settings.effort !== undefined) patch.effort = undefined;
+    if (!Object.keys(patch).length) return;
+    this.settings = { ...this.settings, ...patch };
+    if (patch.effort === undefined && "effort" in patch) delete this.settings.effort;
     seenSettings.set(this.nativeId, this.settings);
-    if (this.live) this.sink.state(Object.fromEntries(changed.map((k) => [k, s[k]])));
+    if (this.live) this.sink.state(patch);
   }
 
   private update(u: AcpUpdate) {

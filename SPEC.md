@@ -450,7 +450,7 @@ relay directly.
 
 ### Antigravity
 
-Google's coding agent, through its CLI `agy` (checked on 1.5.13). Everything goes through the
+Google's coding agent, through its CLI `agy` (checked on 1.5.19). Everything goes through the
 **Agent Client Protocol** (ACP: JSON-RPC 2.0, a message per line, over stdio) that the hidden
 `agy acp` serves. The client in `adapters/acp/` is generic, so a later ACP harness can reuse it.
 

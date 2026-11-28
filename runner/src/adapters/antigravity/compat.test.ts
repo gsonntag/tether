@@ -155,6 +155,14 @@ describe("the real checks", () => {
     expect(await realCompatDeps.testLiveTurn!(bin)).toBe(true);
   });
 
+  test("initAcp verifies session/new, session/load, configOptions, and session/list even when unknown session/load is rejected", async () => {
+    const bin = script("agy-acp-init", `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fakeAgy.ts")}"\n`);
+    const acp = await realCompatDeps.initAcp!(bin);
+    expect(acp.version).toBe("1.5.19");
+    expect(acp.configOptions?.some((o: any) => o.id === "model")).toBe(true);
+    expect(acp.listCount).toBe(0);
+  });
+
   test("subagent first steps on disk: each must decode; other conversations don't count", () => {
     const dir = mkdtempSync(join(scratch, "convs-"));
     const store = (id: string, step: string) => {

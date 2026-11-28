@@ -207,7 +207,8 @@ export const antigravityAdapter: Adapter = {
   resume: (nativeId, projectPath, opts, sink) => AgyDriver.open(nativeId, projectPath, opts, sink),
 
   async listModels() {
-    return modelList(await reader.config().catch(() => []));
+    const info = await reader.configInfo().catch(() => ({ config: [], availableModels: undefined }));
+    return modelList(info.config, info.availableModels);
   },
 
   usageStores: () => [{ dir: agyUsageDir }],
