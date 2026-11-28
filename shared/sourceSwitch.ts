@@ -4,14 +4,14 @@ import { isScheduled } from "./schedule";
 export type SourceSwitchBlocker = "terminal" | "turn" | "background" | "restart" | "queue";
 
 /** Activity that means the confirmed source can still be drawing the session's current work. */
-export function sourceSwitchBlocker(state: LiveState): SourceSwitchBlocker | undefined {
+export function sourceSwitchBlocker(state: LiveState, ignoreQueueIds?: ReadonlySet<string>): SourceSwitchBlocker | undefined {
   if (state.mode === "terminal" || state.terminal) return "terminal";
   if (state.status !== "idle" || state.requests.length > 0) return "turn";
   const backgroundCommands = state.turnSettings?.who === "background" ? state.turnSettings.count ?? 1 : 0;
   if ((state.backgroundSubagents ?? 0) > 0 || (state.shellsRunning ?? 0) > 0 || backgroundCommands > 0) return "background";
   if (state.restartWait) return "restart";
   // Messages about to go (not ones scheduled for later, which follow the session to the new source).
-  if (state.queue.some((m) => (isScheduled(m) ? !m.held && m.at! <= Date.now() : !state.queueHeld))) return "queue";
+  if (state.queue.some((m) => !ignoreQueueIds?.has(m.id) && (isScheduled(m) ? !m.held && m.at! <= Date.now() : !state.queueHeld))) return "queue";
   return undefined;
 }
 

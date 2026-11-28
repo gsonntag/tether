@@ -28,6 +28,8 @@ export interface StartOpts {
    * person's own settings allow. A harness whose read-only mode is enforced by itself needs nothing more.
    */
   readOnly?: boolean;
+  /** Provisional fallback start: adapter holds disk writes (billing/plans) until driver.commit() (O4). */
+  provisional?: boolean;
 }
 
 /**
@@ -47,11 +49,19 @@ export type RequestAsk = Omit<Request, "id" | "sessionId" | "openedAt" | "inputT
  */
 export const RESOLVED_ELSEWHERE = "resolved-elsewhere";
 
-/** Confirmed identity of the account that produced a usage window (R5'/G4). */
+/** Confirmed identity of the account that produced a usage window (R5'/G4/O3'). */
 export interface PlanIdentity {
-  accountId: string;
+  accountId?: string;
   email: string;
   organization: string;
+}
+
+/** Thrown when a queued drain collides with an in-flight fallback hop or handoff gate (Q1'). */
+export class QueueDeferred extends Error {
+  constructor() {
+    super("Deferred until fallback hop finishes.");
+    this.name = "QueueDeferred";
+  }
 }
 
 /** Hooks passed into Driver.send for provisional fallback hops (R6.4). */
@@ -136,6 +146,8 @@ export interface Driver {
   send(text: string, attachments?: Attachment[], shown?: StartOpts, hooks?: SendHooks): Promise<void>;
   /** Resolves once the started driver is ready to accept input (startup-ready commit for no-resend hops). */
   ready?(): Promise<void>;
+  /** Flushes adapter-side writes held during a provisional start (O4). */
+  commit?(): void;
   /** the harness takes the shown settings with each turn (turn/start), so a turn Tether starts runs exactly them */
   readonly pinsSettings?: boolean;
   /** a message into the running turn (capabilities.canSteer) */

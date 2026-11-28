@@ -7,7 +7,8 @@ import { query, type CanUseTool, type HookCallback, type PermissionMode, type Qu
 import { randomUUID } from "node:crypto";
 import type { Attachment } from "../../../../shared/attachments";
 import { tetherOrigin } from "../../../../shared/fromTether";
-import { UNKNOWN_BILLING, type ContextUse, type Msg, type Part, type ToolPart } from "../../../../shared/transcript";
+import { UNKNOWN_BILLING, type Billing, type ContextUse, type Msg, type Part, type PlanUsage, type ToolPart } from "../../../../shared/transcript";
+import type { BillingSource } from "../../../../shared/credentials";
 import { redact, type CredentialSnapshot } from "../../credentials";
 import { nativeImages } from "../../core/attachments";
 import { existsSync } from "node:fs";
@@ -20,7 +21,7 @@ import { commandList, lastGoalStatus } from "./commands";
 import { sessionFile } from "./paths";
 import { movedReadRule } from "./move";
 import { canonicalCommand } from "./content";
-import { keepBilling } from "./context";
+import { keepBilling, keepPlan, noteWindows } from "./context";
 import { claudeAuthSettings, claudeEnv, claudeKeyLease, confirmClaudeBilling, expectedClaudeIdentity } from "./credentials";
 import { claudeAsk, claudeResult } from "./requests";
 import { ClaudeStream, type SessionCron } from "./stream";
@@ -70,6 +71,11 @@ export class ClaudeDriver implements Driver {
   private lease?: ReturnType<typeof claudeKeyLease>;
   private costs?: ClaudeCostCounter;
   private costSessionId?: string;
+  /** O4: hold adapter-side disk writes (keepBilling, keepPlan, noteWindows) until commit() during provisional starts. */
+  private provisional = false;
+  private heldBilling?: Billing;
+  private heldPlans: { plan: PlanUsage; source: BillingSource; identity?: PlanIdentity }[] = [];
+  private heldWindows: { modelUsage: unknown; sessionId: string; model: string | undefined }[] = [];
   onExit?: (error?: string) => void;
 
   private constructor(
@@ -84,6 +90,24 @@ export class ClaudeDriver implements Driver {
       extraAccount: () => isAccountSource(this.credential?.source),
       planSource: () => this.credential?.source ?? "subscription",
       planIdentity: () => this.accountIdentity,
+      persistPlan: (plan, source, identity) => {
+        if (this.closed) return;
+        if (this.provisional) {
+          this.heldPlans.push({ plan, source, identity });
+        } else if (identity) {
+          keepPlan(plan, source, identity);
+        } else if (!isAccountSource(source)) {
+          keepPlan(plan);
+        }
+      },
+      persistWindows: (modelUsage, sessionId, model) => {
+        if (this.closed) return;
+        if (this.provisional) {
+          this.heldWindows.push({ modelUsage, sessionId, model });
+        } else {
+          noteWindows(modelUsage, sessionId, model);
+        }
+      },
       failed: () => this.failed(),
       interrupted: () => this.interrupting,
       goalStatus: (id) => this.goalStatus(id),
@@ -101,6 +125,7 @@ export class ClaudeDriver implements Driver {
 
   private async start(opts: StartOpts, resume: boolean) {
     this.credential = opts.credential;
+    this.provisional = !!opts.provisional;
     this.expectedAccount = await expectedClaudeIdentity(CLAUDE_BIN ?? "claude", opts.credential);
     this.lease = claudeKeyLease(opts.credential, (cost) => this.sink.cost?.(cost));
     const canUseTool: CanUseTool = async (tool, input, o) => {
@@ -215,8 +240,27 @@ export class ClaudeDriver implements Driver {
 
   private async noteBilling() {
     const billing = await this.confirmAccount();
-    keepBilling(this.nativeId, billing);
+    if (this.closed) return;
+    if (this.provisional) this.heldBilling = billing;
+    else keepBilling(this.nativeId, billing);
     this.sink.state({ billing });
+  }
+
+  /** Flushes billing/plan writes held during a provisional start (O4). */
+  commit() {
+    if (!this.provisional || this.closed) return;
+    this.provisional = false;
+    if (this.heldBilling) {
+      keepBilling(this.nativeId, this.heldBilling);
+      this.heldBilling = undefined;
+    }
+    for (const { plan, source, identity } of this.heldPlans.splice(0)) {
+      if (identity) keepPlan(plan, source, identity);
+      else if (!isAccountSource(source)) keepPlan(plan);
+    }
+    for (const { modelUsage, sessionId, model } of this.heldWindows.splice(0)) {
+      noteWindows(modelUsage, sessionId, model);
+    }
   }
 
   private async contextNow(): Promise<ContextUse | undefined> {
@@ -412,6 +456,9 @@ export class ClaudeDriver implements Driver {
   async close() {
     if (this.closed) return;
     this.closed = true;
+    this.heldBilling = undefined;
+    this.heldPlans.length = 0;
+    this.heldWindows.length = 0;
     this.input.end();
     try {
       this.q.close();

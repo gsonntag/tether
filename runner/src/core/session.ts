@@ -21,6 +21,31 @@ export interface ProvisionalHop {
   successor?: Session;
 }
 
+export interface FallbackCarrySnapshot {
+  chain: NonNullable<LiveState["fallbackChain"]>;
+  index: number;
+  before: {
+    active?: number;
+    nextSource?: string;
+    nextFallbackSettings?: StartOpts;
+    nextModel?: string;
+    nextBilling?: LiveState["nextBilling"];
+    nextDeployment?: string;
+    lastKey?: LiveState["lastKey"];
+    sourceSwitchFailed?: boolean;
+  };
+  written: {
+    active?: number;
+    nextSource?: string;
+    nextFallbackSettings?: StartOpts;
+    nextModel?: string;
+    nextBilling?: LiveState["nextBilling"];
+    nextDeployment?: string;
+    lastKey?: LiveState["lastKey"];
+    sourceSwitchFailed?: boolean;
+  };
+}
+
 export class Session {
   retry?: SavedRetry;
   retryTimer?: ReturnType<typeof setTimeout>;
@@ -86,6 +111,14 @@ export class Session {
   shellsRunning = 0;
   /** In-flight provisional fallback hop (R1''', R1'''', R6). */
   provisionalHop?: ProvisionalHop;
+  /** Snapshot for a deferred no-resend fallback carry so next-message failure restores & backs off (O2'). */
+  fallbackCarrySnapshot?: FallbackCarrySnapshot;
+  /** Provisional successor session: global side effects are held until replacement commit (G3''). */
+  provisional = false;
+  /** In-memory queue gate held on both original and successor across commit/handOver (Q1'). */
+  handoffGate = false;
+  /** Held global side effects while provisional (replayed or dropped at commit/discard, G3''). */
+  heldSideEffects: (() => void)[] = [];
   /** Defer idle/limit processing on a provisional successor until replaceWith transfers fallback state. */
   deferTurnEnd = false;
   deferredTurnEnds: (() => void)[] = [];

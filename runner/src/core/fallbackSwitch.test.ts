@@ -10,7 +10,7 @@ import { keepPlan, keptPlanEntries, windowsIn } from "../adapters/claude/context
 import { claudeAccountLabel, claudeEnv } from "../adapters/claude/credentials";
 import { saveConfig } from "../config";
 import { CredentialStore } from "../credentials";
-import { SendCancelled, type PlanIdentity } from "./adapter";
+import { QueueDeferred, SendCancelled, type PlanIdentity } from "./adapter";
 import { RequestBroker } from "./broker";
 import { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
@@ -444,12 +444,12 @@ function setupAccounts(opts: {
     });
   }
   const accX = accounts.create();
-  const idX: PlanIdentity = { accountId: "1".repeat(64), email: "x@example.test", organization: "Org X" };
+  const idX = { accountId: "1".repeat(64), email: "x@example.test", organization: "Org X" };
   accounts.save(accX, idX, 1_000);
   const accY = accounts.create();
-  const idY: PlanIdentity = { accountId: "2".repeat(64), email: "y@example.test", organization: "Org Y" };
+  const idY = { accountId: "2".repeat(64), email: "y@example.test", organization: "Org Y" };
   accounts.save(accY, idY, 2_000);
-  const idMain: PlanIdentity = { accountId: "0".repeat(64), email: "main@example.test", organization: "Main Org" };
+  const idMain = { accountId: "0".repeat(64), email: "main@example.test", organization: "Main Org" };
 
   const claude = new FakeAdapter("claude");
   claude.capabilities = { ...claude.capabilities, sourceSwitch: true, move: { import: "native" } };
@@ -872,10 +872,13 @@ describe("multi-account fallback hops & provisionalStart", () => {
       await t.live.send("claude:one", "go");
       await onSecond;
       const s = await t.core.open("claude:one");
-      const snapshotBefore = JSON.stringify(s.state);
+      expect(s.state.switching).toEqual({ step: 0 });
+      const { switching: _sw, ...stateBefore } = s.state;
+      const snapshotBefore = JSON.stringify(stateBefore);
       await t.live.interrupt("claude:one");
       releaseStart();
       await Bun.sleep(40);
+      expect(s.state.switching).toBeUndefined();
       expect(JSON.stringify(s.state)).toBe(snapshotBefore);
       expect(t.prefs.get("claude:one").source).toBe("subscription");
       expect(t.prefs.get("claude:one").fallbackProgress?.steps[0]?.retryAt).toBeUndefined();
@@ -985,6 +988,7 @@ describe("multi-account fallback hops & provisionalStart", () => {
       expect(t.claude.drivers).toHaveLength(1); // still waiting on teardown!
       releaseClose();
       await racingSend;
+      await waitUntil(() => t.claude.drivers.length === 2 && t.claude.drivers[1]!.sent.includes("after hop"));
       expect(t.claude.drivers).toHaveLength(2);
       expect(t.claude.drivers[1]!.opts.credential?.source).toBe(t.accX);
       expect(t.claude.drivers[1]!.sent).toEqual(["after hop"]);
@@ -1045,6 +1049,7 @@ describe("multi-account fallback hops & provisionalStart", () => {
       await Bun.sleep(20);
       releaseStart();
       await queuedSend;
+      await waitUntil(() => t.claude.drivers.at(-1)!.sent.includes("retry on original"));
       expect(t.prefs.get("claude:one").source).toBe("subscription");
       expect(t.claude.drivers.at(-1)!.sent).toEqual(["retry on original"]);
     }
@@ -1360,6 +1365,296 @@ describe("multi-account fallback hops & provisionalStart", () => {
       await t.live.setSource("codex:cx1", "openai");
       await t.live.send("codex:cx1", "manual carry");
       expect(t.prefs.get("codex:cx1").movedTo).toBe("codex:c-manual");
+    }
+  });
+
+  test("O1/O2'/G3'': chained hop when Y hits limit right after commit; interrupt on carry successor sets retrySuppressed; no-resend carry failure restores snapshot + lastKey and backs off; provisional successor holds turnEnded until commit", async () => {
+    // 1. O1: Y hits limit right after commit -> token already released synchronously inside commit -> hops to step 2 (anthropic).
+    {
+      const t = setupAccounts();
+      t.prefs.set("claude:one", { source: "subscription", model: "sonnet", permissionMode: "plan" });
+      await t.live.setFallbackChain("claude:one", true, [
+        { harness: "claude", source: t.accX, model: "sonnet", permissionMode: "plan" },
+        { harness: "claude", source: "anthropic", model: "sonnet", permissionMode: "plan" },
+      ]);
+      t.claude.script = () => {
+        const src = t.claude.drivers.at(-1)!.opts.credential?.source;
+        if (src === "anthropic") return [(s) => at(s, KEY as any), reply];
+        return [(s) => at(s), limit()];
+      };
+      await t.live.send("claude:one", "double limit");
+      await waitUntil(async () => (await t.core.open("claude:one")).state.fallbackChain?.active === 1);
+      expect(t.prefs.get("claude:one").source).toBe("anthropic");
+    }
+
+    // 2. O1: interrupt called on carry successor sets retrySuppressed on original and discards successor.
+    {
+      let finishAnswer!: () => void;
+      const answerWait = new Promise<void>((r) => (finishAnswer = r));
+      let enqueued!: () => void;
+      const onEnqueued = new Promise<void>((r) => (enqueued = r));
+      const t = setupAccounts({ codex: true });
+      const discarded: string[] = [];
+      t.codex!.move!.discard = async (id) => { discarded.push(id); };
+      t.credentials.set("openai", `fake-openai-${crypto.randomUUID()}`);
+      t.prefs.set("codex:cx1", { source: "subscription", model: "gpt", permissionMode: "read-only" });
+      await t.live.setFallbackChain("codex:cx1", true, [
+        { harness: "codex", source: "openai", model: "gpt", permissionMode: "read-only" },
+      ]);
+      t.live.carrier = async (_from, source) => {
+        t.codex!.addStored("c-succ-stop", []);
+        t.prefs.set("codex:c-succ-stop", { carrying: true, projectPath: "/p", source });
+        return "codex:c-succ-stop";
+      };
+      t.codex!.script = () => {
+        const src = t.codex!.drivers.at(-1)!.opts.credential?.source;
+        if (src === "openai") return [async () => { enqueued(); await answerWait; }, reply];
+        return [(s) => at(s), limit()];
+      };
+      await t.live.send("codex:cx1", "go");
+      await onEnqueued;
+      await t.live.interrupt("codex:c-succ-stop");
+      finishAnswer();
+      await waitUntil(() => discarded.includes("c-succ-stop"));
+      const orig = await t.core.open("codex:cx1");
+      expect(orig.retrySuppressed).toBe(true);
+      expect(t.prefs.get("codex:cx1").movedTo).toBeUndefined();
+    }
+
+    // 3. O2' + Round 13 note: deferred no-resend carry fails on next message -> snapshot (including lastKey, nextSource, active) restored and 10-min backoff recorded.
+    {
+      let now = 80_000_000;
+      const t = setupAccounts({ codex: true, now: () => now });
+      t.credentials.set("openai", `fake-openai-${crypto.randomUUID()}`);
+      t.prefs.set("codex:cx1", { source: "subscription", model: "gpt", permissionMode: "read-only" });
+      await t.live.setFallbackChain("codex:cx1", true, [
+        { harness: "codex", source: "openai", model: "gpt", permissionMode: "read-only" },
+      ]);
+      t.live.carrier = async () => { throw new Error("carry auth failed"); };
+      t.codex!.script = () => [(s) => at(s), tool, limit()];
+      await t.live.send("codex:cx1", "acted");
+      await waitUntil(() => t.prefs.get("codex:cx1").nextSource === "openai");
+      expect(t.prefs.get("codex:cx1").lastKey).toBe("openai");
+      await expect(t.live.send("codex:cx1", "next message")).rejects.toThrow("carry auth failed");
+      const p = t.prefs.get("codex:cx1");
+      expect(p.nextSource).toBeUndefined();
+      expect(p.nextBilling).toBeUndefined();
+      expect(p.sourceSwitchFailed).toBeUndefined();
+      expect(p.lastKey).toBeUndefined();
+      expect(p.fallbackChain?.active).toBeUndefined();
+      expect(p.fallbackProgress?.steps[0]?.retryAt).toBe(now + 10 * 60_000);
+    }
+
+    // 4. G3'': provisional successor turnEnded is held until commit (0 on discard, 1 on commit).
+    {
+      const t = setupAccounts({ codex: true });
+      const turnEnds: string[] = [];
+      t.core.o.bus.on("turnEnded", ({ sessionId }) => turnEnds.push(sessionId));
+      t.credentials.set("openai", `fake-openai-${crypto.randomUUID()}`);
+      t.prefs.set("codex:cx1", { source: "subscription", model: "gpt", permissionMode: "read-only" });
+      await t.live.setFallbackChain("codex:cx1", true, [
+        { harness: "codex", source: "openai", model: "gpt", permissionMode: "read-only" },
+      ]);
+      t.live.carrier = async (_from, source) => {
+        t.codex!.addStored("c-g3", []);
+        t.prefs.set("codex:c-g3", { carrying: true, projectPath: "/p", source });
+        return "codex:c-g3";
+      };
+      t.codex!.script = () => {
+        const src = t.codex!.drivers.at(-1)!.opts.credential?.source;
+        if (src === "openai") return [reply];
+        return [(s) => at(s), limit()];
+      };
+      await t.live.send("codex:cx1", "go");
+      await waitUntil(() => t.prefs.get("codex:cx1").movedTo === "codex:c-g3");
+      await Bun.sleep(30);
+      expect(turnEnds.filter((id) => id === "codex:c-g3")).toHaveLength(1);
+    }
+  });
+
+  test("Q1/Q1': queued messages wait unheld across hop and drain once on successor; limit turn with error doesn't hold queue; user send mid-hop queues unheld", async () => {
+    // 1. Pre-queued message + user send during hop both drain once after same-session commit, with no 'failed' hold.
+    {
+      let releaseStart!: () => void;
+      const startGate = new Promise<void>((r) => (releaseStart = r));
+      let secondStarted!: () => void;
+      const onSecond = new Promise<void>((r) => (secondStarted = r));
+      const t = setupAccounts();
+      t.prefs.set("claude:one", { source: "subscription", model: "sonnet", permissionMode: "plan" });
+      await t.live.setFallbackChain("claude:one", true, [
+        { harness: "claude", source: t.accX, model: "sonnet", permissionMode: "plan" },
+      ]);
+      t.claude.onStart = async (opts) => {
+        if (opts.credential?.source === t.accX) {
+          secondStarted();
+          await startGate;
+        }
+      };
+      t.claude.script = () => {
+        const src = t.claude.drivers.at(-1)!.opts.credential?.source;
+        if (src === t.accX) return [reply];
+        return [(s) => at(s), limit()];
+      };
+      await t.live.queue.add("claude:one", "pre-queued", []);
+      await t.live.send("claude:one", "initial");
+      await onSecond;
+      // Send a user message mid-hop: queued unheld (Q1).
+      await t.live.send("claude:one", "mid-hop user msg");
+      const s = await t.core.open("claude:one");
+      expect(s.state.queueHeldBy).toBeUndefined();
+      expect(s.state.queue.map((q) => q.text)).toEqual(["pre-queued", "mid-hop user msg"]);
+      releaseStart();
+      await waitUntil(() => {
+        const d = t.claude.drivers.find((x) => x.opts.credential?.source === t.accX);
+        return (d?.sent.length ?? 0) >= 3;
+      });
+      const accDriver = t.claude.drivers.find((x) => x.opts.credential?.source === t.accX)!;
+      expect(accDriver.sent).toEqual(["initial", "pre-queued", "mid-hop user msg"]);
+      expect(s.state.queue).toEqual([]);
+      expect(s.state.queueHeldBy).toBeUndefined();
+    }
+
+    // 2. Q1': QueueDeferred restores an already-admitted drain item untouched (same id/schedule/hold) and sends once after commit.
+    {
+      let releaseStart!: () => void;
+      const startGate = new Promise<void>((r) => (releaseStart = r));
+      let secondStarted!: () => void;
+      const onSecond = new Promise<void>((r) => (secondStarted = r));
+      const t = setupAccounts();
+      t.prefs.set("claude:one", { source: "subscription", model: "sonnet", permissionMode: "plan" });
+      await t.live.setFallbackChain("claude:one", true, [
+        { harness: "claude", source: t.accX, model: "sonnet", permissionMode: "plan" },
+      ]);
+      t.claude.onStart = async (opts) => {
+        if (opts.credential?.source === t.accX) {
+          secondStarted();
+          await startGate;
+        }
+      };
+      t.claude.script = () => {
+        const src = t.claude.drivers.at(-1)!.opts.credential?.source;
+        if (src === t.accX) return [reply];
+        return [(s) => at(s), limit()];
+      };
+      const added = await t.live.queue.add("claude:one", "deferred-drain", []);
+      await t.live.send("claude:one", "trigger");
+      await onSecond;
+      const s = await t.core.open("claude:one");
+      // Simulate a queued drain racing into sendNow while hop is active.
+      await expect(t.live.send("claude:one", "deferred-drain", [], { queued: true })).rejects.toBeInstanceOf(QueueDeferred);
+      expect(s.state.queue[0]?.id).toBe(added.id);
+      expect(s.state.queueHeldBy).toBeUndefined();
+      releaseStart();
+      await waitUntil(() => (t.claude.drivers.find((x) => x.opts.credential?.source === t.accX)?.sent.length ?? 0) >= 2);
+      expect(t.claude.drivers.find((x) => x.opts.credential?.source === t.accX)!.sent).toEqual(["trigger", "deferred-drain"]);
+    }
+  });
+
+  test("O3'/Q2/Q2'/O5'/G11': orgId separation & stale generation drop; background probe change & stale drop; cross-harness return notice & returning retryAt persist", async () => {
+    // 1. O3' + Q2: same email + org name with different orgId -> no window sharing, and late report from old process dropped.
+    {
+      const now = 90_000_000;
+      const t = setupAccounts({ now: () => now });
+      const idOrgA: PlanIdentity = { accountId: "a".repeat(64), email: "same@example.test", organization: "Acme" };
+      const idOrgB: PlanIdentity = { accountId: "b".repeat(64), email: "same@example.test", organization: "Acme" };
+      const accA = t.accounts.create();
+      const accB = t.accounts.create();
+      t.accounts.save(accA, idOrgA as any, 3000);
+      t.accounts.save(accB, idOrgB as any, 4000);
+      t.core.notePlan("claude", { fiveHour: { percent: 100, resetsAt: now + 3_600_000, exhausted: true } }, accA, idOrgA);
+      // accB has same email & org name, different accountId (orgId) -> must NOT share accA's full window!
+      t.prefs.set("claude:one", { source: "subscription", model: "sonnet", permissionMode: "plan" });
+      await t.live.setFallbackChain("claude:one", true, [
+        { harness: "claude", source: accB, model: "sonnet", permissionMode: "plan" },
+      ]);
+      t.claude.script = () =>
+        t.claude.drivers.at(-1)!.opts.credential?.source === accB ? [reply] : [(s) => at(s), limit()];
+      await t.live.send("claude:one", "should use B");
+      await waitUntil(async () => (await t.core.open("claude:one")).state.fallbackChain?.active === 0);
+      expect(t.prefs.get("claude:one").source).toBe(accB);
+
+      // Late report from old process after login change on accB is dropped by generation guard (Q2).
+      const oldDriver = t.claude.drivers.find((d) => d.opts.credential?.source === accB)!;
+      t.live.harnessLoginChanged("claude", accB);
+      oldDriver.sink.plan?.({ fiveHour: { percent: 99, resetsAt: now + 9_999_000 } }, idOrgA);
+      expect(t.core.planEntryFor("claude", accB)).toBeUndefined();
+    }
+
+    // 2. O5': background probe settles from unknown -> signedOut -> onProbeChanged fires; stale generation completion dropped.
+    {
+      let releaseFirst!: () => void;
+      const firstWait = new Promise<void>((r) => (releaseFirst = r));
+      let call = 0;
+      const changed: AccountSource[] = [];
+      const t = setupAccounts({
+        probe: async (src) => {
+          if (src !== t.accX) return { state: "signedIn" };
+          call++;
+          if (call === 1) {
+            await firstWait;
+            return { state: "signedOut" };
+          }
+          return { state: "signedIn" };
+        },
+      });
+      t.live.onProbeChanged = (src) => changed.push(src);
+      const first = await t.live.sources("claude");
+      expect(first.options.find((o) => o.source === t.accX)?.probe).toBe("unknown");
+      releaseFirst();
+      await waitUntil(() => changed.includes(t.accX));
+      const second = await t.live.sources("claude");
+      expect(second.options.find((o) => o.source === t.accX)?.probe).toBe("signedOut");
+
+      // Stale generation completion is dropped.
+      let releaseStale!: () => void;
+      const staleWait = new Promise<void>((r) => (releaseStale = r));
+      const changed2: AccountSource[] = [];
+      const u = setupAccounts({
+        probe: async (src) => {
+          if (src === t.accX) {
+            await staleWait;
+            return { state: "signedOut" };
+          }
+          return { state: "signedIn" };
+        },
+      });
+      u.live.onProbeChanged = (src) => changed2.push(src);
+      await u.live.sources("claude");
+      u.live.harnessLoginChanged("claude", u.accX);
+      releaseStale();
+      await Bun.sleep(30);
+      expect(changed2.includes(u.accX)).toBe(false);
+    }
+
+    // 3. G11': cross-harness return notice names step.harness (Codex -> Claude account) and returning pass with all skipped persists retryAt.
+    {
+      let now = 95_000_000;
+      const t = setupAccounts({ codex: true, now: () => now });
+      t.claude.addStored("old-cl", []);
+      t.prefs.set("claude:old-cl", { source: t.accX, model: "sonnet", permissionMode: "plan", movedTo: "codex:cx1", projectPath: "/p" });
+      const oldCl = await t.core.open("claude:old-cl");
+      oldCl.movedTo = "codex:cx1";
+      t.prefs.set("codex:cx1", {
+        source: "subscription",
+        model: "gpt",
+        permissionMode: "read-only",
+        fallbackChain: {
+          enabled: true,
+          active: 1,
+          steps: [
+            { harness: "claude", source: t.accX, model: "sonnet", permissionMode: "plan" },
+            { harness: "codex", source: "subscription", model: "gpt", permissionMode: "read-only" },
+          ],
+        },
+        fallbackProgress: { steps: { 0: { retryAt: now - 1000, sessionId: "claude:old-cl" } } },
+      });
+      t.live.fallbackArchive = async () => "/private/fallback/ret.md";
+      t.claude.script = () => [reply];
+      const orig = await t.core.open("codex:cx1");
+      await t.core.load(orig);
+      await t.live.send("codex:cx1", "return to claude");
+      await waitUntil(() => t.prefs.get("codex:cx1").movedTo === "claude:old-cl");
+      expect(notices(orig).some((n) => n.includes("Returned to step 1 · Claude plan"))).toBe(true);
     }
   });
 });

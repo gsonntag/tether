@@ -46,6 +46,7 @@ export function fallbackStepProblem(step: FallbackStep, catalog?: FallbackHarnes
   if (!catalog || catalog.unavailable) return "Harness unavailable on this runner.";
   const source = catalog.sources.find((option) => option.source === step.source);
   if (!source) return "Login or key unavailable.";
+  if (source.probe === "signedOut") return "Signed out";
   if (!catalog.models) return "Could not load models and permissions.";
   const model = catalog.models.models.find((option) => option.id === step.model);
   if (step.source === "azure") {
@@ -79,4 +80,17 @@ export interface FallbackProgress {
 export function fallbackOrder(length: number, current: number, progress: FallbackProgress, now: number, returning = false): number[] {
   return Array.from({ length }, (_, index) => index).filter((index) =>
     index !== current && (!returning || index < current) && (progress.steps[index]?.retryAt ?? 0) <= now);
+}
+
+/** Whether two steps represent the same effective target (empty effort/mode equal the resolved defaults, O6). */
+export function sameStep(
+  a: FallbackStep,
+  b: FallbackStep,
+  resolved?: { effort?: string; permissionMode?: string },
+): boolean {
+  return a.harness === b.harness
+    && a.source === b.source
+    && a.model === b.model
+    && (a.effort ?? resolved?.effort) === (b.effort ?? resolved?.effort)
+    && (a.permissionMode ?? resolved?.permissionMode) === (b.permissionMode ?? resolved?.permissionMode);
 }

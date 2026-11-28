@@ -45,6 +45,8 @@ export interface SourceOption {
   deployment?: string;
   /** Set when this extra account matches another listed source (e.g. the primary subscription). */
   sameAccountAs?: BillingSource;
+  /** Cached probe result for extra accounts (G10'/O5'). Absent on older runners. */
+  probe?: "signedIn" | "signedOut" | "unknown";
 }
 /** Resolve a deployment name or an unambiguous model alias. With no model, use the first deployment. */
 export function resolveSourceModel(deployments: NonNullable<SourceOption["deployments"]>, model?: string): string | undefined {

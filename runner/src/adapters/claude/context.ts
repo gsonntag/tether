@@ -27,9 +27,10 @@ function normOrg(name: string, email?: string) {
 
 export function samePlanIdentity(a: PlanIdentity | undefined, b: PlanIdentity | undefined): boolean {
   if (!a || !b) return false;
-  return a.accountId === b.accountId &&
-    a.email.toLowerCase() === b.email.toLowerCase() &&
-    normOrg(a.organization, a.email) === normOrg(b.organization, b.email);
+  if (a.email.toLowerCase() !== b.email.toLowerCase()) return false;
+  if (normOrg(a.organization, a.email) !== normOrg(b.organization, b.email)) return false;
+  if (a.accountId && b.accountId && a.accountId !== b.accountId) return false;
+  return true;
 }
 
 interface Windows {
