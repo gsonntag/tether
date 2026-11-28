@@ -923,3 +923,7 @@ Gemini reviewed the plan before rounds 2-6 landed. Its R1 rollback, R3 staleness
 - After this, the serialized chain is validated (non-empty when enabled, no exact duplicates) before sending.
 - Presets follow the same rules.
 - Test: a draft whose source becomes unavailable while the editor is open is left out on Save with the note, and complete unavailable rows are kept.
+
+## Round 10. A one-line correction to G6″.
+
+The checks on the serialized chain (non-empty, no exact duplicates) run **only when `enabled` is true**. Turning the chain off always saves: complete rows are kept, including duplicates and unavailable ones, and draft rows are left out with the note.
