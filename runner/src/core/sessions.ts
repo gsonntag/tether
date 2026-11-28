@@ -131,6 +131,8 @@ export class SessionCore {
   private hide?: RegExp;
   /** a session's open requests (the request desk sets this, core/requests.ts) */
   requestsFor: (sessionId: string) => Request[] = () => [];
+  /** a session's active starter session id when an agent started it (the peers module sets this) */
+  startedByFor: (sessionId: string) => string | undefined = () => undefined;
 
   constructor(readonly o: CoreOptions) {
     this.notices = o.notices ?? new NoticeStore();
@@ -193,13 +195,15 @@ export class SessionCore {
           const s = this.sessions.get(f.id);
           if (s && !s.live && !s.childRunning && !f.missing) {
             const prefs = this.o.prefs.get(f.id);
-            s.summary = { ...f, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(prefs.pinned ? { pinned: prefs.pinned } : {}), ...forked(prefs), ...worktreeOf(prefs), ...(s.state.billing ? { billing: s.state.billing } : {}), mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
+            const { startedBy: _, ...base } = f;
+            s.summary = { ...base, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(prefs.pinned ? { pinned: prefs.pinned } : {}), ...forked(prefs), ...worktreeOf(prefs), ...this.started(f.id), ...(s.state.billing ? { billing: s.state.billing } : {}), mode: s.state.mode, status: s.state.status, ...(s.state.requests.length ? { requests: s.state.requests.length } : {}) };
           }
         }
         this.book.refresh(
           found.filter((f) => this.shown(f)).map((f) => {
             const p = this.o.prefs.get(f.id);
-            return { ...f, ...(p.archived ? { archived: true } : {}), ...(p.pinned ? { pinned: p.pinned } : {}), ...forked(p), ...worktreeOf(p) };
+            const { startedBy: _, ...base } = f;
+            return { ...base, ...(p.archived ? { archived: true } : {}), ...(p.pinned ? { pinned: p.pinned } : {}), ...forked(p), ...worktreeOf(p), ...this.started(f.id) };
           }),
           (id) => this.owned(id),
           // Keep a login failure in Home even if the harness has not created the session record.
@@ -257,9 +261,9 @@ export class SessionCore {
   /** Session rows with what the core knows live laid over what the stores say. */
   private overlay(list: SessionSummary[]): SessionSummary[] {
     return list.map((s) => {
-      const row = this.owned(s.id) ? this.sessions.get(s.id)!.summary : s;
+      const { startedBy: _, ...row } = this.owned(s.id) ? this.sessions.get(s.id)!.summary : s;
       const prefs = this.o.prefs.get(row.id);
-      return { ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : { archived: undefined }), pinned: prefs.pinned || undefined, ...forked(prefs), ...worktreeOf(prefs) };
+      return { ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : { archived: undefined }), pinned: prefs.pinned || undefined, ...forked(prefs), ...worktreeOf(prefs), ...this.started(row.id) };
     });
   }
 
@@ -344,7 +348,8 @@ export class SessionCore {
     // Another open() may have made it meanwhile (a live child appearing).
     const raced = this.sessions.get(id);
     if (raced) return raced;
-    const s = this.add(new Session({ ...row, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(prefs.pinned ? { pinned: prefs.pinned } : {}), ...forked(prefs), ...worktreeOf(prefs), mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
+    const { startedBy: _, ...baseRow } = row;
+    const s = this.add(new Session({ ...baseRow, ...(prefs.title ? { title: prefs.title } : {}), ...(prefs.archived ? { archived: true } : {}), ...(prefs.pinned ? { pinned: prefs.pinned } : {}), ...forked(prefs), ...worktreeOf(prefs), ...this.started(id), mode: "stored", status: "idle" }, state, a.capabilities, this.out, this.seqs.get(id) ?? 0));
     if (blank) {
       // Back as new: the first message starts it (live.ts current). No row until something happens.
       s.transcript = new Transcript(withOverlay([], s.overlay));
@@ -721,8 +726,27 @@ export class SessionCore {
     this.o.bus.emit("continued", { from, to });
   }
 
+  private started(id: string): { startedBy?: string } {
+    const startedBy = this.startedByFor(id);
+    return startedBy ? { startedBy } : {};
+  }
+
+  /** Recomputes SessionSummary.startedBy for `id` and broadcasts the change if present. */
+  refreshStartedBy(id: string) {
+    const s = this.sessions.get(id);
+    if (s) {
+      this.touch(s);
+      return;
+    }
+    const row = this.book.get(id);
+    if (!row) return;
+    const { startedBy: _, ...rest } = row;
+    const next = { ...rest, ...this.started(id) };
+    if (next.startedBy !== row.startedBy) this.book.upsert([next]);
+  }
+
   touch(s: Session, patch: Partial<SessionSummary> = {}) {
-    const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, watching: _watching, archived: _archived, pinned: _pinned, retry: _retry, scheduledAt: _scheduledAt, worktreeOf: _worktreeOf, worktreeBranch: _worktreeBranch, worktreeHandMade: _worktreeHandMade, ...rest } = { ...s.summary, ...patch };
+    const { requests: _, queued: __, queuePaused: ___, backgroundSubagents: ____, watching: _watching, archived: _archived, pinned: _pinned, retry: _retry, scheduledAt: _scheduledAt, worktreeOf: _worktreeOf, worktreeBranch: _worktreeBranch, worktreeHandMade: _worktreeHandMade, startedBy: _startedBy, ...rest } = { ...s.summary, ...patch };
     const beside = s.state.backgroundSubagents;
     const watching = watchingSummary(s.state.watching);
     const n = s.state.requests.length;
@@ -732,7 +756,7 @@ export class SessionCore {
     const at = nextScheduled(s.state.queue);
     const stuck = s.state.queue.some((m) => m.held);
     const title = this.o.prefs.get(s.id).title;
-    s.summary = { ...rest, ...(s.state.retry ? { retry: s.state.retry } : {}), ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...(this.o.prefs.get(s.id).pinned ? { pinned: this.o.prefs.get(s.id).pinned } : {}), ...worktreeOf(this.o.prefs.get(s.id)), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(watching ? { watching } : {}), ...(at !== undefined ? { scheduledAt: at } : {}), ...(stuck || (q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait && s.state.setup !== "running" && !s.retry) ? { queuePaused: true } : {}) };
+    s.summary = { ...rest, ...(s.state.retry ? { retry: s.state.retry } : {}), ...(title ? { title } : {}), ...(this.o.prefs.get(s.id).archived ? { archived: true } : {}), ...(this.o.prefs.get(s.id).pinned ? { pinned: this.o.prefs.get(s.id).pinned } : {}), ...worktreeOf(this.o.prefs.get(s.id)), ...this.started(s.id), ...(s.state.billing ? { billing: s.state.billing } : {}), ...(s.state.cost ? { cost: s.state.cost } : {}), mode: s.state.mode, status: s.state.status, ...(n ? { requests: n } : {}), ...(q ? { queued: q } : {}), ...(beside ? { backgroundSubagents: beside } : {}), ...(watching ? { watching } : {}), ...(at !== undefined ? { scheduledAt: at } : {}), ...(stuck || (q && s.state.queueHeld && s.state.queueHeldBy !== "terminal" && !s.state.restartWait && s.state.setup !== "running" && !s.retry) ? { queuePaused: true } : {}) };
     if (this.owned(s.id) || this.book.get(s.id) || this.watched.has(s.id) || (this.pendingHarnessLogin(s.id) && this.shown(s.summary))) this.book.upsert([s.summary]);
   }
 }

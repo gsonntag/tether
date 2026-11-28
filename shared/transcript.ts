@@ -521,6 +521,8 @@ export interface SessionSummary {
   forkedFrom?: ForkedFrom;
   /** a side chat (SPEC §16a): the session it's beside. Left out of the lists; shown under that session */
   sideOf?: string;
+  /** started by another session's agent (tether_start, SPEC §6a): its starter's id. Nested under it in the sidebar, not in the main list */
+  startedBy?: string;
 }
 
 /** A folder sessions run in, as discovered from the harness stores (SPEC §4). */

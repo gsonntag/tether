@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { SessionSummary } from "../../shared/transcript";
-import { childrenOf, foldWorktrees, folderName, groupByProject, inProject, mergeRows, recentGroups, pinMenuLabel, recentSessions, setHomeFolders, splitPinned, waitingOn , inbox } from "./sessionList";
+import { ancestorChain, childrenOf, foldWorktrees, folderName, groupByProject, inProject, mergeRows, recentGroups, pinMenuLabel, recentSessions, setHomeFolders, splitPinned, startedChildrenOf, waitingOn, inbox } from "./sessionList";
 
 const s = (id: string, updatedAt: number, extra: Partial<SessionSummary> = {}): SessionSummary => ({ id, harness: "claude", nativeId: id, projectPath: "/p/web", title: `T ${id}`, mode: "stored", status: "idle", updatedAt, ...extra });
 const summaries = {
@@ -160,4 +160,73 @@ test("an older runner's Home agent chats stay out of the lists (RunnerInfo.homeF
     setHomeFolders([]);
   }
   expect(recentSessions(summaries).map((r) => r.id).sort()).toEqual(["claude:h", "claude:x"]);
+});
+
+test("agent-started sessions stay nested under their starter, out of the main list, unless pinned", () => {
+  const sums = {
+    a: {
+      epoch: "e",
+      seq: 1,
+      sessions: {
+        boss: s("boss", 5),
+        kid1: s("kid1", 9, { startedBy: "boss", status: "running" }),
+        kid2: s("kid2", 8, { startedBy: "boss", archived: true }),
+        kidPin: s("kidPin", 7, { startedBy: "boss", pinned: 10 }),
+        other: s("other", 4),
+      },
+    },
+  };
+  // Main list omits unpinned startedBy sessions, keeps pinned ones
+  expect(recentSessions(sums).map((r) => r.id)).toEqual(["kidPin", "boss", "other"]);
+  expect(splitPinned(recentSessions(sums)).pinned.map((r) => r.id)).toEqual(["kidPin"]);
+  expect(splitPinned(recentSessions(sums)).rest.map((r) => r.id)).toEqual(["boss", "other"]);
+  // Nested children list returns unarchived, unpinned started children marked spawned
+  const kids = startedChildrenOf(sums, "a", "boss");
+  expect(kids.map((r) => [r.id, r.spawned, r.status])).toEqual([["kid1", true, "running"]]);
+  // Pin menu still allows pinning/unpinning started sessions
+  expect(pinMenuLabel(s("kid1", 9, { startedBy: "boss" }), true)).toBe("Pin");
+  expect(pinMenuLabel(s("kidPin", 7, { startedBy: "boss", pinned: 10 }), true)).toBe("Unpin");
+});
+
+test("agent-started sessions surface in waitingOn and Home only when they directly need input", () => {
+  const sums = {
+    a: {
+      epoch: "e",
+      seq: 1,
+      sessions: {
+        boss: s("boss", 5),
+        working: s("working", 9, { startedBy: "boss", status: "running" }),
+        done: s("done", 8, { startedBy: "boss", unread: "finished" }),
+        failed: s("failed", 7, { startedBy: "boss", unread: "failed", failure: "boom" }),
+        needs: s("needs", 6, { startedBy: "boss", status: "waiting", requests: 1 }),
+      },
+    },
+  };
+  expect(waitingOn(sums, "a").map((r) => r.id)).toEqual(["needs"]);
+  expect(inbox(sums).map((r) => `${r.id}:${r.inbox}`)).toEqual(["needs:needs"]);
+});
+
+test("ancestorChain walks parentSessionId and startedBy to the top-level ancestor, stopping at pinned or cycles", () => {
+  const sums = {
+    a: {
+      epoch: "e",
+      seq: 1,
+      sessions: {
+        boss: s("boss", 1),
+        kid1: s("kid1", 2, { startedBy: "boss" }),
+        kid2: s("kid2", 3, { startedBy: "kid1" }),
+        sub: s("sub", 4, { parentSessionId: "kid2" }),
+        pinnedKid: s("pinnedKid", 5, { startedBy: "boss", pinned: 10 }),
+        cycA: s("cycA", 6, { startedBy: "cycB" }),
+        cycB: s("cycB", 7, { startedBy: "cycA" }),
+      },
+    },
+  };
+  expect(ancestorChain(sums, {}, "a", "boss")).toEqual(["boss"]);
+  expect(ancestorChain(sums, {}, "a", "kid1")).toEqual(["boss", "kid1"]);
+  expect(ancestorChain(sums, {}, "a", "sub")).toEqual(["boss", "kid1", "kid2", "sub"]);
+  expect(ancestorChain(sums, {}, "a", "pinnedKid")).toEqual(["pinnedKid"]);
+  expect(ancestorChain(sums, {}, "a", "cycA")).toEqual(["cycB", "cycA"]);
+  // Falls back to views when not in summaries (e.g. older session opened directly)
+  expect(ancestorChain(sums, { "a\0oldKid": { session: s("oldKid", 1, { startedBy: "boss" }) } }, "a", "oldKid")).toEqual(["boss", "oldKid"]);
 });

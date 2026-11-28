@@ -246,6 +246,9 @@
 .t-row.t-child {
   padding-left: 22px;
 }
+.t-child-nested {
+  padding-left: 14px;
+}
 .t-row.t-child .t-row-title {
   font-size: 13px;
 }

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { SpawnedFamily } from "../../../shared/protocol";
 import { rpc } from "../connection";
 import { familyKeyOf, forgetFamilies, loadFamily, useFamilies } from "../familyStore";
-import { childrenOf, mergeRows, type Row } from "../sessionList";
+import { childrenOf, mergeRows, startedChildrenOf, type Row } from "../sessionList";
 import { useStore } from "../store";
 import { familyKey, mainIds, spawnedRows, withSpawned } from "../subagents";
 
@@ -53,8 +53,14 @@ export function useFamily(runnerId: string | undefined, sessionId: string | unde
   useEffect(() => {
     if (runnerId && sessionId && linkOpen && spawnable && stale) loadFamily(runnerId, sessionId, key, () => useStore.getState().summaries, (r, s) => rpc(r, "spawnedFamily", { sessionId: s }));
   }, [runnerId, sessionId, key, fresh, stale, linkOpen, spawnable]);
-  const children = useMemo(() => withSpawned(mergeRows(stored.for === k ? stored.rows : [], live), runnerId && spawnable ? spawnedRows(f, summaries, runnerId) : []), [stored, live, k, f, summaries, runnerId, spawnable]);
-  const parentTitle = f?.parent && runnerId ? (summaries[runnerId]?.sessions[f.parent.id]?.title ?? f.parent.title) : undefined;
-  const parent = useMemo(() => (f?.parent ? { id: f.parent.id, title: parentTitle ?? "" } : undefined), [f?.parent?.id, parentTitle]);
+  const liveStarted = useMemo(() => (runnerId && sessionId ? startedChildrenOf(summaries, runnerId, sessionId) : []), [summaries, runnerId, sessionId]);
+  const children = useMemo(
+    () => withSpawned(mergeRows(stored.for === k ? stored.rows : [], live), mergeRows(runnerId && spawnable ? spawnedRows(f, summaries, runnerId) : [], liveStarted)),
+    [stored, live, k, f, summaries, runnerId, spawnable, liveStarted],
+  );
+  const directStarterId = runnerId && sessionId ? summaries[runnerId]?.sessions[sessionId]?.startedBy : undefined;
+  const parentId = f?.parent?.id ?? directStarterId;
+  const parentTitle = parentId && runnerId ? (summaries[runnerId]?.sessions[parentId]?.title ?? (f?.parent?.id === parentId ? f.parent.title : undefined)) : undefined;
+  const parent = useMemo(() => (parentId ? { id: parentId, title: parentTitle ?? "" } : undefined), [parentId, parentTitle]);
   return { children, parent };
 }

@@ -488,6 +488,7 @@ export const peersModule: Module = {
     );
     // Read only (shared/access.ts VIEW_OPS): the web shows these as the session's children (SPEC §6a).
     ctx.ops.register("spawnedFamily", ({ sessionId }) => peers.children.family(String(sessionId ?? "")));
+    ctx.sessions.starterProvider?.((id) => peers.children.starterOf(id));
     const offs = [
       // A Move or a source change: who started whom follows the session to its new id.
       ctx.bus.on("continued", ({ from, to }) => peers.children.continued(from, to)),
