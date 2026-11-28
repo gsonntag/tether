@@ -1057,3 +1057,26 @@ The checks on the serialized chain (non-empty, no exact duplicates) run **only w
 - The successor's `provisional` flag clears before `replaceWith` (order in Q1).
 - `discardHop` for a failed no-resend carry (on the next message) also puts a 10-minute backoff on that step, so the next limit doesn't retry it right away.
 - O2′'s restore list includes `lastKey`.
+
+## Round 14. These amend Q1 and Q2.
+
+**Q1′. A queue gate that lives through handoff, and a defer outcome.**
+- The `paused` hook keeps its existing `heldWhy` check and adds: `fallingBack.has(s) || s.provisional || s.handoffGate`.
+- **`handoffGate`** is an in-memory flag, independent of the hop token. It is set on **both** the original and the successor when commit begins, and cleared only after `replaceWith` / `handOver` has transferred the queue. Commit order:
+  1. set `handoffGate` on both;
+  2. release the token (O1);
+  3. clear the successor's `provisional` flag;
+  4. `replaceWith` / `handOver`;
+  5. clear `handoffGate` on both;
+  6. `queue.later(survivor)`;
+  7. replay the deferred turn-end.
+- On discard: O2′ restore, then release the token, then `queue.later(original)`. No gate is needed there, because nothing is handed over.
+- **Defer outcome for a drain already in flight:** when `sendNow` is reached with `o.queued` and finds `fallingBack`, `provisional` or `handoffGate` set after admission, it throws a typed `QueueDeferred`. `drain()` treats `QueueDeferred` as "not sent, not failed". It puts the **original item** back at its position with its id, schedule and hold state unchanged, and doesn't hold the queue. The user-send branch (`queue.add` unheld) applies only to non-queued sends.
+- Tests:
+  - a drain admitted just before a hop starts → `QueueDeferred` → the item is restored unchanged and sent once after commit;
+  - a drain that wakes during `handOver` doesn't claim work on the original.
+
+**Q2′. When identity is captured.**
+- Startup captures the login/account generation **before** the async auth-status lookup. If the generation changed by the time the lookup returns, the start fails as stale (O5′ rule).
+- **Main login:** `accountId` is derived from the raw `auth status` in `expectedClaudeIdentity` (`credentials.ts:151`). It doesn't come from `confirmClaudeBilling`, which only sees the SDK's `accountInfo()` (no orgId).
+- The captured tag `{ identity, generation }` travels through O4's buffered adapter writes. Its generation is checked again when the writes are published at commit.
