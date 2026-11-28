@@ -7,7 +7,7 @@ import type { Row } from "../sessionList";
 (globalThis as any).document ??= { addEventListener() {}, visibilityState: "visible" };
 (globalThis as any).window ??= { addEventListener() {} };
 (globalThis as any).requestAnimationFrame ??= () => 0;
-const { SessionRow } = await import("./SessionRow");
+const { HarnessGlyph, SessionRow } = await import("./SessionRow");
 
 const row = (extra: Partial<Row> = {}): Row => ({ id: "claude:a", runnerId: "r1", harness: "claude", nativeId: "a", projectPath: "/p/web", title: "Fix login", mode: "stored", status: "idle", updatedAt: 1, ...extra });
 const render = (r: Row, canPin = true) => renderToStaticMarkup(<SessionRow row={r} now={2} selected={false} canPin={canPin} />);
@@ -64,4 +64,22 @@ test("session rows in the sidebar have plain title text with no payment-source m
   expect(apiRow).toContain('aria-label="Open session: Fix login"');
   expect(apiRow).toContain('<span class="t-row-title t-row-title-editor">');
   expect(apiRow).toContain('title="Fix login"');
+});
+
+test("HarnessGlyph renders SVG logos for Claude, Codex, and Antigravity instead of temp symbols", () => {
+  const claude = renderToStaticMarkup(<HarnessGlyph harness="claude" />);
+  const codex = renderToStaticMarkup(<HarnessGlyph harness="codex" />);
+  const agy = renderToStaticMarkup(<HarnessGlyph harness="antigravity" />);
+  expect(claude).toContain('aria-label="Claude Code"');
+  expect(claude).toContain("<svg");
+  expect(claude).toContain("#D97757");
+  expect(claude).not.toContain("✻");
+  expect(codex).toContain('aria-label="Codex"');
+  expect(codex).toContain("<svg");
+  expect(codex).toContain('fill="currentColor"');
+  expect(codex).not.toContain("◎");
+  expect(agy).toContain('aria-label="Antigravity"');
+  expect(agy).toContain("<svg");
+  expect(agy).toContain("<linearGradient");
+  expect(agy).not.toContain("▲");
 });
