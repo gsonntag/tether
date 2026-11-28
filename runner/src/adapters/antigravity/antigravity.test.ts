@@ -124,6 +124,41 @@ test("models and thinking levels are separate settings; modes keep Antigravity's
   expect(l.permissionModes.map((m) => [m.id, m.label])).toEqual([["default", "Ask first"], ["accept-edits", "Accept edits"], ["plan", "Plan"], ["bypassPermissions", "Bypass permissions"]]);
 });
 
+test("per-model efforts come from availableModels when present, omitting efforts for fixed models", () => {
+  const config = [
+    {
+      id: "model",
+      options: [
+        { value: "gemini-4-neon", name: "Gemini 4 Neon" },
+        { value: "claude-opus-5-5", name: "Claude Opus 5.5" },
+        { value: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
+      ],
+    },
+    // Even if the currently active model has no thought_level options, availableModels still carries them.
+    { id: "mode", options: [{ value: "default", name: "Default" }] },
+  ];
+  const available = [
+    { modelId: "gemini-4-neon-high", name: "Gemini 4 Neon (High)" },
+    { modelId: "gemini-4-neon-xhigh", name: "Gemini 4 Neon (XHigh)" },
+    { modelId: "gemini-4-neon-low", name: "Gemini 4 Neon (Low)" },
+    { modelId: "claude-opus-5-5-low", name: "Claude Opus 5.5 (Low)" },
+    { modelId: "claude-opus-5-5-high", name: "Claude Opus 5.5 (High)" },
+    { modelId: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
+  ];
+  const l = modelList(config, available);
+  expect(l.efforts).toEqual([
+    { id: "low", label: "Low" },
+    { id: "high", label: "High" },
+    { id: "xhigh", label: "Extra" },
+  ]);
+  expect(l.models).toEqual([
+    { id: "default", label: "Default", efforts: ["low", "high", "xhigh"] },
+    { id: "gemini-4-neon", label: "Gemini 4 Neon", efforts: ["low", "high", "xhigh"] },
+    { id: "claude-opus-5-5", label: "Claude Opus 5.5", efforts: ["low", "high"] },
+    { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)" },
+  ]);
+});
+
 test("the TUI's screen: idle, working, asking for permission or trust", () => {
   expect(agyScreen(fixture("screen-idle.txt"))).toEqual({ state: "idle", input: "", prompt: "normal" });
   expect(agyScreen(fixture("screen-typed.txt"))).toEqual({ state: "idle", input: "fix the failing test", prompt: "normal" });

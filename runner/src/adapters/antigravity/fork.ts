@@ -14,7 +14,9 @@ import { cpSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Msg } from "../../../../shared/transcript";
 import type { AdapterFork, ForkRequest } from "../../core/adapter";
-import { agyHome, conversationFile, reader } from "./store";
+import { agyHome, conversationFile, discardStore, reader } from "./store";
+
+export { discardStore };
 
 /** A user's prompt in Antigravity's steps (`step_type`); a subagent's first message is another type. */
 export const USER_INPUT_STEP = 14;
@@ -90,11 +92,6 @@ export function copyStore(from: string, to: string, keep?: number) {
     db.close();
   }
   if (existsSync(brain(from))) cpSync(brain(from), brain(to), { recursive: true });
-}
-
-export function discardStore(nativeId: string) {
-  for (const f of [conversationFile(nativeId), `${conversationFile(nativeId)}-wal`, `${conversationFile(nativeId)}-shm`]) rmSync(f, { force: true });
-  rmSync(brain(nativeId), { recursive: true, force: true });
 }
 
 export const agyFork: AdapterFork = {

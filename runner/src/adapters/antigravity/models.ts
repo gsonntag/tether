@@ -17,13 +17,68 @@ const options = (config: any[], id: string): { value: string; name: string; desc
  */
 export const BYPASS = "bypassPermissions";
 
-export function modelList(config: any[]): ModelList {
-  const efforts = options(config, "thought_level").map((e) => ({ id: e.value, label: e.name }));
-  const takes = efforts.length ? { efforts: efforts.map((e) => e.id) } : {};
-  const models = options(config, "model").map((m) => ({ id: m.value, label: m.name, ...takes }));
+const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
+const EFFORT_LABELS: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra", max: "Max" };
+
+/**
+ * Derives per-model supported efforts from ACP `models.availableModels` (e.g. `gemini-4-neon-high`
+ * -> model `gemini-4-neon` supports `high`). Models with no `-<effort>` variants take no effort.
+ */
+function effortsByModel(
+  modelIds: string[],
+  availableModels: { modelId?: string; name?: string }[],
+  knownEffortLabels: Map<string, string>,
+): { byModel: Map<string, string[]>; allEfforts: { id: string; label: string }[] } {
+  const known = new Set([...EFFORT_ORDER, ...knownEffortLabels.keys()]);
+  const ids = availableModels.map((m) => m?.modelId).filter((x): x is string => typeof x === "string" && x.length > 0);
+  const byModel = new Map<string, string[]>();
+  const discovered = new Set<string>();
+  const rank = (e: string) => {
+    const i = EFFORT_ORDER.indexOf(e);
+    return i >= 0 ? i : EFFORT_ORDER.length;
+  };
+  for (const id of modelIds) {
+    const prefix = `${id}-`;
+    const matched = ids
+      .filter((v) => v.startsWith(prefix))
+      .map((v) => v.slice(prefix.length))
+      .filter((suffix) => known.has(suffix));
+    const unique = [...new Set(matched)].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+    if (unique.length) {
+      byModel.set(id, unique);
+      for (const e of unique) discovered.add(e);
+    }
+  }
+  const allIds = [...new Set([...knownEffortLabels.keys(), ...discovered])].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  const allEfforts = allIds.map((id) => ({ id, label: knownEffortLabels.get(id) ?? EFFORT_LABELS[id] ?? id }));
+  return { byModel, allEfforts };
+}
+
+export function modelList(config: any[], availableModels?: { modelId?: string; name?: string }[]): ModelList {
+  const configEfforts = options(config, "thought_level").map((e) => ({ id: e.value, label: e.name }));
+  const rawModels = options(config, "model");
+  const hasVariants = Array.isArray(availableModels) && availableModels.length > 0;
+  let efforts = configEfforts;
+  let models: ModelList["models"];
+  if (hasVariants) {
+    const { byModel, allEfforts } = effortsByModel(
+      rawModels.map((m) => m.value),
+      availableModels,
+      new Map(configEfforts.map((e) => [e.id, e.label])),
+    );
+    efforts = allEfforts;
+    models = rawModels.map((m) => {
+      const mEfforts = byModel.get(m.value);
+      return { id: m.value, label: m.name, ...(mEfforts?.length ? { efforts: mEfforts } : {}) };
+    });
+  } else {
+    const takes = efforts.length ? { efforts: efforts.map((e) => e.id) } : {};
+    models = rawModels.map((m) => ({ id: m.value, label: m.name, ...takes }));
+  }
+  const defaultTakes = efforts.length ? { efforts: efforts.map((e) => e.id) } : {};
   return {
     // "Default": whatever Antigravity picks itself (its own setting, as its TUI shows it).
-    models: models.length ? [{ id: "default", label: "Default", ...takes }, ...models] : [],
+    models: models.length ? [{ id: "default", label: "Default", ...defaultTakes }, ...models] : [],
     efforts,
     permissionModes: ((modes) => (modes.length ? [...modes, { id: BYPASS, label: "Bypass permissions", description: "Tether approves every request itself: nothing asks." }] : modes))(
       options(config, "mode").map((m) => ({ id: m.value, label: m.value === "default" ? "Ask first" : m.name, ...(m.description ? { description: m.description } : {}) })),
