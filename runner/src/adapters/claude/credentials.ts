@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type AccountSource, isAccountSource, isSubscriptionSource } from "../../../../shared/credentials";
+import { normalizedOrganization } from "../../../../shared/harnessLogin";
 import type { Billing } from "../../../../shared/transcript";
 import type { SessionCost } from "../../../../shared/costs";
 import { BEDROCK_LABEL } from "../../../../shared/credentials";
@@ -57,11 +58,7 @@ export function ptyText(output: string): string {
   return text;
 }
 
-/** Compared without whitespace: auth status and the SDK space the same name differently. */
-function normalizedOrganization(name: string, email: string) {
-  const normalized = name.replace(/[‘’]/g, "'").replace(/\s+/g, "");
-  return normalized.toLowerCase() === `${email.toLowerCase()}'sorganization` ? normalized.toLowerCase() : normalized;
-}
+export { normalizedOrganization };
 
 function sameClaudeIdentity(actual: unknown, expected: ClaudeIdentity) {
   const account = actual as { email?: unknown; organization?: unknown; orgName?: unknown } | undefined;
