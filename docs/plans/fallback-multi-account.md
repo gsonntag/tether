@@ -1024,3 +1024,36 @@ The checks on the serialized chain (non-empty, no exact duplicates) run **only w
 - Test: "unknown" → a background probe confirms the sign-out → the step becomes "Signed out" and isn't eligible, with no other event needed.
 
 **Clarification:** O5's "commit synchronously in the `enqueued` callback" applies to non-carry hops only. Fallback carry keeps its answer-gated commit (R6b′, R6b″): the replacement happens after `answered()` plus revalidation.
+
+## Round 13. These replace O1's queueing, O1′, and O3′'s report tagging.
+
+**Q1. Gate the queue drain, with no "fallback" hold.**
+- The queue's `paused` host hook (`live.ts:161`) returns true while `fallingBack.has(s)`, or while `s` is a provisional successor. `drain()` (`queue.ts:407`) therefore never sends during a hop. Queued messages and scheduled messages that come due mid-hop simply wait.
+- During a hop, a user send from `sendNow` goes to `queue.add(s, …)` **unheld**, and the user sees "Switching accounts… queued". Queued sends never reach the `fallingBack` reject path, because drain is gated.
+- `queueHeldBy: "fallback"` is **dropped**: no new union value, nothing persisted, and nothing stuck after a restart. Any hold reason that existed before the hop is untouched.
+- **Commit:**
+  1. clear the successor's `provisional` flag;
+  2. `replaceWith` / `handOver`;
+  3. `queue.later(survivor)`;
+  4. replay the deferred turn-end.
+- `discardHop` calls `queue.later(original)` after cleanup.
+- The queue's `turnEnded` listener skips `hold("failed")` when that turn ended with `fallbackPending` (`queue.ts:86`).
+- Tests:
+  - a message already queued at hop start is sent exactly once on the successor, and the queue isn't held "failed";
+  - a scheduled message that comes due mid-hop waits and isn't marked held;
+  - a restart mid-hop leaves no stuck hold;
+  - a limit turn that also carries an error doesn't hold the queue while a hop follows.
+
+**Q2. A live report is tagged with its process's start-time identity.**
+- Each Claude process records the identity confirmed at its start, including `accountId`:
+  - extra accounts: from `expected` (`credentials.ts:236`);
+  - the main login: from `confirmClaudeBilling`'s status.
+  
+  It also records the login/account generation at that moment (O5′).
+- `notePlan` from that process is stored **tagged with that start-time identity**, never the source's current one. A report is dropped when its generation is older than the source's current generation.
+- Test: switch to an account with the same email and org name but a different `orgId`, then deliver a late report from the old process. It is dropped, and no window is stored under the new ID.
+
+**Notes adopted:**
+- The successor's `provisional` flag clears before `replaceWith` (order in Q1).
+- `discardHop` for a failed no-resend carry (on the next message) also puts a 10-minute backoff on that step, so the next limit doesn't retry it right away.
+- O2′'s restore list includes `lastKey`.
