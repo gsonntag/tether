@@ -107,7 +107,7 @@ test("a profile that keeps its own conversations isn't offered: a hop couldn't r
   const a = accounts();
   await a.refresh();
   expect(a.list()).toEqual([]);
-  expect(a.cswap!.accounts()[0]?.problem).toContain("doesn't share");
+  expect(a.cswap!.accounts()[0]?.problem).toContain("aren't the runner's");
 });
 
 test("each start has cswap refresh the profile, and refuses one that changed", async () => {
@@ -169,4 +169,22 @@ test("no_credentials is signed out; TETHER_CSWAP=0 turns discovery off; a bare c
   const bare = new Cswap({ stateDir: join(fx.root, "bare"), bin: fx.bin, claude: "no-such-claude-on-path" });
   expect((await bare.refresh(true))[0]?.configDir).toBeUndefined();
   expect(readFileSync(fx.log, "utf8")).not.toContain("run 2");
+});
+
+test("a failed discovery keeps the accounts found before and marks them uncertain; the next success clears it", async () => {
+  fx.write([{ number: 2, email: "two@example.test" }]);
+  const a = accounts();
+  await a.refresh();
+  const source = a.list()[0]!.source;
+  process.env.FAKE_CSWAP_BROKEN = "boom";
+  process.env.FAKE_CSWAP_CODE = "1";
+  await a.cswap!.refresh(true);
+  expect(a.cswap!.uncertain).toBe(true);
+  expect(a.list().map((x) => x.source)).toEqual([source]);
+  expect(a.cswapUncertain(cswapSource("other@example.test", "org"))).toBe(true);
+  expect(a.cswapUncertain(source)).toBe(false);
+  delete process.env.FAKE_CSWAP_BROKEN;
+  await a.cswap!.refresh(true);
+  expect(a.cswap!.uncertain).toBe(false);
+  expect(a.cswapUncertain(cswapSource("other@example.test", "org"))).toBe(false);
 });

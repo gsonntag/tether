@@ -1489,7 +1489,9 @@ export class LiveControl {
     const source = this.sourceOf(s);
     if (isAccountSource(source)) {
       const accounts = this.opts.claudeAccounts;
-      return accounts?.read(source) && !accounts.signingIn.has(source) ? this.subscriptionRevision(s.summary.harness, source) : undefined;
+      // While cswap can't be read, a session on one of its accounts keeps its identity (a saved retry
+      // stays); starting it still needs the account (credentialFor).
+      return (accounts?.read(source) || accounts?.cswapUncertain(source)) && !accounts.signingIn.has(source) ? this.subscriptionRevision(s.summary.harness, source) : undefined;
     }
     return (source === "subscription" ? this.subscriptionRevisions.get(this.subscriptionScope(s.summary.harness, source)) : undefined)
       ?? this.opts.credentials?.snapshot(source, this.deploymentOf(s))?.revision;
@@ -1506,7 +1508,7 @@ export class LiveControl {
       const accounts = this.opts.claudeAccounts;
       const identity = harness === "claude" ? accounts?.read(source) : undefined;
       if (!store || !accounts || !identity || accounts.signingIn.has(source)) {
-        const hint = harness === "claude" ? accounts?.cswapAccount(source)?.problem : undefined;
+        const hint = harness !== "claude" ? undefined : accounts?.cswapAccount(source)?.problem ?? (accounts?.cswapUncertain(source) ? "cswap couldn't be read just now; try again." : undefined);
         throw new Error(`The chosen Claude subscription account is unavailable.${hint ? ` ${hint}` : ""} Check Accounts or change Source. Nothing was sent.`);
       }
       const { accountId, email, organization } = identity;

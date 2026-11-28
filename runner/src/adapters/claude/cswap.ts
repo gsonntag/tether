@@ -26,7 +26,8 @@ export interface CswapAccount {
 
 export const CSWAP_RELOGIN = "Signed out in cswap. Run `cswap add` after logging in to this account.";
 const UNPREPARED = "cswap couldn't prepare this account. Run `cswap run <n> --share-history` to check it.";
-const UNSHARED = "This cswap profile doesn't share ~/.claude's conversations, so sessions couldn't move between accounts.";
+const UNSHARED = "This cswap profile's conversations aren't the runner's (<dir>): cswap shares ~/.claude/projects, so sessions couldn't move between accounts.";
+const PRIVATE = "Tether's account folder isn't private to this user, so it can't use cswap accounts.";
 // Statuses where cswap holds no usable login (`api_key` slots aren't Claude plans; session mode refuses them).
 const SIGNED_OUT = new Set(["relogin_required", "no_credentials"]);
 const MARK = "TETHER_CSWAP_CONFIG_DIR=";
@@ -71,7 +72,7 @@ export interface CswapOptions {
 }
 
 export class Cswap {
-  private cache?: { at: number; accounts: CswapAccount[] };
+  private cache?: { at: number; accounts: CswapAccount[]; failed?: boolean };
   private pending?: Promise<CswapAccount[]>;
   /** Prepared profiles by source and slot: a reordered slot is prepared again. */
   private prepared = new Map<AccountSource, { number: number; configDir: string }>();
@@ -90,14 +91,20 @@ export class Cswap {
     return this.accounts().find((a) => a.source === source);
   }
 
-  /** Discovery, at most one at a time. No cswap, or output it can't read, is no accounts. */
+  /**
+   * Whether the last discovery failed (cswap timed out, exited non-zero or printed something it
+   * can't read): what was known before is kept, and a source not in it is unknown, not gone.
+   */
+  get uncertain() { return this.cache?.failed === true; }
+
+  /** Discovery, at most one at a time. No cswap is no accounts; a failure keeps the last ones. */
   refresh(force = false): Promise<CswapAccount[]> {
     if (!force && this.cache && Date.now() - this.cache.at <= (this.o.ttlMs ?? 30_000)) return Promise.resolve(this.cache.accounts);
     // A forced one must start after the call: one already running may predate a slot change.
     if (force && this.pending) return this.pending.then(() => this.refresh(true));
-    this.pending ??= this.discover().catch(() => [] as CswapAccount[]).then((accounts) => {
-      this.cache = { at: Date.now(), accounts };
-      return accounts;
+    this.pending ??= this.discover().catch(() => undefined).then((found) => {
+      this.cache = { at: Date.now(), accounts: found ?? this.cache?.accounts ?? [], ...(found ? {} : { failed: true }) };
+      return this.cache.accounts;
     }).finally(() => { this.pending = undefined; });
     return this.pending;
   }
@@ -110,13 +117,14 @@ export class Cswap {
     return env;
   }
 
-  private async discover(): Promise<CswapAccount[]> {
+  /** undefined: cswap is there but discovery failed this time. */
+  private async discover(): Promise<CswapAccount[] | undefined> {
     const bin = this.o.bin ?? cswapBin();
-    if (!bin) return [];
+    if (!bin || !existsSync(bin)) return [];
     const { code, out } = await run([bin, "list", "--json"], this.env(), LIST_MS);
-    if (code !== 0) return [];
+    if (code !== 0) return;
     const data = JSON.parse(out);
-    if (data?.schemaVersion !== 1 || !Array.isArray(data.accounts)) return [];
+    if (data?.schemaVersion !== 1 || !Array.isArray(data.accounts)) return;
     const exclude = new Set(await this.o.exclude?.() ?? []);
     const found: CswapAccount[] = [];
     for (const row of data.accounts) {
@@ -140,11 +148,11 @@ export class Cswap {
         if (configDir) this.failed.delete(source);
         else if (!failed || failed.number !== row.number || Date.now() - failed.at >= RETRY_MS) this.failed.set(source, { number: row.number, at: Date.now() });
         if (!configDir) account.problem = UNPREPARED.replace("<n>", String(row.number));
-        else if (!this.shared(configDir)) account.problem = UNSHARED;
+        else if (!this.shared(configDir)) account.problem = UNSHARED.replace("<dir>", join(claudeDir(), "projects"));
+        else if (!this.writeIdentity(source, account.identity)) account.problem = PRIVATE;
         else {
           account.configDir = configDir;
           this.prepared.set(source, { number: row.number, configDir });
-          this.writeIdentity(source, account.identity);
         }
       }
       found.push(account);
@@ -172,12 +180,10 @@ export class Cswap {
     const claude = isAbsolute(named) ? named : Bun.which(named, { PATH: process.env.PATH ?? "" });
     if (!claude || !isAbsolute(claude)) return;
     // Every level up from Tether's account root is checked: cswap resolves `claude` through this folder.
-    const root = dirname(this.o.stateDir);
-    mkdirSync(root, { recursive: true, mode: 0o700 });
-    if (!privateDir(root)) return;
+    if (!this.privateState()) return;
     const shims = join(this.o.stateDir, "bin");
     mkdirSync(shims, { recursive: true, mode: 0o700 });
-    if (!privateDir(this.o.stateDir) || !privateDir(shims)) return;
+    if (!privateDir(shims)) return;
     const shim = join(shims, "claude");
     const tmp = `${shim}.${process.pid}.tmp`;
     writeFileSync(tmp, `#!/bin/sh\nif [ "$1" = "--tether-cswap-config-dir" ]; then printf '${MARK}%s\\n' "\${CLAUDE_CONFIG_DIR-}"; exit 0; fi\nexec "$TETHER_CSWAP_REAL_CLAUDE" "$@"\n`, { mode: 0o700 });
@@ -212,10 +218,21 @@ export class Cswap {
     return join(this.o.stateDir, `${source.slice("account:".length)}.json`);
   }
 
-  private writeIdentity(source: AccountSource, identity: ClaudeIdentity) {
+  /** Each level is checked before anything is made or written under it. */
+  private privateState() {
+    const root = dirname(this.o.stateDir);
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    if (!privateDir(root)) return false;
+    mkdirSync(this.o.stateDir, { recursive: true, mode: 0o700 });
+    return privateDir(this.o.stateDir);
+  }
+
+  private writeIdentity(source: AccountSource, identity: ClaudeIdentity): boolean {
+    if (!this.privateState()) return false;
     const file = this.identityFile(source);
     const tmp = `${file}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(identity), { mode: 0o600 });
     renameSync(tmp, file);
+    return true;
   }
 }

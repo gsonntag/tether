@@ -31,6 +31,11 @@ export class ClaudeAccounts {
     return this.cswap?.find(source);
   }
 
+  /** A source that may be a cswap account Tether can't see right now because discovery failed. */
+  cswapUncertain(source: AccountSource): boolean {
+    return !!this.cswap?.uncertain && !this.cswapAccount(source) && !this.nativeRead(source);
+  }
+
   /** Discovery is cached briefly; callers that list for the owner wait for a current one. */
   async refresh(): Promise<void> {
     await this.cswap?.refresh();

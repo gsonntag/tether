@@ -1253,7 +1253,7 @@ PATH or in `~/.local/bin` (`TETHER_CSWAP=0` turns this off). Discovery uses only
 (schema 1), cached for 30 seconds, at startup and whenever sources or accounts are listed. No cswap,
 or output Tether can't read, means no extra accounts. Each cswap account is an `account:<id>` source
 whose id is derived from its email and organization UUID, never its slot number, so `cswap swap` or
-`cswap move` keep it. cswap's active account (its default login, `~/.claude`) is skipped, as are
+`cswap move` keep it. If discovery fails (a timeout, an error, unreadable output), the accounts found before are kept and a session bound to one Tether can no longer see keeps its saved retry; it still can't start until cswap answers. cswap's active account (its default login, `~/.claude`) is skipped, as are
 accounts with the same identity as the primary login or one of Tether's own accounts. Accounts cswap
 reports as `relogin_required` or `no_credentials` are listed as unavailable with the hint "Run `cswap
 add` after logging in"; API-key slots are not listed.

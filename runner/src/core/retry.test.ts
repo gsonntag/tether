@@ -124,6 +124,21 @@ describe("automatic rate limit retry integration", () => {
     await second.live.restoreRetries();
     expect((await second.core.open(id)).state.retry).toMatchObject({ nextAt: retryAt });
     expect(second.prefs.get(id).retry).toBeDefined();
+    await second.live.closeAll();
+    second.core.stop();
+
+    // cswap failing at the restart: unknown, not gone, so the retry stays too.
+    process.env.FAKE_CSWAP_BROKEN = "boom";
+    process.env.FAKE_CSWAP_CODE = "1";
+    try {
+      const third = setup({ prefsPath: first.prefsPath, adapter: (() => { const a = new FakeAdapter(); a.addStored("cswap", []); return a; })(), extra: extra() });
+      await third.live.restoreRetries();
+      expect((await third.core.open(id)).state.retry).toMatchObject({ nextAt: retryAt });
+      expect(() => third.live.credentialFor("claude", source)).toThrow("couldn't be read");
+    } finally {
+      delete process.env.FAKE_CSWAP_BROKEN;
+      delete process.env.FAKE_CSWAP_CODE;
+    }
   });
 
   test("the option is available before a new key session sends its first message", async () => {
