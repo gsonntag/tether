@@ -99,7 +99,9 @@ describe("the fallback chain", () => {
     const s = await settled(t, (s) => !!s.state.nextBilling || t.prefs.get(s.id).source === "anthropic");
     await Bun.sleep(30);
     expect(t.adapter.drivers[0]!.sent).toEqual(["fix it"]);
-    expect(t.adapter.drivers).toHaveLength(1);
+    expect(t.adapter.drivers).toHaveLength(2);
+    expect(t.adapter.drivers[1]!.opts.credential?.source).toBe("anthropic");
+    expect(t.adapter.drivers[1]!.sent).toEqual([]);
     expect(t.prefs.get(s.id).source).toBe("anthropic");
     expect(notices(s)[0]).toContain("Switched to Anthropic API key. The turn already acted. Send a message to continue.");
   });
@@ -130,7 +132,8 @@ describe("the fallback chain", () => {
     await sending;
     const s = await settled(t, () => true);
     await Bun.sleep(30);
-    expect(t.adapter.drivers).toHaveLength(1);
+    expect(t.adapter.drivers).toHaveLength(2);
+    expect(t.adapter.drivers[1]!.sent).toEqual([]);
     expect(notices(s)[0]).toContain("The turn already acted.");
   });
 

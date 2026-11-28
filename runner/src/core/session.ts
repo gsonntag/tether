@@ -14,6 +14,13 @@ import type { SavedRetry } from "./retryPolicy";
 
 export type Emit = (sessionId: string, seq: number, event: SessionEvent) => void;
 
+export interface ProvisionalHop {
+  hopId: symbol;
+  abort: (reason?: "cancelled" | "permission") => void;
+  driver?: Driver;
+  successor?: Session;
+}
+
 export class Session {
   retry?: SavedRetry;
   retryTimer?: ReturnType<typeof setTimeout>;
@@ -77,6 +84,11 @@ export class Session {
   turnError?: string;
   /** `!` commands running in its folder (core/shellRuns.ts): it stays in memory meanwhile */
   shellsRunning = 0;
+  /** In-flight provisional fallback hop (R1''', R1'''', R6). */
+  provisionalHop?: ProvisionalHop;
+  /** Defer idle/limit processing on a provisional successor until replaceWith transfers fallback state. */
+  deferTurnEnd = false;
+  deferredTurnEnds: (() => void)[] = [];
   /**
    * Messages only Tether has (its notices: denials, errors, a turn cut off; ids "n-…"), each
    * after the message it followed. The store doesn't have them, so they're laid over every

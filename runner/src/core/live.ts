@@ -28,7 +28,8 @@ import { MESSAGE_TEXT_MAX } from "../../../shared/limits";
 import { PLAN_MODE } from "../../../shared/plan";
 import { sourceSwitchBlockMessage, sourceSwitchBlocker } from "../../../shared/sourceSwitch";
 import { AGENT_NAMES, HARNESS_LABELS, type Billing, type HarnessId, type LiveState, type ModelList, type PlanUsage, type Msg, type RequestAnswer } from "../../../shared/transcript";
-import { SendCancelled, type Driver, type Sink, type StartOpts, type SubagentStart } from "./adapter";
+import { SendCancelled, type Driver, type PlanIdentity, type SendHooks, type Sink, type StartOpts, type SubagentStart } from "./adapter";
+import { BufferedSink } from "./bufferedSink";
 import { AttachmentStore } from "./attachments";
 import type { RequestBroker } from "./broker";
 import { ReadState } from "./inbox";
@@ -41,7 +42,27 @@ import { RetryControl } from "./retryControl";
 import { lockWorktree } from "./worktreeLock";
 
 /** How a message is sent (LiveControl.send). */
-type SendOpts = { stop?: boolean; queued?: boolean; tether?: boolean; continued?: boolean; retryId?: string; fallback?: symbol; continuedFallback?: boolean; clientId?: string };
+type SendOpts = {
+  stop?: boolean;
+  queued?: boolean;
+  tether?: boolean;
+  continued?: boolean;
+  retryId?: string;
+  fallback?: symbol;
+  hopId?: symbol;
+  continuedFallback?: boolean;
+  clientId?: string;
+  beforeEnqueue?: SendHooks["beforeEnqueue"];
+  provisional?: boolean;
+};
+
+/** A step-specific problem (permission rejection, signed-out account, pre-turn start failure) that backs off the step instead of cancelling the chain (R2). */
+class FallbackStepProblemError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FallbackStepProblemError";
+  }
+}
 
 /** Idle this long, a live session's process closes. */
 export const IDLE_CLOSE_MS = 5 * 60_000;
@@ -327,6 +348,7 @@ export class LiveControl {
     this.sideCommand(id, text);
     const s = await this.core.open(id);
     if (!o.fallback && !o.continuedFallback && !o.retryId) this.cancelFallbackTimer(id);
+    if (!o.fallback && this.hasHopLock(s, o.hopId)) await this.waitForHop(s, o.hopId);
     const fallback = this.fallingBack.get(s);
     if (fallback && fallback !== o.fallback) throw new Error("The fallback chain is switching this session. Try again shortly.");
     if (o.retryId && (s.retry?.id !== o.retryId || s.retry.phase !== "sending")) throw new SendCancelled();
@@ -426,7 +448,7 @@ export class LiveControl {
     try {
       this.applyNextDeployment(s);
       await this.core.load(s);
-      const d = await this.ensureDriver(s);
+      const d = await this.ensureDriver(s, false, true, o.hopId);
       if (o.retryId && (s.retry?.id !== o.retryId || s.retry.fingerprint !== this.retryIdentity(s).fingerprint)) throw new SendCancelled();
       // A credential change racing process startup is never allowed to send on the old source.
       this.checkCredential(s);
@@ -462,7 +484,7 @@ export class LiveControl {
       s.limitHit = undefined;
       s.rateHit = undefined;
       s.clientId = o.clientId;
-      await d.send(withAttachments(text, attachments), attachments, shown);
+      await d.send(withAttachments(text, attachments), attachments, shown, o.beforeEnqueue ? { beforeEnqueue: o.beforeEnqueue } : undefined);
       s.fresh = false;
       if (this.core.o.prefs.get(id).blank) this.core.o.prefs.set(id, { blank: undefined });
       if (o.continued) this.core.log(`${id}: continued the turn the restart cut off`);
@@ -473,6 +495,10 @@ export class LiveControl {
         this.status(s, "idle");
       }
       if (s.sending === me && !(e instanceof SendCancelled)) {
+        if (o.provisional) {
+          this.status(s, "idle");
+          throw e;
+        }
         this.markSourceSwitchFailed(s);
         s.turnError = redact((e as Error)?.message ?? String(e));
         const hit = (e as { rateLimit?: { retryAt?: number } })?.rateLimit;
@@ -540,9 +566,10 @@ export class LiveControl {
   }
 
   /** Back once the harness has answered, or says it won't. Slow isn't failed: its errors then show in the chat. */
-  private async answered(n: Session, seen: Set<string>) {
+  private async answered(n: Session, seen: Set<string>, cancelled?: () => boolean) {
     const until = this.core.now() + CARRY_ANSWER_MS;
     while (this.core.now() < until) {
+      if (cancelled?.()) throw new SendCancelled();
       const fresh = (n.transcript?.messages ?? []).filter((m) => !seen.has(m.id));
       if (fresh.some((m) => m.role === "assistant" && !m.error && m.parts.length)) return;
       if (n.state.status === "idle" && !n.sending) {
@@ -844,7 +871,14 @@ export class LiveControl {
     const s = await this.core.open(id);
     if (s.retry) this.cancelRetrySession(s, { due: "stopped" });
     this.cancelFallbackTimer(id);
-    if (this.fallingBack.has(s)) s.retrySuppressed = true;
+    const hop = s.provisionalHop;
+    if (this.fallingBack.has(s) || hop) s.retrySuppressed = true;
+    if (hop) {
+      hop.abort("cancelled");
+      if (hop.successor) await this.interrupt(hop.successor.id).catch(() => {});
+      // Stopped during provisional startup while idle: leave original session state untouched (R1''').
+      if (s.state.status === "idle" && !s.sending && !s.summary.parentSessionId) return;
+    }
     const parentId = s.summary.parentSessionId;
     if (parentId) {
       // A subagent: stop just it (SPEC §6a). Its main session's process runs it, however deep it is nested.
@@ -1353,6 +1387,7 @@ export class LiveControl {
    * The mode is left to the caller.
    */
   async release(s: Session, retire = false) {
+    await this.waitForHop(s);
     if (!this.stopping && s.retry) this.cancelRetrySession(s);
     const d = s.driver ?? (s.starting ? await s.starting.catch(() => undefined) : undefined);
     clearTimeout(s.idleTimer);
@@ -1390,22 +1425,23 @@ export class LiveControl {
   }
 
   /** The session's driver, starting or resuming the harness when it isn't live. */
-  private ensureDriver(s: Session, observe = false, limited = true): Promise<Driver> {
+  private async ensureDriver(s: Session, observe = false, limited = true, hopId?: symbol): Promise<Driver> {
+    if (this.hasHopLock(s, hopId)) await this.waitForHop(s, hopId);
     if (s.driver) {
-      if (observe) return Promise.resolve(s.driver);
-      if (this.revisionOf(s) === s.credentialRevision) return Promise.resolve(s.driver);
+      if (observe) return s.driver;
+      if (this.revisionOf(s) === s.credentialRevision) return s.driver;
       // A running turn finishes on its original process and source. No new message can go to it
       // after a change; idle processes are closed before starting again, on the session's source
       // with its key as it is now. With its key unset that start stops, saying so.
-      if (s.driver.busy() || s.driver.turnRunning?.() || s.state.terminal) return Promise.reject(new Error("Credentials changed. Wait for this process to finish and close its terminal before sending."));
+      if (s.driver.busy() || s.driver.turnRunning?.() || s.state.terminal) throw new Error("Credentials changed. Wait for this process to finish and close its terminal before sending.");
       s.starting ??= this.release(s, true).then(() => this.startDriver(s)).finally(() => { s.starting = undefined; this.core.scheduleEvict(s); });
       return s.starting;
     }
     // Two processes must never drive one session (SPEC §8 handoff).
     const blocked = this.terminal?.blocked(s);
-    if (blocked) return Promise.reject(new Error(blocked));
+    if (blocked) throw new Error(blocked);
     const full = s.starting || observe || !limited ? undefined : this.overLiveLimit(s);
-    if (full) return Promise.reject(new Error(full));
+    if (full) throw new Error(full);
     s.starting ??= this.startDriver(s, observe).finally(() => {
       s.starting = undefined;
       this.core.scheduleEvict(s);
@@ -1588,6 +1624,55 @@ export class LiveControl {
   fallbackMover?: (id: string, harness: HarnessId, source: BillingSource, settings: StartOpts) => Promise<{ sessionId: string; history?: string; after?: string }>;
   fallbackArchive?: (from: string, to: string, after?: string) => Promise<string>;
   private fallingBack = new WeakMap<Session, symbol>();
+  /** Per-session and per-native-id lock held from before old-driver teardown through commit or abort cleanup (R6.3'). */
+  private hopLocks = new Map<string, { promise: Promise<void>; release: () => void; hopId: symbol }>();
+
+  private hopKeys(s: Session): string[] {
+    const nativeKey = `${s.summary.harness}:${s.summary.nativeId}`;
+    return s.id === nativeKey ? [s.id] : [s.id, nativeKey];
+  }
+
+  private hasHopLock(s: Session, hopId?: symbol): boolean {
+    return this.hopKeys(s).some((k) => {
+      const lock = this.hopLocks.get(k);
+      return !!lock && lock.hopId !== hopId;
+    });
+  }
+
+  private async waitForHop(s: Session, hopId?: symbol): Promise<void> {
+    const keys = this.hopKeys(s);
+    while (true) {
+      const lock = keys.map((k) => this.hopLocks.get(k)).find((l) => l && l.hopId !== hopId);
+      if (!lock) return;
+      await lock.promise;
+    }
+  }
+
+  private async acquireHopLock(keys: string[], hopId: symbol): Promise<() => void> {
+    const unique = [...new Set(keys)];
+    while (true) {
+      const existing = unique.map((k) => this.hopLocks.get(k)).find((l) => l && l.hopId !== hopId);
+      if (!existing) break;
+      await existing.promise;
+    }
+    let release!: () => void;
+    const promise = new Promise<void>((r) => (release = r));
+    const owned: string[] = [];
+    for (const k of unique) {
+      if (this.hopLocks.get(k)?.hopId === hopId) continue;
+      this.hopLocks.set(k, { promise, release, hopId });
+      owned.push(k);
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      for (const k of owned) {
+        if (this.hopLocks.get(k)?.hopId === hopId) this.hopLocks.delete(k);
+      }
+      release();
+    };
+  }
 
   /** A queued source remains pending after its first start fails, across views and runner restarts. */
   private markSourceSwitchFailed(s: Session) {
@@ -1624,11 +1709,19 @@ export class LiveControl {
     if (!fallback && this.fallingBack.has(s)) throw new Error("The fallback chain is switching this session.");
     const own = this.sourceOf(s);
     const carries = !!s.capabilities.sourceCarry && asked !== own;
-    if (fallback && (s.retrySuppressed || s.state.fallbackChain !== fallback.chain || this.stopping || !fallback.settings.permissionMode ||
-      !this.fallbackModeAllowed(s, fallback.settings.permissionMode))) throw new Error("The fallback chain or session permissions changed.");
+    if (fallback) {
+      if (s.retrySuppressed || s.state.fallbackChain !== fallback.chain || this.stopping) throw new SendCancelled();
+      if (!fallback.settings.permissionMode || !this.fallbackModeAllowed(s, fallback.settings.permissionMode)) {
+        throw new FallbackStepProblemError("The fallback step exceeds this session's current permissions.");
+      }
+    }
     const busy = sourceSwitchBlocker(s.state);
     if (busy || s.sending || s.starting || s.carrying) throw new Error(sourceSwitchBlockMessage(busy ?? "turn"));
-    const fallbackChain = fallback ? { ...fallback.chain, active: fallback.index } : undefined;
+    // Manual billing-chip switch clears active fallback step so the next message won't return over the pick (G10).
+    const clearedActive = !fallback && s.state.fallbackChain?.active !== undefined
+      ? (({ active: _, ...rest }) => rest)(s.state.fallbackChain)
+      : undefined;
+    const fallbackChain = fallback ? { ...fallback.chain, active: fallback.index } : clearedActive;
     const progress = fallbackChain ? { fallbackChain } : {};
     const lastKey = isCredentialSource(asked) ? asked : isCredentialSource(own) ? own : undefined;
     if (lastKey) {
@@ -1639,9 +1732,13 @@ export class LiveControl {
       // Thought better of it: the thread never left.
       if (s.capabilities.sourceCarry) {
         const pendingDeployment = this.core.o.prefs.get(id).nextSource ? { nextDeployment: undefined } : {};
-        this.core.o.prefs.set(id, { nextSource: undefined, nextFallbackSettings: undefined, nextModel: undefined, nextBilling: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
+        this.core.o.prefs.set(id, { ...progress, nextSource: undefined, nextFallbackSettings: undefined, nextModel: undefined, nextBilling: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
         this.core.o.prefs.flush();
-        s.setState({ nextBilling: undefined, nextModel: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
+        s.setState({ ...progress, nextBilling: undefined, nextModel: undefined, sourceSwitchFailed: undefined, ...pendingDeployment });
+      } else if (clearedActive) {
+        this.core.o.prefs.set(id, { fallbackChain: clearedActive });
+        this.core.o.prefs.flush();
+        s.setState({ fallbackChain: clearedActive });
       }
       return;
     }
@@ -1661,7 +1758,7 @@ export class LiveControl {
       s.setState({ ...progress, nextBilling: next, nextModel, nextDeployment: sourceModel, sourceSwitchFailed: undefined });
       return this.core.touch(s);
     }
-    const confirmed = s.state.billing?.label === next.label;
+    const confirmed = s.state.billing?.label === next.label && s.state.billing?.source === next.source;
     // Where its API cost starts is decided now, while what it was on until now is still what's confirmed.
     let cost: SessionCost | undefined;
     if (isCredentialSource(asked)) {
@@ -1677,7 +1774,7 @@ export class LiveControl {
     const settings = fallback?.settings;
     this.core.o.prefs.set(id, { ...progress, ...settings, source: asked, nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, ...sourceSettings });
     this.core.o.prefs.flush();
-    if (harness === "claude" && isSubscriptionSource(asked)) this.core.o.prefs.setLastSubscription(harness, asked);
+    if (!fallback && harness === "claude" && isSubscriptionSource(asked)) this.core.o.prefs.setLastSubscription(harness, asked);
     s.setState({ ...progress, ...settings, ...(isAccountSource(asked) || isAccountSource(own) ? { plan: this.core.planFor(harness, asked) } : {}), nextBilling: confirmed ? undefined : next, sourceSwitchFailed: undefined, retryThrottled: isSubscriptionSource(asked) ? undefined : this.core.o.prefs.get(id).retryThrottled === true, ...(model ? { model, modelResolved: undefined } : {}), ...(cost ? { cost } : {}) });
     if (settings && s.driver && asked === own) s.credentialRevision = undefined;
     this.core.touch(s);
@@ -1793,6 +1890,8 @@ export class LiveControl {
     if (!enabled || JSON.stringify(old?.steps) !== JSON.stringify(order)) this.core.o.prefs.set(id, { fallbackProgress: undefined });
     this.core.o.prefs.setFallbackOrder(id, chain);
     s.setState({ fallbackChain: chain });
+    // Discard any in-flight provisional hop now that the chain changed (R1''', R6b'').
+    if (s.provisionalHop) s.provisionalHop.abort("cancelled");
     return chain;
   }
 
@@ -1863,6 +1962,352 @@ export class LiveControl {
     const target = levelOf(this.core.adapter(harness), mode);
     const current = this.core.o.prefs.get(s.id).permissionMode ?? s.state.permissionMode;
     return target !== undefined && target <= (levelOf(adapter, current) ?? LEVELS.readOnly);
+  }
+
+  /**
+   * Starts a provisional driver for a fallback hop (R6): all events go to a BufferedSink and nothing
+   * is written to state, prefs or s.driver until enqueued (with resend) or startup ready (no resend).
+   * On pre-turn failure or cancellation, discards silently (G3) with R2's cancellation vs step-problem split.
+   */
+  private async provisionalStart(params: {
+    origin: Session;
+    target: Session;
+    hopId: symbol;
+    chain: FallbackChain;
+    step: FallbackStep;
+    settings: StartOpts;
+    sourceModel?: string;
+    resume: boolean;
+    send?: { text: string; attachments: Attachment[]; tether?: boolean; releaseQueue?: boolean };
+    onCommitBeforeReplay: (driver: Driver, opts: StartOpts) => void;
+    onCommitAfterReplay?: (driver: Driver) => Promise<void> | void;
+    onAbort?: () => Promise<void> | void;
+  }): Promise<void> {
+    const { origin, target, hopId, chain, step, settings, sourceModel, resume, send, onCommitBeforeReplay, onCommitAfterReplay, onAbort } = params;
+    const harness = target.summary.harness;
+    const a = this.core.adapter(harness);
+    const deployment = hasSourceModels(step.source) ? sourceModel ?? settings.model : undefined;
+    let credential: CredentialSnapshot | undefined;
+    try {
+      credential = this.credentialFor(harness, step.source, deployment);
+    } catch (e: any) {
+      throw new FallbackStepProblemError(redact(e?.message ?? String(e)));
+    }
+    const model = hasSourceModels(step.source) ? sourceModel ?? settings.model : settings.model;
+    let opts: StartOpts = {
+      ...(model ? { model } : {}),
+      ...(settings.effort ? { effort: settings.effort } : {}),
+      ...(settings.permissionMode ? { permissionMode: settings.permissionMode } : {}),
+      ...(this.core.o.prefs.get(target.id).sideOf ? { readOnly: true } : {}),
+      ...(credential ? { credential } : {}),
+    };
+    if (a.unset && (!opts.model || !opts.effort)) {
+      const known = await a.defaults(target.summary.projectPath, target.summary.nativeId).catch(() => ({}) as StartOpts);
+      opts = {
+        model: opts.model ?? known.model ?? a.unset.model,
+        effort: opts.effort ?? known.effort ?? a.unset.effort,
+        ...opts,
+      };
+    }
+
+    const sink = new BufferedSink((id) => target.transcript?.get(id));
+    let driver: Driver | undefined;
+    let aborted: "cancelled" | "permission" | undefined;
+    let committed = false;
+    let enqueued = false;
+    let gateReason: "cancelled" | "permission" | undefined;
+
+    const checkGate = (): "cancelled" | "permission" | undefined => {
+      if (aborted === "cancelled" || origin.retrySuppressed || this.stopping || origin.state.fallbackChain !== chain || origin.provisionalHop?.hopId !== hopId) {
+        return "cancelled";
+      }
+      if (aborted === "permission" || !settings.permissionMode || !this.fallbackModeAllowed(origin, settings.permissionMode, step.harness)) {
+        return "permission";
+      }
+      return undefined;
+    };
+
+    const abort = (reason: "cancelled" | "permission" = "cancelled") => {
+      if (committed || aborted) return;
+      aborted = reason;
+      sink.discard();
+      if (driver) {
+        const d = driver;
+        driver = undefined;
+        void d.close().catch(() => {});
+      }
+    };
+
+    origin.provisionalHop = { hopId, abort, ...(target !== origin ? { successor: target } : {}) };
+    const releaseTargetLock = await this.acquireHopLock(this.hopKeys(target), hopId);
+
+    const failBeforeCommit = async (reason?: "cancelled" | "permission", err?: unknown): Promise<never> => {
+      sink.discard();
+      const d = driver;
+      driver = undefined;
+      if (d) await d.close().catch(() => {});
+      await onAbort?.();
+      const finalReason = reason ?? gateReason ?? checkGate();
+      if (finalReason === "cancelled" || (err instanceof SendCancelled && finalReason !== "permission")) {
+        throw new SendCancelled();
+      }
+      if (finalReason === "permission") {
+        throw new FallbackStepProblemError("The fallback step exceeds this session's current permissions.");
+      }
+      throw new FallbackStepProblemError(redact((err as Error)?.message ?? String(err ?? "Provisional start failed.")));
+    };
+
+    let commitPromise: Promise<void> | undefined;
+    const sendToken = {};
+    try {
+      const initialGate = checkGate();
+      if (initialGate) await failBeforeCommit(initialGate);
+
+      // Teardown target's old driver without mutating target.state (leaves state byte-identical on abort).
+      if (target.driver) {
+        const oldDriver = target.driver;
+        target.driver = undefined;
+        clearTimeout(target.idleTimer);
+        await oldDriver.close().catch(() => {});
+      }
+
+      const postTeardownGate = checkGate();
+      if (postTeardownGate) await failBeforeCommit(postTeardownGate);
+
+      try {
+        driver = resume
+          ? await a.resume(target.summary.nativeId, target.summary.projectPath, opts, sink)
+          : await a.start(target.summary.projectPath, target.summary.nativeId, opts, sink);
+      } catch (e) {
+        await failBeforeCommit(undefined, e);
+      }
+
+      if (origin.provisionalHop?.hopId === hopId) origin.provisionalHop.driver = driver;
+      const postStartGate = checkGate();
+      if (postStartGate) await failBeforeCommit(postStartGate);
+
+      const installDriver = (d: Driver) => {
+        target.unwatch?.();
+        target.unwatch = undefined;
+        const subscriptionRevision = step.source === "subscription" ? this.subscriptionRevisions.get(this.subscriptionScope(harness, "subscription")) : undefined;
+        target.driver = d;
+        target.credentialRevision = subscriptionRevision ?? d.credentialRevision ?? opts.credential?.revision;
+        d.onExit = (error) => {
+          if (target.driver !== d) return;
+          if (error) target.apply({ type: "msg", msg: notice(error, "error") });
+          this.toStored(target, error);
+        };
+        this.setMode(target, "live", { error: undefined, continuedIn: undefined, starting: undefined });
+        this.scheduleIdle(target);
+      };
+
+      if (!send) {
+        try {
+          await driver!.ready?.();
+        } catch (e) {
+          await failBeforeCommit(undefined, e);
+        }
+        const readyGate = checkGate();
+        if (readyGate) await failBeforeCommit(readyGate);
+        committed = true;
+        if (origin.provisionalHop?.hopId === hopId) origin.provisionalHop = undefined;
+        onCommitBeforeReplay(driver!, opts);
+        installDriver(driver!);
+        sink.commit(this.sink(target, step.source, driver!.accountIdentity));
+        await onCommitAfterReplay?.(driver!);
+        return;
+      }
+
+      const shown: StartOpts = {
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(opts.effort ? { effort: opts.effort } : {}),
+        ...(opts.permissionMode ? { permissionMode: opts.permissionMode } : {}),
+      };
+      try {
+        await driver!.send(withAttachments(send.text, send.attachments), send.attachments, shown, {
+          beforeEnqueue: () => {
+            const problem = checkGate();
+            if (problem) {
+              gateReason = problem;
+              return false;
+            }
+            return true;
+          },
+          onEnqueued: () => {
+            enqueued = true;
+            committed = true;
+            if (origin.provisionalHop?.hopId === hopId) origin.provisionalHop = undefined;
+            if (target !== origin) target.deferTurnEnd = true;
+            target.sending = sendToken;
+            target.sentOut = sendToken;
+            target.lastSend = { text: send.text, attachments: send.attachments, ...(send.tether ? { tether: true } : {}) };
+            target.retrySuppressed = false;
+            target.turnActed = false;
+            target.limitHit = undefined;
+            target.rateHit = undefined;
+            target.fresh = false;
+            if (this.core.o.prefs.get(target.id).blank) this.core.o.prefs.set(target.id, { blank: undefined });
+            if (send.releaseQueue && target.state.queueHeldBy !== "terminal") this.queue.release(target);
+            onCommitBeforeReplay(driver!, opts);
+            installDriver(driver!);
+            sink.commit(this.sink(target, step.source, driver!.accountIdentity));
+            commitPromise = Promise.resolve(onCommitAfterReplay?.(driver!));
+          },
+        });
+      } catch (e) {
+        if (!enqueued) {
+          await failBeforeCommit(undefined, e);
+        }
+        // Failure AFTER enqueued: never discard and never resend (R1').
+        if (commitPromise) await commitPromise;
+        if (target.sending === sendToken && !(e instanceof SendCancelled)) {
+          this.markSourceSwitchFailed(target);
+          target.turnError = redact((e as Error)?.message ?? String(e));
+          const hit = (e as { rateLimit?: { retryAt?: number } })?.rateLimit;
+          if (hit && typeof hit === "object") target.rateHit = hit;
+          target.apply({ type: "msg", msg: notice(target.turnError, "error") });
+          target.setState({ error: target.turnError });
+          this.status(target, "idle");
+        }
+        return;
+      }
+    } finally {
+      if (commitPromise) await commitPromise;
+      if (enqueued) {
+        if (target.sending === sendToken) target.sending = undefined;
+        if (target.sentOut === sendToken) target.sentOut = undefined;
+        if (target.cancelSend === sendToken) target.cancelSend = undefined;
+        if (target.state.status === "idle" && !target.retry) target.lastSend = undefined;
+        if (target !== origin && target.deferTurnEnd) {
+          target.deferTurnEnd = false;
+          const deferred = target.deferredTurnEnds.splice(0);
+          for (const fn of deferred) fn();
+        }
+        this.core.scheduleEvict(target);
+      }
+      if (origin.provisionalHop?.hopId === hopId) origin.provisionalHop = undefined;
+      releaseTargetLock();
+    }
+  }
+
+  /**
+   * Fallback carry hop (R6b', R6b''): keeps answer-gated replacement semantics while registering the
+   * successor as provisional from carrier() through replaceWith(), with R2 cancellation/permission split
+   * and R6.4 beforeEnqueue gate.
+   */
+  private async carryFallback(params: {
+    origin: Session;
+    hopId: symbol;
+    chain: FallbackChain;
+    index: number;
+    step: FallbackStep;
+    settings: StartOpts;
+    sourceModel?: string;
+    progress: FallbackProgress;
+    sent: NonNullable<Session["lastSend"]>;
+    onCommitted: () => void;
+  }): Promise<void> {
+    const { origin, hopId, chain, index, step, settings, sourceModel, progress, sent, onCommitted } = params;
+    if (!this.carrier) throw new Error("This runner can't change a session's source.");
+    let aborted: "cancelled" | "permission" | undefined;
+    let successor: Session | undefined;
+    let gateReason: "cancelled" | "permission" | undefined;
+    let committed = false;
+
+    const checkGate = (): "cancelled" | "permission" | undefined => {
+      if (aborted === "cancelled" || origin.retrySuppressed || this.stopping || origin.state.fallbackChain !== chain || origin.provisionalHop?.hopId !== hopId) {
+        return "cancelled";
+      }
+      if (aborted === "permission" || !settings.permissionMode || !this.fallbackModeAllowed(origin, settings.permissionMode, step.harness)) {
+        return "permission";
+      }
+      return undefined;
+    };
+
+    const abort = (reason: "cancelled" | "permission" = "cancelled") => {
+      if (committed || aborted) return;
+      aborted = reason;
+      if (successor) void this.interrupt(successor.id).catch(() => {});
+    };
+
+    origin.provisionalHop = { hopId, abort };
+    let releaseSuccessorLock: (() => void) | undefined;
+    try {
+      const initialGate = checkGate();
+      if (initialGate === "cancelled") throw new SendCancelled();
+      if (initialGate === "permission") throw new FallbackStepProblemError("The fallback step exceeds this session's current permissions.");
+
+      const nextModel = hasSourceModels(step.source) ? undefined : settings.model;
+      const carrySettings: StartOpts = {
+        effort: settings.effort,
+        permissionMode: settings.permissionMode,
+        ...(hasSourceModels(step.source) && sourceModel ? { sourceModel, model: sourceModel } : {}),
+      };
+      const id = await this.carrier(origin.id, step.source, nextModel, carrySettings);
+      const n = await this.core.open(id);
+      successor = n;
+      if (origin.provisionalHop?.hopId === hopId) origin.provisionalHop.successor = n;
+      releaseSuccessorLock = await this.acquireHopLock(this.hopKeys(n), hopId);
+      this.core.pin(n);
+      try {
+        const postCarrierGate = checkGate();
+        if (postCarrierGate) {
+          gateReason = postCarrierGate;
+          throw new SendCancelled();
+        }
+        await this.core.load(n);
+        const seen = new Set(n.transcript!.messages.map((m) => m.id));
+        await this.send(id, sent.text, sent.attachments, {
+          tether: true,
+          provisional: true,
+          hopId,
+          beforeEnqueue: () => {
+            const p = checkGate();
+            if (p) {
+              gateReason = p;
+              return false;
+            }
+            return true;
+          },
+        });
+        await this.answered(n, seen, () => !!checkGate());
+        // Just before replaceWith(), revalidate (R6b'').
+        const preReplaceGate = checkGate();
+        if (preReplaceGate) {
+          gateReason = preReplaceGate;
+          throw new SendCancelled();
+        }
+      } catch (e) {
+        await this.interrupt(n.id).catch(() => {});
+        await this.close(n);
+        await this.core.adapter(n.summary.harness).move?.discard?.(n.summary.nativeId).catch(() => {});
+        this.core.dropFresh(n);
+        const finalReason = gateReason ?? checkGate();
+        if (finalReason === "cancelled" || (e instanceof SendCancelled && finalReason !== "permission")) throw new SendCancelled();
+        if (finalReason === "permission") throw new FallbackStepProblemError("The fallback step exceeds this session's current permissions.");
+        throw new FallbackStepProblemError(redact((e as Error)?.message ?? String(e)));
+      } finally {
+        this.core.unpin(n);
+      }
+
+      committed = true;
+      if (origin.provisionalHop?.hopId === hopId) origin.provisionalHop = undefined;
+      delete progress.steps[index]?.retryAt;
+      const lastKey = isCredentialSource(step.source) ? step.source : isCredentialSource(this.sourceOf(origin)) ? this.sourceOf(origin) : undefined;
+      this.core.o.prefs.set(origin.id, {
+        fallbackChain: { ...chain, active: index },
+        fallbackProgress: progress,
+        ...(lastKey ? { lastKey } : {}),
+      });
+      this.core.o.prefs.flush();
+      origin.setState({ fallbackChain: { ...chain, active: index }, ...(lastKey ? { lastKey } : {}) });
+      if (!sent.tether && origin.state.queueHeldBy !== "terminal") this.queue.release(origin);
+      onCommitted();
+      await this.replaceWith(origin, n);
+    } finally {
+      if (origin.provisionalHop?.hopId === hopId) origin.provisionalHop = undefined;
+      releaseSuccessorLock?.();
+    }
   }
 
   private async returnToFallback(s: Session, chain: FallbackChain, index: number, step: FallbackStep, settings: StartOpts, progress: FallbackProgress, sourceModel?: string) {
@@ -2050,6 +2495,7 @@ export class LiveControl {
     const reservation = Symbol();
     this.fallingBack.set(s, reservation);
     this.core.pin(s);
+    let releaseHopLock: (() => void) | undefined;
     let switchedSource = false;
     try {
       // A turn can end before its send has returned.
@@ -2147,23 +2593,141 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
           await this.send(moved.session.id, opening.slice(0, MESSAGE_TEXT_MAX), sent?.attachments, { tether: true, continuedFallback: true });
           return true;
         }
-        await this.setSource(s.id, step.source, sourceModel, { chain, index, settings });
-        switchedSource = true;
-        if (waking) this.core.o.bus.emit("fallbackStatus", { sessionId: s.id, status: "resumed" });
         const label = this.labelOf(harness, step.source);
-        const switched = s.capabilities.sourceCarry && step.source !== source ? `Next source: ${label}.` : `Switched to ${label}.`;
-        delete progress.steps[index]?.retryAt;
-        this.core.o.prefs.set(s.id, { fallbackProgress: progress });
-        this.core.o.prefs.flush();
-        if (!sent || acted) {
+        if (s.state.mode === "terminal" || s.state.terminal || this.terminal?.blocked(s)) throw new Error(sourceSwitchBlockMessage("terminal"));
+        const carries = !!s.capabilities.sourceCarry && step.source !== source;
+        const switched = carries ? `Next source: ${label}.` : `Switched to ${label}.`;
+        if (carries && (!sent || acted)) {
+          // Hops with no resend on a carry harness keep pending-source behaviour (R6b').
+          try {
+            await this.setSource(s.id, step.source, sourceModel, { chain, index, settings });
+          } catch (e) {
+            if (e instanceof FallbackStepProblemError) {
+              progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS };
+              this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+              this.core.o.prefs.flush();
+              continue;
+            }
+            throw e;
+          }
+          switchedSource = true;
+          if (waking) this.core.o.bus.emit("fallbackStatus", { sessionId: s.id, status: "resumed" });
+          delete progress.steps[index]?.retryAt;
+          this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+          this.core.o.prefs.flush();
           say(`${switched} ${acted ? "The turn already acted. " : ""}Send a message to continue.`);
           waiting();
           return true;
         }
-        say(`${switched} Resending your message.`);
-        // The next exhausted turn, including one which ends during send(), owns the next hop.
-        await this.send(s.id, sent.text, sent.attachments, { tether: sent.tether, fallback: reservation });
-        return true;
+        releaseHopLock ??= await this.acquireHopLock(this.hopKeys(s), reservation);
+        if (carries && sent && !acted) {
+          try {
+            await this.carryFallback({
+              origin: s,
+              hopId: reservation,
+              chain,
+              index,
+              step,
+              settings,
+              sourceModel,
+              progress,
+              sent,
+              onCommitted: () => {
+                switchedSource = true;
+                if (waking) this.core.o.bus.emit("fallbackStatus", { sessionId: s.id, status: "resumed" });
+                say(`${switched} Resending your message.`);
+                if (this.fallingBack.get(s) === reservation) this.fallingBack.delete(s);
+                releaseHopLock?.();
+                releaseHopLock = undefined;
+              },
+            });
+            return true;
+          } catch (e) {
+            if (e instanceof FallbackStepProblemError) {
+              progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS };
+              this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+              this.core.o.prefs.flush();
+              continue;
+            }
+            throw e;
+          }
+        }
+        // Same-session non-carry hop via provisionalStart (R1''', R6, G3).
+        const nextBilling = this.core.adapter(harness).billing!.label(step.source);
+        const confirmed = s.state.billing?.label === nextBilling.label && s.state.billing?.source === nextBilling.source;
+        const lastKey = isCredentialSource(step.source) ? step.source : isCredentialSource(source) ? source : undefined;
+        const model = hasSourceModels(step.source) ? sourceModel ?? settings.model : settings.model;
+        const deployment = hasSourceModels(step.source) ? model : undefined;
+        try {
+          await this.provisionalStart({
+            origin: s,
+            target: s,
+            hopId: reservation,
+            chain,
+            step,
+            settings,
+            sourceModel,
+            resume: !s.fresh,
+            send: sent && !acted ? { text: sent.text, attachments: sent.attachments, tether: sent.tether, releaseQueue: !sent.tether } : undefined,
+            onCommitBeforeReplay: () => {
+              let cost: SessionCost | undefined;
+              if (isCredentialSource(step.source)) {
+                try { cost = this.startCost(s); }
+                catch { cost = { estimated: true, complete: false, reasons: ["unsaved"] }; this.core.log("Couldn't save this session's API cost coverage. Its total is unknown."); }
+              }
+              delete progress.steps[index]?.retryAt;
+              const nextChain = { ...chain, active: index };
+              const sourceSettings = model ? { model, deployment } : {};
+              this.core.o.prefs.set(s.id, {
+                fallbackChain: nextChain,
+                fallbackProgress: progress,
+                ...settings,
+                ...sourceSettings,
+                source: step.source,
+                ...(lastKey ? { lastKey } : {}),
+                nextBilling: undefined,
+                nextDeployment: undefined,
+                sourceSwitchFailed: undefined,
+              });
+              this.core.o.prefs.flush();
+              s.setState({
+                fallbackChain: nextChain,
+                ...settings,
+                ...(lastKey ? { lastKey } : {}),
+                ...(isAccountSource(step.source) || isAccountSource(source) ? { plan: this.core.planFor(harness, step.source) } : {}),
+                nextBilling: confirmed ? undefined : undefined,
+                nextDeployment: undefined,
+                sourceSwitchFailed: undefined,
+                retryThrottled: isSubscriptionSource(step.source) ? undefined : this.core.o.prefs.get(s.id).retryThrottled === true,
+                ...(model ? { model, modelResolved: undefined } : {}),
+                ...(cost ? { cost } : {}),
+              });
+              this.core.touch(s);
+              switchedSource = true;
+              if (waking) this.core.o.bus.emit("fallbackStatus", { sessionId: s.id, status: "resumed" });
+              if (!sent || acted) {
+                say(`${switched} ${acted ? "The turn already acted. " : ""}Send a message to continue.`);
+              } else {
+                say(`${switched} Resending your message.`);
+              }
+            },
+            onCommitAfterReplay: () => {
+              if (this.fallingBack.get(s) === reservation) this.fallingBack.delete(s);
+              releaseHopLock?.();
+              releaseHopLock = undefined;
+              if (!sent || acted) waiting();
+            },
+          });
+          return true;
+        } catch (e) {
+          if (e instanceof FallbackStepProblemError) {
+            progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS };
+            this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+            this.core.o.prefs.flush();
+            continue;
+          }
+          throw e;
+        }
       }
       if (returning) return false;
       this.fallbackExhausted(s, chain, progress);
@@ -2173,10 +2737,13 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
         const error = redact((e as Error)?.message ?? String(e));
         say(error, "warning");
         if (!switchedSource) waiting(error);
+      } else if (returning && s.retrySuppressed) {
+        throw e;
       }
       return !returning || switchedSource;
     } finally {
       if (this.fallingBack.get(s) === reservation) this.fallingBack.delete(s);
+      releaseHopLock?.();
       this.core.unpin(s);
     }
   }
@@ -2328,7 +2895,7 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
   // ---------------- sinks ----------------
 
   /** Where a session's driver reports. */
-  private sink(s: Session, processSource: BillingSource): Sink {
+  private sink(s: Session, processSource: BillingSource, _processIdentity?: PlanIdentity): Sink {
     const core = this.core;
     const bus = core.o.bus;
     return {
@@ -2460,34 +3027,44 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
     }
     if (now === "running" && before !== "running") bus.emit("turnStarted", { sessionId: s.id, from: before });
     if (now === "idle") {
-      // The next turn runs with the settings as shown; not while its subagents still run on the old
-      // ones. A harness that reports what still runs (persistent) keeps this itself.
-      if (s.state.turnSettings && !s.driver?.busy() && !s.capabilities.persistent) s.setState({ turnSettings: undefined });
-      const stopped = s.stopped;
-      s.stopped = false;
-      const { limitHit, lastSend, turnActed } = s;
-      const rateHit = s.rateHit;
-      const error = s.turnError ?? s.state.error;
-      const provisional = !!s.sending && s.retry?.phase === "sending" && !lastSend;
-      const retry = !provisional && rateHit && !stopped && this.retries.recover(s, rateHit, lastSend, error ?? "Rate limited.");
-      const recovering = provisional || retry === true;
-      if (rateHit && !recovering && !stopped && lastSend) {
-        const why = turnActed ? "Tools ran or a message was steered in this turn, so it wasn't resent automatically. Send a message to continue." : s.retry ? "Automatic rate limit retries stopped after reaching the attempt or time limit. Send a message to continue." : undefined;
-        if (why) s.apply({ type: "msg", msg: notice(why, "warning") });
+      if (s.deferTurnEnd) {
+        s.deferredTurnEnds.push(() => this.handleIdle(s));
+        this.core.touch(s, { updatedAt: this.core.now() });
+        return;
       }
-      s.rateHit = undefined;
-      if (!recovering && s.retry && (!s.sending || lastSend)) this.retries.clear(s);
-      s.limitHit = undefined;
-      // A process start can report idle before the turn: the send isn't over.
-      if (limitHit || !s.sending) s.lastSend = undefined;
-      const fallbackPending = !stopped && (limitHit || retry === "exhausted") && this.canAdvanceFallback(s, limitHit);
-      bus.emit("turnEnded", { sessionId: s.id, error, ...(stopped ? { stopped } : {}), ...(recovering ? { recovering } : {}), ...(fallbackPending ? { fallbackPending: true } : {}) });
-      s.turnError = undefined;
-      if (fallbackPending) void this.advanceFallback(s, limitHit, lastSend, turnActed, false, false, error);
-      this.scheduleIdle(s);
-      void this.refreshTitle(s);
+      this.handleIdle(s);
     }
     this.core.touch(s, { updatedAt: this.core.now() });
+  }
+
+  private handleIdle(s: Session) {
+    const bus = this.core.o.bus;
+    // The next turn runs with the settings as shown; not while its subagents still run on the old
+    // ones. A harness that reports what still runs (persistent) keeps this itself.
+    if (s.state.turnSettings && !s.driver?.busy() && !s.capabilities.persistent) s.setState({ turnSettings: undefined });
+    const stopped = s.stopped;
+    s.stopped = false;
+    const { limitHit, lastSend, turnActed } = s;
+    const rateHit = s.rateHit;
+    const error = s.turnError ?? s.state.error;
+    const provisional = !!s.sending && s.retry?.phase === "sending" && !lastSend;
+    const retry = !provisional && rateHit && !stopped && this.retries.recover(s, rateHit, lastSend, error ?? "Rate limited.");
+    const recovering = provisional || retry === true;
+    if (rateHit && !recovering && !stopped && lastSend) {
+      const why = turnActed ? "Tools ran or a message was steered in this turn, so it wasn't resent automatically. Send a message to continue." : s.retry ? "Automatic rate limit retries stopped after reaching the attempt or time limit. Send a message to continue." : undefined;
+      if (why) s.apply({ type: "msg", msg: notice(why, "warning") });
+    }
+    s.rateHit = undefined;
+    if (!recovering && s.retry && (!s.sending || lastSend)) this.retries.clear(s);
+    s.limitHit = undefined;
+    // A process start can report idle before the turn: the send isn't over.
+    if (limitHit || !s.sending) s.lastSend = undefined;
+    const fallbackPending = !stopped && (limitHit || retry === "exhausted") && this.canAdvanceFallback(s, limitHit);
+    bus.emit("turnEnded", { sessionId: s.id, error, ...(stopped ? { stopped } : {}), ...(recovering ? { recovering } : {}), ...(fallbackPending ? { fallbackPending: true } : {}) });
+    s.turnError = undefined;
+    if (fallbackPending) void this.advanceFallback(s, limitHit, lastSend, turnActed, false, false, error);
+    this.scheduleIdle(s);
+    void this.refreshTitle(s);
   }
 
   /** The harness names sessions itself (Claude writes a title after the first turn). */
