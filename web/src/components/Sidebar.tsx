@@ -8,7 +8,7 @@ import { Cog6ToothIcon, HomeIcon, LinkIcon, PlusIcon, UserCircleIcon } from "@he
 import type { ProjectInfo } from "../../../shared/transcript";
 import { rpc } from "../connection";
 import { navigate, useRoute } from "../route";
-import { foldWorktrees, folderName, inProject, isHomeChat, listed, recentGroups, mergeRows, recentSessions, splitPinned, waitingOn, type Row } from "../sessionList";
+import { ancestorChain, foldWorktrees, folderName, inProject, isHomeChat, listed, recentGroups, mergeRows, recentSessions, splitPinned, startedChildrenOf, waitingOn, type Row } from "../sessionList";
 import { activeRunnerFilter, aggregateProjects } from "../runnerFilter";
 import { avatarSrc } from "../avatar";
 import { canPin } from "../runners";
@@ -93,38 +93,33 @@ export function Sidebar() {
   const projects = useMemo(() => foldWorktrees(aggregateProjects(projectsBy, activeRunner), Object.values(summaries).flatMap((x) => Object.values(x.sessions))), [projectsBy, activeRunner, summaries]);
 
   const selected = route.page === "session" ? route : undefined;
-  // An open subagent shows under its parent, so the parent's row is the one expanded.
-  const selParent = useStore((s) => (selected ? (s.summaries[selected.runnerId]?.sessions[selected.sessionId]?.parentSessionId ?? s.views[`${selected.runnerId}\u0000${selected.sessionId}`]?.session?.parentSessionId) : undefined));
-  const expanded = selected && { runnerId: selected.runnerId, sessionId: selParent ?? selected.sessionId };
+  // Walk up parentSessionId / startedBy so an open subagent or agent-started session stays nested under its ancestor.
+  const selChainKey = useStore((s) => (selected ? ancestorChain(s.summaries, s.views, selected.runnerId, selected.sessionId).join("\0") : ""));
+  const selChain = useMemo(() => (selChainKey ? selChainKey.split("\0") : []), [selChainKey]);
+  const expanded = selected && selChain.length ? { runnerId: selected.runnerId, sessionId: selChain[0]! } : undefined;
+  const selActiveChild = selChain[1];
   const children = useChildren(expanded?.runnerId, expanded?.sessionId);
   const selectedRow = expanded && [...pinned, ...rest.slice(0, shown)].find((r) => r.runnerId === expanded.runnerId && r.id === expanded.sessionId);
-  const childRow = (c: Row) => <SessionRow key={c.id} row={c} now={now} selected={!!selected && c.id === selected.sessionId} child />;
   // Subagents (and sessions its agent started) sit behind one toggle row, open or closed as this
   // device keeps it; open while one of them is the open session, until toggled.
   const [savedOpen, setSavedOpen] = useState(loadChildrenOpen);
   const [toggled, setToggled] = useState<{ for: string; open: boolean }>();
+  const [otherOpen, setOtherOpen] = useState<Record<string, boolean>>({});
   const selKey = selected ? `${selected.runnerId}\u0000${selected.sessionId}` : "";
-  const sectionOpen = childrenOpen(savedOpen, children, selected?.sessionId, toggled?.for === selKey ? toggled.open : undefined);
-  // A session can have a hundred subagents: a few rows (running first, the open one always), the
-  // rest behind "N more", which opens the whole list.
-  const childRows = () => {
-    if (!children.length) return null;
-    const { label, running, said } = childrenToggle(children);
+  const sectionOpen = childrenOpen(savedOpen, children, selActiveChild, toggled?.for === selKey ? toggled.open : undefined);
+  const renderChildList = (runnerId: string, list: Row[], open: boolean, onToggle: () => void, activeId?: string, activeRest: string[] = []) => {
+    if (!list.length) return null;
+    const { label, running, said } = childrenToggle(list);
     const toggle = (
       <button
         type="button"
         className="t-child-toggle"
-        aria-expanded={sectionOpen}
+        aria-expanded={open}
         aria-label={said}
         title={said}
-        onClick={() => {
-          const open = !sectionOpen;
-          saveChildrenOpen(open);
-          setSavedOpen(open);
-          setToggled({ for: selKey, open });
-        }}
+        onClick={onToggle}
       >
-        <span className="t-child-chev" aria-hidden="true">{sectionOpen ? "▾" : "▸"}</span>
+        <span className="t-child-chev" aria-hidden="true">{open ? "▾" : "▸"}</span>
         <span className="t-child-label">{label}</span>
         {running > 0 && (
           <span className="t-child-running" aria-hidden="true">
@@ -134,20 +129,27 @@ export function Sidebar() {
         )}
       </button>
     );
-    if (!sectionOpen) return toggle;
-    const { few, rest } = fewChildren(children, selected?.sessionId, CHILD_ROWS);
+    if (!open) return toggle;
+    const { few, rest: more } = fewChildren(list, activeId, CHILD_ROWS);
     return (
       <>
         {toggle}
-        {few.map(childRow)}
-        {rest.length > 0 && expanded && (
+        {few.map((c) => (
+          <Fragment key={c.id}>
+            <SessionRow row={c} now={now} selected={!!selected && c.id === selected.sessionId} child />
+            {c.id === activeId && selected && (
+              <NestedBranch runnerId={runnerId} parentId={c.id} activeChain={activeRest} selectedId={selected.sessionId} now={now} />
+            )}
+          </Fragment>
+        ))}
+        {more.length > 0 && (
           <SubagentsPopover
-            runnerId={expanded.runnerId}
-            children={children}
+            runnerId={runnerId}
+            children={list}
             onPick={() => useStore.setState({ sidebarOpen: false })}
             trigger={
               <button type="button" className="t-more t-child-more">
-                {moreLabel(rest)}
+                {moreLabel(more)}
               </button>
             }
           />
@@ -155,14 +157,37 @@ export function Sidebar() {
       </>
     );
   };
+  const childRows = () =>
+    expanded
+      ? renderChildList(
+          expanded.runnerId,
+          children,
+          sectionOpen,
+          () => {
+            const open = !sectionOpen;
+            saveChildrenOpen(open);
+            setSavedOpen(open);
+            setToggled({ for: selKey, open });
+          },
+          selActiveChild,
+          selChain.slice(2),
+        )
+      : null;
 
   /** `grouped`: under its project's subheader, so the row leaves the project out. */
   const sessionRow = (r: Row, grouped = false) => {
     const isExp = !!expanded && r.runnerId === expanded.runnerId && r.id === expanded.sessionId;
+    const liveStarted = isExp ? [] : startedChildrenOf(summaries, r.runnerId, r.id);
+    const otherKey = `${r.runnerId}\u0000${r.id}`;
     return (
       <Fragment key={`${r.runnerId}:${r.id}`}>
-        <SessionRow row={r} now={now} selected={isExp && !selParent} runnerLabel={many ? runnerName(r.runnerId) : undefined} canPin={canPin(runners, r.runnerId)} hideProject={grouped} />
-        {isExp && childRows()}
+        <SessionRow row={r} now={now} selected={isExp && selChain.length === 1} runnerLabel={many ? runnerName(r.runnerId) : undefined} canPin={canPin(runners, r.runnerId)} hideProject={grouped} />
+        {isExp
+          ? childRows()
+          : liveStarted.length > 0 &&
+            renderChildList(r.runnerId, liveStarted, !!otherOpen[otherKey], () =>
+              setOtherOpen((prev) => ({ ...prev, [otherKey]: !prev[otherKey] })),
+            )}
       </Fragment>
     );
   };
@@ -286,11 +311,11 @@ export function Sidebar() {
           </button>
         )}
       </div>
-      {/* An open session not in the list above (a subagent, or one further down): its subagents. */}
+      {/* An open session not in the list above (a subagent, started session, or one further down): its children. */}
       {selected && !selectedRow && children.length > 0 && (
         <>
           <div className="t-list-head">
-            <span className="t-grow">Subagents of this session</span>
+            <span className="t-grow">{children.every((c) => c.spawned) ? "Started by this session" : "Subagents of this session"}</span>
           </div>
           <div className="t-rows">
             {childRows()}
@@ -348,6 +373,55 @@ export function Sidebar() {
       )}
     </SideNav>
     <SidebarHandle />
+    </div>
+  );
+}
+
+/** Deeper nesting (subagents or depth-2 started sessions under an active nested child). */
+function NestedBranch({ runnerId, parentId, activeChain, selectedId, now }: { runnerId: string; parentId: string; activeChain: string[]; selectedId: string; now: number }) {
+  const children = useChildren(runnerId, parentId);
+  const activeId = activeChain[0];
+  const [toggled, setToggled] = useState<boolean>();
+  const open = childrenOpen(false, children, activeId, toggled);
+  if (!children.length) return null;
+  const { label, running, said } = childrenToggle(children);
+  const { few, rest } = fewChildren(children, activeId, CHILD_ROWS);
+  return (
+    <div className="t-child-nested">
+      <button type="button" className="t-child-toggle" aria-expanded={open} aria-label={said} title={said} onClick={() => setToggled(!open)}>
+        <span className="t-child-chev" aria-hidden="true">{open ? "▾" : "▸"}</span>
+        <span className="t-child-label">{label}</span>
+        {running > 0 && (
+          <span className="t-child-running" aria-hidden="true">
+            <StatusDot status="running" />
+            {running}
+          </span>
+        )}
+      </button>
+      {open && (
+        <>
+          {few.map((c) => (
+            <Fragment key={c.id}>
+              <SessionRow row={c} now={now} selected={c.id === selectedId} child />
+              {c.id === activeId && activeChain.length > 1 && (
+                <NestedBranch runnerId={runnerId} parentId={c.id} activeChain={activeChain.slice(1)} selectedId={selectedId} now={now} />
+              )}
+            </Fragment>
+          ))}
+          {rest.length > 0 && (
+            <SubagentsPopover
+              runnerId={runnerId}
+              children={children}
+              onPick={() => useStore.setState({ sidebarOpen: false })}
+              trigger={
+                <button type="button" className="t-more t-child-more">
+                  {moreLabel(rest)}
+                </button>
+              }
+            />
+          )}
+        </>
+      )}
     </div>
   );
 }

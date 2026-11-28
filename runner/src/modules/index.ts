@@ -86,6 +86,10 @@ export interface SessionActions {
   moveSides?(from: string, to: string): void;
   /** what makes forks (the fork module) */
   forker(make: (id: string, o: ForkOptions) => Promise<string>): void;
+  /** provides the active starter session id for an agent-started session (the peers module, SessionSummary.startedBy) */
+  starterProvider?(fn: (sessionId: string) => string | undefined): void;
+  /** re-computes and broadcasts SessionSummary.startedBy for `id` after its starter relationship changes */
+  refreshStartedBy?(id: string): void;
   /** a new session; its first send starts it */
   create(args: { harness: HarnessId; projectPath: string; source: BillingSource } & StartOpts): Promise<string>;
   /** a new native id, on that source */

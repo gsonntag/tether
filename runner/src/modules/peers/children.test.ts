@@ -923,6 +923,32 @@ describe("review: when unsure, it isn't archived", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("starterOf reports active starter, follows continued, and clears when starter is archived", async () => {
+    const t = setup();
+    const refreshed: string[] = [];
+    (t.peers.children as any).ctx.sessions.refreshStartedBy = (id: string) => refreshed.push(id);
+    const r = await t.start({ harness: "codex", prompt: "go" });
+    expect(r.isError).toBeFalsy();
+    const childId = t.created[0]!.id;
+    expect(t.peers.children.starterOf(childId)).toBe("claude:boss");
+    expect(t.peers.children.starterOf("claude:boss")).toBeUndefined();
+    expect(refreshed).toContain(childId);
+
+    // Archiving starter clears starterOf so an unarchived child isn't orphaned from the main list.
+    t.rows.find((x) => x.id === "claude:boss")!.archived = true;
+    expect(t.peers.children.starterOf(childId)).toBeUndefined();
+
+    // Unarchiving starter restores nesting.
+    t.rows.find((x) => x.id === "claude:boss")!.archived = false;
+    expect(t.peers.children.starterOf(childId)).toBe("claude:boss");
+
+    // Moving the starter updates starterOf and refreshes its children.
+    refreshed.length = 0;
+    t.peers.children.continued("claude:boss", "claude:boss2");
+    expect(t.peers.children.starterOf(childId)).toBe("claude:boss2");
+    expect(refreshed).toEqual([childId]);
+  });
 });
 
 describe("CleanupWaits", () => {

@@ -140,6 +140,30 @@ export class Children {
   }
 
   /**
+   * The active (unarchived) starter session id for `id`, if an agent started it.
+   * Returns undefined once the starter is archived so an unarchived child isn't orphaned from the sidebar.
+   */
+  starterOf(id: string): string | undefined {
+    const c = this.kids[id];
+    if (!c) return undefined;
+    let parent = c.parent;
+    for (let hop = 0; hop < 5; hop++) {
+      const kept = this.ctx.sessions.kept?.(parent);
+      if (kept?.archived) return undefined;
+      if (!kept?.movedTo) break;
+      parent = kept.movedTo;
+    }
+    if (this.ctx.session(parent)?.summary.archived) return undefined;
+    return parent;
+  }
+
+  private refreshChildrenOf(parent: string) {
+    for (const [id, c] of Object.entries(this.kids)) {
+      if (c.parent === parent) this.ctx.sessions.refreshStartedBy?.(id);
+    }
+  }
+
+  /**
    * Who started a session and whom it started (the spawnedFamily op: the web shows them as its
    * children, SPEC §6a). Released children too: who started whom doesn't change when the person
    * takes one over. Archived ones, and ones in a folder the lists hide, are left out; one that went
@@ -193,22 +217,28 @@ export class Children {
   continued(from: string, to: string) {
     if (!from || !to || from === to) return;
     let changed = false;
+    const touched: string[] = [];
     if (this.kids[from]) {
       this.kids[to] = this.kids[from]!;
       delete this.kids[from];
       changed = true;
+      touched.push(to);
     }
-    for (const c of Object.values(this.kids))
+    for (const [cid, c] of Object.entries(this.kids))
       if (c.parent === from) {
         c.parent = to;
         changed = true;
+        touched.push(cid);
       }
     const n = this.pending.get(from);
     if (n) {
       this.pending.delete(from);
       this.pending.set(to, (this.pending.get(to) ?? 0) + n);
     }
-    if (changed) this.save();
+    if (changed) {
+      this.save();
+      for (const cid of touched) this.ctx.sessions.refreshStartedBy?.(cid);
+    }
   }
 
   /** The sessions `parent` started that still report to it and are still at work (a finished, idle one doesn't count). */
@@ -374,6 +404,7 @@ export class Children {
     const id = made?.sessionId ?? joined?.sessionId ?? (await s.create({ harness, projectPath: folder, source, permissionMode: mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}) }));
     this.kids[id] = { parent: starter, depth: (this.kids[starter]?.depth ?? 0) + 1, reports: 0, hops };
     this.save();
+    s.refreshStartedBy?.(id);
     if (title) await s.rename(id, title).catch(() => {});
     const sender = { id: starter, title: (starter === from ? me : this.ctx.session(starter))?.summary.title || "Untitled" };
     const hint = `a session's agent started you, not the person. Your final reply each turn goes back to it automatically; it may follow up. The starter's permissions: ${LEVEL_WORDS[level]}.`;
@@ -383,6 +414,7 @@ export class Children {
       // Made, but the prompt didn't go: it isn't this agent's to follow.
       delete this.kids[id];
       this.save();
+      s.refreshStartedBy?.(id);
       return { text: `Made session ${id}, but couldn't send it the prompt: ${(e as Error).message}. It's idle in Tether with nothing to do.`, isError: true };
     }
     const name = `"${markTitle(title ?? "")}" (${id})`;
@@ -496,7 +528,9 @@ export class Children {
     } finally {
       this.archiving.delete(id);
     }
-    return 1 + (await this.archiveChildren(id));
+    const n = 1 + (await this.archiveChildren(id));
+    this.refreshChildrenOf(id);
+    return n;
   }
 
   /**
@@ -578,10 +612,12 @@ export class Children {
     if (this.archiving.has(id)) return;
     if (archived) {
       await this.archiveChildren(id);
+      this.refreshChildrenOf(id);
       return;
     }
     if (this.kids[id]) this.takeOver(id);
     await this.undoCascade(id);
+    this.refreshChildrenOf(id);
   }
 
   /**

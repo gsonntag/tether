@@ -520,8 +520,10 @@ always) and "N more" for the rest (a searchable list). Open or closed is kept pe
 row is in view, until toggled.
 
 **Sessions an agent started** (`tether_start`, §9a) count as its children too, beside its
-subagents, but they're ordinary sessions: no `parentSessionId`, in the lists as well, full header
-controls. The peers module's read-only op `spawnedFamily {sessionId} → {parent?: {id, title},
+subagents, and carry `startedBy` on `SessionSummary` while their starter isn't archived: they're
+shown nested under their starter in the sidebar only (not in the main Recent/project list, unless
+explicitly pinned, or if their starter is archived while they remain active), while keeping full
+header controls and surfacing on Home if they directly need a person's input. The peers module's read-only op `spawnedFamily {sessionId} → {parent?: {id, title},
 children}` (from `children.json`; released children too, never archived ones or ones in a hidden
 folder; one that went on under a new id is its successor; at most 8 opened at once; runners say
 `RunnerInfo.spawnedFamily`) is asked for the open session only, one answer shared by the sidebar

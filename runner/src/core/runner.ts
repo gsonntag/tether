@@ -331,6 +331,8 @@ export function createRunner(o: RunnerOptions) {
         fallbackArchiver: (f: NonNullable<LiveControl["fallbackArchive"]>) => { live.fallbackArchive = f; },
         fork: (id: string, f: ForkOptions = {}) => (forker ? forker(id, f) : Promise.reject(new Error("This runner can't fork sessions."))),
         forker: (f: (id: string, o: ForkOptions) => Promise<string>) => { forker = f; },
+        starterProvider: (fn: (sessionId: string) => string | undefined) => { core.startedByFor = fn; },
+        refreshStartedBy: (id: string) => core.refreshStartedBy(id),
         moveSides: (from: string, to: string) => core.moveSides(from, to),
         sideChatsOf: (id: string) => core.o.prefs.sideChatsOf(id),
         closeDriver: async (id: string) => {

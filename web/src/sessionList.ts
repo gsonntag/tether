@@ -34,8 +34,9 @@ const rows = (summaries: Record<string, SummaryState>, runnerId?: string): Row[]
         .map((x) => ({ ...x, status: shownStatus(x), runnerId: rId })),
     );
 
-/** A row the lists show: not a subagent (under its parent) nor a side chat (under its session, SPEC §16a). */
-export const listed = (r: Pick<SessionSummary, "parentSessionId" | "sideOf">) => !r.parentSessionId && !r.sideOf;
+/** A row the main sidebar lists show: not a subagent, not a side chat, and not an unpinned session started by another session's agent (SPEC §6a). */
+export const listed = (r: Pick<SessionSummary, "parentSessionId" | "sideOf" | "startedBy" | "pinned">) =>
+  !r.parentSessionId && !r.sideOf && (!r.startedBy || !!r.pinned);
 
 const newestFirst = (a: Row, b: Row) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
 
@@ -127,10 +128,10 @@ export const recentGroups = (list: Row[], o: { query?: string; filter?: string }
 
 /**
  * The session menu's pin item: "Pin" or "Unpin", or none where pinning isn't offered (a runner from
- * before pinSession, an archived session, a subagent, a side chat).
+ * before pinSession, a subagent, a side chat). Pinning a started session promotes it into Pinned.
  */
 export function pinMenuLabel(s: SessionSummary, canPin: boolean): "Pin" | "Unpin" | undefined {
-  if (!canPin || !listed(s)) return undefined;
+  if (!canPin || s.parentSessionId || s.sideOf) return undefined;
   return s.pinned ? "Unpin" : "Pin";
 }
 
@@ -141,13 +142,46 @@ export function childrenOf(summaries: Record<string, SummaryState>, runnerId: st
     .sort(newestFirst);
 }
 
+/** Unarchived sessions started by `sessionId` (tether_start) from the broadcast summaries, newest first. */
+export function startedChildrenOf(summaries: Record<string, SummaryState>, runnerId: string, sessionId: string): Row[] {
+  return rows(summaries, runnerId)
+    .filter((r) => r.startedBy === sessionId && !r.archived && !r.pinned)
+    .map((r) => ({ ...r, spawned: true }))
+    .sort(newestFirst);
+}
+
 /**
- * Main sessions on a runner waiting for a person: open requests (a subagent's count in its
- * parent's), or a TUI in terminal mode asking (SPEC §8). Oldest waiting first.
+ * Walks up `parentSessionId` / `startedBy` from `sessionId` to its top-level ancestor in the main
+ * list, returning `[root, ..., sessionId]`. Stops at pinned sessions or cycles.
+ */
+export function ancestorChain(
+  summaries: Record<string, SummaryState>,
+  views: Record<string, { session?: Pick<SessionSummary, "parentSessionId" | "startedBy" | "pinned"> }>,
+  runnerId: string,
+  sessionId: string,
+): string[] {
+  const chain = [sessionId];
+  const seen = new Set<string>([sessionId]);
+  let cur = sessionId;
+  while (true) {
+    const s = summaries[runnerId]?.sessions[cur] ?? views[`${runnerId}\u0000${cur}`]?.session;
+    const parent = s?.parentSessionId ?? (!s?.pinned ? s?.startedBy : undefined);
+    if (!parent || seen.has(parent)) break;
+    seen.add(parent);
+    chain.unshift(parent);
+    cur = parent;
+  }
+  return chain;
+}
+
+/**
+ * Sessions on a runner waiting for a person: open requests (a subagent's count in its
+ * parent's), or a TUI in terminal mode asking (SPEC §8). Includes agent-started sessions since their
+ * requests don't roll up into their starter. Oldest waiting first.
  */
 export function waitingOn(summaries: Record<string, SummaryState>, runnerId: string): Row[] {
   return rows(summaries)
-    .filter((r) => r.runnerId === runnerId && listed(r) && ((r.requests ?? 0) > 0 || (r.mode === "terminal" && r.status === "waiting")))
+    .filter((r) => r.runnerId === runnerId && !r.parentSessionId && !r.sideOf && ((r.requests ?? 0) > 0 || (r.mode === "terminal" && r.status === "waiting")))
     .sort((a, b) => a.updatedAt - b.updatedAt);
 }
 
@@ -183,9 +217,11 @@ export function inbox(summaries: Record<string, SummaryState>): InboxRow[] {
   const out: InboxRow[] = [];
   for (const r of rows(summaries)) {
     // A pinned session its runner can't find is only a saved row: never on Home.
-    if (!listed(r) || r.missing) continue;
+    if (r.parentSessionId || r.sideOf || r.missing) continue;
     const kind: InboxKind | undefined =
       (r.requests ?? 0) > 0 || r.status === "waiting" || (r.queuePaused && r.status === "idle") ? "needs" : r.unread === "failed" ? "failed" : r.unread === "finished" && !r.backgroundSubagents && !r.watching ? "finished" : r.status === "running" ? "working" : r.watching && !r.archived ? "watching" : r.scheduledAt !== undefined && !r.archived ? "scheduled" : undefined;
+    // Nested agent-started sessions only surface on Home when they directly need a person's input.
+    if (r.startedBy && !r.pinned && kind !== "needs") continue;
     if (kind) out.push({ ...r, inbox: kind });
   }
   const rank: Record<InboxKind, number> = { needs: 0, failed: 1, finished: 2, working: 3, watching: 4, scheduled: 5 };
