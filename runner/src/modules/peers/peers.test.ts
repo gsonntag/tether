@@ -8,7 +8,7 @@ import { claudeMove } from "../../adapters/claude/move";
 import { codexMove } from "../../adapters/codex/move";
 import { classifyTool } from "../../adapters/toolKind";
 import { peerTarget } from "../../../../shared/peers";
-import { ASKS_MAX, MAX_HOPS, PeerCaps, RATE_MAX } from "./caps";
+import { ASKS_MAX, MAX_HOPS, PeerCaps } from "./caps";
 import { answerIn, Peers } from "./index";
 import { IMAGE_REFUSED, ImageFailures, readOutgoingImage } from "../texting/images";
 import { CANT_TEXT } from "../phoneLine";
@@ -78,13 +78,10 @@ describe("caps", () => {
     c.turnFrom("b");
     expect(c.check("b", "c", "send")).toBeUndefined();
   });
-  test("rate, open asks, self and cycles", () => {
-    let now = 0;
-    const c = new PeerCaps(() => now);
+  test("no send rate, open asks, self and cycles", () => {
+    const c = new PeerCaps(() => 0);
     expect(c.check("a", "a", "send")).toMatch(/this session/);
-    for (let i = 0; i < RATE_MAX; i++) c.count("a");
-    expect(c.check("a", "b", "send")).toMatch(/messages/);
-    now += 11 * 60_000;
+    for (let i = 0; i < 50; i++) c.count("a");
     expect(c.check("a", "b", "send")).toBeUndefined();
     const closes = Array.from({ length: ASKS_MAX }, () => c.open("a", "b"));
     expect(c.check("a", "c", "ask")).toMatch(/questions waiting/);
@@ -302,15 +299,15 @@ describe("tools", () => {
     expect(refused?.[0]?.text).toMatch(/questions waiting/);
     expect(queued).toHaveLength(3);
     void ab;
-    // And more sends at once than the rate allows.
+    // Many sends at once all go: there is no per-sender rate.
     const { peers: p2 } = setup([row("claude:a", "A"), row("claude:b", "B")]);
-    const r = await Promise.all(Array.from({ length: RATE_MAX + 2 }, (_, i) => p2.send("claude:a", "claude:b", `m${i}`)));
-    expect(r.filter((x) => x.isError)).toHaveLength(2);
+    const r = await Promise.all(Array.from({ length: 25 }, (_, i) => p2.send("claude:a", "claude:b", `m${i}`)));
+    expect(r.filter((x) => x.isError)).toHaveLength(0);
   });
   test("a message that didn't go doesn't count", async () => {
     const { peers, fail } = setup([row("claude:a", "A"), row("claude:b", "B")]);
     fail.add("claude:b");
-    for (let i = 0; i < RATE_MAX + 1; i++) await peers.send("claude:a", "claude:b", "x").catch(() => {});
+    for (let i = 0; i < 11; i++) await peers.send("claude:a", "claude:b", "x").catch(() => {});
     for (let i = 0; i < ASKS_MAX + 1; i++) await peers.ask("claude:a", "claude:b", "x", 15).catch(() => {});
     expect(await peers.broadcastFrom("claude:a", "x", {})).toMatchObject({ text: expect.stringMatching(/Couldn't send/) });
     fail.clear();
