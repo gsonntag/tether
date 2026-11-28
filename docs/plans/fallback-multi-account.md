@@ -809,3 +809,87 @@ Gemini reviewed the plan before rounds 2-6 landed. Its R1 rollback, R3 staleness
   - no `FallbackSetup.current` → hide "Start from this session";
   - no `fallbackRun` → chip and viewer fall back to `state.fallbackChain` and `fallbackWaiting`.
 - **Tests:** every test Gemini listed under "Missing tests" is added to the relevant PR.
+
+## Fixes after re-review, round 8. These amend G2, G3, G4, G6, G10 and G11.
+
+**G2′. Status inputs cache: a contract.**
+- Cache **raw** inputs per (session, harness): the sources list, models, and permission modes **before** filtering by the session ceiling. Don't cache `fallbackCatalog`'s filtered output (`live.ts:1747`).
+- **Seed** on session open and on successor handoff: kick off an async refresh for each harness in the chain. Until it lands, `computeFallbackRun` marks steps on that harness as `state: "checking"`; it never treats them as ready or unavailable.
+- **Permissions are always recomputed from live state** (current mode ceiling and driver) at compute time, never cached.
+- Each refresh carries a generation number. A refresh that resolves after a newer one started, or after the session closed or was replaced, is discarded.
+- **Invalidate (and refresh)** on:
+  - credential set or cleared;
+  - account added, removed or signed out;
+  - harness login changes;
+  - catalog-affecting settings changes.
+- Tests:
+  - publishing on open before the first refresh shows "checking";
+  - a mode change re-derives permissions with no refresh;
+  - a stale in-flight refresh is discarded.
+
+**G3′. Fallback carry: private answer detection and silent failure.**
+- Fallback carry (R6b″) does **not** buffer the successor's output behind commit. The successor is a separate, not-yet-visible session (pinned, not linked in the sidebar, not replacing the original), so its transcript stays live, and `answered(n, seen)` (`live.ts:519-521`) keeps working unchanged.
+  - R6.1's buffered sink applies only to same-session hops and to `returnToFallback`, where the target session is visible.
+  - `moveFallback`'s successor is also an unlinked session, so it needs no buffer either: the successor stays unlinked until `replaceWith`.
+- `carry()` takes a `fallback` option. With it:
+  - the outer catch doesn't mark the original's source switch failed and emits no notice;
+  - it returns a typed outcome (`cancelled | permission | authFailed | failed`) to `advanceFallback`;
+  - cleanup (close, discard, `dropFresh`) runs on every outcome except success;
+  - answer-gated replacement and the final revalidation before `replaceWith` stay (R6b″).
+- Manual carry is unchanged.
+- Test: an auth failure during fallback carry leaves the original with no `sourceSwitchFailed` and no notice, and the chain moves on with a backoff.
+
+**G4′. In-memory eviction on identity change.**
+- When the identity behind a source changes or is lost (login change, account removed, or the probe reports a different accountId), evict that source's entry from `SessionCore.plans` and clear the published `state.plan` on sessions using that source, **before** any refresh.
+  - The concern: `refreshPlan` keeps the old entry when the adapter returns nothing, and `notePlan` merges into it (`sessions.ts:508-526`).
+- Identity is validated **before**:
+  - hydrating startup entries;
+  - merging a live report in `notePlan`;
+  - persisting.
+- Tests, in order:
+  1. a same-process account change, with no restart, shows no stale window;
+  2. the restart case.
+
+**G6′. Saving with incomplete steps.**
+- The runner's `cleanFallbackSteps` (`live.ts:1815`) requires a model on every step. The editor serializes only **complete** steps: harness, source and a nonempty model.
+  - A step with an **unavailable source** but a saved model is complete, and is sent as is.
+  - A step with **no model** (a fresh draft) is incomplete.
+- Saving while `enabled` is false: incomplete drafts are dropped from the payload, after the inline note "1 unfinished step won't be saved". Complete steps, including unavailable ones, are kept.
+- Saving while `enabled` is true: blocked while there are incomplete steps (G6's "missing model" rule).
+- **Presets** follow the same rules.
+- **Older runner:** same payload, since only complete steps are ever sent, so it's compatible.
+- Tests:
+  - turning the chain off with one draft step saves the other steps;
+  - same for a preset save.
+
+**G10′. The unknown-probe contract lives in PR 1.**
+- The runner's source catalog (`sources()`, `live.ts:1532-1539`) lists every **configured** extra account, except one mid sign-in, with a `probe: "signedIn" | "signedOut" | "unknown"` field on the source option.
+  - Today `harnessLogin.ts:216` folds "unknown" into `available:false`, which is used only for the owner listing. That stays as it is for older webs.
+- `fallbackStepProblem` (`shared/fallbackChain.ts:45`):
+  - "Login or key unavailable." stays for sources missing from the catalog (removed or never configured);
+  - a new problem, "Signed out", applies to `probe === "signedOut"`;
+  - `"unknown"` is **eligible**.
+- Credential lookup for an unknown-probe account uses the stored identity. The provisional start then confirms the account or fails silently (G3).
+- PR 2 only surfaces `probe` in the UI.
+- **Returning exit:** when every candidate on a returning pass is skipped, the new `retryAt` values are persisted (`prefs.set fallbackProgress` and `flush`) before the returning exit at `live.ts:2168`, which bypasses `fallbackExhausted`.
+- **Queue exception:** the waited-on `!` shell queue exception is applied inside `sourceSwitchBlocker`'s queue check too, via an `ignoreQueueIds` parameter.
+
+**G11′. Missing-tests list, written out.** These are assigned to PRs 1, 2 and 4.
+- **PR 1:**
+  - B4/G1: same-source hops on anthropic and bedrock leave `nextBilling` undefined;
+  - G4/G4′: main-login logout and new sign-in, same process then restart, applies no old limit;
+  - G3/G3′: an auth failure after a provisional start causes no push, no inbox failure, no held queue, no notice, and leaves state unchanged; the same for fallback carry;
+  - R2: a permission rejection in `moveFallback` and in `returnToFallback` backs off; Stop during a returning wait doesn't send on the old source;
+  - cross-harness return notices name `step.harness` (Codex → Claude account, and back);
+  - a returning pass with every candidate skipped persists `retryAt`;
+  - unknown probe → start is attempted; signed out → skipped.
+- **PR 2:**
+  - the `HarnessLogin` status line doesn't repeat `displayName`;
+  - a list-level collision pass;
+  - an undefined email in `normalizedOrganization`;
+  - the `useAccountLabel` cache doesn't double-probe.
+- **PR 4:**
+  - an alias-less Bedrock model;
+  - "Start from this session" on Bedrock;
+  - turning off a chain that has a removed account, a duplicate step or a draft step;
+  - `SourcePicker` with zero options shows the unavailable value.
