@@ -22,14 +22,26 @@ export function switchBlocked(state: LiveState): string | undefined {
 }
 
 /** The billing chip's menu: the harness's sources, the displayed session source, and why others are unavailable. */
-export function sourceMenu(harness: HarnessId, state: LiveState, choices: SourceChoices): { items: SourceMenuItem[]; value?: string; addKey: boolean } {
+export function sourceMenu(
+  harness: HarnessId,
+  state: LiveState,
+  choices: SourceChoices,
+  accountLabels?: Partial<Record<BillingSource, string>>,
+): { items: SourceMenuItem[]; value?: string; addKey: boolean } {
   // A failed start leaves the target queued, so keep it selected in the menu for cancellation.
   const shown = state.sourceSwitchFailed ? state.nextBilling ?? billingForDisplay(state) : billingForDisplay(state);
   const own = choices.options.find((o) => shown?.source ? o.source === shown.source : o.billing.label === shown?.label);
   const reason = switchBlocked(state);
-  const items: SourceMenuItem[] = choices.options.map((o) => ({ value: o.source, label: o.billing.label, ...(o !== own && reason ? { reason } : {}) }));
+  const items: SourceMenuItem[] = choices.options.map((o) => ({
+    value: o.source,
+    label: accountLabels?.[o.source] || o.billing.label,
+    ...(o !== own && reason ? { reason } : {}),
+  }));
   const gone = !own && shown && shown.kind !== "unknown";
-  if (gone) items.unshift({ value: CURRENT_SOURCE, label: shown.label });
+  if (gone) {
+    const shownSource = shown.source ?? (shown.kind === "plan" ? "subscription" : undefined);
+    items.unshift({ value: CURRENT_SOURCE, label: (shownSource && accountLabels?.[shownSource]) || shown.label });
+  }
   const set = new Set<BillingSource>(choices.options.map((o) => o.source));
   return { items, value: own?.source ?? (gone ? CURRENT_SOURCE : undefined), addKey: HARNESS_KEYS[harness].some((k) => k !== "bedrock" && !set.has(k)) };
 }

@@ -1,7 +1,7 @@
 /** The keys a runner can hold. All can be set at once: a session picks one, or its subscription. */
 import type { TokenRates } from "./costs";
 import type { AzureType } from "./azureRates";
-import type { Billing, HarnessId } from "./transcript";
+import { HARNESS_LABELS, type Billing, type HarnessId } from "./transcript";
 export type CredentialSource = "anthropic" | "openai" | "azure" | "bedrock";
 /** The keys each harness can use. */
 export const HARNESS_KEYS: Record<HarnessId, CredentialSource[]> = { claude: ["anthropic", "bedrock"], codex: ["openai", "azure", "bedrock"], antigravity: [] };
@@ -33,6 +33,28 @@ export const isCredentialSource = (v: unknown): v is CredentialSource => v === "
 export const isSubscriptionSource = (v: BillingSource) => v === "subscription" || isAccountSource(v);
 export const isBillingSource = (v: unknown): v is BillingSource => v === "subscription" || isCredentialSource(v) || isAccountSource(v);
 export const hasSourceModels = (source: BillingSource): source is "azure" | "bedrock" => source === "azure" || source === "bedrock";
+
+/** Runner-style opaque label for a billing source without needing fallbackSetup (G8). */
+export function sourceLabel(harness: HarnessId, source: BillingSource): string {
+  if (source === "anthropic") return "Anthropic API key";
+  if (source === "openai") return "OpenAI API key";
+  if (source === "azure") return "Azure";
+  if (source === "bedrock") return BEDROCK_LABEL;
+  if (isAccountSource(source)) return `Claude plan · ${source.slice(8, 16)}`;
+  if (harness === "claude") return "Claude plan";
+  if (harness === "codex") return "ChatGPT plan";
+  return `${HARNESS_LABELS[harness]} login`;
+}
+
+/** Human-readable label when a saved step's source is missing from the runner catalog (never raw ids). */
+export function missingSourceLabel(harness: HarnessId, source: BillingSource): string {
+  if (isAccountSource(source)) return "Removed Claude account";
+  if (source === "azure") return "Azure (not set up)";
+  if (source === "bedrock") return "Bedrock (not set up)";
+  if (source === "anthropic") return "Anthropic key (not set)";
+  if (source === "openai") return "OpenAI key (not set)";
+  return `${HARNESS_LABELS[harness]} login unavailable`;
+}
 
 /** A source that really exists for a harness now: a login it reports, or a key that's set. */
 export interface SourceOption {

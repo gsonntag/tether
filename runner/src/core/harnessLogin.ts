@@ -4,7 +4,7 @@ import { CSWAP_RELOGIN } from "../adapters/claude/cswap";
 import { isAccountSource, type AccountSource } from "../../../shared/credentials";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import type { HarnessAccount, HarnessLoginFlow, HarnessLoginStatus } from "../../../shared/harnessLogin";
+import { normalizedOrganization, type HarnessAccount, type HarnessLoginFlow, type HarnessLoginStatus } from "../../../shared/harnessLogin";
 import { HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
 import { AcpClient } from "../adapters/acp/client";
 import { acpArgv, reader } from "../adapters/antigravity/store";
@@ -210,8 +210,10 @@ export function registerHarnessLogin(ops: OpRegistry, changed: (harness: Harness
     const expected = accounts?.read(source);
     if (!expected) throw new Error("Unknown Claude account.");
     const status = await loginStatus("claude", accounts!.configDir(source));
-    return status.state === "signedIn" && (status.accountId !== expected.accountId || status.organization !== expected.organization)
-      ? { state: "signedOut" } : status;
+    return status.state === "signedIn" && (
+      status.accountId !== expected.accountId ||
+      normalizedOrganization(status.organization ?? "", status.email) !== normalizedOrganization(expected.organization, expected.email)
+    ) ? { state: "signedOut" } : status;
   };
   ops.register("harnessLoginStatus", async ({ harness }) => named(harness, await loginStatus(harness)));
   ops.register("listHarnessAccounts", async ({ harness }) => {
@@ -222,8 +224,9 @@ export function registerHarnessLogin(ops: OpRegistry, changed: (harness: Harness
     const own = await Promise.all(listed.map(async ({ source, identity }): Promise<HarnessAccount> => {
       const current = await accountStatus(source).catch((): HarnessLoginStatus => ({ state: "unknown" }));
       const status = named(harness, { state: "signedIn", ...identity, ...(current.state === "signedIn" ? current : {}) }, source);
+      const probe: HarnessAccount["probe"] = current.state === "signedIn" ? "signedIn" : current.state === "signedOut" ? "signedOut" : "unknown";
       const cswap = accounts.cswapAccount(source);
-      return { source, status, available: current.state === "signedIn", ...(cswap ? { managedBy: "cswap", ...(current.state === "signedIn" ? {} : { hint: CSWAP_RELOGIN }) } : {}) };
+      return { source, status, available: current.state === "signedIn", probe, ...(cswap ? { managedBy: "cswap", ...(current.state === "signedIn" ? {} : { hint: CSWAP_RELOGIN }) } : {}) };
     }));
     // cswap accounts Tether can't use now still show, with what to do in cswap.
     const unusable = (accounts.cswap?.accounts() ?? []).filter((a) => !listed.some(({ source }) => source === a.source) &&

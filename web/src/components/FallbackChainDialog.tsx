@@ -1,17 +1,19 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { missingSourceLabel, type BillingSource } from "../../../shared/credentials";
 import { fallbackStepProblem, type FallbackHarness, type FallbackPresetEdit, type FallbackSetup, type FallbackStep } from "../../../shared/fallbackChain";
-import { HARNESS_LABELS, type Choice } from "../../../shared/transcript";
+import { HARNESS_LABELS, type Choice, type HarnessId } from "../../../shared/transcript";
+import { useAccountLabel } from "../accountLabel";
 import { rpc } from "../connection";
 
-function Field({ label, value, options, empty, onChange }: {
-  label: string; value: string; options: Choice[]; empty: ReactNode; onChange: (value: string) => void;
+function Field({ label, value, options, empty, missingLabel, onChange }: {
+  label: string; value: string; options: Choice[]; empty: ReactNode; missingLabel?: string; onChange: (value: string) => void;
 }) {
   return <label className="t-fallback-field">{label}
     <select aria-label={label} value={value} onChange={(e) => onChange(e.target.value)}>
       <option value="">{empty}</option>
-      {value && !options.some(({ id }) => id === value) && <option value={value}>{value} (unavailable)</option>}
+      {value && !options.some(({ id }) => id === value) && <option value={value}>{missingLabel ?? `${value} (unavailable)`}</option>}
       {options.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
     </select>
   </label>;
@@ -37,6 +39,11 @@ export function FallbackChainDialog({ runnerId, sessionId, onClose }: { runnerId
   const [error, setError] = useState<string>();
   const [presetId, setPresetId] = useState("");
   const [name, setName] = useState("");
+  const claudeLabels = useAccountLabel(runnerId, "claude", true);
+  const codexLabels = useAccountLabel(runnerId, "codex", !!setup?.harnesses.some((h) => h.harness === "codex" && !h.unavailable));
+  const agyLabels = useAccountLabel(runnerId, "antigravity", !!setup?.harnesses.some((h) => h.harness === "antigravity" && !h.unavailable));
+  const labelsFor = (harness: HarnessId): Partial<Record<BillingSource, string>> | undefined =>
+    harness === "claude" ? claudeLabels.labels : harness === "codex" ? codexLabels.labels : agyLabels.labels;
 
   useEffect(() => {
     let open = true;
@@ -109,10 +116,17 @@ export function FallbackChainDialog({ runnerId, sessionId, onClose }: { runnerId
                 const target = setup.harnesses.find(({ harness }) => harness === id);
                 if (target) change(newStep(target));
               }} />
-              <Field label="Login or key" value={step.source} empty="Choose a source" options={catalog?.sources.map(({ source, billing }) => ({ id: source, label: billing.label })) ?? []} onChange={(id) => {
-                const source = catalog?.sources.find((entry) => entry.source === id)?.source;
-                if (source && catalog) change(newStep(catalog, source));
-              }} />
+              <Field
+                label="Login or key"
+                value={step.source}
+                empty="Choose a source"
+                missingLabel={labelsFor(step.harness)?.[step.source] || missingSourceLabel(step.harness, step.source)}
+                options={catalog?.sources.map(({ source, billing }) => ({ id: source, label: labelsFor(step.harness)?.[source] || billing.label })) ?? []}
+                onChange={(id) => {
+                  const source = catalog?.sources.find((entry) => entry.source === id)?.source;
+                  if (source && catalog) change(newStep(catalog, source));
+                }}
+              />
               <Field label="Model" value={step.model} empty="Choose a model" options={modelsFor(catalog, step.source)} onChange={(model) => change({ ...step, model, effort: undefined })} />
               <Field label="Effort" value={step.effort ?? ""} empty="Harness default" options={efforts} onChange={(effort) => change({ ...step, effort: effort || undefined })} />
               <Field label="Permission mode" value={step.permissionMode ?? ""} empty={modes.find(({ id }) => id === catalog?.defaultMode)?.label ?? "Session default"} options={modes} onChange={(permissionMode) => change({ ...step, permissionMode: permissionMode || undefined })} />
