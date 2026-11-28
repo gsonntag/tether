@@ -1,10 +1,9 @@
 // Loop caps for sessions talking to each other (SPEC §9a). Nothing asks the person; instead an agent
-// can't send to itself, chain messages past MAX_HOPS, send more than RATE_MAX in RATE_MS, keep more
-// than ASKS_MAX asks open, ask a session that is (through others) waiting on its own ask, or
-// broadcast more than once in RATE_MS or from a turn a broadcast started.
+// can't send to itself, chain messages past MAX_HOPS, keep more than ASKS_MAX asks open, ask a session
+// that is (through others) waiting on its own ask, or broadcast more than once in RATE_MS or from a
+// turn a broadcast started.
 
 export const MAX_HOPS = 4;
-export const RATE_MAX = 10;
 export const RATE_MS = 10 * 60_000;
 export const ASKS_MAX = 3;
 export const BROADCAST_MAX = 20;
@@ -16,8 +15,6 @@ export interface Hop {
 }
 
 export class PeerCaps {
-  /** when each sender's messages went, newest last */
-  private sent = new Map<string, number[]>();
   private broadcasts = new Map<string, number>();
   /** open asks: asker -> the sessions it waits on (one entry per ask) */
   private asks = new Map<string, string[]>();
@@ -42,8 +39,6 @@ export class PeerCaps {
     if (from === to) return "That's this session. Message another one.";
     if (this.hopsFrom(from) > MAX_HOPS)
       return `This message would be the ${this.hopsFrom(from)}th in a chain of sessions passing work along (at most ${MAX_HOPS}). Stop here and tell the person what you have.`;
-    const rate = this.rate(from);
-    if (rate) return rate;
     if (kind === "ask") {
       const open = this.asks.get(from)?.length ?? 0;
       if (open >= ASKS_MAX) return `You already have ${open} questions waiting for answers (at most ${ASKS_MAX}). Wait for those first.`;
@@ -61,33 +56,22 @@ export class PeerCaps {
       const m = Math.max(1, Math.round((this.now() - last) / 60_000));
       return `You sent a note to all sessions ${m} minute${m === 1 ? "" : "s"} ago. At most one every ${RATE_MS / 60_000} minutes.`;
     }
-    return this.rate(from);
-  }
-
-  private rate(from: string): string | undefined {
-    const recent = (this.sent.get(from) ?? []).filter((t) => this.now() - t < RATE_MS);
-    this.sent.set(from, recent);
-    if (recent.length >= RATE_MAX) return `You've sent ${recent.length} messages to other sessions in the last ${RATE_MS / 60_000} minutes (at most ${RATE_MAX}). Wait, or tell the person instead.`;
     return undefined;
   }
 
   /**
-   * A message (or one broadcast) goes from `from`: counted at once, right after the check, so calls
-   * running side by side can't all pass it. The returned function takes it back (it didn't go).
+   * A message (or one broadcast) goes from `from`: a broadcast is counted at once, right after the
+   * check, so broadcasts running side by side can't all pass it. The returned function takes it back
+   * (it didn't go).
    */
   count(from: string, broadcast = false): () => void {
     const at = this.now();
     const before = this.broadcasts.get(from);
-    this.sent.set(from, [...(this.sent.get(from) ?? []), at]);
     if (broadcast) this.broadcasts.set(from, at);
     let undone = false;
     return () => {
       if (undone) return;
       undone = true;
-      const list = [...(this.sent.get(from) ?? [])];
-      const i = list.lastIndexOf(at);
-      if (i >= 0) list.splice(i, 1);
-      this.sent.set(from, list);
       if (broadcast && this.broadcasts.get(from) === at) {
         if (before === undefined) this.broadcasts.delete(from);
         else this.broadcasts.set(from, before);

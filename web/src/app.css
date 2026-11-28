@@ -250,10 +250,20 @@
   font-size: 13px;
 }
 .t-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
   font-size: 12px;
   line-height: 1;
-  color: var(--color-text-orange, #d97757);
+  color: var(--color-text-primary);
   flex: none;
+}
+.t-glyph svg {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 .t-dot {
   width: 7px;
