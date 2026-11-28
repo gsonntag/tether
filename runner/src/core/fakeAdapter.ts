@@ -254,6 +254,7 @@ export class FakeAdapter implements Adapter {
   }
   renew?: Adapter["renew"];
   noStore?: Adapter["noStore"];
+  move?: Adapter["move"];
   terminalCommand(_nativeId: string, _projectPath: string, _opts: TerminalOpts): TerminalLaunch {
     return { argv: ["true"] };
   }

@@ -11,9 +11,10 @@
 //
 // Message ids match history.ts: assistant messages are their API message id, user ones their uuid.
 
+import type { BillingSource } from "../../../../shared/credentials";
 import type { ContextUse, Msg } from "../../../../shared/transcript";
 import { nextCronFire, type Watcher } from "../../../../shared/watchers";
-import type { Sink } from "../../core/adapter";
+import type { PlanIdentity, Sink } from "../../core/adapter";
 import { contextOf, contextUsed, keepPlan, noteWindows, planOf } from "./context";
 import { assistantPart, blockText, goalMet, messageId, commandOutput, mergePart, notice, toolResults, userMessage } from "./content";
 
@@ -29,6 +30,10 @@ export interface StreamHost {
   /** On a key: the account's plan limits aren't this process's to report. */
   keyed?(): boolean;
   extraAccount?(): boolean;
+  /** The billing source ("subscription" or "account:<uuid>") this process runs on. */
+  planSource?(): BillingSource;
+  /** Confirmed identity of the subscription account this process started under (R5'/G4). */
+  planIdentity?(): PlanIdentity | undefined;
   /** A key-backed failure stops the process, without emitting the provider's raw error text. */
   failed?(): string | undefined;
   /** How the last /goal evaluation went, from the store (the stream doesn't say). */
@@ -213,8 +218,11 @@ export class ClaudeStream {
         else if (info?.status) this.rejected = undefined;
         const plan = planOf(info);
         if (plan && !this.host.keyed?.()) {
-          if (!this.host.extraAccount?.()) keepPlan(plan);
-          this.main.sink.plan?.(plan);
+          const source = this.host.planSource?.() ?? "subscription";
+          const identity = this.host.planIdentity?.();
+          if (identity) keepPlan(plan, source, identity);
+          else if (!this.host.extraAccount?.()) keepPlan(plan);
+          this.main.sink.plan?.(plan, identity);
         }
         return;
       }

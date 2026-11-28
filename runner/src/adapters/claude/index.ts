@@ -8,10 +8,10 @@ import { stat } from "node:fs/promises";
 import type { Adapter, Driver, QuitStep, ScreenRead, StartOpts } from "../../core/adapter";
 import { movedDir } from "../../core/moved";
 import { CLAUDE_BIN } from "./bin";
-import { chainContext, keepBilling, keptBilling, keptPlan, keptStart } from "./context";
+import { chainContext, keepBilling, keptBilling, keptPlan, keptPlanEntries, keptStart } from "./context";
 import { BEDROCK_LABEL, isAccountSource, HARNESS_KEYS } from "../../../../shared/credentials";
 import { claudeAsk } from "./ask";
-import { claudeAccountLabel, claudeAuthSettings, claudeLoggedIn, claudeTerminalScripts, prepareClaudeTerminal } from "./credentials";
+import { claudeAccountLabel, claudeAuthSettings, claudeLoggedIn, claudePrimaryIdentity, claudeTerminalScripts, prepareClaudeTerminal } from "./credentials";
 import { claudeNeverStarted, claudeProjects, claudeSessionInfo, claudeSessions, claudeStoredMode, claudeSubagents } from "./discovery";
 import { ClaudeDriver } from "./driver";
 import { CLAUDE_UNSET } from "../../../../shared/transcript";
@@ -160,6 +160,7 @@ export const claudeAdapter: Adapter = {
     keys: HARNESS_KEYS.claude,
     label: (source) => (isAccountSource(source) ? { kind: "plan", label: claudeAccountLabel(source), source } : source === "bedrock" ? { kind: "provider", label: BEDROCK_LABEL } : source === "anthropic" ? { kind: "apiKey", label: "Anthropic API key" } : { kind: "plan", label: "Claude plan" }),
     loggedIn: () => claudeLoggedIn(CLAUDE_BIN ?? "claude"),
+    primaryIdentity: () => claudePrimaryIdentity(CLAUDE_BIN ?? "claude"),
     // What it last ran on, as Claude Code confirmed. Nothing recorded: not a key by surprise.
     recorded: (nativeId) => {
       const billing = keptBilling(splitNative(nativeId).session);
@@ -196,7 +197,16 @@ export const claudeAdapter: Adapter = {
   },
   readHistory,
   storeFile: async (nativeId, projectPath) => (splitNative(nativeId).agent ? undefined : sessionFile(splitNative(nativeId).session, projectPath)),
-  planUsage: async () => keptPlan(),
+  planUsage: async () => {
+    const id = await claudePrimaryIdentity(CLAUDE_BIN ?? "claude");
+    return id ? keptPlan("subscription", id) : undefined;
+  },
+  planUsageFor: async (source = "subscription") => {
+    const id = source === "subscription" ? await claudePrimaryIdentity(CLAUDE_BIN ?? "claude") : undefined;
+    const plan = id ? keptPlan(source, id) : undefined;
+    return plan ? { plan, identity: id } : undefined;
+  },
+  storedPlans: () => keptPlanEntries(),
   usageStores: () => [{ dir: projectsDir() }],
   latestStart: (nativeId) => keptStart(splitNative(nativeId).session),
   storedBilling: async (nativeId) => keptBilling(splitNative(nativeId).session),

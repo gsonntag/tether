@@ -19,7 +19,9 @@ import { hasSourceModels, isAccountSource, isCredentialSource, isSubscriptionSou
 import { addSideCost, type CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { withAttachments, type Attachment } from "../../../shared/attachments";
-import { needsHarnessLogin } from "../../../shared/harnessLogin";
+import { needsHarnessLogin, type HarnessLoginStatus } from "../../../shared/harnessLogin";
+import { probeClaudeAccount } from "./harnessLogin";
+import { samePlanIdentity } from "../adapters/claude/context";
 import { FROM_TETHER } from "../../../shared/fromTether";
 import { SIDE_KEEPS, SIDE_STAYS, sideCommandRefusal } from "../../../shared/sideChat";
 import { modelIdProblem, reportedAt } from "../../../shared/labels";
@@ -61,6 +63,13 @@ class FallbackStepProblemError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "FallbackStepProblemError";
+  }
+}
+
+class FallbackHandoffTimeoutError extends Error {
+  constructor() {
+    super("Background work is still running. Stop it, or send a message to try again.");
+    this.name = "FallbackHandoffTimeoutError";
   }
 }
 
@@ -154,7 +163,12 @@ export class LiveControl {
       idleMs?: number;
       /** the most sessions live at once (TETHER_MAX_LIVE_SESSIONS); absent or 0: no limit */
       maxLive?: number;
-      attachmentsDir?: string; credentials?: CredentialStore; claudeAccounts?: ClaudeAccounts; costs?: CostLedger } = {},
+      attachmentsDir?: string;
+      credentials?: CredentialStore;
+      claudeAccounts?: ClaudeAccounts;
+      costs?: CostLedger;
+      probeClaudeAccount?: (source: AccountSource) => Promise<HarnessLoginStatus>;
+    } = {},
   ) {
     this.idleMs = opts.idleMs ?? IDLE_CLOSE_MS;
     this.retries = new RetryControl(core, {
@@ -256,6 +270,7 @@ export class LiveControl {
 
   harnessLoginChanged(harness: HarnessId, source: BillingSource = "subscription") {
     this.subscriptionRevisions.set(this.subscriptionScope(harness, source), randomUUID());
+    this.core.clearPlan(harness, source);
     for (const s of this.core.sessions.values()) {
       if (s.summary.harness === harness && s.retry && this.sourceOf(s) === source) this.cancelRetrySession(s);
     }
@@ -1530,7 +1545,8 @@ export class LiveControl {
   }
 
   private labelOf(harness: HarnessId, source: BillingSource): string {
-    return this.core.adapter(harness).billing?.label(source).label ?? source;
+    const adapter = this.core.o.adapters.find((a) => a.id === harness);
+    return adapter?.billing?.label(source).label ?? (isAccountSource(source) ? `Claude plan · ${source.slice(8, 16)}` : source);
   }
 
   /** The source as it is now: a missing key stops here, naming the source. Nothing stands in for it. */
@@ -1570,11 +1586,24 @@ export class LiveControl {
       if (source === "bedrock") return !!this.opts.credentials?.snapshot(source) && this.sourceModels(harness, source).length > 0;
       return status[source].set && (source !== "azure" || (!!status.azure.endpoint && !!status.azure.deployments?.length));
     };
-    const extras = harness === "claude" ? (this.opts.claudeAccounts?.list() ?? [])
-      .filter(({ source }) => !this.opts.claudeAccounts?.signingIn.has(source)).map(({ source }) => source) : [];
-    const options = [...(login ? ["subscription" as const] : []), ...extras, ...billing.keys.filter(ready)].map((source) => ({
-      source, billing: billing.label(source), ...(hasSourceModels(source) ? { deployments: this.sourceModels(harness, source) } : {}),
-    }));
+    const listedExtras = harness === "claude" ? (this.opts.claudeAccounts?.list() ?? [])
+      .filter(({ source }) => !this.opts.claudeAccounts?.signingIn.has(source)) : [];
+    const extras = listedExtras.map(({ source }) => source);
+    const primary = harness === "claude" && login && listedExtras.length
+      ? await billing.primaryIdentity?.().catch(() => undefined)
+      : undefined;
+    const extraIdentities = new Map(listedExtras.map(({ source, identity }) => [source, identity]));
+    const options: SourceOption[] = [...(login ? ["subscription" as const] : []), ...extras, ...billing.keys.filter(ready)].map((source) => {
+      const sameAccountAs = primary && isAccountSource(source) && extraIdentities.get(source)?.accountId === primary.accountId
+        ? ("subscription" as const)
+        : undefined;
+      return {
+        source,
+        billing: billing.label(source),
+        ...(hasSourceModels(source) ? { deployments: this.sourceModels(harness, source) } : {}),
+        ...(sameAccountAs ? { sameAccountAs } : {}),
+      };
+    });
     const last = this.core.o.prefs.lastSubscription(harness);
     const fallback = options.find((o) => o.source === last)?.source ?? options[0]?.source;
     return { options, ...(fallback ? { default: fallback } : {}) };
@@ -2113,7 +2142,7 @@ export class LiveControl {
         if (origin.provisionalHop?.hopId === hopId) origin.provisionalHop = undefined;
         onCommitBeforeReplay(driver!, opts);
         installDriver(driver!);
-        sink.commit(this.sink(target, step.source, driver!.accountIdentity));
+        sink.commit(this.sink(target, step.source, () => driver!.accountIdentity, this.subscriptionRevisions.get(this.subscriptionScope(harness, step.source))));
         await onCommitAfterReplay?.(driver!);
         return;
       }
@@ -2150,7 +2179,7 @@ export class LiveControl {
             if (send.releaseQueue && target.state.queueHeldBy !== "terminal") this.queue.release(target);
             onCommitBeforeReplay(driver!, opts);
             installDriver(driver!);
-            sink.commit(this.sink(target, step.source, driver!.accountIdentity));
+            sink.commit(this.sink(target, step.source, () => driver!.accountIdentity, this.subscriptionRevisions.get(this.subscriptionScope(harness, step.source))));
             commitPromise = Promise.resolve(onCommitAfterReplay?.(driver!));
           },
         });
@@ -2293,6 +2322,7 @@ export class LiveControl {
       committed = true;
       if (origin.provisionalHop?.hopId === hopId) origin.provisionalHop = undefined;
       delete progress.steps[index]?.retryAt;
+      delete progress.steps[index]?.why;
       const lastKey = isCredentialSource(step.source) ? step.source : isCredentialSource(this.sourceOf(origin)) ? this.sourceOf(origin) : undefined;
       this.core.o.prefs.set(origin.id, {
         fallbackChain: { ...chain, active: index },
@@ -2367,6 +2397,7 @@ export class LiveControl {
         },
         onCommitAfterReplay: async () => {
           delete progress.steps[index]?.retryAt;
+          delete progress.steps[index]?.why;
           prefs.set(s.id, { fallbackChain: { ...chain, active: index }, fallbackProgress: progress });
           onSay(`Returned to ${this.labelOf(step.harness, step.source)}.`);
           await this.replaceWith(s, old);
@@ -2389,6 +2420,8 @@ export class LiveControl {
 
   private fallbackTimers = new Map<string, ReturnType<typeof setTimeout>>();
   fallbackResetDelay = 60_000;
+  /** Cap for waiting on background work during a fallback handoff (B5). */
+  fallbackHandoffMaxMs = 30 * 60_000;
 
   restoreFallbackTimers() {
     for (const id of this.core.o.prefs.ids((p) => p.fallbackResumeAt !== undefined && !!p.fallbackChain?.enabled &&
@@ -2444,7 +2477,8 @@ export class LiveControl {
     const entries = chain.steps.map((step, index) => {
       const retryAt = progress.steps[index]?.retryAt;
       if (retryAt && retryAt > this.core.now()) times.push(retryAt);
-      return `${index + 1}. ${HARNESS_LABELS[step.harness]} · ${step.source} · ${step.model} — ${retryAt ? `retry after ${new Date(retryAt).toISOString()}` : "no reset known"}`;
+      const label = this.labelOf(step.harness, step.source);
+      return `${index + 1}. ${HARNESS_LABELS[step.harness]} · ${label} · ${step.model} — ${retryAt ? `retry after ${new Date(retryAt).toISOString()}` : "no reset known"}`;
     });
     this.core.o.prefs.set(s.id, { fallbackProgress: progress });
     this.core.o.prefs.flush();
@@ -2462,15 +2496,56 @@ export class LiveControl {
       !prefs.sideOf && !this.fallingBack.has(s) && (!hit || isSubscriptionSource(this.sourceOf(s)));
   }
 
+  private hasBackgroundWork(s: Session): boolean {
+    const blocker = sourceSwitchBlocker(s.state);
+    return blocker === "background" || !!s.state.backgroundSubagents || s.shellsRunning > 0 || !!s.driver?.busy();
+  }
+
+  private async probeAccount(source: AccountSource): Promise<HarnessLoginStatus> {
+    if (this.opts.probeClaudeAccount) return this.opts.probeClaudeAccount(source);
+    if (!this.opts.claudeAccounts) return { state: "signedOut" };
+    return probeClaudeAccount(this.opts.claudeAccounts, source);
+  }
+
+  private async claudeIdentityFor(source: BillingSource): Promise<PlanIdentity | undefined> {
+    if (isAccountSource(source)) {
+      const id = this.opts.claudeAccounts?.read(source);
+      return id ? { accountId: id.accountId, email: id.email, organization: id.organization } : undefined;
+    }
+    if (source === "subscription") {
+      return this.core.o.adapters.find((a) => a.id === "claude")?.billing?.primaryIdentity?.().catch(() => undefined);
+    }
+    return undefined;
+  }
+
+  /** Identity-matched Claude plan usage for B1 skip decisions (R5', G4). Untagged windows are ignored. */
+  private async claudePlanForSkip(source: BillingSource): Promise<PlanUsage | undefined> {
+    const targetIdentity = await this.claudeIdentityFor(source);
+    if (!targetIdentity) return undefined;
+    const direct = this.core.planEntryFor("claude", source);
+    if (direct?.identity && samePlanIdentity(direct.identity, targetIdentity)) return direct.plan;
+    // Share a full window across two source IDs only when accountId, email, and normalized org all match (R5').
+    for (const entry of this.core.allPlanEntries("claude")) {
+      if (entry.identity && samePlanIdentity(entry.identity, targetIdentity)) return entry.plan;
+    }
+    return undefined;
+  }
+
   private async waitForFallbackHandoff(s: Session, chain: FallbackChain) {
     const adapter = this.core.adapter(s.summary.harness);
+    const deadline = this.core.now() + this.fallbackHandoffMaxMs;
+    const initialQueueIds = new Set(s.state.queue.map((m) => m.id));
     s.setState({ fallbackWaiting: true });
     try {
       while (!s.retrySuppressed && !this.stopping && s.state.fallbackChain === chain) {
         if (s.state.mode === "terminal" || s.state.terminal || this.terminal?.blocked(s)) throw new Error("Close the terminal first.");
-        if (!s.sending && !s.starting && !s.state.requests.length && s.state.status === "idle" &&
+        // Ignore queue entries added by a waited-on `!` shell (shellRuns.ts:454, G10).
+        const blocker = sourceSwitchBlocker({ ...s.state, queue: s.state.queue.filter((m) => !m.shell || initialQueueIds.has(m.id)) });
+        if (blocker === "terminal") throw new Error("Close the terminal first.");
+        if (!blocker && !s.sending && !s.starting && !s.carrying && !s.state.requests.length && s.state.status === "idle" &&
           !s.driver?.busy() && !s.state.backgroundSubagents && !s.shellsRunning &&
           !await adapter.backgroundRuns?.(s.summary.nativeId).catch(() => true)) return;
+        if (this.core.now() >= deadline) throw new FallbackHandoffTimeoutError();
         await Bun.sleep(250);
       }
       throw new SendCancelled();
@@ -2544,6 +2619,7 @@ export class LiveControl {
         onCommitBeforeReplay: () => {},
         onCommitAfterReplay: async () => {
           delete progress.steps[index]?.retryAt;
+          delete progress.steps[index]?.why;
           if (progress.steps[start] && mover.after) progress.steps[start]!.after = mover.after;
           this.core.o.prefs.set(s.id, { fallbackChain: { ...chain, active: index }, fallbackProgress: progress });
           const from = this.labelOf(s.summary.harness, this.sourceOf(s));
@@ -2584,6 +2660,16 @@ export class LiveControl {
     const say = (text: string, level: Msg["level"] = "info") => s.apply({
       type: "msg", msg: { ...notice(`${cause} ${text}`, level), ...(resetsAt ? { resetsAt } : {}) },
     });
+    const sayRaw = (text: string, level: Msg["level"] = "info") => s.apply({
+      type: "msg", msg: { ...notice(text, level), ...(resetsAt ? { resetsAt } : {}) },
+    });
+    const hopNoticeText = (index: number, label: string, verb: string, tail: string) => {
+      const target = `step ${index + 1} · ${label}`;
+      if (waking) return `Fallback chain resumed. ${verb} ${target}.${tail}`;
+      if (returning) return `Higher-priority source available. ${verb} ${target}.${tail}`;
+      if (hit) return `${start >= 0 ? `Step ${start + 1} hit` : "Hit"} its limit. ${verb} ${target}.${tail}`;
+      return `Rate limit retries exhausted${start >= 0 ? ` on step ${start + 1}` : ""}. ${verb} ${target}.${tail}`;
+    };
     // The turn end before this carried fallbackPending, so push waits for this instead.
     const waiting = (error = ended) => {
       if (!returning) this.core.o.bus.emit("fallbackStatus", { sessionId: s.id, status: "waiting", ...(error ? { error } : {}) });
@@ -2607,15 +2693,35 @@ export class LiveControl {
       if (returning && !waking && start >= 0) {
         progress.steps[start] = { sessionId: s.id, after: s.transcript?.messages.at(-1)?.id };
       }
-      if (!returning && start >= 0) {
-        progress.steps[start] = { retryAt: resetsAt ?? this.core.now() + FALLBACK_BACKOFF_MS, sessionId: s.id, after: s.transcript?.messages.at(-1)?.id };
-        this.core.o.prefs.set(s.id, { fallbackProgress: progress });
-        this.core.o.prefs.flush();
+      if (!returning) {
+        const retryAt = hit ? (resetsAt ?? this.core.now() + FALLBACK_BACKOFF_MS) : this.core.now() + FALLBACK_BACKOFF_MS;
+        const why = hit ? (resetsAt ? "limit" as const : "limit-unknown-reset" as const) : "error" as const;
+        let touched = false;
+        if (start >= 0) {
+          progress.steps[start] = { ...progress.steps[start], retryAt, why, sessionId: s.id, after: s.transcript?.messages.at(-1)?.id };
+          touched = true;
+        }
+        // B2 + G10: share backoff on a plan-limit hit with sibling steps on the same (harness, source, model), even when start === -1.
+        if (hit) {
+          const currentModel = s.state.model;
+          for (let i = 0; i < chain.steps.length; i++) {
+            if (i === start) continue;
+            const other = chain.steps[i]!;
+            if (other.harness === harness && other.source === source && other.model === currentModel) {
+              progress.steps[i] = { ...progress.steps[i], retryAt, why };
+              touched = true;
+            }
+          }
+        }
+        if (touched) {
+          this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+          this.core.o.prefs.flush();
+        }
       }
       const indexes = fallbackOrder(chain.steps.length, waking ? -1 : start, progress, this.core.now(), returning && !waking)
         .filter((index) => waking ? progress.steps[index]?.retryAt !== undefined : index > start || progress.steps[index]?.retryAt !== undefined);
       const catalogs = new Map<HarnessId, FallbackHarness>();
-      const plans = new Map<HarnessId, PlanUsage | undefined>();
+      const plans = new Map<string, PlanUsage | undefined>();
       for (const index of indexes) {
         const step = chain.steps[index]!;
         const cross = step.harness !== harness || !s.capabilities.sourceSwitch;
@@ -2626,30 +2732,62 @@ export class LiveControl {
           return false;
         }
         if (fallbackStepProblem(step, catalog)) {
-          if (!returning) progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS };
+          // G10: back off unavailable steps even when returning so probes don't run on every message.
+          progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS, why: "error" };
+          this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+          this.core.o.prefs.flush();
           continue;
         }
-        if (step.source === "subscription" && step.harness !== "claude") {
-          if (!plans.has(step.harness)) plans.set(step.harness, await this.core.refreshPlan(step.harness));
+        if (isSubscriptionSource(step.source)) {
+          const planKey = `${step.harness}\0${step.source}`;
+          if (!plans.has(planKey)) {
+            if (step.harness === "claude") plans.set(planKey, await this.claudePlanForSkip(step.source));
+            else if (step.source === "subscription") plans.set(planKey, await this.core.refreshPlan(step.harness));
+            else plans.set(planKey, this.core.planFor(step.harness, step.source));
+          }
           const now = this.core.now();
-          const resets = this.planWindows(step.harness, step.model, plans.get(step.harness)).flatMap((w) =>
+          const resets = this.planWindows(step.harness, step.model, plans.get(planKey)).flatMap((w) =>
             w?.resetsAt && w.resetsAt > now && w.resetsAt < 8.64e15 ? [w.resetsAt] : []);
           if (resets.length) {
-            progress.steps[index] = { ...progress.steps[index], retryAt: Math.max(...resets) };
+            progress.steps[index] = { ...progress.steps[index], retryAt: Math.max(...resets), why: "limit" };
             this.core.o.prefs.set(s.id, { fallbackProgress: progress });
             this.core.o.prefs.flush();
             continue;
           }
         }
-        if (!waking && step.source === source && step.model === s.state.model && (!step.effort || step.effort === s.state.effort) &&
+        // R2: compare step.harness too so another harness with the same source & model ID isn't skipped.
+        if (!waking && step.harness === harness && step.source === source && step.model === s.state.model && (!step.effort || step.effort === s.state.effort) &&
           (!step.permissionMode || step.permissionMode === s.state.permissionMode)) continue;
         // Azure steps name a deployment; a Bedrock step's model resolves to one of its configured models.
         const sourceModel = step.source === "azure" ? step.model
           : step.source === "bedrock" ? resolveSourceModel(this.sourceModels(step.harness, "bedrock"), step.model) : undefined;
-        if (step.source === "bedrock" && !sourceModel) continue;
-        if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) return false;
+        if (step.source === "bedrock" && !sourceModel) {
+          progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS, why: "error" };
+          this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+          this.core.o.prefs.flush();
+          continue;
+        }
+        if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) {
+          if (!waking && !s.retrySuppressed && !this.stopping) waiting();
+          return false;
+        }
+        // B8 + R1 + G10: probe extra Claude account sign-in before committing or closing old driver.
+        if (step.harness === "claude" && isAccountSource(step.source)) {
+          const status = await this.probeAccount(step.source).catch((): HarnessLoginStatus => ({ state: "unknown" }));
+          if (s.state.fallbackChain !== chain || this.sourceOf(s) !== source || s.retrySuppressed || this.stopping) {
+            if (!waking && !s.retrySuppressed && !this.stopping) waiting();
+            return false;
+          }
+          if (status.state === "signedOut") {
+            progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS, why: "error" };
+            this.core.o.prefs.set(s.id, { fallbackProgress: progress });
+            this.core.o.prefs.flush();
+            continue;
+          }
+        }
         const settings = { model: step.model, effort: step.effort, permissionMode: step.permissionMode ?? catalog.defaultMode };
-        if (cross || index < start && progress.steps[index]?.sessionId !== s.id && progress.steps[index]?.sessionId) await this.waitForFallbackHandoff(s, chain);
+        const needsReturn = index < start && progress.steps[index]?.sessionId !== s.id && !!progress.steps[index]?.sessionId;
+        if (cross || needsReturn || this.hasBackgroundWork(s)) await this.waitForFallbackHandoff(s, chain);
         if (index < start) {
           releaseHopLock ??= await this.acquireHopLock(this.hopKeys(s), reservation);
           try {
@@ -2666,7 +2804,7 @@ export class LiveControl {
               acted,
               waking,
               returning,
-              onSay: (text) => say(text),
+              onSay: () => sayRaw(hopNoticeText(index, this.labelOf(step.harness, step.source), "Returned to", "")),
               onCommitted: () => {
                 switchedSource = true;
                 if (this.fallingBack.get(s) === reservation) this.fallingBack.delete(s);
@@ -2677,7 +2815,7 @@ export class LiveControl {
             if (returned) return true;
           } catch (e) {
             if (e instanceof FallbackStepProblemError) {
-              progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS };
+              progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS, why: "error" };
               this.core.o.prefs.set(s.id, { fallbackProgress: progress });
               this.core.o.prefs.flush();
               continue;
@@ -2718,7 +2856,7 @@ export class LiveControl {
             return true;
           } catch (e) {
             if (e instanceof FallbackStepProblemError && !s.movedTo && !this.core.o.prefs.get(s.id).movedTo) {
-              progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS };
+              progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS, why: "error" };
               this.core.o.prefs.set(s.id, { fallbackProgress: progress });
               this.core.o.prefs.flush();
               continue;
@@ -2729,14 +2867,14 @@ export class LiveControl {
         const label = this.labelOf(harness, step.source);
         if (s.state.mode === "terminal" || s.state.terminal || this.terminal?.blocked(s)) throw new Error(sourceSwitchBlockMessage("terminal"));
         const carries = !!s.capabilities.sourceCarry && step.source !== source;
-        const switched = carries ? `Next source: ${label}.` : `Switched to ${label}.`;
+        const verb = carries ? "Next source:" : "Switched to";
         if (carries && (!sent || acted)) {
           // Hops with no resend on a carry harness keep pending-source behaviour (R6b').
           try {
             await this.setSource(s.id, step.source, sourceModel, { chain, index, settings });
           } catch (e) {
             if (e instanceof FallbackStepProblemError) {
-              progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS };
+              progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS, why: "error" };
               this.core.o.prefs.set(s.id, { fallbackProgress: progress });
               this.core.o.prefs.flush();
               continue;
@@ -2746,9 +2884,10 @@ export class LiveControl {
           switchedSource = true;
           if (waking) this.core.o.bus.emit("fallbackStatus", { sessionId: s.id, status: "resumed" });
           delete progress.steps[index]?.retryAt;
+          delete progress.steps[index]?.why;
           this.core.o.prefs.set(s.id, { fallbackProgress: progress });
           this.core.o.prefs.flush();
-          say(`${switched} ${acted ? "The turn already acted. " : ""}Send a message to continue.`);
+          sayRaw(hopNoticeText(index, label, verb, ` ${acted ? "The turn already acted. " : ""}Send a message to continue.`));
           waiting();
           return true;
         }
@@ -2768,7 +2907,7 @@ export class LiveControl {
               onCommitted: () => {
                 switchedSource = true;
                 if (waking) this.core.o.bus.emit("fallbackStatus", { sessionId: s.id, status: "resumed" });
-                say(`${switched} Resending your message.`);
+                sayRaw(hopNoticeText(index, label, verb, " Resending your message."));
                 if (this.fallingBack.get(s) === reservation) this.fallingBack.delete(s);
                 releaseHopLock?.();
                 releaseHopLock = undefined;
@@ -2777,7 +2916,7 @@ export class LiveControl {
             return true;
           } catch (e) {
             if (e instanceof FallbackStepProblemError) {
-              progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS };
+              progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS, why: "error" };
               this.core.o.prefs.set(s.id, { fallbackProgress: progress });
               this.core.o.prefs.flush();
               continue;
@@ -2809,6 +2948,7 @@ export class LiveControl {
                 catch { cost = { estimated: true, complete: false, reasons: ["unsaved"] }; this.core.log("Couldn't save this session's API cost coverage. Its total is unknown."); }
               }
               delete progress.steps[index]?.retryAt;
+              delete progress.steps[index]?.why;
               const nextChain = { ...chain, active: index };
               const sourceSettings = model ? { model, deployment } : {};
               this.core.o.prefs.set(s.id, {
@@ -2839,9 +2979,9 @@ export class LiveControl {
               switchedSource = true;
               if (waking) this.core.o.bus.emit("fallbackStatus", { sessionId: s.id, status: "resumed" });
               if (!sent || acted) {
-                say(`${switched} ${acted ? "The turn already acted. " : ""}Send a message to continue.`);
+                sayRaw(hopNoticeText(index, label, verb, ` ${acted ? "The turn already acted. " : ""}Send a message to continue.`));
               } else {
-                say(`${switched} Resending your message.`);
+                sayRaw(hopNoticeText(index, label, verb, " Resending your message."));
               }
             },
             onCommitAfterReplay: () => {
@@ -2854,7 +2994,7 @@ export class LiveControl {
           return true;
         } catch (e) {
           if (e instanceof FallbackStepProblemError) {
-            progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS };
+            progress.steps[index] = { ...progress.steps[index], retryAt: this.core.now() + FALLBACK_BACKOFF_MS, why: "error" };
             this.core.o.prefs.set(s.id, { fallbackProgress: progress });
             this.core.o.prefs.flush();
             continue;
@@ -2866,7 +3006,10 @@ export class LiveControl {
       this.fallbackExhausted(s, chain, progress);
       return true;
     } catch (e) {
-      if (!(e instanceof SendCancelled)) {
+      if (e instanceof FallbackHandoffTimeoutError) {
+        sayRaw(e.message, "warning");
+        if (!switchedSource) waiting(e.message);
+      } else if (!(e instanceof SendCancelled)) {
         const error = redact((e as Error)?.message ?? String(e));
         say(error, "warning");
         if (!switchedSource) waiting(error);
@@ -2921,8 +3064,10 @@ export class LiveControl {
     // Live from here: its own events, not the store, update the transcript.
     s.unwatch?.();
     s.unwatch = undefined;
-    const sink = this.sink(s, this.sourceOf(s));
-    const subscriptionRevision = this.sourceOf(s) === "subscription" ? this.subscriptionRevisions.get(this.subscriptionScope(s.summary.harness, "subscription")) : undefined;
+    const processSource = this.sourceOf(s);
+    const subscriptionRevision = isSubscriptionSource(processSource) ? this.subscriptionRevisions.get(this.subscriptionScope(s.summary.harness, processSource)) : undefined;
+    let processDriver: Driver | undefined;
+    const sink = this.sink(s, processSource, () => processDriver?.accountIdentity, subscriptionRevision);
     let d: Driver;
     let opts: StartOpts;
     s.setState({ starting: s.fresh ? "start" : "resume" });
@@ -2930,6 +3075,7 @@ export class LiveControl {
       opts = await this.startOpts(s, observe);
       if (observe) opts.observe = true;
       d = s.fresh ? await a.start(s.summary.projectPath, s.summary.nativeId, opts, sink) : await a.resume(s.summary.nativeId, s.summary.projectPath, opts, sink);
+      processDriver = d;
     } catch (e: any) {
       const error = redact(e?.message ?? String(e));
       this.markSourceSwitchFailed(s);
@@ -3028,7 +3174,7 @@ export class LiveControl {
   // ---------------- sinks ----------------
 
   /** Where a session's driver reports. */
-  private sink(s: Session, processSource: BillingSource, _processIdentity?: PlanIdentity): Sink {
+  private sink(s: Session, processSource: BillingSource, getIdentity?: () => PlanIdentity | undefined, processSubRev?: string): Sink {
     const core = this.core;
     const bus = core.o.bus;
     return {
@@ -3107,9 +3253,18 @@ export class LiveControl {
       },
       request: (r, signal) => this.desk.ask(s, redactValue(r), signal),
       // The account's, reported by what runs on its login: a key's process says nothing of the plan.
-      plan: (p) => {
+      plan: (p, reportIdentity) => {
         const source = processSource;
-        if (isSubscriptionSource(source)) core.notePlan(s.summary.harness, reportedAt(p), source);
+        if (!isSubscriptionSource(source)) return;
+        // R5': drop late reports from a process started under an old login revision or mismatched identity.
+        const currentSubRev = this.subscriptionRevisions.get(this.subscriptionScope(s.summary.harness, source));
+        if (currentSubRev !== processSubRev) return;
+        const identity = reportIdentity ?? getIdentity?.();
+        if (s.summary.harness === "claude" && isAccountSource(source)) {
+          const expected = this.opts.claudeAccounts?.read(source);
+          if (!expected || (identity && !samePlanIdentity(identity, expected))) return;
+        }
+        core.notePlan(s.summary.harness, reportedAt(p), source, identity);
       },
       limitReached: (hit) => {
         s.limitHit = hit;

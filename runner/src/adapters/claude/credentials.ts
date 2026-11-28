@@ -10,6 +10,7 @@ import { BEDROCK_LABEL } from "../../../../shared/credentials";
 import { claudeBedrockLease } from "../../bedrock";
 import type { CredentialSnapshot } from "../../credentials";
 import { shq } from "../../terminal/hooks";
+import type { PlanIdentity } from "../../core/adapter";
 import { claudeBilling } from "./context";
 
 export const CLAUDE_AUTH_ENV = [
@@ -57,10 +58,10 @@ export function ptyText(output: string): string {
   return text;
 }
 
-/** Compared without whitespace: auth status and the SDK space the same name differently. */
-function normalizedOrganization(name: string, email: string) {
+/** Compared without whitespace: auth status and the SDK space the same name differently. Self-contained for launcher script embedding. */
+export function normalizedOrganization(name: string, email?: string) {
   const normalized = name.replace(/[‘’]/g, "'").replace(/\s+/g, "");
-  return normalized.toLowerCase() === `${email.toLowerCase()}'sorganization` ? normalized.toLowerCase() : normalized;
+  return email && normalized.toLowerCase() === `${email.toLowerCase()}'sorganization` ? normalized.toLowerCase() : normalized;
 }
 
 function sameClaudeIdentity(actual: unknown, expected: ClaudeIdentity) {
@@ -148,7 +149,7 @@ function confirmClaudeStatusIdentity(status: any, expected: ClaudeIdentity & { a
 }
 
 /** Read the account's organization ID from the CLI before checking the live SDK identity. */
-export async function expectedClaudeIdentity(binary: string, credential?: CredentialSnapshot): Promise<ClaudeIdentity | undefined> {
+export async function expectedClaudeIdentity(binary: string, credential?: CredentialSnapshot): Promise<PlanIdentity | undefined> {
   const source = credential?.source;
   if (!source || !isSubscriptionSource(source)) return;
   const expected = credential.claudeAccount;
@@ -158,7 +159,10 @@ export async function expectedClaudeIdentity(binary: string, credential?: Creden
   if (typeof status.email !== "string" || !status.email || typeof status.orgName !== "string" || !status.orgName) {
     throw new Error("Claude could not confirm the Claude subscription account. Check Accounts. Nothing was sent.");
   }
-  return expected ?? { email: status.email, organization: status.orgName };
+  if (expected) return { accountId: expected.accountId, email: expected.email, organization: expected.organization };
+  const id = accountIdentity(status.email, status.subscriptionType, status.orgName, status.orgId);
+  if (!id.accountId) throw new Error("Claude could not confirm the Claude subscription account. Check Accounts. Nothing was sent.");
+  return { accountId: id.accountId, email: status.email, organization: status.orgName };
 }
 
 export function clearClaudeLoginStatus() {
@@ -166,13 +170,34 @@ export function clearClaudeLoginStatus() {
 }
 
 const LOGIN_MS = 30_000;
-let login: { at: number; yes: Promise<boolean> } | undefined;
+let login: { at: number; result: Promise<{ loggedIn: boolean; identity?: PlanIdentity }> } | undefined;
+
+function readClaudeLoginStatus(binary: string): Promise<{ loggedIn: boolean; identity?: PlanIdentity }> {
+  if (login && Date.now() - login.at < LOGIN_MS) return login.result;
+  const result = claudeAuthStatus(binary, undefined, claudeAuthSettings()).then((a) => {
+    try {
+      if (confirmClaudeBilling(a).kind !== "plan") return { loggedIn: false };
+      if (typeof a?.email === "string" && a.email && typeof a?.orgName === "string" && a.orgName) {
+        const id = accountIdentity(a.email, a.subscriptionType, a.orgName, a.orgId);
+        if (id.accountId) return { loggedIn: true, identity: { accountId: id.accountId, email: a.email, organization: a.orgName } };
+      }
+      return { loggedIn: true };
+    } catch {
+      return { loggedIn: false };
+    }
+  }, () => ({ loggedIn: false }));
+  login = { at: Date.now(), result };
+  return result;
+}
+
 /** Whether Claude Code has a subscription login, with no key in reach. Starts a read-only status command. */
 export function claudeLoggedIn(binary: string): Promise<boolean> {
-  if (login && Date.now() - login.at < LOGIN_MS) return login.yes;
-  const yes = claudeAuthStatus(binary, undefined, claudeAuthSettings()).then((a) => { try { return confirmClaudeBilling(a).kind === "plan"; } catch { return false; } }, () => false);
-  login = { at: Date.now(), yes };
-  return yes;
+  return readClaudeLoginStatus(binary).then((r) => r.loggedIn);
+}
+
+/** Cached confirmed identity of Claude's primary subscription login, when logged in. */
+export function claudePrimaryIdentity(binary: string): Promise<PlanIdentity | undefined> {
+  return readClaudeLoginStatus(binary).then((r) => r.identity);
 }
 
 export async function prepareClaudeTerminal(binary: string, credential?: CredentialSnapshot, cwd?: string): Promise<Billing> {

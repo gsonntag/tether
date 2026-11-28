@@ -5,7 +5,7 @@ import { isAccountSource, type AccountSource } from "../../../../shared/credenti
 import type { AccountIdentity } from "../../../../shared/harnessLogin";
 import { claudeDir } from "./paths";
 
-type ClaudeIdentity = AccountIdentity & { accountId: string; email: string; organization: string };
+type ClaudeIdentity = AccountIdentity & { accountId: string; email: string; organization: string; createdAt?: number };
 const SHARED = ["projects", "history.jsonl", "settings.json", "keybindings.json", "CLAUDE.md", "skills", "commands", "agents", "rules"];
 
 export class ClaudeAccounts {
@@ -51,24 +51,39 @@ export class ClaudeAccounts {
     try {
       const file = join(this.configDir(source), ".tether-account.json");
       if (!lstatSync(file).isFile()) return;
-      const { accountId, email, organization, plan } = JSON.parse(readFileSync(file, "utf8"));
+      const { accountId, email, organization, plan, createdAt } = JSON.parse(readFileSync(file, "utf8"));
       if (typeof email === "string" && typeof organization === "string" && /^[a-f0-9]{64}$/.test(accountId)) {
-        return { email, organization, accountId, ...(typeof plan === "string" ? { plan } : {}) };
+        return {
+          email,
+          organization,
+          accountId,
+          ...(typeof plan === "string" ? { plan } : {}),
+          ...(typeof createdAt === "number" && Number.isFinite(createdAt) ? { createdAt } : {}),
+        };
       }
     } catch {}
   }
 
-  save(source: AccountSource, identity: ClaudeIdentity) {
-    writeFileSync(join(this.configDir(source), ".tether-account.json"), JSON.stringify(identity), { mode: 0o600, flag: "wx" });
+  save(source: AccountSource, identity: ClaudeIdentity, createdAt = identity.createdAt ?? Date.now()) {
+    writeFileSync(join(this.configDir(source), ".tether-account.json"), JSON.stringify({ ...identity, createdAt }), { mode: 0o600, flag: "wx" });
   }
 
   list(): { source: AccountSource; identity: ClaudeIdentity }[] {
     if (!this.privateDir(this.root)) return [];
-    return readdirSync(this.root).sort().flatMap((name) => {
+    const entries = readdirSync(this.root).flatMap((name) => {
       const source = `account:${name}`;
-      const identity = isAccountSource(source) ? this.read(source) : undefined;
-      return identity ? [{ source: source as AccountSource, identity }] : [];
+      if (!isAccountSource(source)) return [];
+      const identity = this.read(source);
+      if (!identity) return [];
+      let order = identity.createdAt;
+      if (order === undefined) {
+        try { order = lstatSync(join(this.dir(source), ".tether-account.json")).mtimeMs; } catch { order = 0; }
+      }
+      return [{ name, order, source: source as AccountSource, identity }];
     });
+    return entries
+      .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
+      .map(({ source, identity }) => ({ source, identity }));
   }
 
   remove(source: AccountSource) {
