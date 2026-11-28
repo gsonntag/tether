@@ -1554,6 +1554,8 @@ export class LiveControl {
    * Without an explicit source, use the last selected Claude login or the primary subscription.
    */
   async sourceForNew(harness: HarnessId, asked: unknown): Promise<BillingSource> {
+    // Right after a restart, wait for cswap's accounts before choosing or checking one.
+    if (harness === "claude" && (asked === undefined || isAccountSource(asked))) await this.opts.claudeAccounts?.refresh();
     if (asked === undefined) {
       const last = this.core.o.prefs.lastSubscription(harness);
       return harness === "claude" && isAccountSource(last) && this.opts.claudeAccounts?.read(last) && !this.opts.claudeAccounts.signingIn.has(last) ? last : "subscription";

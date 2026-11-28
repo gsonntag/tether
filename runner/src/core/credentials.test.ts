@@ -753,6 +753,12 @@ test("cswap accounts are sources like Tether's own; one cswap needs signed in ag
     expect(() => live.credentialFor("claude", gone)).toThrow("cswap add");
     await expect(live.setSource("claude:one", gone)).rejects.toThrow("isn't available");
     expect((await core.open("claude:one")).id).toBe("claude:one");
+    // Right after a restart nothing is discovered yet: a new session still finds the saved cswap account.
+    const restarted = setup((dir) => new ClaudeAccounts(join(dir, "claude-accounts"), { cswap: { bin: fx.bin, claude: "/bin/false" } }));
+    restarted.prefs.setLastSubscription("claude", ok);
+    expect(restarted.claudeAccounts.read(ok)).toBeUndefined();
+    expect(await restarted.live.sourceForNew("claude", undefined)).toBe(ok);
+    expect(await restarted.live.sourceForNew("claude", ok)).toBe(ok);
   } finally {
     if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = prior;

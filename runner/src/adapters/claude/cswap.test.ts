@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { isAccountSource } from "../../../../shared/credentials";
 import { accountIdentity } from "../../accountIdentity";
@@ -120,4 +120,29 @@ test("each start has cswap refresh the profile, and refuses one that changed", a
   await expect(a.cswap!.prepare(source, "/elsewhere")).rejects.toThrow("Nothing was sent");
   fx.write([{ number: 2, email: "two@example.test", usageStatus: "relogin_required" }]);
   await expect(a.cswap!.prepare(source, fx.profile(2))).rejects.toThrow("cswap add");
+});
+
+test("a profile whose history link a plain `cswap run` removed is run again with sharing, then starts", async () => {
+  fx.write([{ number: 2, email: "two@example.test" }]);
+  const a = accounts();
+  await a.refresh();
+  const source = a.list()[0]!.source;
+  rmSync(join(fx.profile(2), "projects"));
+  await a.cswap!.refresh(true);
+  expect(a.list().map((x) => x.source)).toEqual([source]);
+  expect(realpathSync(join(fx.profile(2), "projects"))).toBe(realpathSync(join(fx.shared, "projects")));
+  rmSync(join(fx.profile(2), "projects"));
+  await a.cswap!.prepare(source, fx.profile(2));
+  expect(realpathSync(join(fx.profile(2), "projects"))).toBe(realpathSync(join(fx.shared, "projects")));
+});
+
+test("Tether's account root must be a private folder, not a link, before cswap is pointed at its shim", async () => {
+  fx.write([{ number: 2, email: "two@example.test" }]);
+  const real = join(fx.root, "elsewhere");
+  mkdirSync(real, { mode: 0o700 });
+  symlinkSync(real, join(fx.root, "linked"));
+  const a = new ClaudeAccounts(join(fx.root, "linked"), { cswap: { bin: fx.bin, claude: "/bin/false" } });
+  await a.refresh();
+  expect(a.list()).toEqual([]);
+  expect(readFileSync(fx.log, "utf8")).not.toContain("run 2");
 });

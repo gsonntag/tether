@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, realpathSync, writeFileSync, chmodSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import type { AccountSource } from "../../../../shared/credentials";
 import { accountIdentity } from "../../accountIdentity";
 import { claudeDir } from "./paths";
@@ -131,7 +131,8 @@ export class Cswap {
       else {
         const known = this.prepared.get(source);
         const failed = this.failed.get(source);
-        const configDir = known && known.number === row.number && this.usable(known.configDir) ? known.configDir
+        // A profile whose history link went (a `cswap run` without --share-history) is run again: cswap restores it.
+        const configDir = known && known.number === row.number && this.usable(known.configDir) && this.shared(known.configDir) ? known.configDir
           : failed && failed.number === row.number && Date.now() - failed.at < RETRY_MS ? undefined
           : await this.profile(bin, row.number).catch(() => undefined);
         if (configDir) this.failed.delete(source);
@@ -166,6 +167,10 @@ export class Cswap {
   private async profile(bin: string, number: number): Promise<string | undefined> {
     const claude = this.o.claude ?? (process.env.CLAUDE_BIN || Bun.which("claude"));
     if (!claude) return;
+    // Every level up from Tether's account root is checked: cswap resolves `claude` through this folder.
+    const root = dirname(this.o.stateDir);
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    if (!privateDir(root)) return;
     const shims = join(this.o.stateDir, "bin");
     mkdirSync(shims, { recursive: true, mode: 0o700 });
     if (!privateDir(this.o.stateDir) || !privateDir(shims)) return;
