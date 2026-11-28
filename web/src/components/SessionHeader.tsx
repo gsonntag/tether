@@ -5,6 +5,7 @@ import { Icon } from "@astryxdesign/core/Icon";
 import { StopIcon } from "@heroicons/react/24/outline";
 import { isApiBilling, contextDetail, contextPercent, effortLabel, findModel, modelLabel, permissionModeLabel } from "../../../shared/labels";
 import { HARNESS_LABELS, type HarnessCapabilities, type LiveState, type ModelList, type SessionSummary } from "../../../shared/transcript";
+import { useAccountLabel } from "../accountLabel";
 import { rpc } from "../connection";
 import { openSession } from "../route";
 import type { Row } from "../sessionList";
@@ -56,6 +57,14 @@ export function SessionHeader({
   const canSetRetryThrottled = useStore((s) => accessOf(s.runners.find((r) => r.id === runnerId)) !== "view");
   const paid = isApiBilling(billingForDisplay(state));
   const nextBilling = visibleNextBilling(state);
+  const account = useAccountLabel(runnerId, session.harness, !isChild && !session.sideOf);
+  const billingLabelOf = (b: typeof state.nextBilling) => {
+    if (!b) return "";
+    const src = b.source ?? (b.kind === "plan" ? "subscription" : undefined);
+    return (src && account.labels?.[src]) || b.label;
+  };
+  const nextBillingLabel = nextBilling ? billingLabelOf(nextBilling) : undefined;
+  const pendingBillingLabel = state.nextBilling ? billingLabelOf(state.nextBilling) : "";
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleBusy, setTitleBusy] = useState(false);
   const titleInput = useRef<HTMLInputElement>(null);
@@ -150,7 +159,7 @@ export function SessionHeader({
           onRetryThrottled={canSetRetryThrottled ? (on) => void call(rpc(runnerId, "setRetryThrottled", { sessionId: session.id, on })) : undefined}
         />
         {editingFallback && <FallbackChainDialog runnerId={runnerId} sessionId={session.id} onClose={() => setEditingFallback(false)} />}
-        {nextBilling && <span className={`t-chip t-chip-info t-next-source${isApiBilling(nextBilling) ? " t-next-api" : ""}`} title={`${nextBilling.label} from the next start`}>Next: {nextBilling.label}</span>}
+        {nextBilling && <span className={`t-chip t-chip-info t-next-source${isApiBilling(nextBilling) ? " t-next-api" : ""}`} title={`${nextBillingLabel} from the next start`}>Next: {nextBillingLabel}</span>}
         <div className="t-chip-options">
         {isChild ? (
           <button type="button" className="t-chip" onClick={() => openSession(runnerId, session.parentSessionId!)}>
@@ -163,7 +172,7 @@ export function SessionHeader({
               customLabel={session.harness === "codex" && menuSource !== "bedrock" ? "Other model or deployment…" : undefined}
               value={sourcePending ? pendingPick ?? "" : current?.id ?? state.model}
               // While the TUI drives, its /model is what runs: Tether shows the last it knew.
-              label={locked ? `Set in the terminal (last seen: ${modelLabel(state.model, models?.models, state.modelResolved)})` : sourcePending ? (pendingPick ? `${menuSource ? pendingPick : modelLabel(pendingPick, models?.models)} on ${state.nextBilling!.label}` : `Model on ${state.nextBilling!.label}`) : nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model, state.model)}
+              label={locked ? `Set in the terminal (last seen: ${modelLabel(state.model, models?.models, state.modelResolved)})` : sourcePending ? (pendingPick ? `${menuSource ? pendingPick : modelLabel(pendingPick, models?.models)} on ${pendingBillingLabel}` : `Model on ${pendingBillingLabel}`) : nextTurn(modelLabel(state.model, models?.models, state.modelResolved), turn?.model, state.model)}
               disabled={locked}
               choices={(menuSource ? providerModels ?? [] : models?.models ?? []).map((m) => ({ id: m.id, label: m.label, description: m.description }))}
               onOpen={() => { if (menuSource) refreshSources(); else ensureModels(); }}

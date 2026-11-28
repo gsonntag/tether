@@ -37,15 +37,18 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
   // A side chat keeps its session's source (SPEC §16a).
   const changeable = !session.parentSessionId && !session.sideOf && !!capabilities?.sourceSwitch;
   const { choices, refresh } = useSources(runnerId, session.harness, changeable);
-  const account = useAccountLabel(runnerId, session.harness, changeable);
+  const account = useAccountLabel(runnerId, session.harness, !session.parentSessionId && !session.sideOf);
   const billing = billingForDisplay(state) ?? UNKNOWN_BILLING;
-  const usage = usageChip(billing, state.plan);
+  const shownSource = billing.source ?? (billing.kind === "plan" ? "subscription" : undefined);
+  const billingLabel = (shownSource && account.labels?.[shownSource]) || billing.label;
+  const displayBilling = billingLabel === billing.label ? billing : { ...billing, label: billingLabel };
+  const usage = usageChip(displayBilling, state.plan);
   const limits = billing.kind === "plan" ? planChip(state.plan) : undefined;
   const cost = costChip(state.cost);
   const paid = isApiBilling(billing);
   const showSessionCost = paid || !!state.cost;
-  const chip = paid ? { className: "t-chip t-paid-badge", title: billing.label } : { className: "t-chip t-chip-info t-usage-chip", title: usage.detail };
-  const body = paid ? <><span>{billing.label}</span><span className="t-api-cost" title={cost.detail}>{cost.text}</span></> : limits ? limits.text : usage.text;
+  const chip = paid ? { className: "t-chip t-paid-badge", title: billingLabel } : { className: "t-chip t-chip-info t-usage-chip", title: usage.detail };
+  const body = paid ? <><span>{billingLabel}</span><span className="t-api-cost" title={cost.detail}>{cost.text}</span></> : limits ? limits.text : usage.text;
 
   const planSource = billing.source ?? "subscription";
   const planName = account.labels?.[planSource] || choices?.options.find((o) => o.source === planSource)?.billing.label || (billing.kind === "plan" ? billing.label : "Plan limits");
@@ -54,7 +57,7 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
   const hasMenu = !!choices || plan.length > 0 || showSessionCost || showRetryThrottled;
   if (!hasMenu) return <span {...chip}>{body}</span>;
 
-  const menu = choices ? sourceMenu(session.harness, state, choices) : undefined;
+  const menu = choices ? sourceMenu(session.harness, state, choices, account.labels) : undefined;
   const hasMoreBelowPlan = showSessionCost || (!!menu && (menu.items.length > 0 || menu.addKey));
   return (
     <>
@@ -67,7 +70,7 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
           void rpc(runnerId, "refreshPlan", { harness: session.harness }).catch(() => {});
         }}
         renderTrigger={(p) => (
-          <button type="button" {...chip} className={`${chip.className} t-source-chip`} {...p} aria-label={`Source: ${paid ? `${billing.label}, ${cost.text}` : limits ? `${billing.label}, ${limits.text}` : usage.text}`}>
+          <button type="button" {...chip} className={`${chip.className} t-source-chip`} {...p} aria-label={`Source: ${paid ? `${billingLabel}, ${cost.text}` : limits ? `${billingLabel}, ${limits.text}` : usage.text}`}>
             {body}
             <ChevronDownIcon aria-hidden />
           </button>
@@ -85,7 +88,7 @@ export function BillingChip({ runnerId, session, state, capabilities, onSwitch, 
         </>}
         {menu && menu.items.length > 0 && (
           <DropdownMenuRadioGroup label="Source" value={menu.value} onChange={(value) => { if (value !== menu.value && value !== CURRENT_SOURCE) onSwitch(value as BillingSource); }}>
-            {menu.items.map((i) => <DropdownMenuRadioItem key={i.value} value={i.value} label={account.labels?.[i.value as BillingSource] || i.label} description={i.reason} isDisabled={!!i.reason} />)}
+            {menu.items.map((i) => <DropdownMenuRadioItem key={i.value} value={i.value} label={i.label} description={i.reason} isDisabled={!!i.reason} />)}
           </DropdownMenuRadioGroup>
         )}
         {showRetryThrottled && <>

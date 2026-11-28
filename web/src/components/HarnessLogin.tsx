@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
-import { harnessLoginHref, type HarnessAccount, type HarnessLoginFlow, type HarnessLoginStatus } from "../../../shared/harnessLogin";
+import { accountDisplayLabel, harnessLoginHref, type HarnessAccount, type HarnessLoginFlow, type HarnessLoginStatus } from "../../../shared/harnessLogin";
 import { HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
 import { rpc } from "../connection";
+import { invalidateAccountLabelCache } from "../accountLabel";
 import { cswapLabel } from "../accountLabels";
 import { accessOf } from "../runners";
 import { useStore } from "../store";
@@ -15,12 +16,24 @@ export function HarnessLoginLink({ runnerId, harness }: { runnerId: string; harn
 
 const statusText = (s: HarnessLoginStatus | undefined) => {
   switch (s?.state) {
-    case "signedIn": return [s.organization || s.email || "Signed in", s.plan].filter(Boolean).join(" · ");
+    case "signedIn": {
+      // Leave out displayName here: the title slot already renders it (G8).
+      const { name, detail } = accountDisplayLabel({ ...s, displayName: undefined }, "Signed in");
+      return [name, detail].filter(Boolean).join(" · ");
+    }
     case "signedOut": return "Signed out";
     case "unavailable": return "Not installed";
     case "unknown": return "Status unavailable";
     default: return "Checking…";
   }
+};
+
+const extraProbeText = (extra: HarnessAccount | undefined) => {
+  if (!extra) return "";
+  if (extra.probe === "signedOut") return " · Signed out";
+  if (extra.probe === "unknown") return " · Status unavailable";
+  if (extra.probe === undefined && !extra.available) return " · Sign-in required";
+  return "";
 };
 
 export function HarnessLogin({ runnerId, harness, rename, extra, add, onChanged }: {
@@ -75,6 +88,7 @@ export function HarnessLogin({ runnerId, harness, rename, extra, add, onChanged 
       setChallenge(undefined);
       setStatus(undefined);
       setRevision((n) => n + 1);
+      invalidateAccountLabelCache(runnerId, harness);
       onChanged?.();
     };
     const poll = async () => {
@@ -151,6 +165,7 @@ export function HarnessLogin({ runnerId, harness, rename, extra, add, onChanged 
       } else {
         setStatus(await rpc(runnerId, "harnessLogout", { harness }));
       }
+      invalidateAccountLabelCache(runnerId, harness);
       setConfirm(false);
     } catch (e) {
       setError((e as Error).message);
@@ -164,13 +179,14 @@ export function HarnessLogin({ runnerId, harness, rename, extra, add, onChanged 
       const result = await rpc(runnerId, "renameHarnessAccount", { harness, accountId, displayName, source: extra?.source });
       if (extra) onChanged?.();
       else setStatus(result);
+      invalidateAccountLabelCache(runnerId, harness);
     } catch (e) {
       setError((e as Error).message);
     } finally { setBusy(false); }
   };
 
   return <div className="t-credential-slot">
-    {!add && <div className="t-credential-title">{status?.state === "signedIn" && status.displayName ? status.displayName : harness === "claude" && !extra ? "Primary account" : cswap ? "Claude account via cswap" : "Harness account"} <span className="t-credential-status" role="status">{cswap ? cswapLabel({ ...cswap.status, ...(cswap.status.state === "signedIn" ? { displayName: undefined } : {}) }) : statusText(status)}{extra && !extra.available && " · Sign-in required"}</span></div>}
+    {!add && <div className="t-credential-title">{status?.state === "signedIn" && status.displayName ? status.displayName : harness === "claude" && !extra ? "Primary account" : cswap ? "Claude account via cswap" : "Harness account"} <span className="t-credential-status" role="status">{cswap ? cswapLabel({ ...cswap.status, ...(cswap.status.state === "signedIn" ? { displayName: undefined } : {}) }) : statusText(status)}{extraProbeText(extra)}</span></div>}
     {cswap && <div className="t-credential-hint">{cswap.hint ?? "Managed by cswap: sign in again and remove it with cswap."}</div>}
     {error && <div className="t-inline-status error" role="alert">{error}</div>}
     {rename && !flowId && !confirm && !(cswap && !cswap.available) && status?.state === "signedIn" && status.accountId && (

@@ -6,6 +6,7 @@ import { effortLabel, findModel, isApiBilling, modelLabel, permissionModeLabel, 
 import { resolveSourceModel, type BillingSource } from "../../../shared/credentials";
 import type { MoveOptions } from "../../../shared/move";
 import { CLAUDE_UNSET, type HarnessCapabilities, type HarnessId, type LiveState, type SessionSummary } from "../../../shared/transcript";
+import { useAccountLabel } from "../accountLabel";
 import { rpc } from "../connection";
 import { forkSession, useForking } from "../fork";
 import { openSession } from "../route";
@@ -82,6 +83,7 @@ function MoveDialog({ runnerId, session, state, onClose }: { runnerId: string; s
   const targets = options?.targets ?? [];
   const target = targets.find((t) => t.harness === picked) ?? targets[0];
   const harness = target?.harness;
+  const account = useAccountLabel(runnerId, harness ?? "claude", !!harness);
   const models = useStore((s) => (harness ? s.modelLists[modelListKey(runnerId, harness)] : undefined));
   const [sources, setSources] = useState<Partial<Record<HarnessId, BillingSource>>>({});
   const source = harness ? (sources[harness] ?? target?.sources?.default) : undefined;
@@ -139,7 +141,7 @@ function MoveDialog({ runnerId, session, state, onClose }: { runnerId: string; s
         {options && !targets.length && <div className="t-form-error">No other agent or source on this runner.</div>}
         {target && (
           <>
-            <SourcePicker choices={target.sources} value={source} onChange={(s) => setSources((x) => ({ ...x, [target.harness]: s }))} />
+            <SourcePicker choices={target.sources} value={source} accountLabels={account.labels} onChange={(s) => setSources((x) => ({ ...x, [target.harness]: s }))} />
             {deployments ? (
               <DeploymentPicker deployments={deployments} value={deployment} onChange={setModel} />
             ) : (<label>
@@ -171,7 +173,11 @@ function MoveDialog({ runnerId, session, state, onClose }: { runnerId: string; s
               {!target.sources && target.billing && (
                 <>
                   <dt>Billing</dt>
-                  <dd>{isApiBilling(target.billing) ? <span className="t-move-api">{target.billing.label}</span> : target.billing.label}</dd>
+                  <dd>{(() => {
+                    const src = target.billing.source ?? (target.billing.kind === "plan" ? "subscription" : undefined);
+                    const lbl = (src && account.labels?.[src]) || target.billing.label;
+                    return isApiBilling(target.billing) ? <span className="t-move-api">{lbl}</span> : lbl;
+                  })()}</dd>
                 </>
               )}
             </dl>
