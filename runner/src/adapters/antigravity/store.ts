@@ -243,6 +243,20 @@ class Reader {
    */
   async configInfo(): Promise<{ config: any[]; availableModels?: { modelId?: string; name?: string }[] }> {
     if (lastConfig && Date.now() - lastConfigAt < CONFIG_MS) return { config: lastConfig, availableModels: lastAvailableModels };
+    // One probe at a time: callers side by side share it.
+    this.probing ??= this.probeConfig().finally(() => { this.probing = undefined; });
+    try {
+      await this.probing;
+    } catch (e) {
+      // A failed refresh keeps what Antigravity last said rather than emptying the pickers.
+      if (!lastConfig) throw e;
+    }
+    return { config: lastConfig ?? [], availableModels: lastAvailableModels };
+  }
+
+  private probing: Promise<void> | undefined;
+
+  private async probeConfig() {
     const tmp = mkdtempSync(join(tmpdir(), "tether-agy-cfg-"));
     let sid: string | undefined;
     try {
@@ -256,7 +270,6 @@ class Reader {
       if (sid) discardStore(sid);
       rmSync(tmp, { recursive: true, force: true });
     }
-    return { config: lastConfig ?? [], availableModels: lastAvailableModels };
   }
 
   /** Antigravity's options (models, thinking levels, modes), asked of it if no session has said yet. */
