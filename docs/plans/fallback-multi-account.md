@@ -513,3 +513,76 @@ Steps that can't run right now can still be saved.
 - **More tests:**
   - the only higher-priority account is unavailable when it's time to go back;
   - phone keyboard and focus during reorder and in the preset dialogs.
+
+## Fixes after re-review, round 2. These replace R1, R3, R4 and R5 where they differ. R2 stands, extended below.
+
+**R1′. A hop is staged and committed only once startup succeeds (same-harness path, `setSource`).**
+- Snapshot every piece of state the hop owns before changing anything:
+  - `source`, `model`, `effort`, `permissionMode`, deployment;
+  - the billing fields (`billing`, `nextBilling`, `nextModel`, `nextDeployment`, `sourceSwitchFailed`);
+  - `fallbackChain.active`, `fallbackProgress` and the reservation.
+- Tag the hop with a token, for example `hopId` on the session.
+- If startup fails with a typed pre-turn error, roll back **only** the fields that still carry this hop's token. Rollback never undoes a Stop, a chain edit or a manual source change made meanwhile: those change the token, so rollback is skipped and the hop counts as cancelled.
+- **The driver signals the enqueue.**
+  - `d.send()` resolves or emits `enqueued` once the harness actually accepted the turn. For Claude that is after its final auth check (`claude/driver.ts:271-276`).
+  - `s.sentOut` (`live.ts:450`) stays as is for change tracking. The fallback path uses the driver's `enqueued` signal to decide whether a resend is safe: resend only when `enqueued` never fired.
+- The "Switched to step N" notice and the `fallbackStatus` / `fallbackRun` updates are published only after `enqueued` (they move from `live.ts:2150-2165`).
+- Tests:
+  - startup auth failure restores model, effort, mode, billing and active;
+  - Stop during startup: no rollback over the Stop, no backoff;
+  - a chain edit during startup: no rollback over the edit;
+  - failure after `enqueued`: no resend.
+
+**R1″. Cross-harness hops (`moveFallback`, `live.ts:2004-2026`).**
+- Today the successor replaces the original (`replaceWith`) before the send.
+- Change the order:
+  1. open the successor;
+  2. send on it while the original stays in place but hidden from new sends;
+  3. call `replaceWith` only after the successor reports `enqueued`.
+- On a typed pre-turn failure, close and discard the successor with the existing discard path (`:2011-2013`). The original stays active and the step gets a backoff.
+- **R2 also applies here.** The check at `:2008-2009` splits cancellation (`retrySuppressed` / `stopping` / chain replaced → `SendCancelled`, no backoff) from a permission rejection (`!fallbackModeAllowed` → step problem with backoff).
+- Tests:
+  - Codex → Claude-account hop where the account start fails: the original session survives and the successor is discarded;
+  - a permission rejection on the move path backs off that step;
+  - Stop on the move path does not.
+
+**R3′. When the runner recomputes `fallbackRun`.**
+- One function, `fallbackEligibility(s, chain, catalog, now)`, holds the checks that actual hop selection uses today (`live.ts:2086-2109`): availability, permission, usage window, backoff, identical step. `advanceFallback` and the status snapshot both call it, so they cannot drift.
+- Recompute (debounced, about 250 ms) on:
+  - chain save;
+  - hop start, commit or rollback;
+  - `notePlan` usage reports (`:2409-2412`);
+  - a permission-mode change;
+  - catalog and source changes (account added, removed or signed out; key set or cleared);
+  - session open (`sessions.ts:343`) and `keptPrefs` handoff;
+  - a timer at the earliest future `retryAt` or usage reset, so backoff expiry shows up without other events.
+- The "return to earlier step" line follows the **manual-send** path (`live.ts:393-398`): idle, no `nextSource`, not cancelled, and the earlier step is eligible.
+- The automatic continue-on-reset timer (`:1952-1958`) is shown separately ("Will continue at T") only when `continueOnReset` is on.
+- PR 3 drops the shared web predictor and its tests. It tests `fallbackEligibility` and the recompute triggers instead.
+
+**R4′. Unavailable sources: show and warn, don't block.**
+- This keeps the existing rule that unavailable steps can be kept (`setFallbackChain`, `live.ts:1780-1796`, and the runner skips them at hop time).
+- The editor keeps the unavailable value: an explicit option with its missing-source label, plus a warning.
+- Save is **allowed** with unavailable steps, including when turning the chain off.
+- Save is still blocked for:
+  - an exact duplicate;
+  - a missing model on an available source;
+  - an empty chain when it's turned on.
+- Update the "Save is blocked when" list, the edge-case table and the web tests to match. Add a test that one removed account doesn't stop the user from turning the chain off or saving an unrelated edit.
+
+**R5′. Usage windows tied to identity.**
+- Every saved or live usage window carries the identity that produced it: `{ accountId, email, organization }`.
+  - **Reads:** `refreshPlan()` loads Claude's saved plan (`sessions.ts:523-526`) only when its identity matches the source's current confirmed identity.
+  - **Live reports:** `notePlan` from a process (`claude/index.ts:199`, `claude/context.ts:144-150`) is accepted only when the process's identity (confirmed at its start) matches the source's current identity. A late report from a process started under the old identity is dropped.
+  - Windows with no identity (older data) are ignored for skip decisions.
+  - Two source IDs share a "full" window only when accountId, email and the org (normalized) all match.
+- Tests:
+  - an identity change followed by `refreshPlan` doesn't skip the new login;
+  - a late report from the old process is ignored;
+  - an identity-less window is ignored.
+
+**Plan bookkeeping:**
+- PR 3 is now "runner-owned status": `fallbackEligibility`, `fallbackRun` and the recompute triggers, with no web predictor.
+- PR 1 now includes R1′, R1″ and R2, and the driver's `enqueued` signal.
+- PR 5 depends on PR 2 (owner labels) and PR 3.
+- Chip and dialog copy use only `fallbackRun` fields: `current`, `next` (a candidate), per-step `state` / `until` / `reason`, `returnsOnNextMessage` and `continueAt`.
