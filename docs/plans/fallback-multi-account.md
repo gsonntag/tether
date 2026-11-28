@@ -586,3 +586,45 @@ Steps that can't run right now can still be saved.
 - PR 1 now includes R1′, R1″ and R2, and the driver's `enqueued` signal.
 - PR 5 depends on PR 2 (owner labels) and PR 3.
 - Chip and dialog copy use only `fallbackRun` fields: `current`, `next` (a candidate), per-step `state` / `until` / `reason`, `returnsOnNextMessage` and `continueAt`.
+
+## Fixes after re-review, round 3. These replace R1′, R1″ and R3′ where they differ.
+
+**R1‴. A hop is a provisional record. Nothing is written to the session until commit.**
+- `setSource` gains a staged mode. The hop builds `pending = { hopId, source, model, effort, permissionMode, deployment, billing fields, active, progress }` and starts the driver from `pending`. It does **not** write `s.state` or prefs.
+  - **Commit** (the only write) happens when either:
+    - the driver reports `enqueued`, for hops with a message to resend; or
+    - the driver reports **startup ready**, for hops with nothing to resend (no message, or the turn already acted). Startup ready means the process is up, auth is confirmed, and the prompt is accepting input.
+  - **Discard:** on Stop, a chain edit, a manual source change, shutdown or a pre-turn failure, close the provisional driver and drop `pending`.
+  - Because nothing was written, there is no rollback and no per-field ownership check. Cancellation can never strand provisional state (fixes `live.ts:1678-1682,2158-2165`).
+  - `interrupt` (`live.ts:843-863`) and `setFallbackChain` (`:1780-1796`) discard any `pending` on the session.
+  - A permission rejection discards and backs off that step. Cancellation discards with no backoff (R2).
+- Tests:
+  - Stop during startup leaves state byte-identical to before the hop;
+  - a chain edit during startup keeps the edit and leaves no trace of the hop;
+  - an acted turn hops with startup-ready commit and no resend;
+  - an auth failure discards and backs off.
+
+**R1⁗. Provisional successors (`moveFallback` and `returnToFallback`) use the same record.**
+- The successor or old session is provisional until commit. Rules:
+  - **Enqueue gate:** just before the driver enqueues, it re-checks the *original* hop's state: `retrySuppressed`, `stopping`, the chain unchanged, the hop id still current, and `fallbackModeAllowed`. If any check fails, it doesn't enqueue and the successor is discarded.
+  - **Stop routing:** while a provisional successor exists, `interrupt(original)` also discards it. The original's `fallingBack` entry points at the successor (`live.ts:847`).
+  - **Turn-end deferral:** turn-end, limit and `fallbackStatus` handling for a provisional successor are queued, then replayed after `replaceWith` commits. A fast successor turn that ends before handoff still inherits the chain and progress first (`live.ts:576-596,2483-2486`).
+  - **`returnToFallback`** (`live.ts:1893-1909,2111-2119`) moves to the same order as `moveFallback`: resend on the provisional old session first, `replaceWith` only after commit.
+  - **R2 split on every path:** cancellation → `SendCancelled`, no backoff; `!fallbackModeAllowed` → a step problem with backoff. This includes the check at `:1894-1895`, which today treats a permission rejection as cancellation.
+- Tests:
+  - Stop while the successor is starting discards it and no turn runs;
+  - the successor's turn ends before handoff and its limit is processed after commit with the chain intact;
+  - `returnToFallback` with a permission rejection backs off that step;
+  - `returnToFallback` with Stop does not back off.
+
+**R3″. Return status is derived when publishing, not from a trigger list.**
+- `returnsOnNextMessage` and `next` are computed from the live inputs each time `fallbackRun` is published: status, `nextSource` / pending source, sending, the provisional hop, and `fallbackEligibility` of earlier steps.
+- Publishing is debounced and runs on:
+  - every `setState` that touches `status`, `source`, `nextSource`, `nextBilling` or `fallbackChain`;
+  - send start and finish;
+  - turn end (`live.ts:393-398,1659-1661,2403-2404`);
+  - everything in R3′;
+  - the expiry timer.
+- A test drives send → turn end → pending source → cleared, and checks the flag at each step.
+
+**R5′ addendum:** the process identity used by R5′ comes from the driver's confirmed account info for **every** login, including the main `subscription` login, not only for extra accounts.
