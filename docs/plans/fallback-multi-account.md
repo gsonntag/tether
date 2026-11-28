@@ -927,3 +927,70 @@ Gemini reviewed the plan before rounds 2-6 landed. Its R1 rollback, R3 staleness
 ## Round 10. A one-line correction to G6″.
 
 The checks on the serialized chain (non-empty, no exact duplicates) run **only when `enabled` is true**. Turning the chain off always saves: complete rows are kept, including duplicates and unavailable ones, and draft rows are left out with the note.
+
+## Round 11: fixes after the Claude Opus review. These override everything above.
+
+**O1. The hop token is `fallingBack`, with one lifecycle.**
+- `hopId` **is** the `fallingBack` entry: `fallingBack: Map<Session, { hopId, pending?, successor? }>`.
+- **Lifecycle:**
+  - set when a hop starts (as today);
+  - **not** released in `send()` (remove the delete at `live.ts:400-402`);
+  - released **synchronously inside commit**, as the first step, before the live sink is installed, the buffer replayed or deferred turn-end run. A turn that ends after commit (Y is full too) therefore sees no reservation, and `fallbackPending` / `canAdvanceFallback` work as they do today;
+  - on discard, released after cleanup.
+- `interrupt` looks up `fallingBack.get(s)` (or the successor's original through a `successorOf` map) and sets `retrySuppressed` on the original. It also discards `pending` or the successor. This covers carry's `answered()` wait (R6b″).
+- **User sends during a hop:** keep today's rejection in `sendNow` (`live.ts:330-331`), but word it "Switching accounts… your message will be sent when it's done" **and queue the message** instead of dropping it. It goes into the session queue, held with `queueHeldBy: "fallback"`, and is released on commit or discard. This replaces R6.3′'s "queue behind".
+- Tests:
+  - Y is full right after commit → the next hop happens;
+  - Stop during carry's `answered()` → `retrySuppressed` is set and the successor is discarded;
+  - a user send during a hop is queued and sent after commit.
+
+**O2. Carry hops are the one exception to "nothing written until commit", and they restore on failure.**
+- On a carry harness, `setSource` writes `active`, `nextSource`, `nextFallbackSettings`, `nextModel`, `nextBilling` and `nextDeployment` before carry runs (`live.ts:1650-1656`). That stays.
+- The hop snapshots those fields plus `sourceSwitchFailed` first.
+- **Every non-success outcome** of a fallback carry (`cancelled | permission | authFailed | failed`) restores the snapshot, guarded by the hop token (a newer manual change wins).
+- Only after the restore does `advanceFallback` continue to the next candidate, or reach `fallbackExhausted`.
+- `fallbackRun` reports the restored current step.
+- Test: carry auth failure → the next candidate is cross-harness and also fails → exhausted. `nextSource` is cleared, and the next message stays on X.
+
+**O3. Identity matching (replaces the accountId parts of R5′, G4 and G4′).**
+- **Process identity meets stored identity:** compare lowercased email plus `normalizedOrganization`. This applies to live `notePlan` reports, G4 store reads and eviction checks. It is what `sameClaudeIdentity` does today (`claude/credentials.ts:66-72`). The SDK's `AccountInfo` has no orgId, so `accountId` can't be computed on the process side.
+- **`accountId`** (`sha256([email, orgId||orgName])`) is compared only between two records derived from `auth status` (`sameAccountAs`, cross-source window sharing).
+- G4's store tag is `{ email, organization, accountId? }`.
+- Test: a live report from an extra account's process is accepted and stored; a report from a process for a different email is dropped.
+
+**O4. Adapter-side writes during a provisional start.**
+- The driver start takes `{ provisional: true }`. While it's set, `keepBilling` (`claude/driver.ts:205-209`) and any plan or claude-windows write are held in the driver and flushed on commit (`driver.commit()`), or dropped on discard.
+- **Allowed during a provisional start:**
+  - Claude's own writes into its config dir (the session file, credentials refresh);
+  - Tether's in-memory state on `pending`.
+- **Nothing else.**
+- R6a's byte-identical test covers stored billing (`keptBilling`).
+
+**O5. Under-specified items, now specified.**
+- **Commit 1 of PR 1** threads an explicit `StartConfig` (source, model, effort, mode, deployment, credential, sink) through:
+  - `startDriver`, `startOpts` / `chosen`, `sourceOf`, `deploymentOf`, `credentialFor`, `subscriptionRevisions`;
+  - `sink(s, source)` (`live.ts:2219-2250`).
+  
+  Today's callers pass the config built from the session. `provisionalStart` passes `pending`.
+- **What the session shows during a provisional start:** status stays as it was (idle). A `switching: { step }` live-state field drives the chip's `Switching…` and the "Now" card.
+- The provisional resend does **not** go through `send()`'s `status(running)`. It uses a dedicated `provisionalSend` that sets `running` only at commit.
+- `beforeEnqueue` also checks `s.cancelSend !== me`.
+- **Commit runs synchronously inside the driver's `enqueued` callback.** There is no `await` between enqueue and `s.driver = pending.driver`.
+- **Deferred turn-end** captures the whole idle branch's inputs at the moment it happens: `limitHit`, `rateHit`, `lastSend`, `turnActed`, `retry` state and the status transition. It replays them after commit. Deferring only the bus emit is not enough.
+- **G10′ probe cost:** probe results are cached per source for 60 s, and invalidated on login or account changes. `sources()` reads the cache and refreshes it in the background when stale. "unknown" is used until the first result.
+
+**O6. Non-blocking, adopted:**
+- **Toggle default:** the first deliberate step edit (add, remove, reorder or change) on a new chain turns "Use for this session" on, with the note "Turned on. Untick to save without using it".
+- **One shared `sameStep(a, b, resolved)`** in `shared/fallbackChain.ts` is used by both the editor's duplicate check and the runner's identical-step skip (`live.ts:2101`). An empty effort or mode equals the resolved default.
+- **SPEC:** note that under R1‴ a Claude hop with no resend starts a process in order to commit.
+
+**O7. Superseded body text. Implementers: ignore these.**
+- B4 (replaced by G1).
+- B8's catch-and-continue (replaced by R1‴, G3 and O2).
+- B9's Bedrock `<select>` (replaced by G5).
+- The "Save is blocked when" list and R4 (replaced by G6, G6″ and round 10).
+- Every web-side `fallbackPlan()` mention in the Tests and PR lists (replaced by R3′, R3″ and G2).
+- Backend 11's "derive in `keptPrefs` / `sessions.ts:343`" (replaced by G2: publish after open and handoff).
+- The label table's "signed out" row for unconfirmed probes (replaced by the G10′ probe states).
+- R5′'s accountId matching (replaced by O3).
+- R6.3′'s "queue behind" (replaced by O1).
