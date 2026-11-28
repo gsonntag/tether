@@ -1080,3 +1080,11 @@ The checks on the serialized chain (non-empty, no exact duplicates) run **only w
 - Startup captures the login/account generation **before** the async auth-status lookup. If the generation changed by the time the lookup returns, the start fails as stale (O5′ rule).
 - **Main login:** `accountId` is derived from the raw `auth status` in `expectedClaudeIdentity` (`credentials.ts:151`). It doesn't come from `confirmClaudeBilling`, which only sees the SDK's `accountInfo()` (no orgId).
 - The captured tag `{ identity, generation }` travels through O4's buffered adapter writes. Its generation is checked again when the writes are published at commit.
+
+## Approved (Claude Opus, round 14). Implementation notes
+
+1. Put the `QueueDeferred` check, and the matching user-send queueing, **also** at the claim point, in the same synchronous step as `s.sending = me` (`live.ts:415-417`), not only at `:330`. There are awaits in between (`terminal.settled` at `:351`, the returning branch at `:398`).
+2. For same-session hops, R6.5's steps (apply `pending`, install the driver, replay the buffer) slot in after Q1′ step 2 or 3, all synchronous (O5). `handoffGate` then covers a single session.
+3. While `handOver` runs, `queue.add` on the successor waits for `handoffGate`, so moved items keep their order ahead of new ones (`queue.ts:233`).
+4. For extra accounts, Q2's start-time identity comes from `credential.claudeAccount` in `expectedClaudeIdentity` (`credentials.ts:151-155`), not from the launcher script at `:236`.
+5. The defer check exempts sends that carry the hop's own `o.fallback` symbol, as `:330` already does.
