@@ -301,6 +301,7 @@ export function createRunner(o: RunnerOptions) {
           const s = extra.fresh ? core.create(harness, nativeId, projectPath, opts) : await core.open(id);
           core.book.upsert([s.summary]);
           if (from) {
+            if (extra.stored) return id;
             // A source change: nothing is anyone's until the harness has confirmed it.
             try { await live.resumeLive(s); }
             catch (e) { core.dropFresh(s); throw e; }
