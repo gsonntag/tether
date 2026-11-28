@@ -893,3 +893,33 @@ Gemini reviewed the plan before rounds 2-6 landed. Its R1 rollback, R3 staleness
   - "Start from this session" on Bedrock;
   - turning off a chain that has a removed account, a duplicate step or a draft step;
   - `SourcePicker` with zero options shows the unavailable value.
+
+## Fixes after re-review, round 9. These amend G3′, G2′ and G6′.
+
+**G3″. Successors (move and fallback carry) are quiet until replacement.**
+- A provisional successor session gets a `provisional` flag. While it is set:
+  - Its events go to the session's **own** transcript and state, so `answered(n, seen)` keeps working.
+  - Global side effects are held in a per-session queue:
+    - bus emits (`turnEnded` at `live.ts:2484`, `fallbackStatus`, inbox `read.set`, push);
+    - queue hold or release;
+    - sidebar summary publication.
+- **On replacement commit:**
+  - the flag is cleared;
+  - held side effects that still apply are replayed, for example the successor's own `turnEnded` after its answer;
+  - effects superseded by the handoff are dropped. A `turnEnded` that the hop itself handles counts as handled.
+- **On discard,** the held queue is dropped, so no push, inbox entry or notification ever fires for a discarded successor.
+- Test: a successor whose turn ends before commit fires no push; after commit, exactly one `turnEnded` is published.
+
+**G2‴. Cache seeding and invalidation (adds to G2′).**
+- Chain save (`setFallbackChain`) seeds a refresh for every harness in the new chain that has no cache entry.
+- Driver install or replace on the session invalidates the cache entries for that harness, because `listModels` depends on the driver, and kicks off a refresh.
+- Test: adding a Codex step to a Claude-only chain moves that step from "checking" to a real state without opening the catalog elsewhere.
+
+**G6″. Draft rows (final rule).**
+- **Complete row:** harness, source and a nonempty model. It's always serialized, even when its source is unavailable.
+- **Draft row (no model), when saving:**
+  - its source is available → Save is blocked while enabled, with "Pick a model for step N";
+  - its source is unavailable (it can't be completed), or the chain is off → the draft is left out, with the inline note "N unfinished step(s) won't be saved".
+- After this, the serialized chain is validated (non-empty when enabled, no exact duplicates) before sending.
+- Presets follow the same rules.
+- Test: a draft whose source becomes unavailable while the editor is open is left out on Save with the note, and complete unavailable rows are kept.
