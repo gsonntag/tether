@@ -1657,4 +1657,236 @@ describe("multi-account fallback hops & provisionalStart", () => {
       expect(notices(orig).some((n) => n.includes("Returned to step 1 · Claude plan"))).toBe(true);
     }
   });
+
+  test("PR1 blockers: silent carry startup failure + O2 exhausted; heldSideEffects replay; Stop holds queue; native->archive move fallback; scheduled mid-hop + handoffGate drain/add ordering", async () => {
+    // 1. Blocker 1 + O2 + G11': resend-carry carrier/startup auth failure is silent (no notice, no sourceSwitchFailed, no inbox failure), backs off, tries next cross-harness step which also fails -> exhausted with nextSource cleared.
+    {
+      const t = setupAccounts({ codex: true });
+      t.credentials.set("openai", `fake-openai-${crypto.randomUUID()}`);
+      t.prefs.set("codex:cx1", { source: "subscription", model: "gpt", permissionMode: "read-only" });
+      await t.live.setFallbackChain("codex:cx1", true, [
+        { harness: "codex", source: "openai", model: "gpt", permissionMode: "read-only" },
+        { harness: "claude", source: t.accX, model: "sonnet", permissionMode: "plan" },
+      ]);
+      // Carrier fails at startup (provisional flag passed) -> silent backoff, moves to step 2 (claude).
+      let sawProvisional = false;
+      t.live.carrier = async (_from, _source, _m, _s, extra) => {
+        sawProvisional = !!extra?.provisional;
+        throw new Error("OpenAI key rejected at start.");
+      };
+      t.live.fallbackMover = async () => { throw new Error("Cross-harness start failed."); };
+      t.codex!.script = () => [(s) => at(s), limit()];
+      const orig = await t.core.open("codex:cx1");
+      await t.core.load(orig);
+      await t.live.send("codex:cx1", "try carry then cross");
+      await waitUntil(() => notices(orig).some((n) => n.includes("Used every available source.")));
+      expect(sawProvisional).toBe(true);
+      expect(t.prefs.get("codex:cx1").nextSource).toBeUndefined();
+      expect(t.prefs.get("codex:cx1").sourceSwitchFailed).toBeUndefined();
+      expect(t.prefs.get("codex:cx1").failure).not.toContain("OpenAI key rejected");
+      expect(notices(orig).some((n) => n.includes("Couldn't start"))).toBe(false);
+      expect(t.prefs.get("codex:cx1").fallbackProgress?.steps[0]?.retryAt).toBeGreaterThan(Date.now());
+      expect(t.prefs.get("codex:cx1").fallbackProgress?.steps[1]?.retryAt).toBeGreaterThan(Date.now());
+    }
+
+    // 1b. Blocker 1: carrier returns a provisional successor whose startDriver fails -> silent (no notice, no inbox failure on discarded successor), backs off and advances.
+    {
+      const t = setupAccounts({ codex: true });
+      t.credentials.set("openai", `fake-openai-${crypto.randomUUID()}`);
+      t.prefs.set("codex:cx1", { source: "subscription", model: "gpt", permissionMode: "read-only" });
+      await t.live.setFallbackChain("codex:cx1", true, [
+        { harness: "codex", source: "openai", model: "gpt", permissionMode: "read-only" },
+      ]);
+      t.live.carrier = async (_from, source) => {
+        t.codex!.addStored("c-start-fail", []);
+        t.prefs.set("codex:c-start-fail", { carrying: true, projectPath: "/p", source });
+        return "codex:c-start-fail";
+      };
+      t.codex!.onStart = (opts) => {
+        if (opts.credential?.source === "openai") throw new Error("not logged in to OpenAI");
+      };
+      t.codex!.script = () => [(s) => at(s), limit()];
+      const orig = await t.core.open("codex:cx1");
+      await t.core.load(orig);
+      await t.live.send("codex:cx1", "provisional start fail");
+      await waitUntil(() => notices(orig).some((n) => n.includes("Used every available source.")));
+      expect(t.prefs.get("codex:c-start-fail").failure).toBeUndefined();
+      expect(t.prefs.get("codex:cx1").sourceSwitchFailed).toBeUndefined();
+      expect(notices(orig).some((n) => n.includes("Couldn't start"))).toBe(false);
+    }
+
+    // 2. Blocker 2 (G3''): heldSideEffects holds turnStarted + message + toolCall on provisional carry successor and replays them on commit (and drops on discard).
+    {
+      const t = setupAccounts({ codex: true });
+      const busEvents: string[] = [];
+      t.core.o.bus.on("turnStarted", ({ sessionId }) => { if (sessionId === "codex:c-held") busEvents.push("turnStarted"); });
+      t.core.o.bus.on("message", ({ sessionId }) => { if (sessionId === "codex:c-held") busEvents.push("message"); });
+      t.core.o.bus.on("turnEnded", ({ sessionId }) => { if (sessionId === "codex:c-held") busEvents.push("turnEnded"); });
+      t.credentials.set("openai", `fake-openai-${crypto.randomUUID()}`);
+      t.prefs.set("codex:cx1", { source: "subscription", model: "gpt", permissionMode: "read-only" });
+      await t.live.setFallbackChain("codex:cx1", true, [
+        { harness: "codex", source: "openai", model: "gpt", permissionMode: "read-only" },
+      ]);
+      t.live.carrier = async (_from, source) => {
+        t.codex!.addStored("c-held", []);
+        t.prefs.set("codex:c-held", { carrying: true, projectPath: "/p", source });
+        return "codex:c-held";
+      };
+      t.codex!.script = () => {
+        const src = t.codex!.drivers.at(-1)!.opts.credential?.source;
+        if (src === "openai") return [reply];
+        return [(s) => at(s), limit()];
+      };
+      await t.live.send("codex:cx1", "go");
+      await waitUntil(() => t.prefs.get("codex:cx1").movedTo === "codex:c-held");
+      await Bun.sleep(30);
+      expect(busEvents).toContain("turnStarted");
+      expect(busEvents).toContain("message");
+      expect(busEvents.filter((e) => e === "turnEnded")).toHaveLength(1);
+      expect(busEvents.indexOf("turnStarted")).toBeLessThan(busEvents.indexOf("turnEnded"));
+    }
+
+    // 3. Blocker 3: Stop during a hop holds queued messages "stopped" so they don't drain on the exhausted source.
+    {
+      let releaseStart!: () => void;
+      const startGate = new Promise<void>((r) => (releaseStart = r));
+      let secondStarted!: () => void;
+      const onSecond = new Promise<void>((r) => (secondStarted = r));
+      const t = setupAccounts();
+      t.prefs.set("claude:one", { source: "subscription", model: "sonnet", permissionMode: "plan" });
+      await t.live.setFallbackChain("claude:one", true, [
+        { harness: "claude", source: t.accX, model: "sonnet", permissionMode: "plan" },
+      ]);
+      t.claude.onStart = async (opts) => {
+        if (opts.credential?.source === t.accX) {
+          secondStarted();
+          await startGate;
+        }
+      };
+      t.claude.script = () => [(s) => at(s), limit()];
+      await t.live.queue.add("claude:one", "must stay held", []);
+      await t.live.send("claude:one", "hit limit");
+      await onSecond;
+      await t.live.interrupt("claude:one");
+      releaseStart();
+      await Bun.sleep(100);
+      const s = await t.core.open("claude:one");
+      expect(s.state.queueHeldBy).toBe("stopped");
+      expect(s.state.queue.map((m) => m.text)).toEqual(["must stay held"]);
+      expect(t.claude.drivers.flatMap((d) => d.sent)).toEqual(["hit limit"]);
+    }
+
+    // 4. Blocker 4: Failed native import falls back to archiveOnly move and succeeds.
+    {
+      const t = setupAccounts({ codex: true });
+      t.prefs.set("codex:cx1", { source: "subscription", model: "gpt", permissionMode: "read-only" });
+      await t.live.setFallbackChain("codex:cx1", true, [
+        { harness: "claude", source: t.accX, model: "sonnet", permissionMode: "plan" },
+      ]);
+      const calls: boolean[] = [];
+      t.live.fallbackMover = async (_id, _h, source, _opts, extra) => {
+        calls.push(!!extra?.archiveOnly);
+        if (!extra?.archiveOnly) {
+          t.claude.addStored("nat-bad", []);
+          t.prefs.set("claude:nat-bad", { source, projectPath: "/p", carrying: true });
+          return { sessionId: "claude:nat-bad", after: "a1", native: true };
+        }
+        t.claude.addStored("arch-ok", []);
+        t.prefs.set("claude:arch-ok", { source, projectPath: "/p", carrying: true });
+        return { sessionId: "claude:arch-ok", history: "/tmp/history.md" };
+      };
+      let firstAttempt = true;
+      t.claude.onStart = (opts) => {
+        if (firstAttempt && opts.credential?.source === t.accX) {
+          firstAttempt = false;
+          throw new Error("imported rollout corrupt");
+        }
+      };
+      t.codex!.script = () => [(s) => at(s), limit()];
+      t.claude.script = () => [reply];
+      await t.live.send("codex:cx1", "move me");
+      await waitUntil(() => t.prefs.get("codex:cx1").movedTo === "claude:arch-ok");
+      expect(calls).toEqual([false, true]);
+    }
+
+    // 5. Blocker 5 (Q1): scheduled message coming due mid-hop waits unheld and drains after commit.
+    {
+      let now = 100_000_000;
+      let releaseStart!: () => void;
+      const startGate = new Promise<void>((r) => (releaseStart = r));
+      let secondStarted!: () => void;
+      const onSecond = new Promise<void>((r) => (secondStarted = r));
+      const t = setupAccounts({ now: () => now });
+      t.prefs.set("claude:one", { source: "subscription", model: "sonnet", permissionMode: "plan" });
+      await t.live.setFallbackChain("claude:one", true, [
+        { harness: "claude", source: t.accX, model: "sonnet", permissionMode: "plan" },
+      ]);
+      t.claude.onStart = async (opts) => {
+        if (opts.credential?.source === t.accX) {
+          secondStarted();
+          await startGate;
+        }
+      };
+      t.claude.script = () =>
+        t.claude.drivers.at(-1)!.opts.credential?.source === t.accX ? [reply] : [(s) => at(s), limit()];
+      await t.live.queue.add("claude:one", "scheduled mid-hop", [], { at: now + 60_000 });
+      await t.live.send("claude:one", "trigger");
+      await onSecond;
+      // Advance time past the scheduled message while hop is active.
+      now += 120_000;
+      t.live.queue.later("claude:one");
+      await Bun.sleep(80);
+      const s = await t.core.open("claude:one");
+      expect(s.state.queue).toHaveLength(1);
+      expect(s.state.queue[0]!.held).toBeUndefined();
+      expect(s.state.queueHeldBy).toBeUndefined();
+      releaseStart();
+      await waitUntil(() => (t.claude.drivers.find((d) => d.opts.credential?.source === t.accX)?.sent.length ?? 0) >= 2);
+      expect(t.claude.drivers.find((d) => d.opts.credential?.source === t.accX)!.sent).toEqual(["trigger", "scheduled mid-hop"]);
+    }
+
+    // 6. Blocker 5 (Q1' + Round 14 note 3): during handOver, drain doesn't claim work on original, and queue.add on successor waits for handoffGate so moved items stay ahead.
+    {
+      const t = setupAccounts({ codex: true });
+      t.credentials.set("openai", `fake-openai-${crypto.randomUUID()}`);
+      t.prefs.set("codex:cx1", { source: "subscription", model: "gpt", permissionMode: "read-only" });
+      await t.live.setFallbackChain("codex:cx1", true, [
+        { harness: "codex", source: "openai", model: "gpt", permissionMode: "read-only" },
+      ]);
+      t.live.carrier = async (_from, source) => {
+        t.codex!.addStored("c-gate", []);
+        t.prefs.set("codex:c-gate", { carrying: true, projectPath: "/p", source });
+        return "codex:c-gate";
+      };
+      // Hook handOver to pause mid-handoff so we can test drain on original + queue.add on successor!
+      const origHandOver = t.live.queue.handOver.bind(t.live.queue);
+      let enteredHandOver!: () => void;
+      const onHandOver = new Promise<void>((r) => (enteredHandOver = r));
+      let finishHandOver!: () => void;
+      const handOverGate = new Promise<void>((r) => (finishHandOver = r));
+      t.live.queue.handOver = async (fromId, toId) => {
+        enteredHandOver();
+        await handOverGate;
+        return origHandOver(fromId, toId);
+      };
+      t.codex!.script = () => {
+        const src = t.codex!.drivers.at(-1)!.opts.credential?.source;
+        if (src === "openai") return [reply];
+        return [(s) => at(s), limit()];
+      };
+      await t.live.queue.add("codex:cx1", "moved-first", []);
+      await t.live.send("codex:cx1", "start");
+      await onHandOver;
+      // While handoffGate is active during handOver:
+      // (a) A drain waking on original must NOT claim work (throws QueueDeferred / paused).
+      await expect(t.live.send("codex:cx1", "moved-first", [], { queued: true })).rejects.toBeInstanceOf(QueueDeferred);
+      // (b) queue.add on successor waits until handOver finishes, so moved-first stays ahead of added-second.
+      const addPromise = t.live.queue.add("codex:c-gate", "added-second", []);
+      finishHandOver();
+      await addPromise;
+      await waitUntil(() => (t.codex!.drivers.find((d) => d.opts.credential?.source === "openai")?.sent.length ?? 0) >= 3);
+      const openaiDriver = t.codex!.drivers.find((d) => d.opts.credential?.source === "openai")!;
+      expect(openaiDriver.sent).toEqual(["start", "moved-first", "added-second"]);
+    }
+  });
 });

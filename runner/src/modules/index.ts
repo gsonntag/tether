@@ -73,8 +73,8 @@ export interface SessionActions {
   /** a session whose store exists (a harness took a history): its settings, and it starts now, so its source is confirmed and shown before anything is typed. `from`: it's for that session's source change, unlisted, and a failed start throws */
   adopt(harness: HarnessId, nativeId: string, projectPath: string, opts: StartOpts, source: BillingSource, from?: string, extra?: AdoptExtra): Promise<string>;
   /** what makes the thread a session's source change goes to (Mover.carry) */
-  carrier(make: (id: string, source: BillingSource, model?: string, settings?: StartOpts) => Promise<string>): void;
-  fallbackMover?(move: (id: string, harness: HarnessId, source: BillingSource, opts: StartOpts) => Promise<{ sessionId: string; history?: string; after?: string }>): void;
+  carrier(make: (id: string, source: BillingSource, model?: string, settings?: StartOpts, extra?: { provisional?: boolean }) => Promise<string>): void;
+  fallbackMover?(move: (id: string, harness: HarnessId, source: BillingSource, opts: StartOpts, extra?: { archiveOnly?: boolean }) => Promise<{ sessionId: string; history?: string; after?: string; native?: boolean }>): void;
   fallbackArchiver?(write: (from: string, to: string, after?: string) => Promise<string>): void;
   /** a fork of a session (SPEC §16): a new stored session with its conversation, through `messageId` when given. Its id */
   fork(id: string, o?: ForkOptions): Promise<string>;

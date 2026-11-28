@@ -242,7 +242,7 @@ export class Mover {
    * and the same settings, confirmed and unlisted. Native import or nothing: the file route is a
    * turn on the new source that the person didn't ask for.
    */
-  async carry(id: string, source: BillingSource, picked?: string, settings?: StartOpts): Promise<string> {
+  async carry(id: string, source: BillingSource, picked?: string, settings?: StartOpts, extra?: { provisional?: boolean }): Promise<string> {
     const { look, adapter } = await this.source(id);
     // What's waiting follows the session (live.ts send), so it's no reason to refuse.
     const why = await this.blocked(adapter, { ...look, state: { ...look.state, queue: [] } });
@@ -257,7 +257,7 @@ export class Mover {
       const sourceModel = hasSourceModels(source) ? look.state.nextDeployment : undefined;
       const pin = sourceModel ? { sourceModel, model: sourceModel } : model && model !== "default" ? { model } : {};
       const opts: StartOpts = { ...pin, ...(effort ? { effort } : {}), permissionMode: moveMode(adapter, permissionMode, adapter), ...settings };
-      const moved = await this.native(adapter, portable, opts, await this.background(adapter, look), source, id);
+      const moved = await this.native(adapter, portable, opts, await this.background(adapter, look), source, id, extra?.provisional ? { stored: true } : undefined);
       const note = contextNote(moved.kept, moved.total);
       if (note) await this.ctx.sessions.notice(moved.sessionId, { ...notice(`n-carried-${moved.sessionId}`, note, id), link: undefined }, moved.after ? { after: moved.after } : {});
       this.ctx.log(`${id} goes on as ${moved.sessionId} on ${source}: ${moved.kept} of ${moved.total} messages in context`);
@@ -291,7 +291,7 @@ export class Mover {
     return made.sessionId;
   }
 
-  async fallbackHop(id: string, to: HarnessId, source: BillingSource, opts: StartOpts) {
+  async fallbackHop(id: string, to: HarnessId, source: BillingSource, opts: StartOpts, extra?: { archiveOnly?: boolean }) {
     const { look, adapter } = await this.source(id);
     const target = this.adapter(to);
     if (!adapter.capabilities.move || !target.capabilities.move || !target.move) throw new Error("This harness cannot transfer a session.");
@@ -304,8 +304,8 @@ export class Mover {
     this.moving.add(id);
     try {
       const portable = await exportSession(adapter, look);
-      if (target.capabilities.move.import === "native") {
-        try { return await this.native(target, portable, opts, false, source, id, { stored: true }, false); }
+      if (!extra?.archiveOnly && target.capabilities.move.import === "native") {
+        try { return { ...(await this.native(target, portable, opts, false, source, id, { stored: true }, false)), native: true }; }
         catch (e) { this.ctx.log(`Fallback native import into ${to} failed: ${(e as Error).message}`); }
       }
       const native = await this.ctx.sessions.newId(to, portable.from.projectPath, opts, source);
@@ -383,9 +383,9 @@ export const moveModule: Module = {
   name: "move",
   start(ctx) {
     const mover = new Mover(ctx);
-    ctx.sessions.fallbackMover?.((id, harness, source, opts) => mover.fallbackHop(id, harness, source, opts));
+    ctx.sessions.fallbackMover?.((id, harness, source, opts, extra) => mover.fallbackHop(id, harness, source, opts, extra));
     ctx.sessions.fallbackArchiver?.((from, to, after) => mover.fallbackArchive(from, to, after));
-    ctx.sessions.carrier((id, source, model, settings) => mover.carry(id, source, model, settings));
+    ctx.sessions.carrier((id, source, model, settings, extra) => mover.carry(id, source, model, settings, extra));
     ctx.ops.register("moveOptions", (a) => mover.options(String(a.sessionId ?? "")));
     ctx.ops.register("moveSession", (a) => mover.move(String(a.sessionId ?? ""), String(a.harness ?? ""), { ...(typeof a.model === "string" && a.model ? { model: a.model } : {}), ...(typeof a.effort === "string" && a.effort ? { effort: a.effort } : {}), source: a.source }));
   },
