@@ -709,3 +709,103 @@ Steps that can't run right now can still be saved.
   - a chain edit between enqueue and answer: same;
   - permission lowered between enqueue and answer: discard and back off;
   - ordinary manual carry still completes, with no regression.
+
+## Fixes after Gemini review (round 7). These override anything earlier that conflicts.
+
+Gemini reviewed the plan before rounds 2-6 landed. Its R1 rollback, R3 staleness, R4 Save-blocking and R2 move/return findings are already resolved by R1‴/R1⁗/R6, R3′/R3″, R4′ and R1⁗ respectively. The items below are new.
+
+**G1. B4 is withdrawn.**
+- Keep today's confirmation check, `s.state.billing?.label === next.label` (`live.ts:1664`), and strengthen it only with `&& s.state.billing?.source === next.source`.
+- `billing.label(asked)` sets `source` only for `account:*` (`claude/index.ts:161`), so both sides are `undefined` for subscription, anthropic and bedrock.
+- Test: a same-source hop on anthropic leaves `nextBilling` undefined; the same for bedrock.
+
+**G2. `fallbackRun` is computed synchronously, and reasons are opaque.**
+- `computeFallbackRun(s)` lives in LiveControl and reads only synchronous, cached data:
+  - prefs and `s.state`;
+  - `planFor`;
+  - a **cached** catalog snapshot (`lastFallbackCatalog[sessionId]`), refreshed asynchronously after each `fallbackCatalog()` call and on credential or login changes;
+  - presence of credentials and accounts.
+- It is never called from `SessionCore.make` or the synchronous `keptPrefs`. LiveControl publishes it on open (an `opened` hook) and on successor handoff, after those finish.
+- **Expiry:** the runner arms one timer at the earliest future `retryAt` or reset (R3′). The web also treats `until <= now` as "ready" for display.
+- **Opaque reasons** in `LiveState`: the reason is an enum (`signedOut | unavailable | permission | limit | error`), never account names, emails or probe text. Owners map it to names on the web with `useAccountLabel`.
+- Remove every remaining mention of a web-side `fallbackPlan()`. PR 3 and PR 5 follow R3′/R3″ and G2 only.
+
+**G3. A failed provisional start is silent (amends R1‴).**
+- During `provisionalStart`, a typed pre-turn auth failure must **not**:
+  - emit "Couldn't start…" or the `send()` error notice;
+  - call `read.set(failure)` or `markSourceSwitchFailed`;
+  - set `s.state.error`;
+  - reach `status(idle)` / `turnEnded` (no "Failed" push, no held queue).
+- `startDriver` and `send` take a `provisional` flag that turns these into a returned typed error.
+- "Switched to…" / "Resending…" notices are emitted only at commit (already in R1′).
+- Test: no push, no inbox failure, no held queue and no notice, and state is unchanged.
+
+**G4. One identity-tagged Claude usage store (concrete form of R5′).**
+- Replace `claude-windows.json`'s untagged plan (`claude/context.ts:28,145-150`, written from `stream.ts:216`) with `{ [source]: { identity: { accountId, email, organization }, plan } }` for the main login and every extra account.
+- `planUsage` / `keptPlan` (`claude/index.ts:199`) return the plan only when the identity matches the source's current confirmed identity. The refresh after a login change (in the runner's `harnessLoginChanged` path) therefore can't revive the old account's plan.
+- All entries are loaded into `SessionCore.plans` at startup, so B1 works before any Claude session is opened.
+- Untagged legacy data is ignored for skips.
+- `claudeLoggedIn` (`claude/credentials.ts:168-176`) caches the parsed status, including `accountId`, not just a boolean. `sameAccountAs` uses it.
+- Test: log out of the main login, sign in to another account, refresh, and restart: the old limit is not applied.
+
+**G5. Bedrock (replaces critic point 5 and B9's model filter).**
+- Bedrock steps use `DeploymentPicker`, as `NewSessionDialog.tsx:363` and `MoveDialog.tsx:143` do.
+- For `source === "bedrock"`, `fallbackStepProblem` checks `!!resolveSourceModel(source.deployments ?? [], step.model)`. It does not require a match in `catalog.models.models`, and accepts both Bedrock IDs and aliases (`alias` is optional, `shared/credentials.ts:16`).
+- "Start from this session" on a live Bedrock session (where `s.state.model` is the Bedrock ID) therefore validates.
+- **Older runner:** if `fallbackSetup` comes from a runner without this check, the web keeps its Bedrock step model as a harness alias when one resolves. Otherwise it warns "Update the runner to use this Bedrock model".
+- Tests:
+  - an alias-less Bedrock model in the editor;
+  - "Start from this session" on Bedrock.
+
+**G6. Save rules (final).**
+- Save is **never** blocked when `enabled` is false.
+- When enabled, Save is blocked only for an empty chain, an exact duplicate (compared by effective values: an empty effort or mode equals the step's resolved default), or a missing model on an available source.
+- Unavailable sources stay saveable (R4′).
+- `SourcePicker` renders the explicit unavailable option even when `options.length === 0` (`SourcePicker.tsx:8`).
+- "Save as preset" follows the same rules.
+
+**G7. Chip CSS.**
+- Change `app.css:2639` to `.t-chips .t-chip.t-next-api`, so it matches inside `.t-chip-options`.
+- `.t-fallback-chip` keeps `cursor: pointer` even when it has `.t-chip-info`.
+
+**G8. Corrected label inventory (PR 2).**
+- `MoveDialog.tsx:142` passes `accountLabels`. `:174` is the legacy path and also gets them.
+- `BillingChip.tsx:42,47,48,70` (chip body, title, aria-label) and the `CURRENT_SOURCE` entry (`sourceMenu.ts:32`) use account labels.
+- `HarnessLogin.tsx` status span leaves out `displayName`, which `:171` already shows.
+- The `SessionHeader` model menu string is at `:166`.
+- Add a shared `sourceLabel(harness, source)` in `shared/credentials.ts` for runner-style labels without `fallbackSetup`, used by the chip and the viewer panel.
+- `useAccountLabel` gets a module-level cache keyed by runner and harness, like `useSources`, so `SessionHeader` and `BillingChip` don't each spawn `claude auth status`.
+- The dialog calls it for every harness used in the chain, not only Claude.
+- Copy uses Tether's mode labels (`shared/labels.ts:41`, "Ask first").
+
+**G9. `accountDisplayLabel` details.**
+- When the name already came from the organization, `detail` leaves the org out.
+- `normalizedOrganization` must handle an undefined email.
+- Plan names are shown as given, not title-cased.
+- Name collisions are resolved in a list-level pass in `useAccountLabel`.
+- The copy moved to `shared/` must stay self-contained, because `claude/credentials.ts:202` embeds `normalizedOrganization.toString()` into the launcher script.
+- `harnessLogin.ts:212` compares organizations through `normalizedOrganization`.
+
+**G10. Runner edge cases folded into PR 1.**
+- **B5 / handoff wait:**
+  - `waitForFallbackHandoff` also waits on `sourceSwitchBlocker(s.state)` (`shared/sourceSwitch.ts:7-16`) and ignores queue entries added by a waited-on `!` shell (`shellRuns.ts:454`);
+  - Stop during a returning wait (`live.ts:398`) cancels the user's send too, instead of falling through to the old source;
+  - the early return at `:2108` calls `waiting()` the way `:2060,2083` do.
+- **Notices:** `returnToFallback` and `fallbackExhausted` pass `step.harness`, not `harness`, to `labelOf` (`live.ts:2115,1969`).
+- **Returning to an unavailable step:** it gets a `retryAt` backoff even when `returning` is true (`live.ts:2087`), so probes don't run on every message.
+- **B2 shared backoff:**
+  - match sibling steps against the current (harness, source, model) even when `start === -1`;
+  - merge `{ ...progress.steps[i], retryAt }`.
+- **"Unknown" probe** (`harnessLogin.ts:60,73`): go ahead and start (the provisional start then confirms or fails silently per G3). Show "unknown", never "signed out".
+- **B6 notices:** update the `fallbackSwitch.test.ts:78,104` assertions. When `start === -1`, the copy is "Hit its limit. Switched to step M · …".
+- **A manual billing-chip switch** while `fallbackChain.active` is set clears `active`. The next message then doesn't "return" over your pick.
+- **"Start from this session"** with an unset or `"default"` model uses the source's first valid model.
+
+**G11. PR bookkeeping.**
+- PR 1 touches `shared/` too (`fallbackChain.ts`, `credentials.ts`). Drop "Runner only".
+- Probe state (`HarnessAccount.probe`) goes in PR 2. On older runners, `available:false` with no `probe` reads as "Sign-in required", never "signed out".
+- PR 5 depends on PRs 2, 3 and 4, and reuses PR 4's step-card rendering.
+- **Older runners:**
+  - no `FallbackSetup.current` → hide "Start from this session";
+  - no `fallbackRun` → chip and viewer fall back to `state.fallbackChain` and `fallbackWaiting`.
+- **Tests:** every test Gemini listed under "Missing tests" is added to the relevant PR.
