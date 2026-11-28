@@ -444,3 +444,72 @@ Steps that can't run right now can still be saved.
 3. Wait up to 30 minutes with a visible "Waiting…" state. Stop is the way out.
 4. Yes: "Use for this session" starts off when nothing is saved.
 5. No change to who can run the preset ops.
+
+## Fixes after outside review (GPT-6.2 Sol). Where this section disagrees with anything above, this section wins.
+
+**R1. Failed account start (replaces B8's "treat a failed account start as a failed step").**
+- The hop sets `source` and `fallbackChain.active` before it resends (`live.ts:1678`).
+- `send()` releases the fallback reservation before startup (`live.ts:400,450`).
+- So a plain catch-and-continue would carry on with the wrong source, chain and reservation.
+- Instead:
+  - check the account's sign-in (`confirmClaudeBilling` / status probe) **before** committing the hop;
+  - if the start still fails with a typed auth or pre-turn error, restore the previous `source`, `active` and reservation, and only then move on;
+  - resend only if the turn never reached the harness;
+  - Stop, shutdown or a chain edit during the probe still cancel the hop.
+- Tests:
+  - Stop during the probe;
+  - a chain edit during the probe;
+  - an auth failure after commit restores the previous state.
+
+**R2. Permission race and cancellation (refines B10 and critic point 16).**
+- The guard at `live.ts:1627` returns false for Stop, shutdown, a replaced chain **and** permission rejection.
+- Split them:
+  - cancellation ends the hop with no backoff;
+  - only a permission rejection counts as a step problem with backoff.
+- Before pinning the identical-step skip (`live.ts:2102`) in tests, fix it to compare `step.harness` too. Today a step on another harness with the same source and model ID is skipped.
+
+**R3. Who decides "Now" and "Next" (replaces the web-side `fallbackPlan()` prediction in PR 3).**
+- `fallbackOrder` (`shared/fallbackChain.ts:69`) knows only the index and the backoff.
+- The runner also:
+  - derives the starting step when `active` is absent (`live.ts:2037`);
+  - checks availability, permissions, usage and whether a step matches the current one (`live.ts:2086`).
+- Viewers have no catalog.
+- So `fallbackRun` is **computed on the runner** and published in live state:
+  - the current step;
+  - the next eligible candidate;
+  - per-step state (ready, cooling down until T, can't run + reason).
+- The web only renders it.
+- Copy says "Next if this hits a limit: …" (a candidate), never a promise.
+- The return-to-earlier-step line appears only when the runner reports that every guard passes: idle status, no `nextSource`, not cancelled, no deferred "continue" (`live.ts:393,1952`).
+- `fallbackPlan()` becomes runner-internal with pinning tests.
+
+**R4. Removed or unavailable source in the editor.**
+- `SourcePicker` shows `options[0]` when the saved value is missing (`SourcePicker.tsx:7`), so a broken step can look fixed.
+- Add an explicit unavailable option that renders the saved value with its missing-source label (see the Label design table).
+- Keep the draft's value until the user deliberately picks a replacement.
+- Save stays blocked while the step is broken.
+- Add a test for this.
+
+**R5. Cached Claude usage across identity changes (refines B1 and B7).**
+- The main login's plan is cached by harness (`sessions.ts:504,523`).
+- After switching the main login to another identity, a stale "full until T" could wrongly skip the new login.
+- Invalidate the cached plan when the identity (accountId/email) behind a source changes.
+- Persist the cache together with that identity.
+- Apply a known-full window across two source IDs only when their identities match.
+
+**Non-blocking, also adopt:**
+- **Probe state is not sign-out.**
+  - `listHarnessAccounts` returns the stored identity with `signedIn` even when the probe fails, and `available:false` also covers "unknown" (`harnessLogin.ts:219`, `accountLabel.ts:31`).
+  - Keep the stored name, and expose the probe state separately: signed in / signed out / unknown.
+  - Say "signed out" only on a confirmed sign-out.
+  - When two accounts end up with the same name and detail, add the email's local part, or the short id as a last resort.
+- **B1-B2 reset rules.**
+  - Keep the existing `exhausted || percent >= 100` check (`live.ts:2093,2184`).
+  - Use the latest reset among the full windows.
+  - Persist the cause of a backoff (`limit` / `limit-unknown-reset` / `error`), so the UI can tell a limit apart from a short-lived failure.
+- **Older runners.**
+  - PR 4's web code must handle `FallbackSetup.current` and `fallbackRun` being absent: show cards with no status and no "Now" card.
+  - Add a web test for this.
+- **More tests:**
+  - the only higher-priority account is unavailable when it's time to go back;
+  - phone keyboard and focus during reorder and in the preset dialogs.
