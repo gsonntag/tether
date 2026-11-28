@@ -21,6 +21,7 @@ import { ShellCard, ShellSent } from "./ShellCard";
 import { ToolCard } from "./ToolCard";
 import { openSession } from "../route";
 import { useForking } from "../fork";
+import { useStore } from "../store";
 import { resetTime } from "../../../shared/labels";
 import { localizeUsageLimitRetry } from "../usageLimitTime";
 
@@ -107,11 +108,14 @@ function ForkHere({ onFork }: { onFork: () => void }) {
 
 export const Message = memo(function Message({ msg, failed, forkable }: { msg: Msg; failed?: boolean; forkable?: boolean }) {
   const { projectPath, runnerId, sessionId, fork } = useSessionCtx();
+  const runnerTimeZone = useStore((s) => s.runners.find((r) => r.id === runnerId)?.timeZone);
   const harness = parseSessionId(sessionId)?.harness;
   const loginLink = harness && <HarnessLoginLink runnerId={runnerId} harness={harness} />;
   const { full, loading, error, load } = useFullParts(msg.id, msg.parts);
   if (msg.role === "notice") {
-    const text = msg.parts.map((p) => (p.type === "text" ? (msg.level === "error" ? localizeUsageLimitRetry(p.text, undefined, msg.ts) : p.text) : "")).join("\n");
+    const rawText = msg.parts.map((p) => (p.type === "text" ? p.text : "")).join("\n");
+    const text = msg.parts.map((p) => (p.type === "text" ? localizeUsageLimitRetry(p.text, undefined, msg.ts, runnerTimeZone) : "")).join("\n");
+    const alreadyShowsReset = /\bresets \d{4}-\d{2}-\d{2}T/.test(rawText);
     return (
       <div className={`t-msg notice ${msg.level ?? "info"}`} role={msg.level === "error" ? "alert" : undefined}>
         <Icon icon={msg.level && msg.level !== "info" ? ExclamationTriangleIcon : InformationCircleIcon} size="sm" />
@@ -125,7 +129,7 @@ export const Message = memo(function Message({ msg, failed, forkable }: { msg: M
             text
           )}
           {msg.level === "error" && needsHarnessLogin(text) && <>{" "}{loginLink}</>}
-          {msg.resetsAt && ` Plan resets ${resetTime(msg.resetsAt)}.`}
+          {msg.resetsAt && !alreadyShowsReset && ` Plan resets ${resetTime(msg.resetsAt)}.`}
           {msg.scheduledFor && ` It was for ${whenLabel(msg.scheduledFor, msg.ts).replace(/^at /, "")}; sent at ${clock(msg.ts)}.`}
           {msg.link && (
             <>
@@ -143,7 +147,7 @@ export const Message = memo(function Message({ msg, failed, forkable }: { msg: M
   const parts = msg.parts.map((p, i) => {
     const part = full[i] ?? p;
     return msg.role === "assistant" && part.type === "text"
-      ? { ...part, text: localizeUsageLimitRetry(part.text, undefined, msg.ts) }
+      ? { ...part, text: localizeUsageLimitRetry(part.text, undefined, msg.ts, runnerTimeZone) }
       : part;
   });
   for (let i = 0; i < omitted; i++) {
@@ -257,7 +261,7 @@ export const Message = memo(function Message({ msg, failed, forkable }: { msg: M
           <PartView key={i} rowKey={`${msg.id}:${i}`} part={p} streaming={!!msg.streaming && i === parts.length - 1} cut={cutFor(i)} root={projectPath} />
         ))}
         {missing.length > 0 && <CutNote loading={missing.some((i) => loading.includes(i))} error={error} onLoad={() => load(missing)} />}
-        {msg.error && <div className="t-msg-error">{localizeUsageLimitRetry(msg.error, undefined, msg.ts)}{needsHarnessLogin(msg.error) && <>{" "}{loginLink}</>}</div>}
+        {msg.error && <div className="t-msg-error">{localizeUsageLimitRetry(msg.error, undefined, msg.ts, runnerTimeZone)}{needsHarnessLogin(msg.error) && <>{" "}{loginLink}</>}</div>}
         {forkable && fork && (
           // A new session whose conversation ends here (SPEC §16); this one stays as it is.
           <ForkHere onFork={() => fork.from(msg.id)} />

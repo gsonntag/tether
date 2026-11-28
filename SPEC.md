@@ -1801,10 +1801,12 @@ Tether's dated table and the owner's agreement may differ. It still reads "est. 
 hosted tool fees and unknown pricing remain unknown, and a partial total is never complete. These
 estimates are not provider invoices.
 
-The usage-limit error's retry timestamp is interpreted as runner UTC and displayed in the
-browser's local timezone, including the date and timezone label. When the provider gives only a time (the retry is
-within a day), it means the next such UTC time after the message. Native error text stays unchanged
-in the store. Ordinary transcript dates and user messages are not rewritten.
+Usage-limit and plan-limit reset/retry timestamps (Codex's "try again at …", Claude Code's
+"resets … (TZ)", and Tether's fallback notices) are normalized from their explicit timezone or the
+runner's advertised IANA `timeZone` (defaulting to UTC for older runners) and displayed in the
+browser's local timezone, including the date and timezone label. When the provider omits the date or
+year, it is anchored to the next matching instant after the message. Native error text stays
+unchanged in the store. Ordinary transcript dates and user messages are not rewritten.
 
 ### Usage
 

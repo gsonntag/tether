@@ -65,7 +65,11 @@ const tokens = (n: number) => (n >= 999_500 ? `${+(n / 1_000_000).toFixed(1)}M` 
 export const contextPercent = (c: { used: number; total: number }) => `${Math.round((c.used / c.total) * 100)}%`;
 export const contextDetail = (c: { used: number; total: number }) => `${tokens(c.used)} of ${tokens(c.total)} context`;
 
-export const resetTime = (ms: number, week = true) => new Date(ms).toLocaleString(undefined, week ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" } : { hour: "numeric", minute: "2-digit" });
+export const resetTime = (ms: number, week = true, timeZone?: string) =>
+  new Date(ms).toLocaleString(undefined, {
+    ...(week ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" } : { hour: "numeric", minute: "2-digit" }),
+    ...(timeZone ? { timeZone } : {}),
+  });
 
 function poolShortName(p: PlanPool): string {
   const lower = (p.id || p.name).toLowerCase();

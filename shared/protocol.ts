@@ -104,6 +104,8 @@ export interface RunnerInfo {
   protocol: number;
   /** installed harnesses */
   harnesses: HarnessInfo[];
+  /** the runner's IANA time zone (e.g. "UTC", "America/Los_Angeles"); absent on older runners (assumed UTC) */
+  timeZone?: string;
   /** set by the server: when this connection said hello */
   connectedAt?: number;
   /** a runner from before the Home agent was removed: its Home agent's folder, whose chats browsers leave out of the lists. Remove once no runner sends it */

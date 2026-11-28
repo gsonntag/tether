@@ -43,3 +43,36 @@ test("an origin kind that only exists on Object.prototype isn't a messaging app"
   expect(out).not.toContain("via ");
   expect(out).not.toContain("undefined");
 });
+
+test("warning and info notices localize fallback UTC timestamps without duplicating legacy resets", () => {
+  const at = Date.UTC(2026, 10, 28, 10, 0);
+  const exhausted = html({
+    id: "n1",
+    role: "notice",
+    level: "warning",
+    ts: at,
+    parts: [{ type: "text", text: "Used every available source.\n1. Claude · subscription · opus — retry after 2026-11-28T14:00:00.000Z" }],
+  });
+  expect(exhausted).not.toContain("2026-11-28T14:00:00.000Z");
+  expect(exhausted).toContain("retry after ");
+
+  const legacyMoved = html({
+    id: "n2",
+    role: "notice",
+    level: "info",
+    ts: at,
+    resetsAt: Date.UTC(2026, 10, 28, 14, 0),
+    parts: [{ type: "text", text: "Moved to this Codex session · Claude plan hit a usage limit, resets 2026-11-28T14:00:00.000Z." }],
+  });
+  expect(legacyMoved).not.toContain("2026-11-28T14:00:00.000Z");
+  expect(legacyMoved).not.toContain("Plan resets");
+
+  const claudeLimit = html({
+    id: "n3",
+    role: "notice",
+    level: "error",
+    ts: Date.UTC(2026, 10, 1, 6, 0),
+    parts: [{ type: "text", text: "You've hit your session limit · resets 8:40am (UTC)" }],
+  });
+  expect(claudeLimit).not.toContain("(UTC)");
+});

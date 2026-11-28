@@ -77,6 +77,10 @@ describe("wire", () => {
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, archiveWorktree: "yes" } })) as any).runner.archiveWorktree).toBeUndefined();
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, canText: true } })) as any).runner.canText).toBe(true);
     expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, canText: 1 } })) as any).runner.canText).toBeUndefined();
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, timeZone: "UTC" } })) as any).runner.timeZone).toBe("UTC");
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, timeZone: "America/Los_Angeles" } })) as any).runner.timeZone).toBe("America/Los_Angeles");
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, timeZone: "Not/AZone" } })) as any).runner.timeZone).toBeUndefined();
+    expect((parseRunnerMessage(JSON.stringify({ t: "hello", runner: { ...runner, timeZone: 42 } })) as any).runner.timeZone).toBeUndefined();
     for (const bad of [{ id: "x" }, { ...runner, harnesses: "no" }, { ...runner, protocol: "1" }, { ...runner, hostname: 3 }, { ...runner, id: "" }, null])
       expect(parseRunnerMessage(JSON.stringify({ t: "hello", runner: bad }))).toBeNull();
   });

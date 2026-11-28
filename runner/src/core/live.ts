@@ -2018,9 +2018,8 @@ export class LiveControl {
     if (progress.steps[start] && mover.after) progress.steps[start]!.after = mover.after;
     this.core.o.prefs.set(s.id, { fallbackChain: { ...chain, active: index }, fallbackProgress: progress });
     const from = this.labelOf(s.summary.harness, this.sourceOf(s));
-    const when = resetsAt ? `, resets ${new Date(resetsAt).toISOString()}` : "";
     const link = (text: string, sessionId: string): Msg => ({ ...notice(text), link: { sessionId, label: "Open session" } });
-    s.apply({ type: "msg", msg: { ...link(`Moved to this ${HARNESS_LABELS[step.harness]} session · ${from} hit a usage limit${when}.`, next.id), ...(resetsAt ? { resetsAt } : {}) } });
+    s.apply({ type: "msg", msg: { ...link(`Moved to this ${HARNESS_LABELS[step.harness]} session · ${from} hit a usage limit.`, next.id), ...(resetsAt ? { resetsAt } : {}) } });
     next.apply({ type: "msg", msg: link(`Continued from this ${HARNESS_LABELS[s.summary.harness]} session.`, s.id) });
     await this.replaceWith(s, next);
     return { session: next, note: mover.history ? `Read the conversation and work history at ${mover.history}.` : undefined };
