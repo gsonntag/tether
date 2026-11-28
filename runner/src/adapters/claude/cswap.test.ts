@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { isAccountSource } from "../../../../shared/credentials";
 import { accountIdentity } from "../../accountIdentity";
 import { ClaudeAccounts } from "./accounts";
-import { CSWAP_RELOGIN, Cswap, cswapSource } from "./cswap";
+import { CSWAP_RELOGIN, Cswap, cswapBin, cswapSource } from "./cswap";
 import { fakeCswap } from "./cswapFixture";
 
 let prior: string | undefined;
@@ -144,5 +144,29 @@ test("Tether's account root must be a private folder, not a link, before cswap i
   const a = new ClaudeAccounts(join(fx.root, "linked"), { cswap: { bin: fx.bin, claude: "/bin/false" } });
   await a.refresh();
   expect(a.list()).toEqual([]);
+  expect(readFileSync(fx.log, "utf8")).not.toContain("run 2");
+});
+
+test("a forced discovery reads cswap after the call, not a run already in flight", async () => {
+  fx.write([{ number: 2, email: "a@example.test" }]);
+  const cswap = new Cswap({ stateDir: join(fx.root, "state"), bin: fx.bin, claude: "/bin/false" });
+  const early = cswap.refresh();
+  fx.write([{ number: 3, email: "a@example.test" }]);
+  const forced = await cswap.refresh(true);
+  await early;
+  expect(forced[0]?.configDir).toBe(fx.profile(3));
+});
+
+test("no_credentials is signed out; TETHER_CSWAP=0 turns discovery off; a bare claude name never runs the shim", async () => {
+  fx.write([{ number: 2, email: "none@example.test", usageStatus: "no_credentials" }]);
+  const a = accounts();
+  await a.refresh();
+  expect(a.cswap!.accounts()[0]?.problem).toBe(CSWAP_RELOGIN);
+  const prior = process.env.TETHER_CSWAP;
+  process.env.TETHER_CSWAP = "0";
+  try { expect(cswapBin()).toBeUndefined(); } finally { if (prior === undefined) delete process.env.TETHER_CSWAP; else process.env.TETHER_CSWAP = prior; }
+  fx.write([{ number: 2, email: "two@example.test" }]);
+  const bare = new Cswap({ stateDir: join(fx.root, "bare"), bin: fx.bin, claude: "no-such-claude-on-path" });
+  expect((await bare.refresh(true))[0]?.configDir).toBeUndefined();
   expect(readFileSync(fx.log, "utf8")).not.toContain("run 2");
 });

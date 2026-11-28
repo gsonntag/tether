@@ -242,6 +242,8 @@ export class LiveControl {
 
   /** Reconcile before timers and queues resume. Uncertain dispatches require a person to continue. */
   async restoreRetries() {
+    // A retry's saved identity names its source: cswap's accounts must be discovered first.
+    await this.opts.claudeAccounts?.refresh();
     for (const id of this.core.o.prefs.retrying()) {
       const saved = this.core.o.prefs.get(id).retry;
       let s: Session | undefined;

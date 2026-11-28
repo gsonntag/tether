@@ -3,6 +3,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../config";
+import { ClaudeAccounts } from "../adapters/claude/accounts";
+import { fakeCswap } from "../adapters/claude/cswapFixture";
+import { CredentialStore } from "../credentials";
 import { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
 import { FakeAdapter, idle, say, toolCall } from "./fakeAdapter";
@@ -24,14 +27,14 @@ function prefsFile() {
   return file;
 }
 
-function setup(o: { prefsPath?: string; adapter?: FakeAdapter } = {}) {
+function setup(o: { prefsPath?: string; adapter?: FakeAdapter; extra?: ConstructorParameters<typeof LiveControl>[2] } = {}) {
   const adapter = o.adapter ?? new FakeAdapter();
   const path = o.prefsPath ?? prefsFile();
   const prefs = new Prefs(path);
   const bus = new EventBus<CoreEvents>();
   const core = new SessionCore({ adapters: [adapter], bus, send: () => true, epoch: crypto.randomUUID(), prefs, evictMs: 20, log: () => {} });
   const broker = new RequestBroker([], { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (l, c) => prefs.setRequests(l, c) });
-  const live = new LiveControl(core, broker, { idleMs: 60_000 });
+  const live = new LiveControl(core, broker, { idleMs: 60_000, ...o.extra });
   cleanups.push(async () => {
     await live.closeAll().catch(() => {});
     core.stop();
@@ -91,6 +94,36 @@ describe("automatic rate limit retry integration", () => {
     expect(restored.state.retry).toBeUndefined();
     expect(second.prefs.get(id).retry).toBeUndefined();
     expect(adapter.drivers).toHaveLength(0);
+  });
+
+  test("a cswap account's saved retry survives a restart before discovery finishes", async () => {
+    const fx = fakeCswap();
+    const prior = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = fx.shared;
+    cleanups.push(async () => { if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prior; });
+    fx.write([{ number: 2, email: "two@example.test" }]);
+    const state = mkdtempSync(join(tmpdir(), "tether-retry-cswap-"));
+    const extra = () => ({ credentials: new CredentialStore(join(state, "credentials.json")), claudeAccounts: new ClaudeAccounts(join(state, "claude-accounts"), { cswap: { bin: fx.bin, claude: "/bin/false" } }) });
+    const first = setup({ extra: extra() });
+    const id = "claude:cswap";
+    first.adapter.addStored("cswap", []);
+    await first.live.sourceForNew("claude", undefined);
+    const source = (first.live as any).opts.claudeAccounts.list()[0].source;
+    first.prefs.set(id, { source });
+    const retryAt = Date.now() + 60_000;
+    first.adapter.script = () => [limit(1, retryAt)];
+    await first.live.send(id, "wait for the plan");
+    const original = await first.core.open(id);
+    await until(() => !!original.state.retry);
+    await first.live.closeAll();
+    first.core.stop();
+
+    const adapter = new FakeAdapter();
+    adapter.addStored("cswap", []);
+    const second = setup({ prefsPath: first.prefsPath, adapter, extra: extra() });
+    await second.live.restoreRetries();
+    expect((await second.core.open(id)).state.retry).toMatchObject({ nextAt: retryAt });
+    expect(second.prefs.get(id).retry).toBeDefined();
   });
 
   test("the option is available before a new key session sends its first message", async () => {

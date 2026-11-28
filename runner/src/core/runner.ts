@@ -368,6 +368,7 @@ export function createRunner(o: RunnerOptions) {
           const s = await core.open(id);
           const adapter = core.adapter(s.summary.harness);
           if (!adapter.ask) throw new Error("This session's harness can't generate text.");
+          if (s.summary.harness === "claude") await claudeAccounts?.refresh();
           // The session's own source, as its next start would use it: a missing key stops here.
           const credential = live.credentialFor(s.summary.harness, live.sourceOf(s), live.deploymentOf(s));
           // On a key, what it cost goes in the session's API ledger with its turns'.

@@ -93,6 +93,8 @@ export class Cswap {
   /** Discovery, at most one at a time. No cswap, or output it can't read, is no accounts. */
   refresh(force = false): Promise<CswapAccount[]> {
     if (!force && this.cache && Date.now() - this.cache.at <= (this.o.ttlMs ?? 30_000)) return Promise.resolve(this.cache.accounts);
+    // A forced one must start after the call: one already running may predate a slot change.
+    if (force && this.pending) return this.pending.then(() => this.refresh(true));
     this.pending ??= this.discover().catch(() => [] as CswapAccount[]).then((accounts) => {
       this.cache = { at: Date.now(), accounts };
       return accounts;
@@ -165,8 +167,10 @@ export class Cswap {
    * (cswap's own `claude auth status` checks).
    */
   private async profile(bin: string, number: number): Promise<string | undefined> {
-    const claude = this.o.claude ?? (process.env.CLAUDE_BIN || Bun.which("claude"));
-    if (!claude) return;
+    // A path: a bare name would find the shim itself first on PATH.
+    const named = this.o.claude ?? (process.env.CLAUDE_BIN || "claude");
+    const claude = isAbsolute(named) ? named : Bun.which(named, { PATH: process.env.PATH ?? "" });
+    if (!claude || !isAbsolute(claude)) return;
     // Every level up from Tether's account root is checked: cswap resolves `claude` through this folder.
     const root = dirname(this.o.stateDir);
     mkdirSync(root, { recursive: true, mode: 0o700 });
