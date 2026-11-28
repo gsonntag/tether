@@ -7,7 +7,7 @@ import type { HarnessLoginFlow, HarnessLoginStatus } from "../../../shared/harne
 import { HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
 import { AcpClient } from "../adapters/acp/client";
 import { acpArgv, reader } from "../adapters/antigravity/store";
-import { claudeEnv, claudeSubscriptionStatus, clearClaudeLoginStatus } from "../adapters/claude/credentials";
+import { claudeEnv, claudeSubscriptionStatus, clearClaudeLoginStatus, normalizedOrganization } from "../adapters/claude/credentials";
 import { call as codexCall, connect as codexConnect } from "../adapters/codex/daemon";
 import { HARNESS_BINS } from "../adapters/detect";
 import { childEnv } from "../childEnv";
@@ -180,6 +180,16 @@ async function logout(harness: HarnessId) {
   }
 }
 
+export async function probeClaudeAccount(accounts: ClaudeAccounts, source: AccountSource): Promise<HarnessLoginStatus> {
+  const expected = accounts.read(source);
+  if (!expected) throw new Error("Unknown Claude account.");
+  const status = await loginStatus("claude", accounts.configDir(source));
+  return status.state === "signedIn" && (
+    status.accountId !== expected.accountId ||
+    normalizedOrganization(status.organization ?? "", status.email ?? "") !== normalizedOrganization(expected.organization, expected.email)
+  ) ? { state: "signedOut" } : status;
+}
+
 export function registerHarnessLogin(ops: OpRegistry, changed: (harness: HarnessId, source?: AccountSource) => void, prefs?: Pick<Prefs, "accountName" | "setAccountName">, accounts?: ClaudeAccounts, accountInUse?: (source: AccountSource) => boolean, releaseAccount?: (source: AccountSource) => Promise<void>) {
   const flows = new Map<string, Flow>();
   const busy = new Set<HarnessId>();
@@ -205,12 +215,9 @@ export function registerHarnessLogin(ops: OpRegistry, changed: (harness: Harness
     const displayName = prefs?.accountName(harness, status.accountId, source);
     return displayName ? { ...status, displayName } : status;
   };
-  const accountStatus = async (source: AccountSource): Promise<HarnessLoginStatus> => {
-    const expected = accounts?.read(source);
-    if (!expected) throw new Error("Unknown Claude account.");
-    const status = await loginStatus("claude", accounts!.configDir(source));
-    return status.state === "signedIn" && (status.accountId !== expected.accountId || status.organization !== expected.organization)
-      ? { state: "signedOut" } : status;
+  const accountStatus = (source: AccountSource): Promise<HarnessLoginStatus> => {
+    if (!accounts) throw new Error("Unknown Claude account.");
+    return probeClaudeAccount(accounts, source);
   };
   ops.register("harnessLoginStatus", async ({ harness }) => named(harness, await loginStatus(harness)));
   ops.register("listHarnessAccounts", async ({ harness }) => {

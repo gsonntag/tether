@@ -21,7 +21,8 @@ import { parseSessionId, sessionId } from "../../../shared/ids";
 import { mergePlan } from "../../../shared/labels";
 import type { HarnessId, LiveState, Msg, PlanUsage, ProjectInfo, Request, SessionEvent, SessionSnapshot, SessionSummary } from "../../../shared/transcript";
 import { AGENT_NAMES, HARNESS_LABELS, TRANSCRIPT_PAGE, UNKNOWN_BILLING } from "../../../shared/transcript";
-import type { Adapter, StartOpts } from "./adapter";
+import type { Adapter, PlanIdentity, StartOpts } from "./adapter";
+import { samePlanIdentity } from "../adapters/claude/context";
 import type { EventBus } from "./bus";
 import type { CoreEvents } from "./events";
 import type { Prefs } from "./prefs";
@@ -113,8 +114,8 @@ export function archiveCause(by: unknown): string {
 
 export class SessionCore {
   readonly sessions = new Map<string, Session>();
-  /** each harness's latest plan limits report: account-wide, so not any one session's */
-  private plans = new Map<string, PlanUsage>();
+  /** each harness/source's latest plan limits report, with optional confirmed identity (R5'/G4) */
+  private plans = new Map<string, { plan: PlanUsage; identity?: PlanIdentity }>();
   /** sessions at least one browser has subscribed to (since the last connect) */
   readonly watched = new Set<string>();
   readonly book: SummaryBook;
@@ -143,6 +144,15 @@ export class SessionCore {
     o.bus.on("disconnected", () => [...this.watched].forEach((id) => this.unwatch(id)));
     this.book.hidden = (id) => this.replaced(id);
     o.bus.on("connected", () => this.book.announce());
+    // Load persisted identity-tagged plan windows at startup so fallback checks work before any session opens (G4).
+    for (const a of o.adapters) {
+      const stored = a.storedPlans?.();
+      if (!stored) continue;
+      for (const [source, entry] of Object.entries(stored)) {
+        if (!entry?.identity || !entry?.plan) continue;
+        this.plans.set(this.planScope(a.id, source as BillingSource), { plan: entry.plan, identity: entry.identity });
+      }
+    }
   }
 
   adapter(harness: HarnessId): Adapter {
@@ -502,14 +512,41 @@ export class SessionCore {
   }
 
   planFor(harness: HarnessId, source?: BillingSource) {
+    return this.plans.get(this.planScope(harness, source))?.plan;
+  }
+
+  planEntryFor(harness: HarnessId, source?: BillingSource) {
     return this.plans.get(this.planScope(harness, source));
   }
 
-  /** The account's plan limits, the latest report, on all its sessions. */
-  notePlan(harness: HarnessId, report: PlanUsage, source?: BillingSource) {
+  allPlanEntries(harness: HarnessId): { source: BillingSource; plan: PlanUsage; identity?: PlanIdentity }[] {
+    const out: { source: BillingSource; plan: PlanUsage; identity?: PlanIdentity }[] = [];
+    const prefix = `${harness}:`;
+    for (const [scope, entry] of this.plans) {
+      if (scope === harness) out.push({ source: "subscription", ...entry });
+      else if (scope.startsWith(prefix)) out.push({ source: scope.slice(prefix.length) as BillingSource, ...entry });
+    }
+    return out;
+  }
+
+  clearPlan(harness: HarnessId, source?: BillingSource) {
     const scope = this.planScope(harness, source);
-    const plan = mergePlan(this.plans.get(scope), report);
-    this.plans.set(scope, plan);
+    this.plans.delete(scope);
+    for (const s of this.sessions.values()) {
+      if (s.summary.harness === harness && !s.summary.parentSessionId && this.planScope(harness, this.o.prefs.get(s.id).source) === scope) {
+        s.setState({ plan: undefined });
+      }
+    }
+  }
+
+  /** The account's plan limits, the latest report, on all its sessions. */
+  notePlan(harness: HarnessId, report: PlanUsage, source?: BillingSource, identity?: PlanIdentity) {
+    const scope = this.planScope(harness, source);
+    const existing = this.plans.get(scope);
+    const plan = identity && existing?.identity && !samePlanIdentity(existing.identity, identity)
+      ? report
+      : mergePlan(existing?.plan, report);
+    this.plans.set(scope, { plan, ...(identity ? { identity } : existing?.identity ? { identity: existing.identity } : {}) });
     for (const s of this.sessions.values()) {
       if (s.summary.harness === harness && !s.summary.parentSessionId && this.planScope(harness, this.o.prefs.get(s.id).source) === scope) s.setState({ plan });
     }
@@ -521,9 +558,16 @@ export class SessionCore {
 
   /** What the harness can say of its plan limits now, on all its sessions. */
   async refreshPlan(harness: HarnessId) {
-    const plan = await this.adapter(harness).planUsage?.().catch(() => undefined);
+    const a = this.adapter(harness);
+    if (a.planUsageFor) {
+      const entry = await a.planUsageFor("subscription").catch(() => undefined);
+      if (entry?.plan) this.notePlan(harness, entry.plan, "subscription", entry.identity);
+      else this.clearPlan(harness, "subscription");
+      return this.planFor(harness, "subscription");
+    }
+    const plan = await a.planUsage?.().catch(() => undefined);
     if (plan) this.notePlan(harness, plan);
-    return this.plans.get(harness);
+    return this.planFor(harness);
   }
 
   /** The context and billing as they're stored, when no driver reports them. Main sessions only. */

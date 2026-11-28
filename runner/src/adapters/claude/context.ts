@@ -7,10 +7,31 @@
 import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { BillingSource } from "../../../../shared/credentials";
 import { mergePlan, reportedAt } from "../../../../shared/labels";
 import { UNKNOWN_BILLING, type Billing, type ContextUse, type PlanUsage, type PlanWindow } from "../../../../shared/transcript";
 import { CONFIG_DIR } from "../../config";
+import type { PlanIdentity } from "../../core/adapter";
 import type { Entry } from "./jsonl";
+
+export interface IdentityTaggedPlan {
+  identity: PlanIdentity;
+  plan: PlanUsage;
+}
+
+/** Normalized org comparison (matches claude/credentials.ts). */
+function normOrg(name: string, email?: string) {
+  const normalized = name.replace(/[‘’]/g, "'").replace(/\s+/g, "");
+  return email && normalized.toLowerCase() === `${email.toLowerCase()}'sorganization` ? normalized.toLowerCase() : normalized;
+}
+
+export function samePlanIdentity(a: PlanIdentity | undefined, b: PlanIdentity | undefined): boolean {
+  if (!a || !b) return false;
+  if (a.email.toLowerCase() !== b.email.toLowerCase()) return false;
+  if (normOrg(a.organization, a.email) !== normOrg(b.organization, b.email)) return false;
+  if (a.accountId && b.accountId && a.accountId !== b.accountId) return false;
+  return true;
+}
 
 interface Windows {
   /** the last reported window of a model */
@@ -19,8 +40,10 @@ interface Windows {
   sessions: Record<string, { model: string; window: number; at: number }>;
   /** what each session drew from on its latest start; only the start says */
   billing?: Record<string, Billing & { at: number }>;
-  /** the plan limits last reported: a stored session has no other way to know them */
+  /** legacy untagged plan (ignored for fallback skip decisions) */
   plan?: PlanUsage;
+  /** per-source identity-tagged plan windows (main login and extra accounts, G4) */
+  plans?: Record<string, IdentityTaggedPlan>;
 }
 
 const MAX_SESSIONS = 2000;
@@ -141,13 +164,36 @@ export function keptStart(sessionId: string): (Billing & { at: number }) | undef
   return b && typeof b.at === "number" ? { kind: b.kind, label: b.label, at: b.at } : undefined;
 }
 
-/** The latest report, kept for stored sessions after a restart. */
-export function keepPlan(report: PlanUsage) {
+/** The latest report, kept for stored sessions and fallback usage checks after a restart (G4). */
+export function keepPlan(report: PlanUsage, source: BillingSource = "subscription", identity?: PlanIdentity) {
   const w = load();
-  w.plan = mergePlan(w.plan, reportedAt(report));
+  const stamped = reportedAt(report);
+  if (identity) {
+    w.plans ??= {};
+    const existing = w.plans[source];
+    w.plans[source] = existing && samePlanIdentity(existing.identity, identity)
+      ? { identity, plan: mergePlan(existing.plan, stamped) }
+      : { identity, plan: stamped };
+    if (source === "subscription") delete w.plan;
+  } else {
+    w.plan = mergePlan(w.plan, stamped);
+  }
   save();
 }
-export const keptPlan = () => load().plan;
+
+export function keptPlan(source: BillingSource = "subscription", expectedIdentity?: PlanIdentity): PlanUsage | undefined {
+  const w = load();
+  if (expectedIdentity) {
+    const entry = w.plans?.[source];
+    return entry && samePlanIdentity(entry.identity, expectedIdentity) ? entry.plan : undefined;
+  }
+  return w.plans?.[source]?.plan ?? (source === "subscription" ? w.plan : undefined);
+}
+
+/** All identity-tagged plan entries persisted on disk, for startup loading into SessionCore (G4). */
+export function keptPlanEntries(): Record<string, IdentityTaggedPlan> {
+  return { ...(load().plans ?? {}) };
+}
 
 const CATALOG_MS = 10 * 60_000;
 let catalog: { at: number; models: Record<string, number> } | undefined;

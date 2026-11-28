@@ -305,14 +305,14 @@ export class Mover {
     try {
       const portable = await exportSession(adapter, look);
       if (target.capabilities.move.import === "native") {
-        try { return await this.native(target, portable, opts, false, source, id, undefined, false); }
+        try { return await this.native(target, portable, opts, false, source, id, { stored: true }, false); }
         catch (e) { this.ctx.log(`Fallback native import into ${to} failed: ${(e as Error).message}`); }
       }
       const native = await this.ctx.sessions.newId(to, portable.from.projectPath, opts, source);
       const dir = movedDir(`${to}:${native}`, this.ctx.dataDir);
       try {
         const { file } = writeArchive(portable, dir, this.ctx.attachmentsDir, this.earlier(portable));
-        const sessionId = await this.ctx.sessions.adopt(to, native, portable.from.projectPath, opts, source, id, { fresh: true });
+        const sessionId = await this.ctx.sessions.adopt(to, native, portable.from.projectPath, opts, source, id, { fresh: true, stored: true });
         return { sessionId, history: file };
       } catch (e) {
         rmSync(dir, { recursive: true, force: true });

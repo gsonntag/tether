@@ -28,6 +28,8 @@ export interface StartOpts {
    * person's own settings allow. A harness whose read-only mode is enforced by itself needs nothing more.
    */
   readOnly?: boolean;
+  /** Provisional fallback start: adapter holds disk writes (billing/plans) until driver.commit() (O4). */
+  provisional?: boolean;
 }
 
 /**
@@ -46,6 +48,29 @@ export type RequestAsk = Omit<Request, "id" | "sessionId" | "openedAt" | "inputT
  * somewhere else (Codex's own TUI, SPEC §6): it closes as resolved elsewhere, not cancelled.
  */
 export const RESOLVED_ELSEWHERE = "resolved-elsewhere";
+
+/** Confirmed identity of the account that produced a usage window (R5'/G4/O3'). */
+export interface PlanIdentity {
+  accountId?: string;
+  email: string;
+  organization: string;
+}
+
+/** Thrown when a queued drain collides with an in-flight fallback hop or handoff gate (Q1'). */
+export class QueueDeferred extends Error {
+  constructor() {
+    super("Deferred until fallback hop finishes.");
+    this.name = "QueueDeferred";
+  }
+}
+
+/** Hooks passed into Driver.send for provisional fallback hops (R6.4). */
+export interface SendHooks {
+  /** Checked at the last moment before handing the turn to the harness (after auth confirmation). Returning false cancels without enqueueing. */
+  beforeEnqueue?: () => boolean | Promise<boolean>;
+  /** Called once the harness has accepted the turn (resending is no longer safe). */
+  onEnqueued?: () => void;
+}
 
 /** A send that Stop cancelled before it reached the harness: nothing went out. */
 export class SendCancelled extends Error {
@@ -84,7 +109,7 @@ export interface Sink {
    */
   request(r: RequestAsk, signal?: AbortSignal): Promise<Decision>;
   /** the harness reported the account's plan limits: partial, merged into what's known */
-  plan?(p: PlanUsage): void;
+  plan?(p: PlanUsage, identity?: PlanIdentity): void;
   /**
    * The turn failed on the harness's own signal that the plan is exhausted (SPEC §10), never on a
    * short rate limit or any other failure. `resetsAt` (ms) if the signal says.
@@ -109,6 +134,8 @@ export interface Sink {
 export interface Driver {
   /** Actual credential revision of the process, including a rejoined process on an older key. */
   readonly credentialRevision?: string;
+  /** Confirmed account identity of a subscription process, for identity-tagged usage windows. */
+  readonly accountIdentity?: PlanIdentity;
   readonly nativeId: string;
   /**
    * Starts a turn. `attachments` are files under the runner's attachments folder; the text already
@@ -116,7 +143,11 @@ export interface Driver {
    * it as images too.
    */
   /** `shown`: the session's settings as Tether shows them (a driver that pins them on the turn: pinsSettings) */
-  send(text: string, attachments?: Attachment[], shown?: StartOpts): Promise<void>;
+  send(text: string, attachments?: Attachment[], shown?: StartOpts, hooks?: SendHooks): Promise<void>;
+  /** Resolves once the started driver is ready to accept input (startup-ready commit for no-resend hops). */
+  ready?(): Promise<void>;
+  /** Flushes adapter-side writes held during a provisional start (O4). */
+  commit?(): void;
   /** the harness takes the shown settings with each turn (turn/start), so a turn Tether starts runs exactly them */
   readonly pinsSettings?: boolean;
   /** a message into the running turn (capabilities.canSteer) */
@@ -225,6 +256,8 @@ export interface AdapterBilling {
   label(source: BillingSource): Billing;
   /** the harness reports a subscription login. Read-only */
   loggedIn(): Promise<boolean>;
+  /** cached confirmed identity of the primary subscription login, when known (no extra spawn when cached) */
+  primaryIdentity?(): Promise<PlanIdentity | undefined>;
   /** what its own records say a session with nothing saved draws from */
   recorded?(nativeId: string, projectPath: string): BillingSource | undefined;
 }
@@ -287,6 +320,10 @@ export interface Adapter {
   storedBilling?(nativeId: string, projectPath: string): Promise<Billing>;
   /** The account's plan limits, as far as they're known without a turn (SPEC §5). Starts nothing. */
   planUsage?(): Promise<PlanUsage | undefined>;
+  /** Identity-tagged plan usage for a specific source (main login or extra account), read-only. */
+  planUsageFor?(source?: BillingSource): Promise<{ plan: PlanUsage; identity?: PlanIdentity } | undefined>;
+  /** All persisted identity-tagged plan windows to load at startup (G4). */
+  storedPlans?(): Record<string, { identity: PlanIdentity; plan: PlanUsage }>;
   /** Where the harness keeps its session logs, for Settings → Usage (`private`: a home only Tether's API-key threads use). Read-only. */
   usageStores?(): { dir: string; private?: boolean }[];
   /** What a stored session drew from on its latest start and when (ms), as Tether recorded it; undefined if it didn't. */

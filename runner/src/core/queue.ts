@@ -27,6 +27,7 @@ import { jsonBytes, MESSAGE_TEXT_MAX, QUEUE_BYTES_MAX, QUEUE_MAX, queuedBytes, s
 export const queueBytes = (q: QueuedMessage[]) => q.reduce((n, m) => n + queuedBytes(m), 0);
 import { AGENT_NAMES, type LiveState, type Msg, type QueuedMessage } from "../../../shared/transcript";
 import { badScheduleTime, isScheduled, nextScheduled, SCHEDULE_LATE_MAX_MS, SCHEDULE_LATE_NOTE_MS, scheduled, unscheduled } from "../../../shared/schedule";
+import { QueueDeferred } from "./adapter";
 import { Scheduler, Uptime } from "./scheduler";
 import type { Session } from "./session";
 import { sideCommandRefusal } from "../../../shared/sideChat";
@@ -43,6 +44,8 @@ export interface QueueHost {
   paused?(sessionId: string): boolean;
   /** a new worktree's setup runs (SPEC §4): nothing may go out yet */
   settingUp?(sessionId: string): boolean;
+  /** wait while a fallback handoff is transferring the queue so moved items keep order ahead of new ones (Round 14). */
+  handoffWait?(sessionId: string): Promise<void> | undefined;
 }
 
 export class MessageQueue {
@@ -78,9 +81,9 @@ export class MessageQueue {
     this.scheduler = new Scheduler({ now: () => core.now(), next: () => this.nextDue(), fire: () => this.due(), idle: () => this.idle() });
     this.uptime = new Uptime(() => core.now(), { get: () => core.o.prefs.aliveAt(), set: (t) => core.o.prefs.setAliveAt(t) });
     const bus = core.o.bus;
-    bus.on("turnEnded", ({ sessionId, error, stopped, recovering }) => {
+    bus.on("turnEnded", ({ sessionId, error, stopped, recovering, fallbackPending }) => {
       const s = core.sessions.get(sessionId);
-      if (!s || s.summary.parentSessionId || !s.state.queue.length || recovering) return;
+      if (!s || s.summary.parentSessionId || !s.state.queue.length || recovering || fallbackPending) return;
       // A failed turn holds what waits (scheduled ones due now too): the next message would most
       // likely fail the same way.
       if (error && !stopped) this.hold(s, "failed");
@@ -113,6 +116,8 @@ export class MessageQueue {
   // ---------------- ops ----------------
 
   async add(id: string, text: string, attachments: Attachment[], o: { shell?: QueuedMessage["shell"]; at?: number } = {}): Promise<{ id: string }> {
+    const wait = this.host.handoffWait?.(id);
+    if (wait) await wait;
     const s = await this.root(id);
     const later = o.at !== undefined;
     if (later) {
@@ -407,6 +412,7 @@ export class MessageQueue {
     if (s.state.mode === "terminal" || busy || s.sending || s.starting || this.host.waiting(id) || this.host.paused?.(id) || this.host.settingUp?.(id) || s.state.setup === "failed") return;
     const next = this.next(s);
     if (!next) return;
+    const idx = s.state.queue.indexOf(next);
     const rest = s.state.queue.filter((m) => m !== next);
     const timed = isScheduled(next);
     this.draining.add(id);
@@ -428,6 +434,20 @@ export class MessageQueue {
     } catch (e: any) {
       this.going.delete(id);
       const cancelled = this.cancelledGoing.delete(next!.id);
+      if (e instanceof QueueDeferred) {
+        const to = this.handed.get(id) ? this.core.sessions.get(this.handed.get(id)!) : undefined;
+        const home = to ?? s;
+        if (cancelled) {
+          this.persist(s);
+          this.left(s, next!, "cancelled");
+        } else {
+          const list = [...home.state.queue];
+          list.splice(home === s && idx >= 0 ? Math.min(idx, list.length) : 0, 0, next!);
+          this.save(home, list);
+        }
+        if (to) this.persist(s);
+        return;
+      }
       // Back at the front (unless you cancelled it meanwhile). Stopped while the harness started:
       // held, as after any Stop, unless you sent something since (Stop and send now): then it
       // follows that message. A turn that started meanwhile just means later; anything else holds
