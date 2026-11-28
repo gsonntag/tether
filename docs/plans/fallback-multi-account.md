@@ -628,3 +628,42 @@ Steps that can't run right now can still be saved.
 - A test drives send → turn end → pending source → cleared, and checks the flag at each step.
 
 **R5′ addendum:** the process identity used by R5′ comes from the driver's confirmed account info for **every** login, including the main `subscription` login, not only for extra accounts.
+
+## Fixes after re-review, round 4. One startup primitive for every hop.
+
+**R6. `provisionalStart(target, pending)` is the only way any hop starts a driver.** Same-session `setSource` hops, `moveFallback` and `returnToFallback` all use it.
+
+1. **Buffered sink.** The driver starts against a buffering event sink, not the session's live sink (`live.ts:1393-1411,2222-2255`). Nothing reaches the session's transcript, state or bus before commit. On commit the buffer is replayed in order into the live sink. On discard it is dropped.
+2. **Driver not installed until commit.** `s.driver` keeps pointing at the old driver (or none) until commit. The provisional driver lives on `pending.driver`.
+3. **Exclusive native session.** A lock keyed by the native session id (the thread/conversation id) is taken before startup and released on discard or commit. While it is held, the old driver must not write to the same native session. Same-session hops close the old driver before taking the lock, as today.
+4. **Enqueue gate inside the driver.**
+   - `d.send(..., { beforeEnqueue })` calls `beforeEnqueue()` at the last moment before handing the turn to the harness. For Claude, that is **after** its final auth check (`claude/driver.ts:271-276`).
+   - The callback re-checks: hop id still current, not `retrySuppressed`, not `stopping`, chain unchanged, and `fallbackModeAllowed`.
+   - If the callback returns false, the driver doesn't enqueue and the hop is discarded, with R2's split between cancellation and permission rejection.
+   - All three adapters implement the hook. Antigravity and Codex call it just before writing the prompt.
+5. **Commit.** On `enqueued`, or **startup ready** when there is nothing to resend:
+   - apply `pending` to state and prefs;
+   - install `pending.driver`;
+   - replay the buffer;
+   - release the lock;
+   - run `replaceWith` for move and return;
+   - then run any deferred turn-end handling (R1⁗).
+
+**R6a. `returnToFallback` (`live.ts:1882-1909,2111-2119`).**
+- The settings (model, effort, mode, deployment) and transcript changes it makes to the historical session are prepared on `pending`, never written before commit.
+- On abort, the historical session is left exactly as it was: prefs, `fresh` / `rebuilt` flags, transcript and state.
+- Returns with no resend use the startup-ready commit.
+- Tests:
+  - abort leaves the historical session byte-identical;
+  - a return with no resend commits on startup ready.
+
+**R6b. Codex source carry (`live.ts:404-405,1654-1662`, `codex/index.ts:59`).**
+- `pending` is built by the same start-planning code that `send()` uses today, including `nextSource` → `carry`. A same-harness Codex source change therefore still starts a **new thread** carrying the context, never the original native id.
+- The lock in R6.3 is then taken on the new thread id.
+- Test: a Codex subscription → Azure same-harness hop starts a new thread with carry, and the original thread is untouched on discard.
+
+**PR 1 scope** now centres on `provisionalStart`. Suggested commit order:
+1. the buffered sink and the driver `beforeEnqueue` / `enqueued` / startup-ready hooks in all adapters, with no behaviour change;
+2. same-session hops moved onto `provisionalStart`;
+3. `moveFallback` and `returnToFallback` moved onto it;
+4. account-specific rules (B1-B10, R5′).
