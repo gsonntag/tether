@@ -22,6 +22,7 @@ import { forgetRunner, useStore } from "../store";
 import { RunnerDot, runnerStatus } from "./RunnerStatus";
 import { useNow } from "./useNow";
 import { whenLabel } from "../schedule";
+import { localizeUsageLimitRetry } from "../usageLimitTime";
 import { watchingChip, watchingTitle } from "../watching";
 
 export function Home() {
@@ -105,7 +106,9 @@ function Inbox() {
                     {r.scheduledAt !== undefined && <span>· Scheduled {whenLabel(r.scheduledAt, now).replace(/^at /, "")}</span>}
                     {r.watching && r.status !== "running" && <span className="t-watching" title={watchingTitle(r.watching)}>· {watchingChip(r.watching, now)}</span>}
                   </span>
-                  {r.failure && (r.inbox === "failed" || login) && <span className="t-inbox-why">{r.failure}</span>}
+                  {r.failure && (r.inbox === "failed" || login) && (
+                    <span className="t-inbox-why">{localizeUsageLimitRetry(r.failure, undefined, r.updatedAt, runners.find((x) => x.id === r.runnerId)?.timeZone)}</span>
+                  )}
                 </button>
                 {login && <HarnessLoginLink runnerId={r.runnerId} harness={r.harness} />}
                 {(r.inbox === "failed" || r.inbox === "finished" || login) && (

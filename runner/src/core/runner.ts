@@ -12,6 +12,7 @@ import { CostLedger } from "../costs";
 import type { SessionCost } from "../../../shared/costs";
 import { testAzure } from "../adapters/codex/upstream";
 import { PROTOCOL_VERSION, type HarnessInfo, type RunnerBuild, type RunnerInfo } from "../../../shared/protocol";
+import { validTimeZone } from "../../../shared/usage";
 import { parseSessionId, sessionId } from "../../../shared/ids";
 import type { ForkedFrom } from "../../../shared/fork";
 import type { SessionPrefs } from "../config";
@@ -101,6 +102,7 @@ export function createRunner(o: RunnerOptions) {
     ...(currentBuild ? { build: currentBuild } : {}),
     protocol: PROTOCOL_VERSION,
     harnesses: await harnesses,
+    timeZone: validTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone),
     git: true,
     gitActions: true,
     files: true,

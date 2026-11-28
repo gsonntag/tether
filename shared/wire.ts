@@ -56,6 +56,15 @@ function parseRunnerBuild(v: unknown): RunnerBuild | undefined {
   return { commit: v.commit, date: v.date, ...(branch ? { branch } : {}), dirty: v.dirty, ...(behind !== undefined ? { behind } : {}) };
 }
 
+function parseTimeZone(v: unknown): string | undefined {
+  if (typeof v !== "string" || !v || v.length > 64) return undefined;
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: v }).resolvedOptions().timeZone;
+  } catch {
+    return undefined;
+  }
+}
+
 function parseRunnerInfo(v: unknown): Omit<RunnerInfo, "connectedAt"> | null {
   if (!isObj(v) || !isId(v.id) || typeof v.hostname !== "string" || typeof v.version !== "string" || !isNum(v.protocol) || !Array.isArray(v.harnesses)) return null;
   // Unknown harnesses (a newer runner) are left out rather than refusing the runner.
@@ -66,7 +75,8 @@ function parseRunnerInfo(v: unknown): Omit<RunnerInfo, "connectedAt"> | null {
   const shared = cleanGrants(v.shared);
   const textingHub = parseHubState(v.textingHub);
   const build = parseRunnerBuild(v.build);
-  return { id: v.id, name, hostname: v.hostname, version: v.version, protocol: v.protocol, harnesses, ...(homeFolder ? { homeFolder } : {}), ...(v.git === true ? { git: true } : {}), ...(v.gitActions === true ? { gitActions: true } : {}), ...(v.files === true ? { files: true } : {}), ...(v.pinning === true ? { pinning: true } : {}), ...(v.spawnedFamily === true ? { spawnedFamily: true } : {}), ...(v.existingWorktrees === true ? { existingWorktrees: true } : {}), ...(v.archiveWorktree === true ? { archiveWorktree: true } : {}), ...(v.canText === true ? { canText: true } : {}), ...(shared.length ? { shared } : {}), ...(textingHub ? { textingHub } : {}), ...(build ? { build } : {}) };
+  const timeZone = parseTimeZone(v.timeZone);
+  return { id: v.id, name, hostname: v.hostname, version: v.version, protocol: v.protocol, harnesses, ...(timeZone ? { timeZone } : {}), ...(homeFolder ? { homeFolder } : {}), ...(v.git === true ? { git: true } : {}), ...(v.gitActions === true ? { gitActions: true } : {}), ...(v.files === true ? { files: true } : {}), ...(v.pinning === true ? { pinning: true } : {}), ...(v.spawnedFamily === true ? { spawnedFamily: true } : {}), ...(v.existingWorktrees === true ? { existingWorktrees: true } : {}), ...(v.archiveWorktree === true ? { archiveWorktree: true } : {}), ...(v.canText === true ? { canText: true } : {}), ...(shared.length ? { shared } : {}), ...(textingHub ? { textingHub } : {}), ...(build ? { build } : {}) };
 }
 
 /** A runner frame, or null when it isn't one the server understands. Rebuilt like browser frames. */

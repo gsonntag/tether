@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { modelIdProblem, MODEL_ID_MAX, planLines, reportedAt, mergePlan, isApiBilling, contextDetail, contextPercent, planChip, usageChip, effortLabel, findModel, modelLabel, permissionModeLabel, prettyModel } from "./labels";
+import { modelIdProblem, MODEL_ID_MAX, planLines, reportedAt, mergePlan, isApiBilling, contextDetail, contextPercent, planChip, resetTime, usageChip, effortLabel, findModel, modelLabel, permissionModeLabel, prettyModel } from "./labels";
 
 test("model ids read as people say them", () => {
   expect(prettyModel("claude-opus-5-5")).toBe("Opus 5.5");
@@ -180,6 +180,15 @@ test("multi-pool plan lines and merging", () => {
   const replaced = mergePlan(plan, fresh);
   expect(replaced.pools?.length).toBe(1);
   expect(replaced.pools?.[0]?.id).toBe("other");
+});
+
+test("resetTime converts UTC epoch ms to the requested timezone", () => {
+  const ms = Date.UTC(2026, 10, 1, 2, 33); // 2026-11-01T02:33:00Z = Oct 31, 7:33 PM PDT
+  expect(resetTime(ms, true, "America/Los_Angeles")).toContain("31");
+  expect(resetTime(ms, true, "America/Los_Angeles")).toMatch(/7:33|19:33/);
+  expect(resetTime(ms, false, "America/Los_Angeles")).toMatch(/7:33|19:33/);
+  expect(resetTime(ms, true, "UTC")).toContain("1");
+  expect(resetTime(ms, false, "UTC")).toMatch(/2:33|02:33/);
 });
 
 test("a typed model or deployment name: trimmed, short, a model id's characters, no control characters", () => {
