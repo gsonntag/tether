@@ -693,3 +693,19 @@ Steps that can't run right now can still be saved.
 - Tests:
   - a Codex carry where the prompt is accepted and the turn then errors before answering: the original is kept and the successor discarded;
   - a Codex no-resend hop sets `nextSource` and creates no thread.
+
+## Fixes after re-review, round 6. Amends R6b′.
+
+**R6b″. Fallback carry stays cancellable until replacement.**
+- When `carry()` runs **as part of a fallback hop**, it is registered as the hop's provisional successor (R1⁗) from `carrier()` until `replaceWith()`, including the whole `answered()` wait. The R6.3′ reservation is held for that whole span.
+- **Stop** (`interrupt`, `live.ts:843-876`) or a **chain edit** (`setFallbackChain`, `:1780-1796`) during the wait:
+  - interrupts the successor's turn;
+  - closes and discards it with the existing catch-path cleanup (`:523-526`);
+  - throws `SendCancelled`, so there is no backoff.
+- **Just before `replaceWith()`** (`:531`), revalidate: hop id still current, not `retrySuppressed`, not `stopping`, chain unchanged, and `fallbackModeAllowed`. On failure, discard as above.
+- **Ordinary manual carry** (a user-picked source change, no hop) is unchanged: no hop registration and no extra revalidation beyond today's.
+- Tests:
+  - Stop between enqueue and answer: the successor is discarded and the original stays;
+  - a chain edit between enqueue and answer: same;
+  - permission lowered between enqueue and answer: discard and back off;
+  - ordinary manual carry still completes, with no regression.
