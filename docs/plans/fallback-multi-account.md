@@ -994,3 +994,33 @@ The checks on the serialized chain (non-empty, no exact duplicates) run **only w
 - The label table's "signed out" row for unconfirmed probes (replaced by the G10′ probe states).
 - R5′'s accountId matching (replaced by O3).
 - R6.3′'s "queue behind" (replaced by O1).
+
+## Round 12. These amend O1, O2, O3 and O5.
+
+**O1′. Queue-hold release order.**
+- Commit releases the hop **token** synchronously, as its first step (O1).
+- The hop-owned `queueHeldBy: "fallback"` hold is released **on the surviving session after `replaceWith` / `queue.handOver` finishes** (`live.ts:576`). For a same-session hop, that is the same session, right after commit.
+- Release clears only a hold this hop set. If the queue was held for another reason before the hop (`stopped`, `terminal`, …), that reason is kept.
+- On discard, the hold is released on the original after cleanup, also keeping any earlier reason.
+- Test: a cross-harness hop with a queued user message. It is sent on the successor exactly once, and the successor isn't left held.
+
+**O2′. One discard path, with restore inside it.**
+- Every way a hop can end without success (Stop, a chain edit, a permission rejection, an auth failure, any other failure, or carry unwinding from `answered()`) goes through a single `discardHop(s, hopId, outcome)`. It runs, in order:
+  1. close and discard the provisional driver or successor, dropping held adapter writes (O4), including writes from confirmations still in flight;
+  2. **restore** the hop-owned fields from the snapshot: `active`, `nextSource`, `nextFallbackSettings`, `nextModel`, `nextBilling` (state and prefs), `nextDeployment` and `sourceSwitchFailed`. Restore only fields whose current value still equals what the hop wrote. A chain edit or a manual change made meanwhile wins;
+  3. release the queue hold (O1′);
+  4. release the token.
+- Stop calls `discardHop` for the current token; it doesn't release the token itself.
+- **No-resend carry:** the snapshot lives until the deferred carry on the next message succeeds (it is then dropped) or fails (then `discardHop` runs). A new hop or a manual source change also drops it.
+
+**O3′. Identity: accept by email and org, tag with the ID, check the ID when both sides have one.**
+- **Live reports:** accept when lowercased email plus `normalizedOrganization` match the source's confirmed identity (O3). Then store the report tagged with that source's **confirmed auth-status `accountId`**, which the runner already has.
+- **Store reads, eviction and cross-source sharing:** require email and normalized org to match, **and** `accountId` to match whenever both sides have one. Two accounts with the same email and org name but different org IDs therefore never share windows.
+- Test: same email and org name with different `orgId` → no sharing, and no stale read after a switch.
+
+**O5′. Probe results are published.**
+- When a background probe settles (G10′) with a different result than before, it invalidates the raw catalog cache for that harness (G2′) and triggers a refresh plus a `fallbackRun` republish for every session whose chain uses that source.
+- Each probe carries the login/account generation it started under. A completion from an older generation (a login or account change happened since) is dropped.
+- Test: "unknown" → a background probe confirms the sign-out → the step becomes "Signed out" and isn't eligible, with no other event needed.
+
+**Clarification:** O5's "commit synchronously in the `enqueued` callback" applies to non-carry hops only. Fallback carry keeps its answer-gated commit (R6b′, R6b″): the replacement happens after `answered()` plus revalidation.
