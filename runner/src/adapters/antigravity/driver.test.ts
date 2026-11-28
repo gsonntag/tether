@@ -308,6 +308,8 @@ test("switching to a model without thinking levels clears effort, and starting w
   try {
     expect(sink2.lastWith("model")?.model).toBe("gpt-oss-120b-medium");
     expect(sink2.lastWith("model")?.effort).toBeUndefined();
+    // Said explicitly, so an effort left in Tether's state from an earlier run is cleared.
+    expect("effort" in (sink2.lastWith("model") ?? {})).toBe(true);
   } finally {
     await d2.close();
   }

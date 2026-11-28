@@ -203,7 +203,9 @@ export class AgyDriver implements Driver {
     this.live = true;
     reader.forget();
     const context = seenContext.get(this.nativeId);
-    this.sink.state({ ...this.settings, billing: billingOf(), ...(context ? { context } : {}) });
+    // A model with no thinking levels clears any effort Tether still shows from before.
+    const noEffort = this.offeredEfforts?.length === 0 ? { effort: undefined } : {};
+    this.sink.state({ ...this.settings, ...noEffort, billing: billingOf(), ...(context ? { context } : {}) });
     void this.pollQuota();
   }
 

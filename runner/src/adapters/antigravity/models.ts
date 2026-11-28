@@ -60,17 +60,14 @@ export function modelList(config: any[], availableModels?: { modelId?: string; n
   const hasVariants = Array.isArray(availableModels) && availableModels.length > 0;
   let efforts = configEfforts;
   let models: ModelList["models"];
-  if (hasVariants) {
-    const { byModel, allEfforts } = effortsByModel(
-      rawModels.map((m) => m.value),
-      availableModels,
-      new Map(configEfforts.map((e) => [e.id, e.label])),
-    );
-    efforts = allEfforts;
-    models = rawModels.map((m) => {
-      const mEfforts = byModel.get(m.value);
-      return { id: m.value, label: m.name, ...(mEfforts?.length ? { efforts: mEfforts } : {}) };
-    });
+  const variants = hasVariants
+    ? effortsByModel(rawModels.map((m) => m.value), availableModels, new Map(configEfforts.map((e) => [e.id, e.label])))
+    : undefined;
+  // No model matched a variant (an agy that names them differently): fall back to the shared levels.
+  if (variants?.byModel.size) {
+    efforts = variants.allEfforts;
+    // A model with no variants takes no effort: an empty list, so pickers and fallback steps offer none.
+    models = rawModels.map((m) => ({ id: m.value, label: m.name, efforts: variants.byModel.get(m.value) ?? [] }));
   } else {
     const takes = efforts.length ? { efforts: efforts.map((e) => e.id) } : {};
     models = rawModels.map((m) => ({ id: m.value, label: m.name, ...takes }));
