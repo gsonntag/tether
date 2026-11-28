@@ -11,7 +11,7 @@ import { UNKNOWN_BILLING, type ContextUse, type Msg, type Part, type ToolPart } 
 import { redact, type CredentialSnapshot } from "../../credentials";
 import { nativeImages } from "../../core/attachments";
 import { existsSync } from "node:fs";
-import type { Driver, Sink, StartOpts } from "../../core/adapter";
+import { SendCancelled, type Driver, type PlanIdentity, type SendHooks, type Sink, type StartOpts } from "../../core/adapter";
 import { movedDir } from "../../core/moved";
 import { runnerSettings } from "../../core/runnerSettings";
 import { parseCommand } from "../../../../shared/commands";
@@ -268,12 +268,19 @@ export class ClaudeDriver implements Driver {
     this.onExit?.(error);
   }
 
-  async send(text: string, attachments: Attachment[] = []) {
+  get accountIdentity(): PlanIdentity | undefined {
+    return this.expectedAccount && "accountId" in this.expectedAccount ? this.expectedAccount as PlanIdentity : undefined;
+  }
+
+  async send(text: string, attachments: Attachment[] = [], _shown?: StartOpts, hooks?: SendHooks) {
     if (this.expectedAccount) await this.confirmAccount();
+    if (this.closed) throw new Error("Claude Code isn't running.");
+    if (hooks?.beforeEnqueue && !(await hooks.beforeEnqueue())) throw new SendCancelled();
     if (this.closed) throw new Error("Claude Code isn't running.");
     this.interrupting = false;
     this.sink.state({ status: "running", error: undefined });
     this.push(text, attachments);
+    hooks?.onEnqueued?.();
   }
 
   /**

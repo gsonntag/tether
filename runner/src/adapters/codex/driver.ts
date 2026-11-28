@@ -14,7 +14,7 @@ import { NATIVE_IMAGE_TYPES, type Attachment } from "../../../../shared/attachme
 import { NATIVE_IMAGE_MAX } from "../../core/attachments";
 import { FROM_TETHER, titleText } from "../../../../shared/fromTether";
 import { UNKNOWN_BILLING } from "../../../../shared/transcript";
-import { RESOLVED_ELSEWHERE, SendCancelled, type Driver, type Sink, type StartOpts } from "../../core/adapter";
+import { RESOLVED_ELSEWHERE, SendCancelled, type Driver, type SendHooks, type Sink, type StartOpts } from "../../core/adapter";
 import { assertCredentialCurrent, confirmedProxy, credentialEndpoint, newConnection, observedCredential, rememberSource, retirePrivateSource, sourceBilling, sourceProvider, sourceCredentialRevision, stopPrivateSource, threadConnection } from "./sources";
 import { CostLedger } from "../../costs";
 import { sourceHome } from "./sources";
@@ -773,7 +773,7 @@ export class CodexDriver implements Driver {
    * it: turn/start carries model, effort, approval policy, sandbox and reviewer, so the turn runs
    * exactly what's shown, whatever the thread had a moment before.
    */
-  async send(text: string, attachments: Attachment[] = [], shown: StartOpts = {}) {
+  async send(text: string, attachments: Attachment[] = [], shown: StartOpts = {}, hooks?: SendHooks) {
     if (this.closed) throw new Error("This Codex session isn't connected.");
     if (this.turnRunning()) throw new Error("Codex is still working on a turn started elsewhere. Stop it first, or wait for it to finish.");
     this.sendOnWay = true;
@@ -803,7 +803,9 @@ export class CodexDriver implements Driver {
           await this.noteBilling(current, true);
           assertCredentialCurrent(this.credential);
         }
+        if (this.stopAsked || (hooks?.beforeEnqueue && !(await hooks.beforeEnqueue()))) throw new SendCancelled();
         r = await this.outgoing(text, attachments, pin.params).finally(() => setTimeout(() => (this.starting = false), 5000));
+        hooks?.onEnqueued?.();
       } finally {
         // Only provisional: the turn's own turn_context says what it really runs with.
         this.pinned = undefined;
@@ -825,6 +827,10 @@ export class CodexDriver implements Driver {
       // Stop pressed while turn/start was on its way: the turn id it needed is here now.
       if (this.stopAsked && turnId) await this.stopThread(this.nativeId, turnId).catch(() => {});
     } catch (e: any) {
+      if (e instanceof SendCancelled) {
+        this.sink.state({ status: "idle" });
+        throw e;
+      }
       const safe = new Error(this.credential?.source !== "subscription" && this.credential ? "Codex API request failed. Check the configured key, quota and connection. Nothing was sent through another source." : `Codex didn't start the turn: ${e?.message ?? e}`) as Error & { rateLimit?: { retryAt?: number } };
       const hit = rateLimitHit(e);
       if (hit) safe.rateLimit = hit;

@@ -17,7 +17,7 @@ import type { Attachment } from "../../../../shared/attachments";
 import { tetherOrigin } from "../../../../shared/fromTether";
 import type { Msg, Part, RequestQuestion, ToolPart } from "../../../../shared/transcript";
 import { nativeImages } from "../../core/attachments";
-import type { Decision, Driver, RequestAsk, Sink, StartOpts } from "../../core/adapter";
+import { SendCancelled, type Decision, type Driver, type RequestAsk, type SendHooks, type Sink, type StartOpts } from "../../core/adapter";
 import { movedDir } from "../../core/moved";
 import { AcpClient, type AcpUpdate } from "../acp/client";
 import { acpTool, AcpTranscript } from "../acp/transcript";
@@ -331,9 +331,11 @@ export class AgyDriver implements Driver {
 
   // ---------- turns ----------
 
-  async send(text: string, attachments: Attachment[] = []) {
+  async send(text: string, attachments: Attachment[] = [], _shown?: StartOpts, hooks?: SendHooks) {
     if (this.closed || !this.client.alive) throw new Error("Antigravity isn't running.");
     if (this.turn || this.unprompted) throw new Error("Antigravity is still working on the last message.");
+    if (hooks?.beforeEnqueue && !(await hooks.beforeEnqueue())) throw new SendCancelled();
+    if (this.closed || !this.client.alive) throw new Error("Antigravity isn't running.");
     const images = nativeImages(attachments);
     const tether = tetherOrigin(text);
     const shown: Part[] = [{ type: "text", text: tether?.text ?? text }, ...images.map((i) => ({ type: "image" as const, mimeType: i.mimeType, data: i.data }))];
@@ -358,6 +360,7 @@ export class AgyDriver implements Driver {
         },
         (e: unknown) => this.ended(this.stopping ? undefined : `Antigravity: ${(e as Error)?.message ?? e}`, this.stopping, e),
       );
+    hooks?.onEnqueued?.();
   }
 
   private ended(error: string | undefined, stopped: boolean, cause?: unknown) {

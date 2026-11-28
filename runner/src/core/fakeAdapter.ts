@@ -1,8 +1,9 @@
 // A fake harness for core tests: stored sessions are in memory, and its driver replays a scripted
 // stream of sink calls on each send, so sync, paging and subagent tests are deterministic.
 
+import type { Attachment } from "../../../shared/attachments";
 import type { HarnessCapabilities, HarnessId, ModelList, Msg, ProjectInfo, SessionSummary } from "../../../shared/transcript";
-import type { Adapter, AdapterBilling, Decision, Driver, Sink, StartOpts, TerminalLaunch, TerminalOpts } from "./adapter";
+import { SendCancelled, type Adapter, type AdapterBilling, type Decision, type Driver, type PlanIdentity, type SendHooks, type Sink, type StartOpts, type TerminalLaunch, type TerminalOpts } from "./adapter";
 import { createHash } from "node:crypto";
 
 /** One step of a scripted turn: called with the session's sink. */
@@ -22,6 +23,11 @@ export class FakeDriver implements Driver {
   children = new Map<string, Sink>();
   lastDecision?: Decision;
   decisions: Decision[] = [];
+  accountIdentity?: PlanIdentity;
+  beforeSend?: (text: string, d: FakeDriver) => void | Promise<void>;
+  sendError?: Error;
+  readyGate?: Promise<void>;
+  closeGate?: Promise<void>;
 
   constructor(
     readonly nativeId: string,
@@ -30,11 +36,20 @@ export class FakeDriver implements Driver {
     private script: (text: string) => Step[],
   ) {}
 
-  async send(text: string) {
+  async ready() {
+    await this.readyGate;
+  }
+
+  async send(text: string, _attachments?: Attachment[], _shown?: StartOpts, hooks?: SendHooks) {
+    await this.beforeSend?.(text, this);
+    if (this.sendError) throw this.sendError;
+    if (hooks?.beforeEnqueue && !(await hooks.beforeEnqueue())) throw new SendCancelled();
+    if (this.closed) throw new Error("Fake driver closed.");
     this.sent.push(text);
     const id = `u${this.sent.length}`;
     this.sink.event({ type: "msg", msg: { id, role: "user", ts: 1, parts: [{ type: "text", text }] } });
     this.sink.state({ status: "running" });
+    hooks?.onEnqueued?.();
     for (const step of this.script(text)) await step(this.sink, this);
   }
   steered: string[] = [];
@@ -87,6 +102,7 @@ export class FakeDriver implements Driver {
     return this.isBusy;
   }
   async close() {
+    await this.closeGate;
     this.closed = true;
   }
 }
@@ -198,13 +214,19 @@ export class FakeAdapter implements Adapter {
   neverStarted?: (nativeId: string, projectPath: string) => Promise<boolean>;
   storedContext?: Adapter["storedContext"];
   planUsage?: Adapter["planUsage"];
+  planUsageFor?: Adapter["planUsageFor"];
+  storedPlans?: Adapter["storedPlans"];
   storedBilling?: Adapter["storedBilling"];
+  onStart?: (opts: StartOpts, sink: Sink, resume: boolean, nativeId: string) => void | Promise<void>;
+  onDriver?: (d: FakeDriver) => void;
   async start(_p: string, nativeId: string, opts: StartOpts, sink: Sink) {
     await this.startGate;
+    await this.onStart?.(opts, sink, false, nativeId);
     return this.make(nativeId, opts, sink);
   }
   async resume(nativeId: string, _p: string, opts: StartOpts, sink: Sink) {
     await this.startGate;
+    await this.onStart?.(opts, sink, true, nativeId);
     this.resumed.push(nativeId);
     return this.make(nativeId, opts, sink);
   }
@@ -212,6 +234,7 @@ export class FakeAdapter implements Adapter {
     if (this.startError) throw new Error(this.startError);
     const d = new FakeDriver(nativeId, sink, opts, (t) => this.script(t));
     this.drivers.push(d);
+    this.onDriver?.(d);
     // A harness that keeps settings itself applies what it was given at the start and reports it.
     if (this.capabilities.persistent && Object.keys(opts).length) sink.state({ ...opts });
     if (this.capabilities.persistent) d.onSetting = (k, v) => sink.state({ [k]: v });
