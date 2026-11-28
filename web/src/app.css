@@ -2511,6 +2511,7 @@
 .t-credential-slot { border: 1px solid var(--t-border); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
 .t-credential-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; font-weight: 600; }
 .t-credential-status { color: var(--t-muted); margin-left: auto; font-size: 13px; font-weight: 400; }
+.t-credential-hint { color: var(--t-muted); font-size: 13px; }
 .t-credential-entry { display: flex; flex-wrap: wrap; gap: 8px; }
 .t-credential-entry > input { flex: 1 1 140px; min-width: 0; }
 .t-credentials .t-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }

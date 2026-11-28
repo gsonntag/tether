@@ -35,6 +35,7 @@ const runnerFolder = join(import.meta.dir, "..");
 const build = await readBuildInfo(runnerFolder);
 const runner = createRunner({
   costsFile: join(DATA_DIR, "costs.json"),
+  cswap: process.env.TETHER_CSWAP !== "0",
   credentials,
   url,
   token,

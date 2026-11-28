@@ -1248,6 +1248,28 @@ with links to the primary directory's projects, history and user configuration. 
 refreshes the login in each directory. Removing an extra account deletes its directory without
 calling Claude logout. Sessions bound to the removed source need a new source before they can send.
 
+The runner also offers Claude accounts the owner set up with **cswap** (claude-swap), when it is on
+PATH or in `~/.local/bin` (`TETHER_CSWAP=0` turns this off). Discovery uses only `cswap list --json`
+(schema 1), cached for 30 seconds, at startup and whenever sources or accounts are listed. No cswap,
+or output Tether can't read, means no extra accounts. Each cswap account is an `account:<id>` source
+whose id is derived from its email and organization UUID, never its slot number, so `cswap swap` or
+`cswap move` keep it. cswap's active account (its default login, `~/.claude`) is skipped, as are
+accounts with the same identity as the primary login or one of Tether's own accounts. Accounts cswap
+reports as `relogin_required` or `no_credentials` are listed as unavailable with the hint "Run `cswap
+add` after logging in"; API-key slots are not listed.
+
+A cswap account runs in cswap's own per-account profile, so Tether and the owner's `cswap run` share
+one profile and one credential copy. Tether runs `cswap run <n> --share-history` (with a `claude`
+shim first on PATH that reports `CLAUDE_CONFIG_DIR` for one marker argument) when it first discovers
+the account and again before each start, so cswap creates or refreshes the profile and keeps its
+`projects/` and `history.jsonl` linked to `~/.claude`. A profile whose `projects/` isn't the shared
+one is not offered, because a fallback hop or a source change couldn't resume the conversation there.
+Tether writes nothing into the profile: the identity the terminal launcher checks is kept in the
+runner's state (`claude-accounts/.cswap/<id>.json`). Starts confirm the account with `claude auth
+status` in the profile, as for Tether's own accounts. Settings → Accounts labels these by email (with
+the organization when it isn't the personal one) and "via cswap", and hides Sign in and Remove: cswap
+manages them.
+
 The new-session picker defaults to the last selected Claude subscription when available. The source
 chip can switch accounts in place, and the SDK and tmux terminal run under the selected account.
 Claude must confirm the subscription, email and organization before sending. Account names and

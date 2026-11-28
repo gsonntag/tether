@@ -1,8 +1,10 @@
 // Fallback on the real core with a scripted harness.
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { FallbackStep } from "../../../shared/fallbackChain";
+import { ClaudeAccounts } from "../adapters/claude/accounts";
+import { fakeCswap } from "../adapters/claude/cswapFixture";
 import { saveConfig } from "../config";
 import { CredentialStore } from "../credentials";
 import { RequestBroker } from "./broker";
@@ -39,7 +41,7 @@ const settled = async (t: ReturnType<typeof setup>, want: (s: any) => boolean) =
   throw new Error("never settled");
 };
 
-function setup({ ticked = true, key = true, now = Date.now } = {}) {
+function setup({ ticked = true, key = true, now = Date.now, claudeAccounts }: { ticked?: boolean; key?: boolean; now?: () => number; claudeAccounts?: (dir: string) => ClaudeAccounts } = {}) {
   const base = "/tmp/claude-1001/auto/unit";
   mkdirSync(base, { recursive: true });
   const dir = mkdtempSync(join(base, "core-")), file = join(dir, "runner.json");
@@ -49,7 +51,8 @@ function setup({ ticked = true, key = true, now = Date.now } = {}) {
   adapter.addStored("one", []);
   const prefs = new Prefs(file, 0);
   const core = new SessionCore({ adapters: [adapter], now, bus: new EventBus<CoreEvents>(), send: () => true, prefs, epoch: "auto", log: () => {} });
-  const live = new LiveControl(core, new RequestBroker(), { credentials, idleMs: 60_000 });
+  const accounts = claudeAccounts?.(dir);
+  const live = new LiveControl(core, new RequestBroker(), { credentials, idleMs: 60_000, ...(accounts ? { claudeAccounts: accounts } : {}) });
   cleanups.push(() => core.stop());
   if (key) credentials.set("anthropic", `fake-auto-${crypto.randomUUID()}`);
   Object.assign(adapter, { move: { modes: [{ mode: "plan", level: 0 }, { mode: "full", level: 5 }] } });
@@ -60,7 +63,7 @@ function setup({ ticked = true, key = true, now = Date.now } = {}) {
   });
   if (ticked) prefs.set("claude:one", { fallbackChain: { enabled: true, steps }, source: "subscription" });
   // A turn on the plan runs out; anything on the key answers.
-  const t = { dir, file, adapter, core, live, credentials, prefs, sends: () => adapter.drivers.reduce((n, d) => n + d.sent.length, 0) };
+  const t = { dir, file, adapter, core, live, credentials, prefs, accounts, sends: () => adapter.drivers.reduce((n, d) => n + d.sent.length, 0) };
   adapter.script = () => {
     return adapter.drivers.at(-1)!.opts.credential?.source === "anthropic" ? [(s) => at(s, KEY as any), reply] : [(s) => at(s), limit()];
   };
@@ -256,6 +259,34 @@ describe("the fallback chain", () => {
     expect([on.nativeId, on.opts.credential?.source, on.sent]).toEqual(["carried-1", "anthropic", ["fix it"]]);
     expect(t.prefs.get("claude:carried-1")).toMatchObject({ fallbackChain: { enabled: true, steps, active: 0 }, lastKey: "anthropic" });
     expect(t.prefs.get("claude:one").movedTo).toBe("claude:carried-1");
+  });
+
+  test("hops from one cswap account to another on the same conversation", async () => {
+    const fx = fakeCswap();
+    const prior = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = fx.shared;
+    cleanups.push(() => { if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prior; });
+    fx.write([{ number: 1, email: "default@example.test", active: true }, { number: 2, email: "x@example.test" }, { number: 3, email: "y@example.test" }]);
+    const t = setup({ key: false, ticked: false, claudeAccounts: (dir) => new ClaudeAccounts(join(dir, "claude-accounts"), { cswap: { bin: fx.bin, claude: "/bin/false" } }) });
+    await t.accounts!.refresh();
+    const [x, y] = t.accounts!.list().map(({ source }) => source) as [`account:${string}`, `account:${string}`];
+    t.prefs.set("claude:one", { source: x, fallbackChain: { enabled: true, steps: [{ ...steps[0]!, source: y }] } });
+    t.adapter.script = () => t.adapter.drivers.at(-1)!.opts.credential?.source === y ? [(s) => at(s), reply] : [(s) => at(s), limit()];
+    await t.live.send("claude:one", "fix it");
+    const s = await settled(t, (s) => t.prefs.get(s.id).source === y);
+    expect(s.id).toBe("claude:one");
+    expect(sentOn(t)).toEqual([[x, ["fix it"]], [y, ["fix it"]]]);
+    const [first, second] = t.adapter.drivers;
+    // The same Claude session id, resumed in the other account's cswap profile.
+    expect([first!.nativeId, second!.nativeId]).toEqual(["one", "one"]);
+    expect(first!.opts.credential?.claudeAccount?.configDir).toBe(fx.profile(2));
+    expect(second!.opts.credential?.claudeAccount?.configDir).toBe(fx.profile(3));
+    expect(second!.opts.credential?.claudeAccount?.email).toBe("y@example.test");
+    // Both profiles read and write the one conversation folder.
+    expect(realpathSync(join(fx.profile(2), "projects"))).toBe(realpathSync(join(fx.profile(3), "projects")));
+    expect(realpathSync(join(fx.profile(3), "projects"))).toBe(realpathSync(join(fx.shared, "projects")));
+    // Before Claude starts, cswap refreshes that same profile.
+    await second!.opts.credential!.claudeAccount!.prepare!();
   });
 
   test("skips unavailable and overly permissive steps, and records the chosen settings", async () => {

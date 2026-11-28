@@ -1,9 +1,10 @@
 import { accountIdentity } from "../accountIdentity";
-import type { ClaudeAccounts } from "../adapters/claude/accounts";
+import { CSWAP_MANAGED, type ClaudeAccounts } from "../adapters/claude/accounts";
+import { CSWAP_RELOGIN } from "../adapters/claude/cswap";
 import { isAccountSource, type AccountSource } from "../../../shared/credentials";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import type { HarnessLoginFlow, HarnessLoginStatus } from "../../../shared/harnessLogin";
+import type { HarnessAccount, HarnessLoginFlow, HarnessLoginStatus } from "../../../shared/harnessLogin";
 import { HARNESS_LABELS, type HarnessId } from "../../../shared/transcript";
 import { AcpClient } from "../adapters/acp/client";
 import { acpArgv, reader } from "../adapters/antigravity/store";
@@ -216,14 +217,24 @@ export function registerHarnessLogin(ops: OpRegistry, changed: (harness: Harness
   ops.register("listHarnessAccounts", async ({ harness }) => {
     assertHarness(harness);
     if (harness !== "claude" || !accounts) return [];
-    return Promise.all(accounts.list().map(async ({ source, identity }) => {
+    await accounts.refresh();
+    const listed = accounts.list();
+    const own = await Promise.all(listed.map(async ({ source, identity }): Promise<HarnessAccount> => {
       const current = await accountStatus(source).catch((): HarnessLoginStatus => ({ state: "unknown" }));
       const status = named(harness, { state: "signedIn", ...identity, ...(current.state === "signedIn" ? current : {}) }, source);
-      return { source, status, available: current.state === "signedIn" };
+      const cswap = accounts.cswapAccount(source);
+      return { source, status, available: current.state === "signedIn", ...(cswap ? { managedBy: "cswap", ...(current.state === "signedIn" ? {} : { hint: CSWAP_RELOGIN }) } : {}) };
     }));
+    // cswap accounts Tether can't use now still show, with what to do in cswap.
+    const unusable = (accounts.cswap?.accounts() ?? []).filter((a) => !listed.some(({ source }) => source === a.source) &&
+      !listed.some(({ identity }) => identity.accountId === a.identity.accountId)).map(({ source, identity, problem }): HarnessAccount => ({
+      source, status: named(harness, { state: "signedIn", ...identity }, source), available: false, managedBy: "cswap", ...(problem ? { hint: problem } : {}),
+    }));
+    return [...own, ...unusable];
   });
   ops.register("removeHarnessAccount", async ({ harness, source }) => {
     if (harness !== "claude" || !accounts || !isAccountSource(source)) throw new Error("Unknown Claude account.");
+    if (accounts.cswapAccount(source)) throw new Error(CSWAP_MANAGED);
     if (busy.has(harness) || accountInUse?.(source)) throw new Error("Close the account's terminal or wait for its current turn, then try again.");
     const identity = accounts.read(source);
     if (!identity) throw new Error("Unknown Claude account.");
@@ -273,6 +284,7 @@ export function registerHarnessLogin(ops: OpRegistry, changed: (harness: Harness
     if (current && resumable?.owner === owner && resumable.view.state === "pending") return { flowId: current };
     if (busy.has(harness)) throw new Error("A sign-in or sign-out is already running.");
     if (target !== undefined && (harness !== "claude" || !accounts || (target !== "new" && !isAccountSource(target)))) throw new Error("Unknown Claude account.");
+    if (target && target !== "new" && accounts?.cswapAccount(target)) throw new Error(CSWAP_MANAGED);
     const expected = target && target !== "new" ? accounts?.read(target) : undefined;
     if (target && target !== "new" && (!expected || accountInUse?.(target))) throw new Error("Account unavailable or still in use. Close its terminal and wait for its current turn.");
     const source = target === "new" ? accounts!.create() : target;

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CredentialSnapshot } from "../../credentials";
 import { Transcript } from "../../core/transcript";
@@ -226,7 +226,7 @@ case "$*" in
 esac
 `, { mode: 0o700 });
   const source = "account:b8d64ec2-b923-4e94-811e-3f6fe0235a0f";
-  const run = async (orgId: string, orgName = organization) => {
+  const run = async (orgId: string, orgName = organization, identity = join(config, ".tether-account.json")) => {
     // The real CLI writes each space in a PTY as a cursor move.
     let col = 0;
     const json = JSON.stringify({ ...report, orgId, orgName }).replace(/ |[^ ]+/g, (m) => {
@@ -234,7 +234,7 @@ esac
       return `\x1b[${++col + 1}G`;
     });
     writeFileSync(join(config, "status"), `\x1b[?25l${json}\x1b[?25h\r\n`);
-    const p = Bun.spawn([process.execPath, launcher, file, source, source, config, binary, "--resume", "stored-id", "--settings", JSON.stringify(claudeAuthSettings())], {
+    const p = Bun.spawn([process.execPath, launcher, file, source, source, config, identity, binary, "--resume", "stored-id", "--settings", JSON.stringify(claudeAuthSettings())], {
       env: { ...process.env, CLAUDE_CONFIG_DIR: "/primary" }, stdin: "ignore", stdout: "pipe", stderr: "pipe",
     });
     return Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
@@ -245,4 +245,10 @@ esac
   expect(output).toBe("");
   expect(error).toContain("billing could not be confirmed");
   expect((await run("id", "Other Org"))[0]).toBe(1);
+  // A cswap account: the identity is in Tether's own state, not in the profile.
+  const outside = join(dir, "cswap-identity.json");
+  writeFileSync(outside, JSON.stringify(accountIdentity(email, "max", organization, "id")));
+  rmSync(join(config, ".tether-account.json"));
+  expect(await run("id", organization, outside)).toEqual([0, "resumed", ""]);
+  expect((await run("id"))[0]).toBe(1);
 });

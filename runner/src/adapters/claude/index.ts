@@ -4,6 +4,7 @@
 import { resolveSettings } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { stat } from "node:fs/promises";
 import type { Adapter, Driver, QuitStep, ScreenRead, StartOpts } from "../../core/adapter";
 import { movedDir } from "../../core/moved";
@@ -301,6 +302,6 @@ export const claudeAdapter: Adapter = {
         if (path) profileEnv[name] = path;
       }
     }
-    return { argv: [process.execPath, scripts.launcher, credential.file, credential.revision, credential.source, ...(credential.claudeAccount ? [credential.claudeAccount.configDir] : []), ...argv], env: { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? "", ...profileEnv }, quit: CLAUDE_QUIT, quitAtPrompt: CLAUDE_EXIT, screen: claudeScreen };
+    return { argv: [process.execPath, scripts.launcher, credential.file, credential.revision, credential.source, ...(credential.claudeAccount ? [credential.claudeAccount.configDir, credential.claudeAccount.identityFile ?? join(credential.claudeAccount.configDir, ".tether-account.json")] : []), ...argv], env: { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? "", ...profileEnv }, quit: CLAUDE_QUIT, quitAtPrompt: CLAUDE_EXIT, screen: claudeScreen };
   },
 };

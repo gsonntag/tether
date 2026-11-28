@@ -2,7 +2,9 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readlinkSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ClaudeAccounts } from "../adapters/claude/accounts";
+import { CSWAP_MANAGED, ClaudeAccounts } from "../adapters/claude/accounts";
+import { CSWAP_RELOGIN } from "../adapters/claude/cswap";
+import { fakeCswap } from "../adapters/claude/cswapFixture";
 import type { HarnessAccount } from "../../../shared/harnessLogin";
 import { HARNESS_BINS } from "../adapters/detect";
 import { registerHarnessLogin } from "./harnessLogin";
@@ -254,5 +256,63 @@ esac
     if (previousConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = previousConfig;
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cswap accounts list as managed by cswap: renamed in Tether, signed in and removed only with cswap", async () => {
+  const previousBin = HARNESS_BINS.claude;
+  const previousConfig = process.env.CLAUDE_CONFIG_DIR;
+  const fx = fakeCswap();
+  const dir = fx.root;
+  const cli = join(dir, "claude");
+  writeFileSync(cli, `#!/bin/sh
+case "$*" in
+  *"auth status --json")
+    [ -f "$CLAUDE_CONFIG_DIR/login" ] || { echo '{"loggedIn":false}'; exit 1; }
+    identity=$(cat "$CLAUDE_CONFIG_DIR/login")
+    printf '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"%s@example.test","orgName":"Test Organization","orgId":"%s","subscriptionType":"max"}\\n' "$identity" "$identity"
+    ;;
+  *) exit 2 ;;
+esac
+`, { mode: 0o700 });
+  HARNESS_BINS.claude = cli;
+  process.env.CLAUDE_CONFIG_DIR = fx.shared;
+  fx.write([
+    { number: 2, email: "ok@example.test", organizationName: "Test Organization", organizationUuid: "ok" },
+    { number: 3, email: "gone@example.test", usageStatus: "relogin_required" },
+  ]);
+  const accounts = new ClaudeAccounts(join(dir, "accounts"), { cswap: { bin: fx.bin, claude: cli } });
+  const file = join(dir, "runner.json");
+  writeFileSync(file, JSON.stringify({ runnerId: "test-runner" }));
+  const registry = new OpRegistry();
+  const stop = registerHarnessLogin(registry, () => {}, new Prefs(file), accounts);
+  const remote = (op: string, args: unknown) => registry.handle(op, args, "owner");
+  const list = async () => {
+    const result = await remote("listHarnessAccounts", { harness: "claude" });
+    if (!result.ok) throw new Error(result.error);
+    return result.data as HarnessAccount[];
+  };
+  try {
+    await accounts.refresh();
+    writeFileSync(join(fx.profile(2), "login"), "ok");
+    const [ok, gone] = await list();
+    expect(ok).toMatchObject({ available: true, managedBy: "cswap", status: { state: "signedIn", email: "ok@example.test", organization: "Test Organization" } });
+    expect(ok).not.toHaveProperty("hint");
+    expect(gone).toMatchObject({ available: false, managedBy: "cswap", hint: CSWAP_RELOGIN, status: { email: "gone@example.test" } });
+    const source = ok!.source;
+    expect(await remote("removeHarnessAccount", { harness: "claude", source })).toMatchObject({ ok: false, error: CSWAP_MANAGED });
+    expect(await remote("harnessLoginStart", { harness: "claude", account: source })).toMatchObject({ ok: false, error: CSWAP_MANAGED });
+    expect(existsSync(fx.profile(2))).toBe(true);
+    const accountId = accounts.read(source)!.accountId;
+    expect(await remote("renameHarnessAccount", { harness: "claude", source, accountId, displayName: "Side" })).toMatchObject({ ok: true });
+    expect((await list())[0]).toMatchObject({ status: { displayName: "Side" } });
+    // Signed out in its profile: still listed, with what to do in cswap.
+    rmSync(join(fx.profile(2), "login"));
+    expect((await list())[0]).toMatchObject({ source, available: false, hint: CSWAP_RELOGIN });
+  } finally {
+    stop();
+    HARNESS_BINS.claude = previousBin;
+    if (previousConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previousConfig;
   }
 });
