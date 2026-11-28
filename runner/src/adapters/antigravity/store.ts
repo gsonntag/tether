@@ -6,8 +6,8 @@
 // whether a conversation exists and when it last changed.
 
 import { randomUUID } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContextUse, Msg } from "../../../../shared/transcript";
 import { AcpClient, type AcpUpdate } from "../acp/client";
@@ -18,6 +18,12 @@ import { registerLanguageServer, unregisterLanguageServer } from "./quota";
 /** Antigravity's own folder (read each time, so tests can point it elsewhere). */
 export const agyHome = () => process.env.AGY_HOME || join(homedir(), ".gemini", "antigravity-cli");
 export const conversationFile = (nativeId: string) => join(agyHome(), "conversations", `${nativeId}.db`);
+
+/** Deletes a conversation's SQLite store files and brain directory (used for throwaway probes and discarded forks). */
+export function discardStore(nativeId: string) {
+  for (const f of [conversationFile(nativeId), `${conversationFile(nativeId)}-wal`, `${conversationFile(nativeId)}-shm`]) rmSync(f, { force: true });
+  rmSync(join(agyHome(), "brain", nativeId), { recursive: true, force: true });
+}
 
 /** The process Tether starts for ACP: `agy acp`. */
 export const acpArgv = () => [HARNESS_BINS.antigravity, "acp"];
@@ -76,8 +82,14 @@ export function settingsOf(config: any[] | undefined, mode?: string): AgySetting
   return { ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(permissionMode ? { permissionMode } : {}) };
 }
 
+/** How long a cached model/option list is reused before asking `agy acp` again. */
+const CONFIG_MS = 10 * 60_000;
+
 /** The options Antigravity offers (models, thinking levels, modes), from the latest session it opened. */
 export let lastConfig: any[] | undefined;
+let lastConfigAt = 0;
+/** Full per-variant model list (`models.availableModels`) from the latest session opened. */
+export let lastAvailableModels: { modelId?: string; name?: string }[] | undefined;
 /** Its account's tier ("Google AI Pro"), when it says. */
 export let lastTier: string | undefined;
 /** Its commands and skills, as a session last listed them. */
@@ -85,7 +97,11 @@ export let lastCommands: { name: string; description?: string }[] | undefined;
 
 /** Notes what a `session/new` or `session/load` answered. */
 export function noteOpened(r: any) {
-  if (Array.isArray(r?.configOptions)) lastConfig = r.configOptions;
+  if (Array.isArray(r?.configOptions)) {
+    lastConfig = r.configOptions;
+    lastConfigAt = Date.now();
+  }
+  if (Array.isArray(r?.models?.availableModels)) lastAvailableModels = r.models.availableModels;
   const tier = r?._meta?.antigravity?.tier?.name;
   if (typeof tier === "string" && tier) lastTier = tier;
 }
@@ -220,12 +236,45 @@ class Reader {
     });
   }
 
+  /**
+   * Antigravity's options (models, thinking levels, modes) and variant list, asked of it when none
+   * is cached or the cache has aged out. Uses a throwaway `session/new` (agy 1.5.19 rejects
+   * `session/load` for unknown session ids) and discards its empty store immediately.
+   */
+  async configInfo(): Promise<{ config: any[]; availableModels?: { modelId?: string; name?: string }[] }> {
+    if (lastConfig && Date.now() - lastConfigAt < CONFIG_MS) return { config: lastConfig, availableModels: lastAvailableModels };
+    // One probe at a time: callers side by side share it.
+    this.probing ??= this.probeConfig().finally(() => { this.probing = undefined; });
+    try {
+      await this.probing;
+    } catch (e) {
+      // A failed refresh keeps what Antigravity last said rather than emptying the pickers.
+      if (!lastConfig) throw e;
+    }
+    return { config: lastConfig ?? [], availableModels: lastAvailableModels };
+  }
+
+  private probing: Promise<void> | undefined;
+
+  private async probeConfig() {
+    const tmp = mkdtempSync(join(tmpdir(), "tether-agy-cfg-"));
+    let sid: string | undefined;
+    try {
+      await this.use(async (c) => {
+        const r: any = await c.call("session/new", { cwd: tmp, mcpServers: [] });
+        sid = typeof r?.sessionId === "string" ? r.sessionId : undefined;
+        noteOpened(r);
+        if (sid) await c.call("session/close", { sessionId: sid }, 5000).catch(() => {});
+      });
+    } finally {
+      if (sid) discardStore(sid);
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
   /** Antigravity's options (models, thinking levels, modes), asked of it if no session has said yet. */
   async config(): Promise<any[]> {
-    if (lastConfig) return lastConfig;
-    // A load of an id nobody has answers with the options and stores nothing (checked on 1.5.13).
-    await this.use(async (c) => noteOpened(await c.call("session/load", { sessionId: "00000000-0000-4000-8000-000000000000", cwd: homedir(), mcpServers: [] })));
-    return lastConfig ?? [];
+    return (await this.configInfo()).config;
   }
 
   async close() {

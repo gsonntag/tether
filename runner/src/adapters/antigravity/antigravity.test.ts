@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ToolPart } from "../../../../shared/transcript";
+import { fallbackStepProblem } from "../../../../shared/fallbackChain";
 import { AcpTranscript, acpTool } from "../acp/transcript";
 import { modelList } from "./models";
 import { agyScreen } from "./screen";
@@ -122,6 +123,63 @@ test("models and thinking levels are separate settings; modes keep Antigravity's
     { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", efforts: ["low", "high"] },
   ]);
   expect(l.permissionModes.map((m) => [m.id, m.label])).toEqual([["default", "Ask first"], ["accept-edits", "Accept edits"], ["plan", "Plan"], ["bypassPermissions", "Bypass permissions"]]);
+});
+
+test("per-model efforts come from availableModels when present, with none for fixed models", () => {
+  const config = [
+    {
+      id: "model",
+      options: [
+        { value: "gemini-4-neon", name: "Gemini 4 Neon" },
+        { value: "claude-opus-5-5", name: "Claude Opus 5.5" },
+        { value: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
+      ],
+    },
+    // Even if the currently active model has no thought_level options, availableModels still carries them.
+    { id: "mode", options: [{ value: "default", name: "Default" }] },
+  ];
+  const available = [
+    { modelId: "gemini-4-neon-high", name: "Gemini 4 Neon (High)" },
+    { modelId: "gemini-4-neon-xhigh", name: "Gemini 4 Neon (XHigh)" },
+    { modelId: "gemini-4-neon-low", name: "Gemini 4 Neon (Low)" },
+    { modelId: "claude-opus-5-5-low", name: "Claude Opus 5.5 (Low)" },
+    { modelId: "claude-opus-5-5-high", name: "Claude Opus 5.5 (High)" },
+    { modelId: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
+  ];
+  const l = modelList(config, available);
+  expect(l.efforts).toEqual([
+    { id: "low", label: "Low" },
+    { id: "high", label: "High" },
+    { id: "xhigh", label: "Extra" },
+  ]);
+  expect(l.models).toEqual([
+    { id: "default", label: "Default", efforts: ["low", "high", "xhigh"] },
+    { id: "gemini-4-neon", label: "Gemini 4 Neon", efforts: ["low", "high", "xhigh"] },
+    { id: "claude-opus-5-5", label: "Claude Opus 5.5", efforts: ["low", "high"] },
+    { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)", efforts: [] },
+  ]);
+});
+
+test("variants that match no model fall back to the shared thinking levels", () => {
+  const config = [
+    { id: "model", options: [{ value: "m1", name: "M1" }] },
+    { id: "thought_level", options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }] },
+  ];
+  const l = modelList(config, [{ modelId: "renamed-variant", name: "Renamed" }]);
+  expect(l.models).toEqual([
+    { id: "default", label: "Default", efforts: ["low", "high"] },
+    { id: "m1", label: "M1", efforts: ["low", "high"] },
+  ]);
+});
+
+test("a fallback step with an effort on a fixed model is a problem", () => {
+  const l = modelList(
+    [{ id: "model", options: [{ value: "gpt-oss-120b-medium", name: "GPT-OSS" }, { value: "g", name: "G" }] }, { id: "mode", options: [{ value: "default", name: "Default" }] }],
+    [{ modelId: "g-high", name: "G (High)" }, { modelId: "gpt-oss-120b-medium", name: "GPT-OSS" }],
+  );
+  const catalog = { harness: "antigravity" as const, sources: [{ source: "subscription" as const, billing: { kind: "plan" as const, label: "Google AI Pro" } }], models: l, defaultMode: "default" };
+  expect(fallbackStepProblem({ harness: "antigravity", source: "subscription", model: "gpt-oss-120b-medium", effort: "high" }, catalog)).toMatch(/Effort unavailable/);
+  expect(fallbackStepProblem({ harness: "antigravity", source: "subscription", model: "g", effort: "high" }, catalog)).toBeUndefined();
 });
 
 test("the TUI's screen: idle, working, asking for permission or trust", () => {
