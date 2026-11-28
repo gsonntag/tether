@@ -7,7 +7,7 @@ import { rpc } from "./connection";
 import { accessOf } from "./runners";
 import { useStore } from "./store";
 
-interface CachedAccounts {
+export interface CachedAccounts {
   labels: Partial<Record<BillingSource, string>>;
   entries: Partial<Record<BillingSource, AccountLabelEntry>>;
   probes: Partial<Record<BillingSource, HarnessAccount["probe"]>>;
@@ -15,10 +15,21 @@ interface CachedAccounts {
 
 const cache = new Map<string, CachedAccounts>();
 const inFlight = new Map<string, Promise<void>>();
+const generations = new Map<string, number>();
 const listeners = new Map<string, Set<() => void>>();
 
+function genOf(key: string): number {
+  return generations.get(key) ?? 0;
+}
+
+function bumpGen(key: string): number {
+  const next = genOf(key) + 1;
+  generations.set(key, next);
+  return next;
+}
+
 function notify(key: string) {
-  for (const fn of listeners.get(key) ?? []) fn();
+  for (const fn of [...(listeners.get(key) ?? [])]) fn();
 }
 
 function subscribe(key: string, fn: () => void): () => void {
@@ -42,10 +53,12 @@ function fetchAccountLabels(
 ): Promise<void> {
   const key = `${runnerId}\0${harness}`;
   if (!force && inFlight.has(key)) return inFlight.get(key)!;
+  const myGen = force ? bumpGen(key) : genOf(key);
   const run = Promise.all([
     callRpc(runnerId, "harnessLoginStatus", { harness }).catch(() => undefined),
     harness === "claude" ? callRpc(runnerId, "listHarnessAccounts", { harness }).catch(() => []) : Promise.resolve([]),
   ]).then(([status, accounts]) => {
+    if (genOf(key) !== myGen) return;
     const items = [
       ...(status ? [{ source: "subscription" as BillingSource, status }] : []),
       ...accounts.map((a) => ({
@@ -69,6 +82,7 @@ function fetchAccountLabels(
 /** Invalidates cached account labels for a runner/harness after login, logout, or rename. */
 export function invalidateAccountLabelCache(runnerId: string, harness: HarnessId) {
   const key = `${runnerId}\0${harness}`;
+  bumpGen(key);
   cache.delete(key);
   inFlight.delete(key);
   notify(key);
@@ -76,8 +90,30 @@ export function invalidateAccountLabelCache(runnerId: string, harness: HarnessId
 
 /** Tests: reset module-level account label cache. */
 export function clearAccountLabelCache() {
+  for (const key of new Set([...cache.keys(), ...inFlight.keys(), ...generations.keys()])) bumpGen(key);
   cache.clear();
   inFlight.clear();
+}
+
+/** Tests: read cached labels for a (runnerId, harness). */
+export function getCachedAccountLabels(runnerId: string, harness: HarnessId): CachedAccounts | undefined {
+  return cache.get(`${runnerId}\0${harness}`);
+}
+
+/** Test/internal: subscribe to cache updates for a (runnerId, harness), reloading on invalidation if absent. */
+export function subscribeAccountLabels(
+  runnerId: string,
+  harness: HarnessId,
+  onChange: () => void,
+  callRpc: typeof rpc = rpc,
+): () => void {
+  const key = `${runnerId}\0${harness}`;
+  const unsub = subscribe(key, () => {
+    onChange();
+    if (!cache.has(key)) void fetchAccountLabels(runnerId, harness, false, callRpc);
+  });
+  if (!cache.has(key)) void fetchAccountLabels(runnerId, harness, false, callRpc);
+  return unsub;
 }
 
 /** Test/internal: directly invoke the deduplicated loader (used by hook and tests). */
@@ -93,14 +129,15 @@ export function loadAccountLabels(
 /** Tests: seed module-level cache for static render tests. */
 export function seedAccountLabelCache(runnerId: string, harness: HarnessId, value: CachedAccounts) {
   const key = `${runnerId}\0${harness}`;
+  bumpGen(key);
   cache.set(key, value);
   notify(key);
 }
 
 /**
  * Read account details through the owner-only op, separate from the shared billing sources.
- * Cached per (runnerId, harness) with in-flight deduplication so SessionHeader, BillingChip,
- * and dialogs don't each spawn duplicate `claude auth status` probes (G8).
+ * Cached per (runnerId, harness) with in-flight deduplication and generation guards so
+ * SessionHeader, BillingChip, and dialogs share probes and reload cleanly after invalidation (G8).
  */
 export function useAccountLabel(runnerId: string | undefined, harness: HarnessId, wanted: boolean) {
   const reactiveLink = useStore((s) => s.link);
@@ -117,9 +154,7 @@ export function useAccountLabel(runnerId: string | undefined, harness: HarnessId
 
   useEffect(() => {
     if (!allowed || !runnerId || !key) return;
-    const unsub = subscribe(key, () => tick((n) => n + 1));
-    if (!cache.has(key)) void fetchAccountLabels(runnerId, harness, false);
-    return unsub;
+    return subscribeAccountLabels(runnerId, harness, () => tick((n) => n + 1));
   }, [allowed, runnerId, harness, key]);
 
   const data = allowed && key ? cache.get(key) : undefined;
