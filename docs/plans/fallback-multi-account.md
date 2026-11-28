@@ -667,3 +667,29 @@ Steps that can't run right now can still be saved.
 2. same-session hops moved onto `provisionalStart`;
 3. `moveFallback` and `returnToFallback` moved onto it;
 4. account-specific rules (B1-B10, R5′).
+
+## Fixes after re-review, round 5. These amend R6.3 and R6b.
+
+**R6.3′. The session reservation comes before teardown.**
+- Take a per-session `hopReservation` (keyed by session id and native id) **before** closing the old driver.
+- Hold it through teardown, provisional startup, and commit (driver installed) or abort cleanup (provisional driver closed, old state restored), whichever ends the hop.
+- Ordinary startup (`ensureDriver` / start paths at `live.ts:1393-1416`, which check `s.driver` and `s.starting`) and terminal handoff (`:2249-2250`) both honour the reservation:
+  - they wait for it to release; or
+  - for a user send, they queue behind it, as sends already queue while `s.sending`.
+- Tests:
+  - a user send racing old-driver teardown waits and then runs on the committed driver;
+  - a terminal open during a hop waits;
+  - abort cleanup releases the reservation and a queued send then runs on the original.
+
+**R6b′. Codex carry keeps its current answer-gated semantics. It is not moved onto enqueue-commit.**
+- Hops that need `carry` keep today's path unchanged (`live.ts:501-531`): the successor's commit point is `answered()`, as now. A prompt that is accepted and then fails is discarded, and the original stays.
+  - This means a same-harness Codex source change, plus any harness where `nextSource` triggers carry.
+- `provisionalStart` adds only the R2 cancellation / permission split and R6.4's `beforeEnqueue` gate to carry's inner `send`. It doesn't change carry's replace rule.
+- **Hops with no resend** on a carry harness keep today's pending-source behaviour (`:1654-1662`): set `nextSource` / `nextFallbackSettings` and carry on the next message. They do not commit a new thread on startup.
+- **R6.5's enqueue / startup-ready commit** therefore applies only to non-carry hops:
+  - Claude same-session account or source hops;
+  - `moveFallback`;
+  - `returnToFallback`.
+- Tests:
+  - a Codex carry where the prompt is accepted and the turn then errors before answering: the original is kept and the successor discarded;
+  - a Codex no-resend hop sets `nextSource` and creates no thread.
