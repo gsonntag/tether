@@ -12,7 +12,13 @@ import { CONFIG_DIR } from "./config";
 
 export const DATA_DIR = process.env.TETHER_DATA_DIR || CONFIG_DIR;
 export interface CredentialSnapshot {
-  claudeAccount?: { configDir: string; accountId: string; email: string; organization: string };
+  claudeAccount?: {
+    configDir: string; accountId: string; email: string; organization: string;
+    /** what the terminal launcher checks the account against; else `.tether-account.json` in configDir */
+    identityFile?: string;
+    /** a cswap account: cswap refreshes its profile before each start */
+    prepare?: () => Promise<void>;
+  };
   rates?: TokenRates;
   bedrock?: BedrockSettings;
   source: BillingSource;

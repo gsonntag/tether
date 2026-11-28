@@ -242,6 +242,8 @@ export class LiveControl {
 
   /** Reconcile before timers and queues resume. Uncertain dispatches require a person to continue. */
   async restoreRetries() {
+    // A retry's saved identity names its source: cswap's accounts must be discovered first.
+    await this.opts.claudeAccounts?.refresh();
     for (const id of this.core.o.prefs.retrying()) {
       const saved = this.core.o.prefs.get(id).retry;
       let s: Session | undefined;
@@ -1487,7 +1489,9 @@ export class LiveControl {
     const source = this.sourceOf(s);
     if (isAccountSource(source)) {
       const accounts = this.opts.claudeAccounts;
-      return accounts?.read(source) && !accounts.signingIn.has(source) ? this.subscriptionRevision(s.summary.harness, source) : undefined;
+      // While cswap can't be read, a session on one of its accounts keeps its identity (a saved retry
+      // stays); starting it still needs the account (credentialFor).
+      return (accounts?.read(source) || accounts?.cswapUncertain(source)) && !accounts.signingIn.has(source) ? this.subscriptionRevision(s.summary.harness, source) : undefined;
     }
     return (source === "subscription" ? this.subscriptionRevisions.get(this.subscriptionScope(s.summary.harness, source)) : undefined)
       ?? this.opts.credentials?.snapshot(source, this.deploymentOf(s))?.revision;
@@ -1504,10 +1508,16 @@ export class LiveControl {
       const accounts = this.opts.claudeAccounts;
       const identity = harness === "claude" ? accounts?.read(source) : undefined;
       if (!store || !accounts || !identity || accounts.signingIn.has(source)) {
-        throw new Error("The chosen Claude subscription account is unavailable. Check Accounts or change Source. Nothing was sent.");
+        const hint = harness !== "claude" ? undefined : accounts?.cswapAccount(source)?.problem ?? (accounts?.cswapUncertain(source) ? "cswap couldn't be read just now; try again." : undefined);
+        throw new Error(`The chosen Claude subscription account is unavailable.${hint ? ` ${hint}` : ""} Check Accounts or change Source. Nothing was sent.`);
       }
       const { accountId, email, organization } = identity;
-      return { source, revision: this.subscriptionRevision(harness, source), file: store.file, claudeAccount: { configDir: accounts.configDir(source), accountId, email, organization } };
+      const configDir = accounts.configDir(source);
+      const cswap = accounts.cswapAccount(source) && accounts.cswap;
+      return { source, revision: this.subscriptionRevision(harness, source), file: store.file, claudeAccount: {
+        configDir, accountId, email, organization, identityFile: accounts.identityFile(source),
+        ...(cswap ? { prepare: () => cswap.prepare(source, configDir) } : {}),
+      } };
     }
     if (!store) return undefined;
     if (source === "bedrock" && !this.sourceModels(harness, source).some((m) => m.name === deployment)) {
@@ -1529,7 +1539,7 @@ export class LiveControl {
     const billing = this.core.adapter(harness).billing;
     if (!billing || !this.opts.credentials) return { options: [] };
     const status = this.opts.credentials.status();
-    const login = await billing.loggedIn().catch(() => false);
+    const [login] = await Promise.all([billing.loggedIn().catch(() => false), harness === "claude" ? this.opts.claudeAccounts?.refresh() : undefined]);
     const ready = (source: CredentialSource) => {
       if (source === "bedrock") return !!this.opts.credentials?.snapshot(source) && this.sourceModels(harness, source).length > 0;
       return status[source].set && (source !== "azure" || (!!status.azure.endpoint && !!status.azure.deployments?.length));
@@ -1548,6 +1558,8 @@ export class LiveControl {
    * Without an explicit source, use the last selected Claude login or the primary subscription.
    */
   async sourceForNew(harness: HarnessId, asked: unknown): Promise<BillingSource> {
+    // Right after a restart, wait for cswap's accounts before choosing or checking one.
+    if (harness === "claude" && (asked === undefined || isAccountSource(asked))) await this.opts.claudeAccounts?.refresh();
     if (asked === undefined) {
       const last = this.core.o.prefs.lastSubscription(harness);
       return harness === "claude" && isAccountSource(last) && this.opts.claudeAccounts?.read(last) && !this.opts.claudeAccounts.signingIn.has(last) ? last : "subscription";
@@ -2204,6 +2216,8 @@ ${sent.text}`, sent.attachments, { tether: true, continuedFallback: true });
    */
   async startOpts(s: Session, observe = false): Promise<StartOpts> {
     const a = this.core.adapter(s.summary.harness);
+    // Right after a restart, cswap's accounts may not be discovered yet.
+    if (!observe && s.summary.harness === "claude" && isAccountSource(this.sourceOf(s))) await this.opts.claudeAccounts?.refresh();
     if (!a.unset) return this.chosen(s, observe);
     const opts = this.chosen(s, observe);
     const known = await a.defaults(s.summary.projectPath, s.summary.nativeId).catch(() => ({}) as StartOpts);

@@ -1,14 +1,10 @@
 import { useEffect, useState } from "react";
 import type { BillingSource } from "../../shared/credentials";
-import type { HarnessLoginStatus } from "../../shared/harnessLogin";
 import type { HarnessId } from "../../shared/transcript";
+import { accountLabelOf, labelOf } from "./accountLabels";
 import { rpc } from "./connection";
 import { accessOf } from "./runners";
 import { useStore } from "./store";
-
-const labelOf = (status: HarnessLoginStatus) => status.state === "signedIn"
-  ? [status.displayName || status.organization || status.email, status.plan].filter(Boolean).join(" · ")
-  : "";
 
 /** Read account details through the owner-only op, separate from the shared billing sources. */
 export function useAccountLabel(runnerId: string | undefined, harness: HarnessId, wanted: boolean) {
@@ -29,7 +25,7 @@ export function useAccountLabel(runnerId: string | undefined, harness: HarnessId
       if (!active) return;
       const labels: Partial<Record<BillingSource, string>> = {};
       if (status) labels.subscription = labelOf(status);
-      for (const { source, status } of accounts) labels[source] = labelOf(status);
+      for (const account of accounts) labels[account.source] = accountLabelOf(account);
       setAccount({ runnerId, harness, labels });
     });
     return () => { active = false; };

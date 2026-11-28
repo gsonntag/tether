@@ -1,4 +1,7 @@
 import { ClaudeAccounts } from "../adapters/claude/accounts";
+import { claudeSubscriptionStatus } from "../adapters/claude/credentials";
+import { HARNESS_BINS } from "../adapters/detect";
+import { accountIdentity } from "../accountIdentity";
 import { isCredentialSource } from "../../../shared/credentials";
 import { registerHarnessLogin } from "./harnessLogin";
 // The runner's core, assembled: its event bus, ops, harness facts and connection to the app.
@@ -41,6 +44,8 @@ import { systemdScopeWrap, Tmux, TMUX_SOCKET } from "../terminal/tmux";
 
 export interface RunnerOptions {
   costsFile?: string;
+  /** Offer the Claude accounts the owner set up with cswap, when it's installed (SPEC §credentials). */
+  cswap?: boolean;
   credentials?: CredentialStore;
   url: string;
   token: string;
@@ -157,7 +162,14 @@ export function createRunner(o: RunnerOptions) {
   });
   // Open requests are kept in runner.json, so they survive a restart (SPEC §7).
   const broker = new RequestBroker(o.policy, { saved: prefs.requests(), closed: prefs.closedRequests(), persist: (open, closed) => prefs.setRequests(open, closed), log: o.log });
-  const claudeAccounts = o.credentials?.file ? new ClaudeAccounts(join(dirname(o.credentials.file), "claude-accounts")) : undefined;
+  const claudeAccounts = o.credentials?.file ? new ClaudeAccounts(join(dirname(o.credentials.file), "claude-accounts"), o.cswap ? { cswap: {
+    // The primary login (~/.claude) is the `subscription` source, never a cswap account too.
+    primary: async () => {
+      const status = await claudeSubscriptionStatus(HARNESS_BINS.claude);
+      return status?.authMethod === "claude.ai" && status.loggedIn === true ? accountIdentity(status.email, undefined, status.orgName, status.orgId).accountId : undefined;
+    },
+  } } : {}) : undefined;
+  void claudeAccounts?.refresh();
   const live = new LiveControl(core, broker, { idleMs: o.core?.idleMs, maxLive: o.core?.maxLive, attachmentsDir: o.attachmentsDir, credentials: o.credentials, claudeAccounts, costs });
   const stopHarnessLogin = registerHarnessLogin(ops, (harness, source) => {
     live.harnessLoginChanged(harness, source);
@@ -356,6 +368,7 @@ export function createRunner(o: RunnerOptions) {
           const s = await core.open(id);
           const adapter = core.adapter(s.summary.harness);
           if (!adapter.ask) throw new Error("This session's harness can't generate text.");
+          if (s.summary.harness === "claude") await claudeAccounts?.refresh();
           // The session's own source, as its next start would use it: a missing key stops here.
           const credential = live.credentialFor(s.summary.harness, live.sourceOf(s), live.deploymentOf(s));
           // On a key, what it cost goes in the session's API ledger with its turns'.

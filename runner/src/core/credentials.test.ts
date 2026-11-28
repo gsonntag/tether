@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { RunnerToServer } from "../../../shared/protocol";
 import { ClaudeAccounts } from "../adapters/claude/accounts";
+import { fakeCswap } from "../adapters/claude/cswapFixture";
 import { saveConfig } from "../config";
 import { CredentialStore } from "../credentials";
 import { RequestBroker } from "./broker";
@@ -17,7 +18,7 @@ import { SessionCore } from "./sessions";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((f) => f()));
-function setup() {
+function setup(claudeAccountsOf?: (dir: string) => ClaudeAccounts) {
   const base = "/tmp/claude-1001/keys/unit"; mkdirSync(base, { recursive: true });
   const dir = mkdtempSync(join(base, "core-")), file = join(dir, "runner.json");
   saveConfig({ runnerId: "keys-test" }, file);
@@ -25,7 +26,7 @@ function setup() {
   adapter.addStored("one", []);
   const frames: RunnerToServer[] = [], prefs = new Prefs(file, 0);
   const core = new SessionCore({ adapters: [adapter], bus: new EventBus<CoreEvents>(), send: (m) => (frames.push(m), true), prefs, epoch: "keys", log: () => {} });
-  const claudeAccounts = new ClaudeAccounts(join(dir, "claude-accounts"));
+  const claudeAccounts = claudeAccountsOf?.(dir) ?? new ClaudeAccounts(join(dir, "claude-accounts"));
   const live = new LiveControl(core, new RequestBroker(), { credentials, claudeAccounts, idleMs: 60_000 });
   const ops = new OpRegistry(); registerSessionOps(ops, core, live);
   cleanups.push(() => core.stop());
@@ -732,4 +733,34 @@ test("Bedrock lists models by harness and switches Claude using a configured mod
   await live.setSource(id, "subscription");
   expect(prefs.get(id).deployment).toBeUndefined();
   expect(prefs.get(id).model).not.toBe(profile);
+});
+
+test("cswap accounts are sources like Tether's own; one cswap needs signed in again blocks with its hint", async () => {
+  const fx = fakeCswap();
+  const prior = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = fx.shared;
+  try {
+    fx.write([{ number: 1, email: "default@example.test", active: true }, { number: 2, email: "ok@example.test" }, { number: 3, email: "gone@example.test", usageStatus: "relogin_required" }]);
+    const { adapter, claudeAccounts, core, live } = setup((dir) => new ClaudeAccounts(join(dir, "claude-accounts"), { cswap: { bin: fx.bin, claude: "/bin/false" } }));
+    adapter.capabilities = { ...adapter.capabilities, sourceSwitch: true };
+    const listed = await live.sources("claude");
+    const ok = claudeAccounts.list()[0]!.source;
+    expect(listed.options.map((o) => o.source)).toEqual(["subscription", ok]);
+    const gone = claudeAccounts.cswap!.accounts().find((a) => a.problem)!.source;
+    await live.setSource("claude:one", ok);
+    await live.send("claude:one", "hi");
+    expect(adapter.drivers.at(-1)?.opts.credential?.claudeAccount).toMatchObject({ configDir: fx.profile(2), email: "ok@example.test" });
+    expect(() => live.credentialFor("claude", gone)).toThrow("cswap add");
+    await expect(live.setSource("claude:one", gone)).rejects.toThrow("isn't available");
+    expect((await core.open("claude:one")).id).toBe("claude:one");
+    // Right after a restart nothing is discovered yet: a new session still finds the saved cswap account.
+    const restarted = setup((dir) => new ClaudeAccounts(join(dir, "claude-accounts"), { cswap: { bin: fx.bin, claude: "/bin/false" } }));
+    restarted.prefs.setLastSubscription("claude", ok);
+    expect(restarted.claudeAccounts.read(ok)).toBeUndefined();
+    expect(await restarted.live.sourceForNew("claude", undefined)).toBe(ok);
+    expect(await restarted.live.sourceForNew("claude", ok)).toBe(ok);
+  } finally {
+    if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prior;
+  }
 });

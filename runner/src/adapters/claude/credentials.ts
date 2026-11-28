@@ -109,6 +109,7 @@ export function claudeKeyLease(credential?: CredentialSnapshot, onCost?: (cost: 
 
 /** auth status is read-only: no turn and no trust prompt. Async so its helper can reach the lease. */
 export async function confirmClaudeTerminal(binary: string, credential: CredentialSnapshot | undefined, settings: Record<string, unknown>, cwd?: string, providerEnv?: Record<string, string>): Promise<Billing> {
+  await credential?.claudeAccount?.prepare?.();
   const status = await claudeAuthStatus(binary, credential, settings, cwd, providerEnv);
   if (credential?.claudeAccount) confirmClaudeStatusIdentity(status, credential.claudeAccount);
   return confirmClaudeBilling(status, credential);
@@ -152,6 +153,7 @@ export async function expectedClaudeIdentity(binary: string, credential?: Creden
   const source = credential?.source;
   if (!source || !isSubscriptionSource(source)) return;
   const expected = credential.claudeAccount;
+  await expected?.prepare?.();
   const status = await claudeSubscriptionStatus(binary, expected?.configDir);
   if (expected) confirmClaudeStatusIdentity(status, expected);
   confirmClaudeBilling(status, credential);
@@ -218,7 +220,7 @@ try {
     chmodSync(socket, 0o600);
   } else if (source.startsWith("account:")) {
     env.CLAUDE_CONFIG_DIR = argv.shift();
-    const expected = JSON.parse(readFileSync(join(env.CLAUDE_CONFIG_DIR, ".tether-account.json"), "utf8"));
+    const expected = JSON.parse(readFileSync(argv.shift(), "utf8"));
     let report = "";
     const statusDecoder = new TextDecoder();
     const status = Bun.spawn([argv[0], "--settings", argv[argv.indexOf("--settings") + 1], "auth", "status", "--json"], {

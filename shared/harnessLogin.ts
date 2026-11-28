@@ -14,6 +14,10 @@ export interface HarnessAccount {
   source: AccountSource;
   status: HarnessLoginStatus;
   available: boolean;
+  /** Set up with cswap (claude-swap): it signs in and removes the account, not Tether. */
+  managedBy?: "cswap";
+  /** Why it's unavailable, when Tether knows. */
+  hint?: string;
 }
 
 export type HarnessLoginStatus =
